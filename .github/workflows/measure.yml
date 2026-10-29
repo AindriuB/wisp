@@ -1,0 +1,90 @@
+name: Measure
+
+# Records binary size, idle RSS and RSS after one request per target.
+# CI runners render in software (lavapipe, WARP) or inside a VM, so these
+# figures are not comparable with a local hardware-rendered run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: wisp
+            renderer: unknown
+          - target: x86_64-apple-darwin
+            os: macos-26-intel
+            binary: wisp
+            renderer: unknown
+          # Windows first: measure.ps1 could not be run or linted locally.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: wisp.exe
+            renderer: software
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: wisp
+            renderer: software
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install GPUI build packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ libasound2-dev libfontconfig-dev libgit2-dev \
+            libglib2.0-dev libssl-dev libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev make cmake clang lld llvm jq git curl \
+            gettext-base elfutils libsqlite3-dev musl-tools musl-dev build-essential \
+            pipewire xdg-desktop-portal libstdc++-14-dev \
+            xvfb mesa-vulkan-drivers
+      - name: Install Metal Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Verify Metal Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: xcrun metal --version
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p wisp-app --target ${{ matrix.target }}
+      - name: Measure (Linux, software Vulkan under xvfb)
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+          RENDERER: ${{ matrix.renderer }}
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: xvfb-run -a scripts/measure/measure.sh target/${{ matrix.target }}/release/${{ matrix.binary }} measure-${{ matrix.target }}.json
+      - name: Measure (macOS)
+        if: runner.os == 'macOS'
+        env:
+          TARGET: ${{ matrix.target }}
+          RENDERER: ${{ matrix.renderer }}
+        run: scripts/measure/measure.sh target/${{ matrix.target }}/release/${{ matrix.binary }} measure-${{ matrix.target }}.json
+      - name: Measure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          RENDERER: ${{ matrix.renderer }}
+        run: ./scripts/measure/measure.ps1 -Binary target/${{ matrix.target }}/release/${{ matrix.binary }} -Output measure-${{ matrix.target }}.json
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: measure-${{ matrix.target }}
+          path: measure-${{ matrix.target }}.json
+          if-no-files-found: warn

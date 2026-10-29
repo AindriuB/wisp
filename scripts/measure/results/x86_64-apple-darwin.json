@@ -1,0 +1,12 @@
+{
+  "target": "x86_64-apple-darwin",
+  "commit": "561807fb0a8ad259500ee0f2b8e5c927e7b44b58",
+  "binary_bytes": 18052632,
+  "idle_rss_kib": null,
+  "after_request_rss_kib": null,
+  "settle_seconds": 5,
+  "renderer": "unknown",
+  "status": "unmeasured",
+  "reason": "RSS under Rosetta is not representative; binary_bytes is from the local cross-build on arm64 (cargo build --release --locked -p wisp-app --target x86_64-apple-darwin). Native figure comes from measure.yml on macos-26-intel.",
+  "os_version": "macOS 27.0.1 arm64 (cross-built)"
+}
