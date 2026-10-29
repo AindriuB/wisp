@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-29 — M0 budgets recorded and GPUI kept
+The Budgets section of `docs/architecture.md` now holds the M0 measurements per target and the budgets the user set from them on macOS arm64 with a hardware renderer: binary at most 20 MB (20,971,520 B), idle RSS at most 120 MB, RSS after one request at most 128 MB, about 20% over the measured 16,660,480 B, 100,032 KiB and 103,296 KiB. The user decided to keep GPUI because it builds and renders on macOS within budget. Windows, Linux and macOS x64 RSS read "not measured" and have no budget until a `measure.yml` run and per-platform budgets from the user.
+**Cost:** GPUI costs the user accepted: version-pinning churn (git rev, then crates.io `gpui-pre`), a separate `gpui-pre-platform` backend crate, the Metal Toolchain as a separate Xcode download, and a text input that ignores input while the window is in the background (UI automation needs the window frontmost). CI figures come from software or unknown renderers, so do not compare them with the hardware figure or hold them to these budgets. Task 08's file was retired here.
+
 ## 2026-10-29 — RSS and binary-size measurement scripts and macOS results
 `scripts/measure/measure.sh` (macOS, Linux) and `measure.ps1` (Windows) launch `wisp` twice against a local 64 KiB file, sample RSS idle and after one request, and write one JSON record; `measure.yml` (dispatch only) runs them per target. Committed results: aarch64-apple-darwin measured on a hardware renderer (binary 16,660,480 B, idle ~100 MB, ~103 MB after one request) and x86_64-apple-darwin with binary size only. Failure paths (early exit, no `WISP_EVENT` in 30 s) write `unmeasured` with null RSS and exit 1.
 **Cost:** `measure.ps1` was never run (no pwsh here); Windows, Linux and macOS x64 RSS wait on a `measure.yml` run, which needs a remote. x64 macOS RSS under Rosetta is not representative, so do not measure it that way. CI renderers are software, so those figures are not comparable with the hardware one. Unfixed review P3s are listed in PLAN.md under Open from 07.
