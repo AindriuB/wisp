@@ -148,11 +148,40 @@ the collection folder.
 
 ## Budgets
 
-TBD. The memory budgets (idle RSS, RSS after one request) and the binary-size
-budget per platform have not been set. They will be set from the Milestone 0
-walking-skeleton measurements and recorded here, after which they are enforced.
-Until then, no change may be justified or rejected by reference to a number
-that is not in this section.
+Measured by `scripts/measure/measure.sh` at the end of Milestone 0 and copied
+from the committed records in `scripts/measure/results/`. RSS is in KiB as
+recorded; the budget figures below are in MB (1 MB = 1,048,576 B, 1 MB RSS =
+1,024 KiB).
+
+| Target | Binary size | Idle RSS | RSS after one request | Renderer | Source commit |
+|---|---|---|---|---|---|
+| `aarch64-apple-darwin` | 16,660,480 B | 100,032 KiB | 103,296 KiB | hardware | `561807f` (`aarch64-apple-darwin.json`) |
+| `x86_64-apple-darwin` | 18,052,632 B (local cross-build on arm64) | not measured: RSS under Rosetta is not representative; awaits a `measure.yml` run on `macos-26-intel` | not measured: same | unknown | `561807f` (`x86_64-apple-darwin.json`) |
+| `x86_64-pc-windows-msvc` | not measured: no `measure.yml` run yet (needs a pushed GitHub remote) | not measured: same | not measured: same | n/a | n/a |
+| `x86_64-unknown-linux-gnu` | not measured: no `measure.yml` run yet (needs a pushed GitHub remote) | not measured: same | not measured: same | n/a | n/a |
+
+`measure.ps1` (Windows) has never been run. Figures from `measure.yml` will come
+from software or unknown renderers on CI runners and are not comparable with the
+hardware figure above; they must be labelled as such when added.
+
+### Set budgets
+
+Set by the user on 2026-10-29 from the `aarch64-apple-darwin` hardware-renderer
+figures, with about 20% headroom:
+
+| Measure | Budget |
+|---|---|
+| Binary size | at most 20 MB (20,971,520 B) |
+| Idle RSS | at most 120 MB |
+| RSS after one request | at most 128 MB |
+
+These apply to the macOS arm64 hardware-renderer figure only, as measured by
+`scripts/measure/measure.sh`. Other platforms have no budget yet: they are not
+measured, and CI figures are not comparable. The user will set per-platform
+budgets after a `measure.yml` run.
+
+No change may be justified or rejected by reference to a number that is not in
+this section.
 
 ## Decisions worth knowing
 
