@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-29 | 07 | measure.sh/measure.ps1 and dispatch-only measure.yml; macOS arm64 measured, x64 binary size only; ps1 and CI platforms unverified | ## 2026-10-29 — RSS and binary-size measurement scripts and macOS results |
 | 2026-10-29 | 06 | GPUI window (method dropdown, URL, Send, status line, body) wired to Engine; WISP_AUTOSEND_URL measurement hook | ## 2026-10-29 — GPUI walking-skeleton window wired to the Engine |
 | 2026-10-29 | 04, 05 | Minimal core Engine over reqwest + rustls with Send/Cancel and Completed/Failed events; CI and four-target release workflows (Linux/Windows jobs unverified) | ## 2026-10-29 — Minimal core Engine and CI/release workflows |
 | 2026-10-29 | 02, 03 | Cargo workspace with exact crates.io GPUI pins (gpui-component 0.8.1, gpui-pre and gpui-pre-platform 0.3.10); CLAUDE.md trimmed under 50 lines | ## 2026-10-29 — Cargo workspace scaffold and trimmed CLAUDE.md |
