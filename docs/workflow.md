@@ -11,6 +11,23 @@ wide and in parallel, and the main session's context stays small.
 /record          scribe    →  PLAN.md, HISTORY.md, docs/
 ```
 
+## Roles
+
+Each agent returns a conclusion, not a transcript. Definitions live in
+`~/.claude/agents/` (shared by every project).
+
+- `explorer` — read-only recon: where a thing is, what calls it. Cites lines.
+- `architect` — read-only judgement on shape, boundaries and blast radius.
+- `planner` — turns a goal into numbered, parallel-safe task files with
+  disjoint file ownership and explicit acceptance criteria.
+- `implementer` — executes exactly one task file in its own worktree.
+- `code-reviewer` — hunts bugs and style breaks in a diff, each with a concrete
+  failing input; its findings go back to the implementer before verify.
+- `tester` — runs builds and suites, reports pass/fail and the minimal failing
+  detail. Never the full log.
+- `reviewer` — checks a diff against its task's acceptance criteria.
+- `scribe` — the only agent that edits `PLAN.md`, `HISTORY*.md` and `docs/`.
+
 ## Why it is shaped this way
 
 The main session is the scarcest context in the run. Everything that produces
