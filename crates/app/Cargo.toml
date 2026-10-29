@@ -1,0 +1,18 @@
+[package]
+name = "wisp-app"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "wisp"
+path = "src/main.rs"
+
+[dependencies]
+wisp-core.workspace = true
+wisp-storage.workspace = true
+gpui.workspace = true
+gpui-platform.workspace = true
+gpui-component.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

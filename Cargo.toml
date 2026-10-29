@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
+
+[workspace.dependencies]
+wisp-core = { path = "crates/core" }
+wisp-storage = { path = "crates/storage" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros"] }
+async-channel = { version = "2", default-features = false, features = ["std"] }
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+thiserror = { version = "2", default-features = false, features = ["std"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+anyhow = { version = "1", default-features = false, features = ["std"] }
+wiremock = { version = "0.6", default-features = false }
+# Features unify across members: Linux backends (wayland, x11) are enabled on the platform crate only.
+gpui = { package = "gpui-pre", version = "=0.3.10", default-features = false }
+gpui-component = { version = "=0.8.1", default-features = false }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.10", default-features = false, features = ["font-kit", "wayland", "x11"] }

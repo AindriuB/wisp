@@ -1,0 +1,20 @@
+[package]
+name = "wisp-core"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "wisp_core"
+
+[dependencies]
+reqwest.workspace = true
+tokio.workspace = true
+async-channel.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio.workspace = true
