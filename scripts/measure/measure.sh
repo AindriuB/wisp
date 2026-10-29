@@ -10,11 +10,19 @@
 # RSS, kill. Fixed waits are fine: this is a measurement, not a test.
 # If the window fails to start or no WISP_EVENT line arrives, write
 # status "unmeasured" with a reason, exit non-zero, and record no numbers.
+# The waiting stops early when the app prints `WISP_EVENT failed` or exits.
+# Each launch's stdout/stderr are kept next to <output.json> as
+# <output stem>.{idle,req}.{out,err}.log; on "unmeasured" the last 20 stderr
+# lines go into the JSON key stderr_tail and the job log. The app runs with
+# RUST_BACKTRACE=1 and RUST_LOG=info. On macOS a request-run timeout also
+# saves `sample` output as <output stem>.req.sample.log.
 set -u
 
 bin="${1:-}"; out="${2:-}"
 [ -n "$bin" ] && [ -n "$out" ] || { echo "usage: measure.sh <binary> <output.json>" >&2; exit 2; }
 [ -f "$bin" ] || { echo "no such binary: $bin" >&2; exit 2; }
+# Absolute path, so a bare name is never looked up on PATH.
+bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")"
 
 settle="${SETTLE_SECONDS:-5}"
 renderer="${RENDERER:-unknown}"
@@ -23,6 +31,10 @@ commit="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 os_version="$(uname -sr)"
 if [ "$(uname -s)" = Darwin ]; then os_version="macOS $(sw_vers -productVersion) $(uname -m)"; fi
 bytes="$(wc -c <"$bin" | tr -d ' ')"
+
+mkdir -p "$(dirname "$out")"
+logbase="${out%.json}"
+export RUST_BACKTRACE=1 RUST_LOG=info
 
 work="$(mktemp -d)"
 server_pid=""; app_pid=""
@@ -33,22 +45,47 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# write_json <status> <reason|""> <idle> <after>
+# write_json <status> <reason|""> <idle> <after> [stderr-file]
 write_json() {
   mkdir -p "$(dirname "$out")"
-  python3 - "$target" "$commit" "$bytes" "$3" "$4" "$settle" "$renderer" "$1" "$2" "$os_version" >"$out" <<'PY'
+  python3 - "$target" "$commit" "$bytes" "$3" "$4" "$settle" "$renderer" "$1" "$2" "$os_version" "${5:-}" >"$out" <<'PY'
 import json, sys
 a = sys.argv[1:]
+tail = None
+if a[10]:
+    try:
+        with open(a[10], errors="replace") as f:
+            tail = f.read().splitlines()[-20:]
+    except OSError:
+        tail = []
 num = lambda s: int(s) if s else None
 print(json.dumps({
     "target": a[0], "commit": a[1], "binary_bytes": num(a[2]),
     "idle_rss_kib": num(a[3]), "after_request_rss_kib": num(a[4]),
     "settle_seconds": int(a[5]), "renderer": a[6], "status": a[7],
     "reason": a[8] or None, "os_version": a[9],
+    "stderr_tail": tail,
 }, indent=2))
 PY
 }
-fail() { echo "unmeasured: $1" >&2; write_json unmeasured "$1" "" ""; exit 1; }
+# err_file is the stderr log of the launch in progress (empty before any launch).
+err_file=""
+fail() {
+  local reason="$1"
+  if [ -n "$err_file" ]; then
+    if [ -s "$err_file" ]; then
+      reason="$reason (stderr: $(wc -l <"$err_file" | tr -d ' ') lines, tail in stderr_tail)"
+      echo "--- last 20 lines of app stderr ---" >&2
+      tail -n 20 "$err_file" >&2
+      echo "--- end of app stderr ---" >&2
+    else
+      reason="$reason (app stderr was empty)"
+    fi
+  fi
+  echo "unmeasured: $reason" >&2
+  write_json unmeasured "$reason" "" "" "$err_file"
+  exit 1
+}
 
 head -c 65536 /dev/zero >"$work/file.bin"
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
@@ -63,7 +100,8 @@ curl -sf -o /dev/null "http://127.0.0.1:$port/file.bin" || fail "local http serv
 rss_of() { ps -o rss= -p "$1" | tr -d ' '; }
 
 # Run 1: idle.
-"$bin" >"$work/idle.out" 2>&1 &
+err_file="$logbase.idle.err.log"
+"$bin" >"$logbase.idle.out.log" 2>"$err_file" &
 app_pid=$!
 sleep "$settle"
 kill -0 "$app_pid" 2>/dev/null || fail "window failed to start (process exited during idle run)"
@@ -72,15 +110,36 @@ kill "$app_pid" 2>/dev/null; wait "$app_pid" 2>/dev/null; app_pid=""
 [ -n "$idle" ] || fail "could not sample idle RSS"
 
 # Run 2: after one request.
-WISP_AUTOSEND_URL="http://127.0.0.1:$port/file.bin" "$bin" >"$work/req.out" 2>&1 &
+err_file="$logbase.req.err.log"
+req_out="$logbase.req.out.log"
+WISP_AUTOSEND_URL="http://127.0.0.1:$port/file.bin" "$bin" >"$req_out" 2>"$err_file" &
 app_pid=$!
-got=""
+got=""; alive=1
 for _ in $(seq 1 300); do
-  if grep -q '^WISP_EVENT completed' "$work/req.out"; then got=1; break; fi
-  kill -0 "$app_pid" 2>/dev/null || break
+  grep -q '^WISP_EVENT completed' "$req_out" && { got=1; break; }
+  failed="$(grep -m1 '^WISP_EVENT failed' "$req_out")"
+  [ -z "$failed" ] || fail "$failed"
+  if ! kill -0 "$app_pid" 2>/dev/null; then alive=0; break; fi
   sleep 0.1
 done
-[ -n "$got" ] || fail "no 'WISP_EVENT completed' line within 30 s"
+if [ -z "$got" ] && [ "$alive" = 0 ]; then
+  # Exited: re-check the log once for a line written just before exit.
+  grep -q '^WISP_EVENT completed' "$req_out" && got=1
+  failed="$(grep -m1 '^WISP_EVENT failed' "$req_out")"
+  [ -n "$got" ] || [ -z "$failed" ] || fail "$failed"
+  if [ -z "$got" ]; then
+    code=0; wait "$app_pid" 2>/dev/null || code=$?
+    app_pid=""
+    fail "app exited (code $code) before WISP_EVENT"
+  fi
+fi
+if [ -z "$got" ]; then
+  # Timed out with the app still running: on macOS grab a stack sample.
+  if [ "$(uname -s)" = Darwin ] && kill -0 "$app_pid" 2>/dev/null; then
+    sample "$app_pid" 3 -file "$logbase.req.sample.log" >/dev/null 2>&1 || true
+  fi
+  fail "no 'WISP_EVENT completed' line within 30 s"
+fi
 sleep "$settle"
 kill -0 "$app_pid" 2>/dev/null || fail "app exited after the request"
 after="$(rss_of "$app_pid")"

@@ -24,6 +24,14 @@ const METHODS: [(&str, Method); 7] = [
     ("OPTIONS", Method::Options),
 ];
 
+/// Startup checkpoint on stderr, only when the measurement hook is active, so a
+/// hang can be located from the captured stderr.
+pub fn trace(stage: &str) {
+    if std::env::var_os("WISP_AUTOSEND_URL").is_some() {
+        eprintln!("WISP_TRACE {stage}");
+    }
+}
+
 pub struct WispView {
     engine: Engine,
     method: Entity<SelectState<Vec<&'static str>>>,
@@ -54,14 +62,20 @@ impl WispView {
             let id = this.submit(Method::Get, target);
             this.autosend = Some(id);
             this.latest = Some(id);
+            trace("autosend submitted");
         }
+        trace("window opened");
         this
     }
 
     /// One background task drains the event channel; the UI thread only awaits.
     fn spawn_drain(&self, rx: EventReceiver, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut first = true;
             while let Ok(event) = rx.recv().await {
+                if std::mem::take(&mut first) {
+                    trace("first event received");
+                }
                 let alive = this.update(cx, |this, cx| this.on_event(event, cx));
                 if alive.is_err() {
                     break;

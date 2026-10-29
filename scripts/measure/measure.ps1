@@ -9,21 +9,37 @@
 # stdout line (30 s max), wait settle_seconds, sample again, kill. Fixed waits
 # are fine: this is a measurement, not a test.
 # If the window fails to start or no WISP_EVENT line arrives, write status
-# "unmeasured" with a reason, exit non-zero, and record no numbers.
+# "unmeasured" with a reason, exit non-zero, and record no numbers. The wait
+# stops early when the app prints `WISP_EVENT failed` or exits, and any thrown
+# exception also ends as "unmeasured" with its message as the reason.
+# Each launch's stdout/stderr are kept next to -Output as
+# <output stem>.{idle,req}.{out,err}.log; on "unmeasured" the last 20 stderr
+# lines go into the JSON key stderr_tail and the job log. The app runs with
+# RUST_BACKTRACE=1 and RUST_LOG=info.
 param(
   [Parameter(Mandatory = $true)][string]$Binary,
   [Parameter(Mandatory = $true)][string]$Output
 )
 $ErrorActionPreference = 'Stop'
+$Output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
+$logBase = Join-Path (Split-Path -Parent $Output) ([System.IO.Path]::GetFileNameWithoutExtension($Output))
+$env:RUST_BACKTRACE = '1'
+$env:RUST_LOG = 'info'
 
 $settle = if ($env:SETTLE_SECONDS) { [int]$env:SETTLE_SECONDS } else { 5 }
 $renderer = if ($env:RENDERER) { $env:RENDERER } else { 'unknown' }
 $target = if ($env:TARGET) { $env:TARGET } else { 'x86_64-pc-windows-msvc' }
 $commit = (git rev-parse HEAD 2>$null); if (-not $commit) { $commit = 'unknown' }
 $osVersion = [System.Environment]::OSVersion.VersionString
-$bytes = (Get-Item $Binary).Length
+$bytes = $null
+$errFile = $null
 
-function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv) {
+function Get-StderrTail {
+  if (-not $errFile) { return $null }
+  try { return , @(Get-Content -Path $errFile -Tail 20 -ErrorAction Stop | ForEach-Object { [string]$_ }) } catch { return , @() }
+}
+
+function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $stderrTail) {
   $dir = Split-Path -Parent $Output
   if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   [ordered]@{
@@ -32,6 +48,7 @@ function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv) {
     private_kib = [ordered]@{ idle = $idlePriv; after_request = $afterPriv }
     settle_seconds = $settle; renderer = $renderer; status = $status
     reason = $reason; os_version = $osVersion
+    stderr_tail = $stderrTail
   } | ConvertTo-Json | Set-Content -Encoding utf8 $Output
 }
 
@@ -43,13 +60,28 @@ function Stop-All {
   if ($server -and -not $server.HasExited) { $server.Kill() }
 }
 function Fail($reason) {
-  [Console]::Error.WriteLine("unmeasured: $reason")
-  Write-Result 'unmeasured' $reason $null $null $null $null
   Stop-All
+  $tail = Get-StderrTail
+  if ($errFile) {
+    if ($tail -and $tail.Count -gt 0) {
+      $reason = "$reason (stderr tail in stderr_tail)"
+      [Console]::Error.WriteLine('--- last 20 lines of app stderr ---')
+      $tail | ForEach-Object { [Console]::Error.WriteLine($_) }
+      [Console]::Error.WriteLine('--- end of app stderr ---')
+    } else {
+      $reason = "$reason (app stderr was empty)"
+    }
+  }
+  [Console]::Error.WriteLine("unmeasured: $reason")
+  Write-Result 'unmeasured' $reason $null $null $null $null $tail
   exit 1
 }
 
 try {
+  $Binary = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Binary)
+  $bytes = (Get-Item $Binary).Length
+  $dir = Split-Path -Parent $Output
+  if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   [System.IO.File]::WriteAllBytes((Join-Path $work 'file.bin'), (New-Object byte[] 65536))
   $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
   $listener.Start(); $port = $listener.LocalEndpoint.Port; $listener.Stop()
@@ -62,7 +94,9 @@ try {
   if (-not $up) { Fail 'local http server did not start' }
 
   # Run 1: idle.
-  $app = Start-Process $Binary -PassThru -RedirectStandardOutput (Join-Path $work 'idle.out') -RedirectStandardError (Join-Path $work 'idle.err')
+  $errFile = "$logBase.idle.err.log"
+  $app = Start-Process $Binary -PassThru -RedirectStandardOutput "$logBase.idle.out.log" -RedirectStandardError $errFile
+  $null = $app.Handle  # keep the handle so ExitCode stays readable
   Start-Sleep -Seconds $settle
   if ($app.HasExited) { Fail 'window failed to start (process exited during idle run)' }
   $app.Refresh()
@@ -71,13 +105,23 @@ try {
 
   # Run 2: after one request.
   $env:WISP_AUTOSEND_URL = $url
-  $reqOut = Join-Path $work 'req.out'
-  $app = Start-Process $Binary -PassThru -RedirectStandardOutput $reqOut -RedirectStandardError (Join-Path $work 'req.err')
+  $reqOut = "$logBase.req.out.log"
+  $errFile = "$logBase.req.err.log"
+  $app = Start-Process $Binary -PassThru -RedirectStandardOutput $reqOut -RedirectStandardError $errFile
+  $null = $app.Handle
   Remove-Item Env:WISP_AUTOSEND_URL
   $got = $false
+  # Each pass: completed line, then failed line, then process exit. A final
+  # pass after exit catches a line written just before the process ended.
   for ($i = 0; $i -lt 300 -and -not $got; $i++) {
-    if ((Test-Path $reqOut) -and (Select-String -Path $reqOut -Pattern '^WISP_EVENT completed' -Quiet)) { $got = $true; break }
-    if ($app.HasExited) { break }
+    $exited = $app.HasExited
+    if ($exited) { $app.WaitForExit() }
+    if (Test-Path $reqOut) {
+      if (Select-String -Path $reqOut -Pattern '^WISP_EVENT completed' -Quiet) { $got = $true; break }
+      $failedLine = Select-String -Path $reqOut -Pattern '^WISP_EVENT failed' | Select-Object -First 1
+      if ($failedLine) { Fail $failedLine.Line.Trim() }
+    }
+    if ($exited) { Fail "app exited (code $($app.ExitCode)) before WISP_EVENT" }
     Start-Sleep -Milliseconds 100
   }
   if (-not $got) { Fail "no 'WISP_EVENT completed' line within 30 s" }
@@ -87,8 +131,17 @@ try {
   $after = [int64]($app.WorkingSet64 / 1KB); $afterPriv = [int64]($app.PrivateMemorySize64 / 1KB)
   $app.Kill(); $app.WaitForExit(); $app = $null
 
-  Write-Result 'measured' $null $idle $idlePriv $after $afterPriv
+  Write-Result 'measured' $null $idle $idlePriv $after $afterPriv $null
   Get-Content $Output
+}
+catch {
+  # Fail's own `exit 1` does not land here; this is for unexpected throws.
+  $msg = $_.Exception.Message
+  $tail = Get-StderrTail
+  [Console]::Error.WriteLine("unmeasured: $msg")
+  try { Stop-All } catch { }
+  try { Write-Result 'unmeasured' $msg $null $null $null $null $tail } catch { [Console]::Error.WriteLine("could not write result: $($_.Exception.Message)") }
+  exit 1
 }
 finally {
   Stop-All

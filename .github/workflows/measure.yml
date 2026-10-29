@@ -26,7 +26,6 @@ jobs:
             os: macos-26-intel
             binary: wisp
             renderer: unknown
-          # Windows first: measure.ps1 could not be run or linted locally.
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             binary: wisp.exe
@@ -49,6 +48,18 @@ jobs:
             gettext-base elfutils libsqlite3-dev musl-tools musl-dev build-essential \
             pipewire xdg-desktop-portal libstdc++-14-dev \
             xvfb mesa-vulkan-drivers
+      - name: Install EGL/GL userspace and Vulkan tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          for pkg in libegl1 libgl1 libgl1-mesa-dri libegl-mesa0 vulkan-tools; do
+            sudo apt-get install -y "$pkg" || echo "::warning::could not install $pkg"
+          done
+      - name: Diagnose graphics stack (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          grep PRETTY_NAME /etc/os-release || true
+          ls -la /usr/share/vulkan/icd.d/ || true
+          xvfb-run -a vulkaninfo --summary || true
       - name: Install Metal Toolchain (macOS)
         if: runner.os == 'macOS'
         run: xcodebuild -downloadComponent MetalToolchain
@@ -66,7 +77,6 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           RENDERER: ${{ matrix.renderer }}
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: xvfb-run -a scripts/measure/measure.sh target/${{ matrix.target }}/release/${{ matrix.binary }} measure-${{ matrix.target }}.json
       - name: Measure (macOS)
         if: runner.os == 'macOS'
@@ -86,5 +96,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: measure-${{ matrix.target }}
-          path: measure-${{ matrix.target }}.json
+          path: |
+            measure-${{ matrix.target }}.json
+            measure-${{ matrix.target }}.*.log
           if-no-files-found: warn
