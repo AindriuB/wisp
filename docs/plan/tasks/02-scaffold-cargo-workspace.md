@@ -69,3 +69,13 @@ finished here as an empty stub.
 - CI workflows (task 05).
 - Editing `docs/` or `CLAUDE.md` (task 03).
 - If `gpui` or `gpui-component` transitively pulls `openssl-sys` or `native-tls`, do not work around it by patching: stop and report it, because it is evidence for the M0 GPUI exit decision.
+
+## Attempt 1 — failed
+
+Verified at HEAD bb671f0 (branch task/02-scaffold-cargo-workspace). tester: PASS. reviewer: REQUEST CHANGES.
+
+- **Missing GPUI platform backend.** `gpui-pre 0.3.10` has no default-platform constructor: only `Application::with_platform(Rc<dyn Platform>)` and `new_inaccessible(..)` (gpui-pre-0.3.10/src/app.rs:208,225). The platform backends ship separately as crates.io `gpui-pre-platform` (0.3.10: "Zed's `gpui_platform` crate"), which is not in Cargo.lock. Task 06 could not open a window without editing the root Cargo.toml and Cargo.lock, which breaks this task's Goal. Fix: add `gpui-pre-platform = "=0.3.10"` to `[workspace.dependencies]` (and as a `workspace = true` dependency of wisp-app), with whatever Linux (wayland/x11) and Windows features it needs.
+- **`wayland`/`x11` features on `gpui` are no-ops** in gpui-pre 0.3.10 (`wayland = []`, `x11 = ["scap?/x11"]`); the Linux backend lives in the platform crate. Move the Linux features to the platform crate and leave a one-line comment on how features merge.
+- **Re-run graph checks with the platform crate present:** `cargo tree --workspace --target all -i openssl-sys` and `-i native-tls` (must not match), one source/version each for `gpui-pre` and `gpui-pre-platform`, and neither in wisp-core or wisp-storage. Paste the real command output into the handoff.
+- Optional: reword or squash commit ae706dc, whose body still argues for the abandoned git-rev pins.
+- Optional: confirm the effect of `default-features = false` on gpui-pre (it turns off `font-kit` and `windows-manifest`); flag it for tasks 05/06 if Windows needs the manifest.
