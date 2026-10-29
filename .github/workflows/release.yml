@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: wisp
+          # macos-26-intel is a standard GitHub-hosted Intel runner, so this
+          # target builds natively rather than cross-compiling.
+          - target: x86_64-apple-darwin
+            os: macos-26-intel
+            binary: wisp
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: wisp.exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: wisp
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # GPUI build packages: script/linux (apt list) at zed rev
+      # 08cbb88a152c3751a43e853425a70e9f631a5918, the zed-rev recorded in the
+      # pinned gpui-pre 0.3.10 snapshot. libstdc++-14-dev is the Ubuntu 24.04 extra.
+      - name: Install GPUI build packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ libasound2-dev libfontconfig-dev libgit2-dev \
+            libglib2.0-dev libssl-dev libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev make cmake clang lld llvm jq git curl \
+            gettext-base elfutils libsqlite3-dev musl-tools musl-dev build-essential \
+            pipewire xdg-desktop-portal libstdc++-14-dev
+      - name: Install Metal Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Verify Metal Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: xcrun metal --version
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p wisp-app --target ${{ matrix.target }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wisp-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          if-no-files-found: error

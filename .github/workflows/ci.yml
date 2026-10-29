@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # GPUI build packages: script/linux (apt list) at zed rev
+      # 08cbb88a152c3751a43e853425a70e9f631a5918, the zed-rev recorded in the
+      # pinned gpui-pre 0.3.10 snapshot. libstdc++-14-dev is the Ubuntu 24.04 extra.
+      - name: Install GPUI build packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ libasound2-dev libfontconfig-dev libgit2-dev \
+            libglib2.0-dev libssl-dev libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev make cmake clang lld llvm jq git curl \
+            gettext-base elfutils libsqlite3-dev musl-tools musl-dev build-essential \
+            pipewire xdg-desktop-portal libstdc++-14-dev
+      - name: Install Metal Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Verify Metal Toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: xcrun metal --version
+      # rustup reads rust-toolchain.toml and installs the pinned toolchain.
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
