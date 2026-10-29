@@ -28,3 +28,12 @@ name Wisp in its title line.
 - The `## Budgets` section of `docs/architecture.md` (task 08).
 - `PLAN.md` and `HISTORY*.md` updates — those happen at `/record`, not here.
 - Rewriting `docs/workflow.md` beyond receiving moved text.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 7ed75a7
+
+- [STYLE] commit 7ed75a7 (subject line) — the commit subject is `docs: trim CLAUDE.md under 50 lines, move role descriptions to workflow.md`, but the written commit format asks for the task id as the prefix.
+  route: implementer — the fix is to reword the subject to `03: trim CLAUDE.md under 50 lines, move role descriptions to workflow.md`. The scribe can also do it at merge. No content changes.
+  rule: docs/conventions.md `## Commits`: "`<task-id>: <imperative summary>` — for example `03: add IBAN checksum guard`."
+- [NOTE] (optional) CLAUDE.md:27 — the new prose line is 87 characters, while neighbouring prose wraps at about 80. No written wrap rule; not required.
