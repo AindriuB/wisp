@@ -23,7 +23,8 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 - **M0 — Walking skeleton:** workspace, minimal GPUI window, minimal Engine over reqwest + rustls, CI release builds on four targets, and measured RSS and binary size that set the budgets in `docs/architecture.md`; exit decides whether GPUI stays.
 - **M1 — Core and storage:** full model, `resolve`, body store, full event set and cancel, `toml_edit` storage with secrets and watcher, unit-tested without a window.
 - **M2 — UI v1:** layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings.
-**Done in M0:** workspace scaffold with pinned GPUI deps (02); minimal core Engine (04); CI and release workflows (05). Remaining M0 tasks: 06 window, 07 measure RSS and size, 08 record measurements.
+**Done in M0:** workspace scaffold with pinned GPUI deps (02); minimal core Engine (04); CI and release workflows (05); GPUI window with the `WISP_AUTOSEND_URL` hook (06). Remaining M0 tasks: 07 measure RSS and size, 08 record measurements.
+**Open from 06:** the method dropdown has no chevron (cosmetic, M2). Task 07's parser must match error kinds in Debug form (`kind=Connect`). UI automation needs the window frontmost.
 **Open from 05:** the Linux and Windows jobs and a green `release.yml` run are unverified; only the x86_64-apple-darwin release build was run, locally. Not closable until the repo is pushed and the workflows run. Task 07 needs real release artefacts, so this gates it.
 **Blocked by:** M1 on M0; M2 on M1 (M2 may start once the M1 API is frozen).
 
