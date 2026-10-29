@@ -27,7 +27,6 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 **Open from 09, per-platform budgets:** the user has not set budgets for Windows, Linux or macOS x64. Windows (24.9 MB) and Linux (35.1 MB) release binaries exceed the 20 MB figure, and Linux software-rendered RSS (about 171 MB idle) exceeds 120 MB. CI renderers are software or unknown and not comparable with the hardware figure; the set budgets still apply to macOS arm64 hardware only. Per-platform budgets are the user's call.
 **Open from 09, x86_64-apple-darwin RSS:** unmeasured on CI because the main thread blocks in the headless runner's icon service (see HISTORY). Binary size only.
 **Open from 09, review P3s:** `WISP_TRACE window opened` prints from inside the `open_window` build closure, before it returns; `measure.ps1`'s catch path does not print the stderr tail to the job log nor say whether stderr was empty; a set `CDPATH` could break `measure.sh`'s path resolution.
-**Open from 07:** the `measure.yml` comment "Windows first" is wrong (Windows is third in the matrix; it means first real run of `measure.ps1`).
 **Open from 06:** the method dropdown has no chevron (cosmetic, M2). UI automation needs the window frontmost.
 **Blocked by:** M1 on M0; M2 on M1 (M2 may start once the M1 API is frozen).
 
