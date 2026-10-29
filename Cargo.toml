@@ -21,6 +21,7 @@ async-channel = { version = "2", default-features = false, features = ["std"] }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 thiserror = { version = "2", default-features = false, features = ["std"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 anyhow = { version = "1", default-features = false, features = ["std"] }
 wiremock = { version = "0.6", default-features = false }
 # Features unify across members: Linux backends (wayland, x11) are enabled on the platform crate only.
