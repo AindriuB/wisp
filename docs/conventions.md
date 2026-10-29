@@ -64,8 +64,11 @@ Use `tracing`. Never log secrets, auth headers, or values from
 
 ## GPUI
 
-GPUI and `gpui-component` appear only in `crates/app`. Both are pinned to an
-exact git rev. Bumping the rev is its own task, never folded into feature work.
+GPUI and `gpui-component` appear only in `crates/app`. Both come from
+crates.io (the latest `gpui-component` and the `gpui-pre` snapshot it depends
+on), pinned to exact versions (`=x.y.z`) in `[workspace.dependencies]`, with one
+gpui source in `Cargo.lock`. Bumping them is its own task, never folded into
+feature work.
 
 ## Dependencies
 

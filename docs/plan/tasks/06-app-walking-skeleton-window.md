@@ -14,7 +14,7 @@ Send button, a status line and the raw response body, wired to the `wisp-core`
 ## Context
 - docs/plan/specs/2026-10-29-http-client-v1.md:166-198 — UI and state (only the request bar and response pane apply)
 - docs/plan/tasks/04-core-minimal-engine.md — the exact Engine API to call
-- `gpui-component` examples at the rev pinned in task 02 — `Select`/dropdown, `Input`, `Button` usage
+- `gpui-component` examples at the version pinned in task 02 — `Select`/dropdown, `Input`, `Button` usage
 - docs/conventions.md:50-66 — `anyhow` allowed here; GPUI only here
 
 ## Acceptance

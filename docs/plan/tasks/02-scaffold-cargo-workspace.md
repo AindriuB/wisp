@@ -37,7 +37,7 @@ finished here as an empty stub.
   - `serde` — `derive`, `std`.
   - `thiserror`, `tracing` (`std`), `anyhow` (`std`).
   - `wiremock` — dev only, for `wisp-core` tests.
-  - `gpui` and `gpui-component` — git dependencies, each pinned to an exact `rev`. Pick the latest `gpui-component` rev that builds on 1.99.1, then pin `gpui` to the exact zed rev that `gpui-component` rev itself pins, so the graph contains one `gpui`. Enable the Linux `wayland` and `x11` features if `gpui` gates them.
+  - `gpui` and `gpui-component` — crates.io dependencies, each pinned to an exact version (`=x.y.z`). Pick the latest `gpui-component` that builds on 1.99.1, then pin the crates.io `gpui-pre` snapshot it depends on to its exact version, so the graph contains one `gpui` source. Enable the Linux `wayland` and `x11` features if `gpui` gates them.
 - Member manifests reference every dependency with `workspace = true`:
   - `wisp-core`: reqwest, tokio, async-channel, serde, thiserror, tracing; dev: wiremock, tokio.
   - `wisp-storage`: no dependencies.
@@ -56,12 +56,12 @@ finished here as an empty stub.
 - [ ] `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` are clean.
 - [ ] `cargo tree --workspace --target all -i openssl-sys` and `cargo tree --workspace --target all -i native-tls` each report that the package is not in the graph. (`--target all` checks Windows and Linux graphs from macOS without building them.)
 - [ ] `cargo tree -p wisp-core -i gpui` and `cargo tree -p wisp-storage -i gpui` report `gpui` is not a dependency of those packages.
-- [ ] `cargo tree --workspace --target all -i gpui` shows exactly one `gpui` source and rev.
-- [ ] `gpui` and `gpui-component` entries in `Cargo.toml` each carry `rev = "<40-char sha>"`, not `branch` or `tag`.
+- [ ] `cargo tree --workspace --target all -i gpui` shows exactly one `gpui` source and version.
+- [ ] `gpui` and `gpui-component` entries in `Cargo.toml` each carry an exact `=x.y.z` version from crates.io, not a git source or a range.
 - [ ] Every package in `cargo metadata --format-version 1 --no-deps` has `publish` equal to `[]`.
 - [ ] `cargo metadata --format-version 1 --no-deps` lists packages `wisp-core`, `wisp-storage`, `wisp-app`, and a bin target `wisp`.
 - [ ] Every member-crate dependency line uses `workspace = true`.
-- [ ] The commit body states the chosen `gpui-component` and `gpui` revs and why that pair.
+- [ ] The commit body states the chosen `gpui-component` and `gpui-pre` versions and why that pair.
 - [ ] Not checkable locally: that the Linux and Windows graphs *build*. Checked by task 05's CI run; here only `cargo tree --target all` evidence is required.
 
 ## Out of scope
