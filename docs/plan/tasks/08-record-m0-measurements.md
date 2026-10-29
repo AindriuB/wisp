@@ -27,4 +27,4 @@ are recorded as measured; the budgets set from them are the user's decision.
 ## Out of scope
 - The GPUI keep-or-revisit decision itself; it is the user's, made on these numbers.
 - `PLAN.md` and `HISTORY*.md` — done at `/record`.
-- Any other section of `docs/architecture.md` (task 03 owns the naming paragraph).
+- Any other section of `docs/architecture.md`.

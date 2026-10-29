@@ -42,10 +42,13 @@ Crates are conceptually `core`, `storage` and `app`, in `crates/<name>/`.
 Standard Rust naming otherwise: `snake_case` functions and modules,
 `CamelCase` types, `SCREAMING_SNAKE_CASE` constants.
 
-**Open decision for the planner:** a package named `core` clashes with std
-`core`. Suggested: package `hc-core` with lib name `hc_core`, and likewise
-`hc-storage` and `hc-app`; also choose the shipped binary's name. Decide before
-M0 creates the crates, then record the result here.
+**Decided 2026-10-29:** the product is Wisp and the shipped binary is `wisp`.
+A package named `core` would clash with std `core`, so the packages are
+`wisp-core` (lib `wisp_core`), `wisp-storage` (lib `wisp_storage`) and
+`wisp-app` (produces the binary `wisp`), in `crates/core`, `crates/storage` and
+`crates/app`. Every workspace package sets `publish = false`: `wisp`,
+`wisp-core` and `wisp-app` are already taken on crates.io by an unrelated tmux
+tool, and Wisp ships as binaries from GitHub releases, not via crates.io.
 
 ## Errors
 

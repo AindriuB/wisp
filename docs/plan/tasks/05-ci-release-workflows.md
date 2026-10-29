@@ -8,7 +8,7 @@
 
 ## Goal
 Every push and pull request runs format, lint and tests; a tag or manual
-dispatch builds release binaries of `httpclient` for macOS arm64, macOS x64,
+dispatch builds release binaries of `wisp` for macOS arm64, macOS x64,
 Windows x64 and Linux x64 and uploads them as artifacts. This is the only
 evidence M0 will have that the Windows and Linux builds work.
 
@@ -21,14 +21,14 @@ evidence M0 will have that the Windows and Linux builds work.
 ## Acceptance
 - [ ] `ci.yml` triggers on `push` and `pull_request`; runs `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` on `ubuntu-latest` and `macos-latest`.
 - [ ] `release.yml` triggers on `push` of tags `v*` and on `workflow_dispatch`, with a matrix of exactly four entries: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`.
-- [ ] Every build step uses `cargo build --release --locked -p hc-app --target <target>`.
-- [ ] Each matrix entry uploads one artifact named `httpclient-<target>` containing the binary (`httpclient.exe` on Windows) and nothing else.
+- [ ] Every build step uses `cargo build --release --locked -p wisp-app --target <target>`.
+- [ ] Each matrix entry uploads one artifact named `wisp-<target>` containing the binary (`wisp.exe` on Windows) and nothing else.
 - [ ] The toolchain comes from `rust-toolchain.toml` (no second pinned version in YAML); targets are added with `rustup target add`.
 - [ ] Linux jobs install the GPUI build packages from the pinned zed rev's `script/linux` list; the YAML comment names that rev.
 - [ ] `x86_64-apple-darwin` is cross-compiled on an Apple Silicon runner unless an Intel macOS runner image is verified current on the day of implementation; the choice is stated in the commit body.
 - [ ] All third-party actions are pinned to a full commit SHA with the version in a trailing comment.
 - [ ] `actionlint .github/workflows/*.yml` exits 0 (installed at `/opt/homebrew/bin/actionlint`).
-- [ ] Locally verifiable subset passes: `rustup target add x86_64-apple-darwin && cargo build --release --locked -p hc-app --target x86_64-apple-darwin` succeeds on this Mac.
+- [ ] Locally verifiable subset passes: `rustup target add x86_64-apple-darwin && cargo build --release --locked -p wisp-app --target x86_64-apple-darwin` succeeds on this Mac.
 - [ ] **Not verifiable locally:** the Windows and Linux jobs, and any job actually running. The repo has no remote. The implementer reports this criterion as `UNVERIFIED — needs a push`; it is closed by the first green `release.yml` run once a remote exists, and that run's URL goes in the close-out. Do not mark it passed on the strength of `actionlint`.
 
 ## Out of scope

@@ -29,6 +29,6 @@ as they stand; nothing is edited.
 - [ ] Files are committed byte-for-byte: `git show HEAD:CLAUDE.md | wc -l` prints `54`, and `git diff HEAD` is empty.
 
 ## Out of scope
-- Trimming `CLAUDE.md` (task 03) and recording the naming decision (task 03).
+- Trimming `CLAUDE.md` (task 03).
 - Any `Cargo.toml`, `crates/` or `.gitignore` additions (task 02).
 - Adding a git remote or pushing. There is no remote today; nothing in M0 requires one to land.

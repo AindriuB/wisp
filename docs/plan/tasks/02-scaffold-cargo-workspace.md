@@ -20,10 +20,13 @@ touch the root manifest or the lockfile concurrently. `storage` is delivered
 finished here as an empty stub.
 
 ## Decisions settled by the planner (apply exactly)
-- Packages: `hc-core` (lib `hc_core`) in `crates/core`, `hc-storage` (lib
-  `hc_storage`) in `crates/storage`, `hc-app` in `crates/app`. The shipped
-  binary is named `httpclient` (`[[bin]] name = "httpclient"` in `hc-app`).
-  Task 03 records this in `docs/conventions.md#naming`.
+- Packages: `wisp-core` (lib `wisp_core`) in `crates/core`, `wisp-storage` (lib
+  `wisp_storage`) in `crates/storage`, `wisp-app` in `crates/app`. The shipped
+  binary is named `wisp` (`[[bin]] name = "wisp"` in `wisp-app`).
+  The product is named Wisp. Every package sets `publish = false` (put it in
+  `[workspace.package]` and inherit): `wisp`, `wisp-core` and `wisp-app` are
+  taken on crates.io by an unrelated tmux tool, and Wisp ships as binaries from
+  GitHub releases. Recorded in `docs/conventions.md#naming`.
 - `rust-toolchain.toml`: `channel = "1.99.1"`, `components = ["rustfmt", "clippy"]`, no `targets` list (CI adds targets).
 - Root `[workspace]` with `resolver = "3"`, `members = ["crates/*"]`, `[workspace.package] edition = "2024"`.
 - `[profile.release]`: `lto = true`, `codegen-units = 1`, `strip = true`, `opt-level = 3`. The M0 measurements (task 07) are taken with exactly this profile.
@@ -33,12 +36,12 @@ finished here as an empty stub.
   - `async-channel` — the executor-agnostic event channel; `std`.
   - `serde` — `derive`, `std`.
   - `thiserror`, `tracing` (`std`), `anyhow` (`std`).
-  - `wiremock` — dev only, for `hc-core` tests.
+  - `wiremock` — dev only, for `wisp-core` tests.
   - `gpui` and `gpui-component` — git dependencies, each pinned to an exact `rev`. Pick the latest `gpui-component` rev that builds on 1.99.1, then pin `gpui` to the exact zed rev that `gpui-component` rev itself pins, so the graph contains one `gpui`. Enable the Linux `wayland` and `x11` features if `gpui` gates them.
 - Member manifests reference every dependency with `workspace = true`:
-  - `hc-core`: reqwest, tokio, async-channel, serde, thiserror, tracing; dev: wiremock, tokio.
-  - `hc-storage`: no dependencies.
-  - `hc-app`: hc-core (path), hc-storage (path), gpui, gpui-component, anyhow, tracing. No direct reqwest or tokio.
+  - `wisp-core`: reqwest, tokio, async-channel, serde, thiserror, tracing; dev: wiremock, tokio.
+  - `wisp-storage`: no dependencies.
+  - `wisp-app`: wisp-core (path), wisp-storage (path), gpui, gpui-component, anyhow, tracing. No direct reqwest or tokio.
 - Stub sources: `crates/core/src/lib.rs` and `crates/storage/src/lib.rs` contain one `//!` doc line each; `crates/app/src/main.rs` is an empty `fn main() {}`.
 - `.gitignore` gains `/target/`, `/logs/` and `*.log`.
 
@@ -52,10 +55,11 @@ finished here as an empty stub.
 - [ ] `cargo build --workspace --locked` succeeds on macOS arm64 (this compiles `gpui`, proving the pin resolves and builds).
 - [ ] `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` are clean.
 - [ ] `cargo tree --workspace --target all -i openssl-sys` and `cargo tree --workspace --target all -i native-tls` each report that the package is not in the graph. (`--target all` checks Windows and Linux graphs from macOS without building them.)
-- [ ] `cargo tree -p hc-core -i gpui` and `cargo tree -p hc-storage -i gpui` report `gpui` is not a dependency of those packages.
+- [ ] `cargo tree -p wisp-core -i gpui` and `cargo tree -p wisp-storage -i gpui` report `gpui` is not a dependency of those packages.
 - [ ] `cargo tree --workspace --target all -i gpui` shows exactly one `gpui` source and rev.
 - [ ] `gpui` and `gpui-component` entries in `Cargo.toml` each carry `rev = "<40-char sha>"`, not `branch` or `tag`.
-- [ ] `cargo metadata --format-version 1 --no-deps` lists packages `hc-core`, `hc-storage`, `hc-app`, and a bin target `httpclient`.
+- [ ] Every package in `cargo metadata --format-version 1 --no-deps` has `publish` equal to `[]`.
+- [ ] `cargo metadata --format-version 1 --no-deps` lists packages `wisp-core`, `wisp-storage`, `wisp-app`, and a bin target `wisp`.
 - [ ] Every member-crate dependency line uses `workspace = true`.
 - [ ] The commit body states the chosen `gpui-component` and `gpui` revs and why that pair.
 - [ ] Not checkable locally: that the Linux and Windows graphs *build*. Checked by task 05's CI run; here only `cargo tree --target all` evidence is required.

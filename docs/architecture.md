@@ -1,4 +1,4 @@
-# Architecture
+# Wisp architecture
 
 The shape of the system: what the pieces are, what talks to what, and where the
 boundaries are. `explorer` and `architect` read this before inferring
@@ -34,8 +34,8 @@ here listens on a port.
 | `storage` | `crates/storage` | Reading and writing collections, environments and body files; file watcher |
 | `app` | `crates/app` | GPUI and `gpui-component` UI; the binary |
 
-The crate package and library names are an open decision (a crate called `core`
-clashes with std `core`); see `conventions.md#naming`.
+The packages are `wisp-core`, `wisp-storage` and `wisp-app` (binary `wisp`);
+see `conventions.md#naming`.
 
 ## Repository topology
 

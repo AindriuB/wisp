@@ -1,4 +1,4 @@
-# HTTP client v1 — design spec
+# Wisp (HTTP client) v1 — design spec
 
 Status: agreed 2026-10-29 in a shaping session. Architectural work; hand to `/plan`.
 

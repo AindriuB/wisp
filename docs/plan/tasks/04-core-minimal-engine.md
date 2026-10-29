@@ -8,7 +8,7 @@
 - crates/core/Cargo.toml (no dependency additions; see Out of scope)
 
 ## Goal
-Give `hc-core` a service-shaped `Engine` that takes a `Send` or `Cancel`
+Give `wisp-core` a service-shaped `Engine` that takes a `Send` or `Cancel`
 command, performs the HTTP request on its own small tokio runtime, and reports
 `Completed` or `Failed` on an executor-agnostic channel. This is the M0 subset
 of spec section 3; the type names and shape must be the ones M1 extends, not a
@@ -35,7 +35,7 @@ M0-provisional, to be replaced in M1 (state it in a one-line doc comment on each
 - docs/conventions.md:50-87 — errors, logging, tests
 
 ## Acceptance
-- [ ] `cargo test -p hc-core --locked` passes, with tests (all against `wiremock` on 127.0.0.1, never the internet) named as sentences covering:
+- [ ] `cargo test -p wisp-core --locked` passes, with tests (all against `wiremock` on 127.0.0.1, never the internet) named as sentences covering:
   - a GET returning 200 with a known body yields one `Completed` whose `status`, `body` and `size` match;
   - a POST sends the given headers and body, verified by a `wiremock` matcher;
   - a request to a port with nothing listening yields `Failed` with `ErrorKind::Connect`;
@@ -45,7 +45,7 @@ M0-provisional, to be replaced in M1 (state it in a one-line doc comment on each
   - events are received from a plain `std::thread` with no tokio runtime, via `recv_blocking`;
   - dropping the `Engine` inside a `#[tokio::test]` does not panic;
   - `Command` and `Event` values round-trip through `serde` (use `serde_json` only if it is already in `Cargo.lock`; otherwise assert the derives compile via a generic `fn assert_serde<T: Serialize + DeserializeOwned>()`).
-- [ ] `cargo clippy -p hc-core --all-targets --locked -- -D warnings` and `cargo fmt --check` are clean.
+- [ ] `cargo clippy -p wisp-core --all-targets --locked -- -D warnings` and `cargo fmt --check` are clean.
 - [ ] `git diff main -- Cargo.lock Cargo.toml` is empty (built with `--locked`).
 - [ ] No `unwrap`/`expect` outside `#[cfg(test)]` without an adjacent invariant comment.
 - [ ] The runtime is built with `tokio::runtime::Builder::new_multi_thread().worker_threads(<clamped>)` — visible in the diff.

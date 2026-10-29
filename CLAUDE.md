@@ -1,4 +1,4 @@
-# HttpClient
+# Wisp — HttpClient workspace
 
 <!-- HARD CAP: 50 lines. This file is a router, not a manual.
      If you are adding detail here, it belongs in docs/ instead. -->
