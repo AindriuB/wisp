@@ -156,13 +156,15 @@ recorded; the budget figures below are in MB (1 MB = 1,048,576 B, 1 MB RSS =
 | Target | Binary size | Idle RSS | RSS after one request | Renderer | Source commit |
 |---|---|---|---|---|---|
 | `aarch64-apple-darwin` | 16,660,480 B | 100,032 KiB | 103,296 KiB | hardware | `561807f` (`aarch64-apple-darwin.json`) |
-| `x86_64-apple-darwin` | 18,052,632 B (local cross-build on arm64) | not measured: RSS under Rosetta is not representative; awaits a `measure.yml` run on `macos-26-intel` | not measured: same | unknown | `561807f` (`x86_64-apple-darwin.json`) |
-| `x86_64-pc-windows-msvc` | not measured: no `measure.yml` run yet (needs a pushed GitHub remote) | not measured: same | not measured: same | n/a | n/a |
-| `x86_64-unknown-linux-gnu` | not measured: no `measure.yml` run yet (needs a pushed GitHub remote) | not measured: same | not measured: same | n/a | n/a |
+| `x86_64-apple-darwin` | 18,052,632 B (local cross-build on arm64) | not measured: RSS on `macos-26-intel` CI hung in the icon service (`ISIconManager`) | not measured: same | n/a | `561807f` (`x86_64-apple-darwin.json`) |
 
-`measure.ps1` (Windows) has never been run. Figures from `measure.yml` will come
-from software or unknown renderers on CI runners and are not comparable with the
-hardware figure above; they must be labelled as such when added.
+First `measure.yml` CI figures. Their renderers are software or unknown, so they are not comparable with the hardware row and are not held to the budgets below.
+
+| Target (CI) | Binary size | Idle RSS | RSS after one request | Renderer |
+|---|---|---|---|---|
+| `aarch64-apple-darwin` | 16,660,480 B | 73,168 KiB | 76,528 KiB | unknown |
+| `x86_64-pc-windows-msvc` | 24,937,984 B | 39,600 KiB (private 32,332) | 45,940 KiB (private 34,976) | software (WARP) |
+| `x86_64-unknown-linux-gnu` | 35,134,344 B | 171,712 KiB | 172,324 KiB | llvmpipe software Vulkan under xvfb |
 
 ### Set budgets
 
