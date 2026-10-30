@@ -42,3 +42,22 @@ v1. The log must never contain secret values.
 - Calling `append` from the app (M2)
 - A history UI or query API beyond `read_all`
 - Root `.gitignore` edits
+
+## Review round 1 — findings
+
+Reviewed HEAD: 2ecf88b2c626afea9d3bee5b2464094c63df952f
+
+- [P2] crates/storage/src/history.rs:111 — `read_all` reads the whole log with `fs::read_to_string`, so one line with invalid UTF-8 makes it fail with `Io { InvalidData }` for the entire log, when the task says it "skips malformed lines".
+  route: implementer — read the file as bytes, split on `b'\n'`, and `serde_json::from_slice` each line.
+  input: append `/1`, then raw bytes `\xff\xfe\n`, then `/2`, then `read_all()` → `Err(Io { kind: InvalidData })` instead of `Ok` with 2 entries. Reachable after a crash mid-`write_all` that cuts a non-ASCII preview.
+- [P3] (optional) crates/storage/src/history.rs:203 (`preview_is_bounded_and_valid`) — passes even with the char-boundary loop removed (`é` is 2 bytes, 1024 is even).
+  route: implementer — add a case with a 3-byte char such as `"€".repeat(500)`.
+  input: delete lines 52-54 (the `while` loop) → the test still passes.
+- [P3] (optional) crates/storage/src/history.rs:50 — `preview_from` decodes the whole body with `from_utf8_lossy(bytes).into_owned()` before cutting it.
+  route: implementer — decode only `&bytes[..bytes.len().min(PREVIEW_LIMIT)]` and keep the boundary cut.
+  input: a 100 MB binary body → a temporary String of up to ~300 MB.
+- [STYLE] crates/storage/src/history.rs:142,152,191,177,203 — test names are labels, not sentences: `appends_in_order`, `writes_gitignore`, `rotates_past_limit`, `url_template_kept`, `skips_malformed_line`.
+  route: implementer
+  rule: docs/conventions.md "Tests": "Test names read as sentences".
+- [P3] (optional) crates/storage/src/history.rs:100-105 — if the log ends with a torn line without a trailing newline, the next appended entry joins onto it and is lost as malformed. Check for a trailing newline before appending.
+  route: implementer
