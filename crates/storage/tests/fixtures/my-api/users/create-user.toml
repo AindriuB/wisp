@@ -1,0 +1,26 @@
+# Create a user; the body lives in the sidecar file.
+name = "Create user"
+method = "POST"
+url = "{{baseUrl}}/orgs/{orgId}/files/{name}.{ext}"   # query lives in [[params]]
+
+[path]
+orgId = "{{orgId}}"
+name = "report"
+ext = "pdf"
+
+[[params]]
+name = "notify"
+value = "true"
+enabled = true
+
+[[headers]]
+name = "X-Trace"
+value = "{{$uuid}}"
+enabled = false
+
+[auth]
+type = "inherit"
+
+[body]
+type = "json"
+file = "create-user.body.json"

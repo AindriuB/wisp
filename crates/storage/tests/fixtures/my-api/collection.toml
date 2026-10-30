@@ -1,0 +1,11 @@
+# Fixture collection from the v1 spec, section 2.
+format = 1
+
+[vars]
+# Base URL shared by every request.
+baseUrl = "https://api.example.com"
+
+[auth]
+# Collection-wide default auth.
+type = "bearer"
+token = "{{token}}"

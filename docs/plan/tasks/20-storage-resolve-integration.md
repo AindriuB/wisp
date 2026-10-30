@@ -28,3 +28,16 @@ evidence that the M1 API is ready for M2 to freeze against.
 - Fixing defects in 11–19 here. File each one as a successor task against the owning file.
 - Engine I/O, since it is covered in 16
 - Editing any file under `crates/*/src`
+
+## Review round 1 — findings
+
+Reviewed HEAD: 425a43318e8d8a4724193061c374b3835ae31164
+
+- [P2] crates/storage/tests/resolve_integration.rs:118-148 (`watcher_sees_external_edit`) — passes even when no external edit happens: `copy_dir` writes `users/get-user.toml` just before `Watcher::start`, FSEvents delivers that create after the stream starts, and the loop accepts it.
+  route: implementer — after `Watcher::start`, write a sentinel and drain events until its `Changed` arrives, then make the edit and wait for `users/get-user.toml`.
+  input: replace the edit with a no-op → the test passed 3 of 5 runs.
+- [STYLE] crates/storage/tests/resolve_integration.rs:140-142 — the wait loop sleeps 20 ms between `try_recv` calls.
+  route: implementer — use `std::thread::yield_now()` inside the 5 s deadline loop (the idiom in watcher.rs's test `next()`).
+  rule: docs/conventions.md, Tests: "no sleeps to wait for state".
+
+Accepted residual (orchestrator, 2026-10-30): `create-user.body.json` has no comment because JSON cannot hold one; "every file has at least one comment" applies to the TOML fixture files only.

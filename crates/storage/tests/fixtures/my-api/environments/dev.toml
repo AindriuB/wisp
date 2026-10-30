@@ -1,0 +1,3 @@
+# Plain environment vars; secrets live beside this file.
+[vars]
+orgId = "acme"

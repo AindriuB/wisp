@@ -1,0 +1,2 @@
+# Written by the app so secrets are never committed.
+*.secrets.toml

@@ -1,0 +1,7 @@
+# Fetch one user.
+name = "Get user"
+method = "GET"
+url = "{{baseUrl}}/users/{id}"
+
+[path]
+id = "42"
