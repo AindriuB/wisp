@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 14 | Storage `Watcher::start`: 100 ms per-path coalescing, time-ordered `Changed` events, state/temp files and directories ignored (known dirs scanned at start and on move-in, never walked through symlinks), notify errors logged, channel closes on drop | ## 2026-10-30 — Collection file watcher |
 | 2026-10-30 | 13 | Storage TOML codec (vars, key-value arrays by LCS diff, auth; comments preserved) and atomic fs writes (create_new temp, mode kept, symlinks followed, `atomic_write_private`) | ## 2026-10-30 — Storage TOML codec and atomic file writes |
 | 2026-10-30 | 12 | Body store (`BodyStore`/`BodyWriter`/`BodyHandle`): memory up to the limit, then private per-user spill dir with 0600 files; range reads, release, cleanup on drop; failed writes poison the writer | ## 2026-10-30 — Response body store with spill to disk |
 | 2026-10-30 | 15 | Append-only history log (`.wisp/history.jsonl`, 4 MiB rotation, torn-line recovery, bounded preview); stores no secrets, headers or error messages | ## 2026-10-30 — Append-only request history log |
