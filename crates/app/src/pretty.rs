@@ -60,6 +60,7 @@ fn sniff_kind(sniff: &[u8]) -> ContentKind {
     {
         return ContentKind::Binary;
     }
+    let sniff = sniff.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(sniff);
     let first = sniff
         .iter()
         .copied()
@@ -193,11 +194,13 @@ enum Mode {
 const MAX_INDENT_LEVELS: usize = 32;
 
 fn output_budget(input_len: usize) -> usize {
-    (1024 * 1024).max(input_len.saturating_mul(4))
+    (32 * 1024 * 1024).max(input_len.saturating_mul(4))
 }
 
+const SPACES: &str = "                                                                ";
+const _: () = assert!(SPACES.len() == MAX_INDENT_LEVELS * 2);
+
 fn newline(out: &mut String, depth: usize) {
-    const SPACES: &str = "                                                                ";
     out.push('\n');
     let n = depth.min(MAX_INDENT_LEVELS) * 2;
     out.push_str(&SPACES[..n]);
@@ -388,24 +391,45 @@ mod tests {
     fn deep_nesting_is_iterative() {
         let n = 10_000;
         let s = format!("{}{}", "[".repeat(n), "]".repeat(n));
-        // Completes without recursion; output is either within budget or Err.
-        if let Ok(out) = pretty_json(s.as_bytes()) {
-            assert!(out.len() > n && out.len() <= output_budget(s.len()));
-        }
+        let out = pretty_json(s.as_bytes()).unwrap();
+        assert!(out.len() > n && out.len() <= output_budget(s.len()));
         let s = format!("{}1{}", "{\"a\":".repeat(n), "}".repeat(n));
-        if let Ok(out) = pretty_json(s.as_bytes()) {
-            assert!(out.len() <= output_budget(s.len()));
-        }
+        let out = pretty_json(s.as_bytes()).unwrap();
+        assert!(out.len() <= output_budget(s.len()));
     }
 
     #[test]
     fn hostile_nesting_stays_within_budget() {
         let n = 32_768;
         let s = format!("{}{}", "[".repeat(n), "]".repeat(n));
-        // Old code produced a 2 GiB string here.
-        if let Ok(out) = pretty_json(s.as_bytes()) {
-            assert!(out.len() <= output_budget(s.len()));
+        let out = pretty_json(s.as_bytes()).unwrap();
+        assert!(out.len() <= output_budget(s.len()));
+    }
+
+    #[test]
+    fn output_over_budget_is_rejected() {
+        let n = 300_000;
+        let s = format!("{}{}", "[".repeat(n), "]".repeat(n));
+        let e = pretty_json(s.as_bytes()).unwrap_err();
+        assert_eq!(e.message, "output too large to pretty-print");
+        assert!(e.offset > n);
+    }
+
+    #[test]
+    fn short_row_document_uses_larger_budget() {
+        let mut s = String::from(r#"{"data":{"rows":["#);
+        let mut first = true;
+        while s.len() < 2_000_000 {
+            if !first {
+                s.push(',');
+            }
+            first = false;
+            s.push_str("[1,2,3]");
         }
+        s.push_str("]}}");
+        let out = pretty_json(s.as_bytes()).unwrap();
+        assert!(out.len() > 4 * s.len());
+        assert!(out.len() <= output_budget(s.len()));
     }
 
     #[test]
@@ -457,6 +481,7 @@ mod tests {
         let k = |b: &[u8]| content_kind(&[], b);
         assert_eq!(k(b"  \n{\"a\":1}"), ContentKind::Json);
         assert_eq!(k(b"[1]"), ContentKind::Json);
+        assert_eq!(k(b"\xEF\xBB\xBF{\"a\":1}"), ContentKind::Json);
         assert_eq!(k(b"<?xml version=\"1.0\"?>"), ContentKind::Xml);
         assert_eq!(k(b"<!DOCTYPE html>"), ContentKind::Html);
         assert_eq!(k(b"<html>"), ContentKind::Html);
