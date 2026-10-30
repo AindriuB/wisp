@@ -29,3 +29,11 @@ Pure logic for two UI features. Highlighting turns a URL or field value into con
 - Rendering spans or the palette (tasks 31, 34).
 - Highlighting inside JSON/text body editors.
 - Recent-item history or persisted palette state.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 7c750c6da5974ac87d5d2595c1e0138557d65d8b
+
+- [P2] crates/app/src/highlight.rs:139 (the `hover` test, ~line 330) — no test covers an indirect secret (a variable whose value expands through a secret); changing line 139 to `matches!(source, VarSource::Secret)` leaks `auth = Bearer s3cret-value` and every test still passes.
+  route: implementer — add assertions: variables at request, folder, environment and collection level whose value contains `{{tok}}` (with `tok` a secret) hover with `••••` and the string never contains the secret. Show the test fails under that mutation.
+- [NOTE] (optional) crates/app/src/highlight.rs:144-148 — replace the string check `src.starts_with("secret")` with `matches!(source, VarSource::Secret)`.
