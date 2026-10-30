@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Request file storage with sidecar bodies
+`load_request` and `save_request` in `crates/storage/src/request.rs` read and write request files, with bodies kept in sidecar files. Saves edit the TOML in place through the codec so comments survive, skip writing default auth when the file had none, and keep settings defaults. Sidecar names must be a plain file name in the request's folder (no separators, `..`, absolute or drive paths), not the request's own name, and symlinks must stay inside the folder; a sidecar that canonicalises to the request file is rejected. These checks run before any read or write. It landed as one squashed commit (019d439).
+**Cost:** Review found that unchecked sidecar names let a cloned collection read any file into a request (sent on Send) and overwrite any file on save; two user amendments closed it (name rules, then identity). Residuals (sibling-request overwrite, hard links, `::$DATA`, drive-prefix check, symlink check-then-use race, a duplicate method parser, a `set_current_dir` test) are in PLAN.md. Task 17's file was retired here.
+
 ## 2026-10-30 — Collection tree and folder/collection defaults storage
 `open_collection` returns a `CollectionTree` of `Node`s with `RequestMeta`; sidecars are never read on open and broken request files become `Node::Invalid`. `collection.toml` and `folder.toml` load and save (default auth is not written when the file had none), and `scope_for` returns folders outermost first. Symlink cycles are skipped through a canonical visited set, and sorting has a deterministic tiebreak.
 **Cost:** Review caught a symlink-to-parent loop that made opening a collection never return. The visited set is walk-wide rather than per-path, so sibling symlinks show under whichever name comes first; see PLAN.

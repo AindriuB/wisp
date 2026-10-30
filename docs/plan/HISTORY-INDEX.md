@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 17 | Storage `load_request`/`save_request`: sidecar bodies, in-place `toml_edit` via the codec, default-auth skip, settings defaults kept; sidecar name and identity rules enforced before any read or write | ## 2026-10-30 — Request file storage with sidecar bodies |
 | 2026-10-30 | 18 | Storage `open_collection` tree (`CollectionTree`/`Node`/`RequestMeta`, `Node::Invalid`), collection/folder defaults load/save, `scope_for`, symlink cycles skipped | ## 2026-10-30 — Collection tree and folder/collection defaults storage |
 | 2026-10-30 | 11 | Pure `resolve()`: precedence, dynamic vars, path params, query, header merge, auth inheritance, bodies, settings; bounded expansion (depth 8, 64 KiB, 10,000 budget) | ## 2026-10-30 — resolve(): variables, path params, inheritance and bounded expansion |
 | 2026-10-30 | 19 | Storage environments: list/load/save, comment-preserving edits, `*.secrets.toml` written 0600 via `atomic_write_private` and git-ignored, strict name allowlist, name-only logging | ## 2026-10-30 — Environment and secrets file storage |
