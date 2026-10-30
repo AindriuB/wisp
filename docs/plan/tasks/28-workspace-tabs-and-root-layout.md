@@ -8,6 +8,7 @@
 - crates/app/src/tab.rs
 - crates/app/src/ui/root.rs
 - crates/app/src/view.rs (delete)
+- crates/app/src/actions.rs (keystroke strings in `bind_keys` only; see amendment)
 
 ## Goal
 Replace the walking-skeleton window with the v1 shell: a `Workspace` entity holding the open collection, active environment, `Engine`, settings and tabs; `RequestTab` entities with draft, saved snapshot and response; one background task draining engine events and routing them by `RequestId` through weak handles; the watcher wired to reload or flag tabs; explicit save; and the root view with sidebar | (tab bar, request pane, draggable response split). The `WISP_AUTOSEND_URL` hook moves here and keeps its exact output.
@@ -50,3 +51,10 @@ Decision (orchestrator): when `Settings::theme` is `System`, the app follows the
 Additional acceptance:
 - [ ] `ui/root.rs` holds a `Window::observe_window_appearance` subscription whose callback calls `theme::apply(settings.theme, Some(window), cx)` only when the current setting is `ThemeSetting::System` (or the equivalent variant) and returns without applying otherwise.
 - [ ] Hand check (orchestrator, window frontmost): with `theme = "system"` in `settings.toml`, switching macOS between Light and Dark in System Settings switches the window's theme without restart; with `theme = "dark"`, switching macOS appearance changes nothing.
+
+### Amendment (2026-10-30, key strings in actions.rs)
+Decision (orchestrator): `crates/app/src/actions.rs` (frozen in task 21) binds keys as `"secondary-enter"`, `"secondary-s"`, etc.; gpui-pre 0.3.10 rejects `secondary` as a modifier, so `actions::bind_keys` panics with `InvalidKeystrokeError` at launch, and this task requires `main` to call it. This task may change only the keystroke strings in `bind_keys`: `cmd-` on macOS and `ctrl-` elsewhere (e.g. via `cfg!(target_os = "macos")`). No change to the action types, their names, or anything else in `actions.rs`.
+
+Additional acceptance:
+- [ ] A unit test asserts every binding string in `bind_keys` parses (e.g. via gpui's `Keystroke::parse`) on the build platform.
+- [ ] The app launches without panic: `RENDERER=hardware scripts/measure/measure.sh` reports status `measured`.

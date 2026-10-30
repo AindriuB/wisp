@@ -12,6 +12,7 @@ One overlay view serves both shortcuts. ⌘K opens it over requests and commands
 - crates/app/src/ui/palette.rs — frozen constructor from task 21 (`PaletteView::new(workspace, mode, ..)`, emits `DismissEvent`; the root view opens and closes it, task 28)
 - crates/app/src/palette.rs — `items`, `filter`, `CommandId`, `PaletteKind` (task 25)
 - crates/app/src/actions.rs — the actions each `CommandId` maps to
+- Task 28 touched only the keystroke strings in `actions::bind_keys` (`cmd-`/`ctrl-` per platform); the `CommandId` → action mapping is still this task's.
 - ~/.cargo/registry/src/*/gpui-component-0.8.1/src/command/ — `Command`, `CommandState`, `CommandItem` (`filterable(false)` + `on_query`)
 - Build with `CARGO_TARGET_DIR=/Users/Andrew/HttpClient/target/wt-34`.
 
