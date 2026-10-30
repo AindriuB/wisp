@@ -1,20 +1,25 @@
-//! The engine: owns a small tokio runtime and one `reqwest::Client`.
+//! The engine: owns a small tokio runtime, a body store and a cache of reqwest clients.
 
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::oneshot;
 
+use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
 use crate::model::{
-    Command, EngineError, ErrorKind, Event, Header, Method, PreparedBody, PreparedRequest,
-    RequestId,
+    ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
+    PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
 };
 
 /// Receiving end of the engine's event channel; works from any executor or plain threads.
 pub type EventReceiver = async_channel::Receiver<Event>;
+
+/// Minimum spacing between `Progress` events of one request.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Engine configuration.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +27,8 @@ pub struct EngineConfig {
     /// Clamped to `1..=2`.
     pub worker_threads: usize,
     pub default_timeout: Option<Duration>,
+    /// Response bodies larger than this spill to disk.
+    pub body_memory_limit: u64,
 }
 
 impl Default for EngineConfig {
@@ -29,7 +36,72 @@ impl Default for EngineConfig {
         Self {
             worker_threads: 1,
             default_timeout: Some(Duration::from_secs(30)),
+            body_memory_limit: DEFAULT_MEMORY_LIMIT,
         }
+    }
+}
+
+/// Rate limiter for progress events; takes the time as an argument so tests need no clock.
+#[derive(Debug)]
+pub(crate) struct Throttle {
+    interval: Duration,
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    pub(crate) fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
+    /// True if an event may be emitted at `now`; records the emission.
+    pub(crate) fn allow(&mut self, now: Instant) -> bool {
+        match self.last {
+            Some(last) if now.saturating_duration_since(last) < self.interval => false,
+            _ => {
+                self.last = Some(now);
+                true
+            }
+        }
+    }
+}
+
+/// One `reqwest::Client` per distinct `ClientSettings`.
+#[derive(Default)]
+pub(crate) struct ClientCache {
+    clients: Mutex<HashMap<ClientSettings, reqwest::Client>>,
+}
+
+impl ClientCache {
+    pub(crate) fn get(&self, settings: &ClientSettings) -> Result<reqwest::Client, EngineError> {
+        let mut map = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = map.get(settings) {
+            return Ok(c.clone());
+        }
+        let mut builder = reqwest::Client::builder().use_rustls_tls();
+        if !settings.verify_tls {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        if !settings.follow_redirects {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+        if let Some(proxy) = &settings.proxy {
+            let proxy = reqwest::Proxy::all(proxy.as_str())
+                .map_err(|e| err(ErrorKind::InvalidUrl, format!("invalid proxy: {e}")))?;
+            builder = builder.proxy(proxy);
+        }
+        let client = builder
+            .build()
+            .map_err(|e| err(ErrorKind::Other, format!("cannot build client: {e}")))?;
+        map.insert(settings.clone(), client.clone());
+        Ok(client)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.clients.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
@@ -37,7 +109,8 @@ type Inflight = Arc<Mutex<HashMap<RequestId, oneshot::Sender<()>>>>;
 
 struct Inner {
     runtime: Option<tokio::runtime::Runtime>,
-    client: reqwest::Client,
+    clients: Arc<ClientCache>,
+    bodies: BodyStore,
     events: async_channel::Sender<Event>,
     next_id: AtomicU64,
     inflight: Inflight,
@@ -71,6 +144,11 @@ fn lock(m: &Inflight) -> std::sync::MutexGuard<'_, HashMap<RequestId, oneshot::S
 }
 
 impl Engine {
+    /// The store holding completed response bodies; read and release them here.
+    pub fn bodies(&self) -> BodyStore {
+        self.inner.bodies.clone()
+    }
+
     /// Start the engine and return it with its event receiver.
     ///
     /// # Panics
@@ -83,14 +161,11 @@ impl Engine {
             .thread_name("wisp-engine")
             .build()
             .expect("tokio runtime creation fails only on OS resource exhaustion at startup");
-        let client = reqwest::Client::builder()
-            .use_rustls_tls()
-            .build()
-            .expect("client builder with default rustls config is infallible at startup");
         let (tx, rx) = async_channel::unbounded();
         let inner = Inner {
             runtime: Some(runtime),
-            client,
+            clients: Arc::default(),
+            bodies: BodyStore::new(config.body_memory_limit),
             events: tx,
             next_id: AtomicU64::new(1),
             inflight: Arc::default(),
@@ -117,29 +192,35 @@ impl Engine {
                 let id = RequestId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
                 let (ctx, crx) = oneshot::channel();
                 lock(&self.inner.inflight).insert(id, ctx);
-                let client = self.inner.client.clone();
+                let clients = self.inner.clients.clone();
+                let bodies = self.inner.bodies.clone();
                 let events = self.inner.events.clone();
                 let inflight = self.inner.inflight.clone();
                 let timeout = req.timeout.or(self.inner.default_timeout);
                 let fut = async move {
                     let start = Instant::now();
-                    let result = tokio::select! {
-                        r = perform(&client, req, timeout, start) => r,
-                        _ = crx => Err(EngineError {
-                            kind: ErrorKind::Cancelled,
-                            message: "request cancelled".into(),
-                        }),
+                    let _ = events
+                        .send(Event::Started {
+                            id,
+                            at: SystemTime::now(),
+                        })
+                        .await;
+                    let terminal = tokio::select! {
+                        r = perform(id, &clients, &bodies, &events, req, timeout, start) => {
+                            Some(match r {
+                                Ok((size, body)) => Event::Completed {
+                                    id,
+                                    total: start.elapsed(),
+                                    size,
+                                    body,
+                                },
+                                Err(error) => Event::Failed { id, error },
+                            })
+                        }
+                        _ = crx => None,
                     };
                     lock(&inflight).remove(&id);
-                    let ev = match result {
-                        Ok(mut ev) => {
-                            if let Event::Completed { id: slot, .. } = &mut ev {
-                                *slot = id;
-                            }
-                            ev
-                        }
-                        Err(error) => Event::Failed { id, error },
-                    };
+                    let ev = terminal.unwrap_or(Event::Cancelled { id });
                     tracing::debug!(id = id.0, "request finished");
                     let _ = events.send(ev).await;
                 };
@@ -166,12 +247,97 @@ fn err(kind: ErrorKind, message: impl Into<String>) -> EngineError {
     }
 }
 
+fn version_of(v: reqwest::Version) -> HttpVersion {
+    if v == reqwest::Version::HTTP_09 {
+        HttpVersion::Http09
+    } else if v == reqwest::Version::HTTP_10 {
+        HttpVersion::Http10
+    } else if v == reqwest::Version::HTTP_2 {
+        HttpVersion::Http2
+    } else if v == reqwest::Version::HTTP_3 {
+        HttpVersion::Http3
+    } else {
+        HttpVersion::Http11
+    }
+}
+
+fn body_file_error(path: &Path, e: &std::io::Error) -> EngineError {
+    err(
+        ErrorKind::BodyFile,
+        format!("cannot read {}: {e}", path.display()),
+    )
+}
+
+async fn read_file(path: &Path) -> Result<Vec<u8>, EngineError> {
+    let owned = path.to_owned();
+    match tokio::task::spawn_blocking(move || std::fs::read(&owned)).await {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(e)) => Err(body_file_error(path, &e)),
+        Err(e) => Err(err(
+            ErrorKind::BodyFile,
+            format!("cannot read {}: {e}", path.display()),
+        )),
+    }
+}
+
+/// Header-parameter value: quotes and line breaks would break out of the quoted string.
+fn quote_param(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '\r' && *c != '\n')
+        .flat_map(|c| {
+            if c == '"' || c == '\\' {
+                vec!['\\', c]
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+async fn build_multipart(boundary: &str, parts: &[PreparedPart]) -> Result<Vec<u8>, EngineError> {
+    let mut out = Vec::new();
+    for part in parts {
+        out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        let name = quote_param(&part.name);
+        match &part.value {
+            PreparedPartValue::Text(t) => {
+                out.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                );
+                out.extend_from_slice(t.as_bytes());
+            }
+            PreparedPartValue::File(path) => {
+                let filename = path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let data = read_file(path).await?;
+                out.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+                        quote_param(&filename)
+                    )
+                    .as_bytes(),
+                );
+                out.extend_from_slice(&data);
+            }
+        }
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Ok(out)
+}
+
+/// Runs one request, emitting `Headers` and `Progress`; returns the size and body.
 async fn perform(
-    client: &reqwest::Client,
+    id: RequestId,
+    clients: &ClientCache,
+    bodies: &BodyStore,
+    events: &async_channel::Sender<Event>,
     req: PreparedRequest,
     timeout: Option<Duration>,
     start: Instant,
-) -> Result<Event, EngineError> {
+) -> Result<(u64, BodyHandle), EngineError> {
     let url =
         reqwest::Url::parse(&req.url).map_err(|e| err(ErrorKind::InvalidUrl, e.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -180,6 +346,7 @@ async fn perform(
             format!("unsupported scheme `{}`", url.scheme()),
         ));
     }
+    let client = clients.get(&req.client)?;
     let method = match req.method {
         Method::Get => reqwest::Method::GET,
         Method::Post => reqwest::Method::POST,
@@ -189,26 +356,41 @@ async fn perform(
         Method::Head => reqwest::Method::HEAD,
         Method::Options => reqwest::Method::OPTIONS,
     };
+    let multipart = matches!(req.body, PreparedBody::Multipart(_));
     let mut rb = client.request(method, url);
     for h in &req.headers {
+        // The engine owns the multipart content type: it carries the boundary.
+        if multipart && h.name.eq_ignore_ascii_case("content-type") {
+            continue;
+        }
         rb = rb.header(h.name.as_str(), h.value.as_str());
     }
+    tracing::debug!(
+        id = id.0,
+        header_names = ?req.headers.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+        "sending request"
+    );
     match req.body {
         PreparedBody::None => {}
         PreparedBody::Bytes(b) => rb = rb.body(b),
-        PreparedBody::File(_) | PreparedBody::Multipart(_) => {
-            return Err(err(
-                ErrorKind::BodyFile,
-                "file and multipart bodies are unsupported until task 16",
-            ));
+        PreparedBody::File(path) => rb = rb.body(read_file(&path).await?),
+        PreparedBody::Multipart(parts) => {
+            let boundary = format!("wisp-{}", uuid::Uuid::new_v4().simple());
+            let data = build_multipart(&boundary, &parts).await?;
+            rb = rb
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(data);
         }
     }
     if let Some(t) = timeout {
         rb = rb.timeout(t);
     }
-    let resp = rb.send().await.map_err(|e| classify(&e, false))?;
+    let mut resp = rb.send().await.map_err(|e| classify(&e, false))?;
     let status = resp.status();
-    let headers = resp
+    let headers: Vec<Header> = resp
         .headers()
         .iter()
         .map(|(n, v)| Header {
@@ -216,16 +398,37 @@ async fn perform(
             value: String::from_utf8_lossy(v.as_bytes()).into_owned(),
         })
         .collect();
-    let body = resp.bytes().await.map_err(|e| classify(&e, true))?.to_vec();
-    Ok(Event::Completed {
-        id: RequestId(0), // overwritten by the caller
-        status: status.as_u16(),
-        reason: status.canonical_reason().map(str::to_owned),
-        headers,
-        total: start.elapsed(),
-        size: body.len() as u64,
-        body,
-    })
+    let _ = events
+        .send(Event::Headers {
+            id,
+            status: status.as_u16(),
+            reason: status.canonical_reason().map(str::to_owned),
+            version: version_of(resp.version()),
+            headers,
+            ttfb: start.elapsed(),
+        })
+        .await;
+    let mut writer = bodies.writer();
+    let mut throttle = Throttle::new(PROGRESS_INTERVAL);
+    let mut received: u64 = 0;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| classify(&e, true))? {
+        writer
+            .write(&chunk)
+            .map_err(|e| err(ErrorKind::Body, e.to_string()))?;
+        received += chunk.len() as u64;
+        if throttle.allow(Instant::now()) {
+            let _ = events
+                .send(Event::Progress {
+                    id,
+                    bytes: received,
+                })
+                .await;
+        }
+    }
+    let handle = writer
+        .finish()
+        .map_err(|e| err(ErrorKind::Body, e.to_string()))?;
+    Ok((received, handle))
 }
 
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
@@ -265,7 +468,15 @@ fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
 
 #[cfg(test)]
 mod tests {
-    use super::clamp_threads;
+    use super::*;
+
+    fn settings(verify_tls: bool) -> ClientSettings {
+        ClientSettings {
+            verify_tls,
+            follow_redirects: true,
+            proxy: None,
+        }
+    }
 
     #[test]
     fn worker_threads_are_clamped_to_one_through_two() {
@@ -273,5 +484,41 @@ mod tests {
         assert_eq!(clamp_threads(1), 1);
         assert_eq!(clamp_threads(2), 2);
         assert_eq!(clamp_threads(99), 2);
+    }
+
+    #[test]
+    fn ten_updates_ten_ms_apart_emit_once() {
+        let t0 = Instant::now();
+        let mut t = Throttle::new(PROGRESS_INTERVAL);
+        let n = (0..10)
+            .filter(|i| t.allow(t0 + Duration::from_millis(10 * i)))
+            .count();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn two_updates_150_ms_apart_emit_twice() {
+        let t0 = Instant::now();
+        let mut t = Throttle::new(PROGRESS_INTERVAL);
+        assert!(t.allow(t0));
+        assert!(t.allow(t0 + Duration::from_millis(150)));
+    }
+
+    #[test]
+    fn equal_settings_share_a_client_and_different_settings_do_not() {
+        let cache = ClientCache::default();
+        cache.get(&settings(true)).unwrap();
+        cache.get(&settings(true)).unwrap();
+        assert_eq!(cache.len(), 1);
+        cache.get(&settings(false)).unwrap();
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn an_invalid_proxy_is_an_invalid_url_error() {
+        let mut s = settings(true);
+        s.proxy = Some("not a proxy".into());
+        let e = ClientCache::default().get(&s).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::InvalidUrl);
     }
 }

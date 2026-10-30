@@ -9,6 +9,6 @@ pub mod resolve;
 
 pub use engine::{Engine, EngineConfig, EventReceiver};
 pub use model::{
-    ClientSettings, Command, EngineError, ErrorKind, Event, Header, Method, PreparedBody,
-    PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
+    ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
+    PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
 };

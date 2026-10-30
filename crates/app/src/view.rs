@@ -8,12 +8,13 @@ use gpui_component::button::Button;
 use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectState};
 use gpui_component::{ActiveTheme as _, IndexPath};
+use wisp_core::body::BodyHandle;
 use wisp_core::{
     ClientSettings, Command, Engine, EngineConfig, Event, EventReceiver, Method, PreparedBody,
     PreparedRequest, RequestId,
 };
 
-use crate::format::{body_text, completed_line};
+use crate::format::{BODY_LIMIT, body_text, completed_line};
 
 const METHODS: [(&str, Method); 7] = [
     ("GET", Method::Get),
@@ -41,6 +42,9 @@ pub struct WispView {
     body: SharedString,
     autosend: Option<RequestId>,
     latest: Option<RequestId>,
+    /// Body currently shown; released when a new response replaces it.
+    shown: Option<BodyHandle>,
+    status_line: Option<(u16, Option<String>)>,
 }
 
 impl WispView {
@@ -57,6 +61,8 @@ impl WispView {
             body: SharedString::default(),
             autosend: None,
             latest: None,
+            shown: None,
+            status_line: None,
         };
         this.spawn_drain(rx, cx);
         if let Ok(target) = std::env::var("WISP_AUTOSEND_URL") {
@@ -118,33 +124,67 @@ impl WispView {
         cx.notify();
     }
 
+    fn release_shown(&mut self) {
+        if let Some(h) = self.shown.take() {
+            self.engine.bodies().release(&h);
+        }
+    }
+
     fn on_event(&mut self, event: Event, cx: &mut Context<Self>) {
-        let (Event::Completed { id, .. } | Event::Failed { id, .. }) = &event;
-        if self.latest != Some(*id) && self.autosend != Some(*id) {
+        let id = match &event {
+            Event::Started { id, .. }
+            | Event::Headers { id, .. }
+            | Event::Progress { id, .. }
+            | Event::Completed { id, .. }
+            | Event::Failed { id, .. }
+            | Event::Cancelled { id } => *id,
+        };
+        if self.latest != Some(id) && self.autosend != Some(id) {
+            // A superseded response may still complete; free its body.
+            if let Event::Completed { body, .. } = &event {
+                self.engine.bodies().release(body);
+            }
             return;
         }
         match event {
+            Event::Started { .. } | Event::Progress { .. } => return,
+            Event::Headers { status, reason, .. } => {
+                self.status_line = Some((status, reason));
+                return;
+            }
             Event::Completed {
                 id,
-                status,
-                reason,
                 total,
                 size,
                 body,
                 ..
             } => {
+                let (status, reason) = self.status_line.take().unwrap_or((0, None));
                 self.status = completed_line(status, reason.as_deref(), total, size).into();
-                self.body = body_text(&body).into();
+                let read = self.engine.bodies().read(&body, 0, BODY_LIMIT + 1);
+                self.release_shown();
+                match read {
+                    Ok(bytes) => self.body = body_text(&bytes).into(),
+                    Err(e) => {
+                        self.status = format!("{} (body unreadable: {e})", self.status).into();
+                        self.body = SharedString::default();
+                    }
+                }
+                self.shown = Some(body);
                 if self.autosend == Some(id) {
                     println!("WISP_EVENT completed status={status} size={size}");
                 }
             }
             Event::Failed { id, error } => {
                 self.status = format!("Error ({:?}): {}", error.kind, error.message).into();
+                self.release_shown();
                 self.body = SharedString::default();
                 if self.autosend == Some(id) {
                     println!("WISP_EVENT failed kind={:?}", error.kind);
                 }
+            }
+            Event::Cancelled { .. } => {
+                self.status = "Cancelled".into();
             }
         }
         cx.notify();

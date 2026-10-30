@@ -1,10 +1,11 @@
 //! Plain-data command, event and error types. No locks, handles or runtime types.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::body::BodyHandle;
 use crate::resolve::ResolveWarning;
 
 /// Identifier of one request, allocated monotonically by the engine.
@@ -90,7 +91,6 @@ pub enum ErrorKind {
     Timeout,
     Body,
     BodyFile,
-    Cancelled,
     Other,
 }
 
@@ -102,22 +102,49 @@ pub struct EngineError {
     pub message: String,
 }
 
+/// HTTP protocol version of a response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HttpVersion {
+    Http09,
+    Http10,
+    Http11,
+    Http2,
+    Http3,
+}
+
 /// Output of the engine.
+///
+/// Per request the order is `Started`, optionally `Headers`, zero or more
+/// `Progress`, then exactly one of `Completed`, `Failed` or `Cancelled`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    Started {
+        id: RequestId,
+        at: SystemTime,
+    },
+    Headers {
+        id: RequestId,
+        status: u16,
+        reason: Option<String>,
+        version: HttpVersion,
+        headers: Vec<Header>,
+        ttfb: Duration,
+    },
+    Progress {
+        id: RequestId,
+        bytes: u64,
+    },
     Completed {
         id: RequestId,
-        /// M0-provisional: moves to a `Headers` event in M1.
-        status: u16,
-        /// M0-provisional: moves to a `Headers` event in M1.
-        reason: Option<String>,
-        /// M0-provisional: moves to a `Headers` event in M1.
-        headers: Vec<Header>,
         total: Duration,
         size: u64,
-        /// M0-provisional: becomes a `BodyHandle` in M1.
-        body: Vec<u8>,
+        body: BodyHandle,
     },
-    /// M0-provisional: cancellation reports `Failed{kind: Cancelled}` until M1 adds `Event::Cancelled`.
-    Failed { id: RequestId, error: EngineError },
+    Failed {
+        id: RequestId,
+        error: EngineError,
+    },
+    Cancelled {
+        id: RequestId,
+    },
 }

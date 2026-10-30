@@ -64,3 +64,14 @@ locks or handles. That keeps a socket transport possible later.
 - Any UI beyond keeping the M0 window working
 - `scripts/measure/**` and its results files
 - Editing `crates/core/Cargo.toml` (10 owns the dependency set). If a dependency is truly missing, stop and report.
+
+## Review round 1 — findings
+
+Reviewed HEAD: b35d7acdc0e6edcd24f63532ce49ba2338b0f625
+
+- [STYLE] crates/core/tests/engine.rs:286 — the cancel test waits on a fixed `tokio::time::sleep(100 ms)` before asserting that cancelling a finished id emits nothing; the check is also weak (an event after 100 ms still passes).
+  route: implementer — after `Cancel(sentinel)`, submit one more request and assert the next event received is that request's `Started` (channel order is preserved).
+  rule: docs/conventions.md, Tests: "no sleeps to wait for state."
+- [P3] crates/app/src/view.rs:168 — `bodies().read(...).unwrap_or_default()` throws away a read error, so an unreadable body shows as empty under a normal completed status.
+  route: implementer — show the read error in the status/body area instead.
+  input: a spilled response whose temp file is removed before the read → empty body under a 200 status, no error.

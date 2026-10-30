@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 /// Maximum number of body bytes shown in the response pane.
-pub const BODY_LIMIT: usize = 1024 * 1024;
+pub const BODY_LIMIT: usize = 64 * 1024;
 
 /// Format a byte count as B, KB or MB.
 pub fn format_size(bytes: u64) -> String {
@@ -34,7 +34,7 @@ pub fn body_text(body: &[u8]) -> String {
         return String::from_utf8_lossy(body).into_owned();
     }
     let mut text = String::from_utf8_lossy(&body[..BODY_LIMIT]).into_owned();
-    text.push_str("\n\n[truncated: showing first 1 MiB]");
+    text.push_str("\n\n[truncated: showing first 64 KiB]");
     text
 }
 
