@@ -145,7 +145,13 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
     (settings, warning)
 }
 
-fn set_if_differs(doc: &mut DocumentMut, key: &str, new: Item, same: impl Fn(&Item) -> bool) {
+fn set_if_differs(
+    doc: &mut DocumentMut,
+    key: &str,
+    new: Item,
+    is_default: bool,
+    same: impl Fn(&Item) -> bool,
+) {
     match doc.get(key) {
         Some(existing) if same(existing) => {}
         Some(existing) => {
@@ -156,6 +162,8 @@ fn set_if_differs(doc: &mut DocumentMut, key: &str, new: Item, same: impl Fn(&It
                 *v.decor_mut() = d;
             }
         }
+        // An absent key already means the default; do not materialise it.
+        None if is_default => {}
         None => doc[key] = new,
     }
 }
@@ -167,18 +175,34 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
         Err(e) => return Err(e.into()),
     };
-    set_if_differs(&mut doc, "theme", value(theme_str(settings.theme)), |i| {
-        i.as_str() == Some(theme_str(settings.theme))
-    });
-    set_if_differs(&mut doc, "split", value(split_str(settings.split)), |i| {
-        i.as_str() == Some(split_str(settings.split))
-    });
-    for (key, n) in [
-        ("pretty_limit", settings.pretty_limit),
-        ("body_memory_limit", settings.body_memory_limit),
+    let d = Settings::default();
+    set_if_differs(
+        &mut doc,
+        "theme",
+        value(theme_str(settings.theme)),
+        settings.theme == d.theme,
+        |i| i.as_str() == Some(theme_str(settings.theme)),
+    );
+    set_if_differs(
+        &mut doc,
+        "split",
+        value(split_str(settings.split)),
+        settings.split == d.split,
+        |i| i.as_str() == Some(split_str(settings.split)),
+    );
+    for (key, n, default) in [
+        ("pretty_limit", settings.pretty_limit, d.pretty_limit),
+        (
+            "body_memory_limit",
+            settings.body_memory_limit,
+            d.body_memory_limit,
+        ),
     ] {
+        let is_default = n == default;
         let n = i64::try_from(n).unwrap_or(i64::MAX);
-        set_if_differs(&mut doc, key, value(n), |i| i.as_integer() == Some(n));
+        set_if_differs(&mut doc, key, value(n), is_default, |i| {
+            i.as_integer() == Some(n)
+        });
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -303,5 +327,16 @@ mod tests {
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();
         assert_eq!(after, before.replace("\"system\"", "\"dark\""));
+    }
+
+    #[test]
+    fn save_without_file_writes_only_changed_keys() {
+        let p = dir("onlytheme").join("settings.toml");
+        let s = Settings {
+            theme: ThemeMode::Dark,
+            ..Settings::default()
+        };
+        save(&p, &s).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "theme = \"dark\"\n");
     }
 }

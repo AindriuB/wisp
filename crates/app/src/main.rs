@@ -1,7 +1,8 @@
-//! Wisp walking-skeleton window: one request bar, one response pane.
+//! Wisp: portable HTTP client.
 
+// kept for the response pane (task 31+), allow removed by 35
+#[allow(dead_code)]
 mod format;
-mod view;
 
 // mounted by 28, allow removed by 35
 #[allow(dead_code)]
@@ -46,13 +47,40 @@ mod workspace;
 use gpui::{AppContext as _, WindowOptions};
 use gpui_component::Root;
 
+use crate::ui::root::WorkspaceView;
+use crate::workspace::Workspace;
+
+/// Startup checkpoint on stderr, only when the measurement hook is active, so a
+/// hang can be located from the captured stderr.
+pub fn trace(stage: &str) {
+    if std::env::var_os("WISP_AUTOSEND_URL").is_some() {
+        eprintln!("WISP_TRACE {stage}");
+    }
+}
+
 fn main() {
-    view::trace("app run start");
+    trace("app run start");
     gpui_platform::application().run(|cx| {
         gpui_component::init(cx);
-        view::trace("before open_window");
+        actions::bind_keys(cx);
+        let settings_path = settings::settings_path();
+        let loaded = match &settings_path {
+            Some(path) => {
+                let (loaded, warning) = settings::load(path);
+                if let Some(w) = warning {
+                    eprintln!("wisp: settings: {w}");
+                }
+                loaded
+            }
+            None => settings::Settings::default(),
+        };
+        theme::apply(loaded.theme, None, cx);
+        let open = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+        trace("before open_window");
         let opened = cx.open_window(WindowOptions::default(), |window, cx| {
-            let view = cx.new(|cx| view::WispView::new(window, cx));
+            let workspace = cx.new(|cx| Workspace::new(loaded, settings_path, open, cx));
+            let view = cx.new(|cx| WorkspaceView::new(workspace, window, cx));
+            trace("window opened");
             cx.new(|cx| Root::new(view, window, cx))
         });
         if let Err(err) = opened {
