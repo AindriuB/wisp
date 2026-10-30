@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 18 | Storage `open_collection` tree (`CollectionTree`/`Node`/`RequestMeta`, `Node::Invalid`), collection/folder defaults load/save, `scope_for`, symlink cycles skipped | ## 2026-10-30 — Collection tree and folder/collection defaults storage |
+| 2026-10-30 | 11 | Pure `resolve()`: precedence, dynamic vars, path params, query, header merge, auth inheritance, bodies, settings; bounded expansion (depth 8, 64 KiB, 10,000 budget) | ## 2026-10-30 — resolve(): variables, path params, inheritance and bounded expansion |
 | 2026-10-30 | 19 | Storage environments: list/load/save, comment-preserving edits, `*.secrets.toml` written 0600 via `atomic_write_private` and git-ignored, strict name allowlist, name-only logging | ## 2026-10-30 — Environment and secrets file storage |
 | 2026-10-30 | 16 | Engine emits Started/Headers/Progress(throttled)/Completed/Failed/Cancelled, streams bodies into `BodyStore`, real cancel, File and Multipart bodies sent, one cached client per `ClientSettings`; app reads first 64 KiB and shows body errors | ## 2026-10-30 — Engine full event set, real cancel and per-settings clients |
 | 2026-10-30 | 14 | Storage `Watcher::start`: 100 ms per-path coalescing, time-ordered `Changed` events, state/temp files and directories ignored (known dirs scanned at start and on move-in, never walked through symlinks), notify errors logged, channel closes on drop | ## 2026-10-30 — Collection file watcher |

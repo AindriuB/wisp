@@ -17,6 +17,14 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Collection tree and folder/collection defaults storage
+`open_collection` returns a `CollectionTree` of `Node`s with `RequestMeta`; sidecars are never read on open and broken request files become `Node::Invalid`. `collection.toml` and `folder.toml` load and save (default auth is not written when the file had none), and `scope_for` returns folders outermost first. Symlink cycles are skipped through a canonical visited set, and sorting has a deterministic tiebreak.
+**Cost:** Review caught a symlink-to-parent loop that made opening a collection never return. The visited set is walk-wide rather than per-path, so sibling symlinks show under whichever name comes first; see PLAN.
+
+## 2026-10-30 — resolve(): variables, path params, inheritance and bounded expansion
+Pure `resolve(&Request, &Scope)` applies variable precedence, dynamic vars, path params (multi-param segments, catch-all per-segment encoding, regex warnings), query, header merge, nearest-folder auth inheritance, bodies and settings, and collects all problems. Expansion is bounded: depth 8, 64 KiB cap on bytes added by expansion, 10,000-expansion budget with every placeholder charged.
+**Cost:** Three review rounds and two user amendments. Exponential variable fan-out could freeze the UI (14 s growing to hours); then failing leaves bypassed the budget (55-345 s), then empty-name leaves did. The first size cap measured the whole output and wrongly rejected large literal bodies, so it now counts only bytes added by expansion. Do not budget only successful lookups.
+
 ## 2026-10-30 — Environment and secrets file storage
 `crates/storage/src/environment.rs` lists, loads and saves environments under `environments/`. Edits preserve comments. Secret values go to `<name>.secrets.toml` through `atomic_write_private` (0600), and `environments/.gitignore` keeps them out of git. Names must be ASCII alphanumerics, `-`, `_` and inner `.`, with no `..`, no `.secrets` suffix and no Windows reserved names. Listing skips non-files and invalid names, and logging records names only. Code review was clean after one round; it landed as one squashed commit (25428db).
 **Cost:** Review caught that an environment named `dev.secrets` would overwrite `dev`'s secrets file, and that `:` in a name could escape the folder on Windows; both led to the name allowlist. The allowlist rejects names with spaces, so existing ones will not load. Other residuals (symlinked files unlisted, one `file_type` error aborting listing, non-atomic two-file save order, COM0/LPT0, case-insensitive collisions) are in PLAN.md. Task 19's file was retired here.
