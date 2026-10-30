@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Response body store with spill to disk
+`crates/core/src/body.rs` adds `BodyStore`, `BodyWriter` and `BodyHandle`. Bodies stay in memory up to the limit, then spill to `<temp_dir>/wisp-<uid>` (mode 0700, ownership and mode checked via `symlink_metadata`) as `wisp-<pid>-<uuid>.body`, created with `create_new` and mode 0600. Handles support range reads and release; files are removed on writer drop and on last-store drop, and a failed write poisons the writer. Code review was clean after one round; it landed as one squashed commit (bb85e0a).
+**Cost:** The spill location was first a shared temp path; the user's 2026-10-30 amendment moved it to a private per-user directory, and the review round tightened it. The uid-ownership check has no test because it needs root, three tests spill into the real per-user directory instead of a test base, and the non-unix code path is not compiled here. Task 16 should rely on `BodyStore` ids being process-unique. Task 12's file was retired here.
+
 ## 2026-10-30 — Append-only request history log
 `crates/storage/src/history.rs` adds `HistoryEntry`, `Outcome` and `HistoryLog`, writing JSON lines to `<collection>/.wisp/history.jsonl` and creating `.wisp/.gitignore`. The log rotates past 4 MiB to `history.1.jsonl`; `read_all` skips malformed and invalid-UTF-8 lines, and `append` recovers from a torn last line. `preview_from` is bounded to 1 KiB on a char boundary. The URL template is stored unresolved, and no secrets, headers or error messages are stored. Code review was clean after one round; it landed as one squashed commit (4198ee4).
 **Cost:** The review round fixed robustness gaps (torn last line, invalid UTF-8) rather than design. `preview_from` decodes exactly 1024 bytes, so a 4-byte char straddling the limit becomes U+FFFD; left as an optional P3. Rotation is not safe against concurrent writers (single writer in v1). Never store `ResolveWarning`s in history, because `PatternMismatch.value` can hold a resolved secret. Task 15's file was retired here.
