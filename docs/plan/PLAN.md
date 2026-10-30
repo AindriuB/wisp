@@ -22,8 +22,7 @@ than no plan.
 Build the portable GPUI HTTP client in three milestones, in this order. Spec: `docs/plan/specs/2026-10-29-http-client-v1.md`. Product is Wisp; crate naming is settled in `docs/conventions.md#naming`.
 - **M0 — Walking skeleton (complete).**
 - **M1 — Core and storage (complete):** tasks 10-20 landed. The full model, `resolve`, body store, full event set and cancel, `toml_edit` storage with secrets and watcher, and the fixture integration test all pass without a window. See HISTORY.
-- **M2 — UI v1 (in progress):** layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings. Tasks 21-35 in `docs/plan/tasks/`. 21 (module layout freeze), 22 (template helpers), 23 (storage tree operations), 25 (highlight and palette ranking), 26 (response formatting, paging, cookies), 27 (settings and themes) and 29 (key-value table editor) landed; 24 is in review.
-**In flight:** 24 (in review)
+- **M2 — UI v1 (in progress):** layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings. Tasks 21-35 in `docs/plan/tasks/`. 21 (module layout freeze), 22 (template helpers), 23 (storage tree operations), 25 (highlight and palette ranking), 26 (response formatting, paging, cookies), 27 (settings and themes) and 29 (key-value table editor) and 24 (draft dirty tracking and URL/params sync) landed.
 **Next:** 28 is unblocked (depends on 21 and 23). Task 36 (follow-up, to be written): raise the pretty-print output budget in `crates/app/src/pretty.rs` from max(1 MiB, 4x input) to max(32 MiB, 4x input), by user decision on 2026-10-30. Fold in the optional 26 items below.
 
 ### Open budget and measurement questions (from M0)
@@ -51,6 +50,7 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 **Palette and highlight (25, optional P3):** `palette.rs:136` lowercases only the first char of a label, so chars with a multi-char lowercase (such as "İ") never match. Write the hover " (uses a secret)" suffix format into the spec for task 31. Assert the full order in the `sen` ranking test.
 **Formatting (26, optional, fold into 36):** `deep_nesting_is_iterative` and `hostile_nesting` accept any `Err`; assert the budget error and an offset past the last opening bracket. Tie the `SPACES` length to `MAX_INDENT_LEVELS` with a const assert. `sniff_kind` does not skip a BOM.
 **Settings (27):** task 28's ToggleTheme and ToggleLayout must surface `settings::save` errors to the user, because save now returns Err on an unparsable or unreadable file instead of overwriting it. Live OS-appearance following for theme="system", and its hand check, belong to task 28. Optional P3: rename test `location_prefers_env_then_config_dir_then_none`, since its first case is the portable marker, not an env var.
+**Draft and URL sync (24):** accepted residual: `Request.vars` has no `DirtySections` flag (vars change only through external edits in v1), so a draft can be dirty with no section highlighted. `merge_parsed_params` aligns old and parsed params with a 3-level order-preserving LCS (name+value, name, same slot); it is O(n*m) per keystroke, fine at real param counts (about 8 MB at 1000 params). Names containing `=` or `&`, and empty names, do not round-trip (documented on `display_url`). Optional cosmetic: group the test helpers `pairs` and `kv` at the top of the `url_sync` tests.
 **Stub allows (21):** each stub `mod` carries `#[allow(dead_code)]` (mounted by 28, allow removed by 35).
 
 ### Carry-forward: crates/storage

@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Draft dirty tracking and URL/params sync
+`draft.rs` now diffs a draft request against its saved copy per section (`DirtySections`) and decides what to do when the file changes on disk. `url_sync.rs` keeps the URL text and the params table in step, so typing in either updates the other without losing disabled or reordered rows. Both are pure, GPUI-free modules with unit tests (196 workspace tests, fmt and clippy clean).
+**Cost:** Three code-review rounds. Param merging started as a simple name match and lost rows when names repeated or the user edited a value; it ended as a 3-level order-preserving LCS (name+value, name, same slot), O(n*m) per keystroke. Do not go back to name-only matching. `Request.vars` has no dirty flag and names with `=`/`&` or empty names do not round-trip; both are accepted (see PLAN).
+
 ## 2026-10-30 — M2 storage ops, highlighting, formatting and settings
 Four independent M2 pieces landed as one commit each. Storage `ops` creates, renames, moves and deletes requests (with sidecar bodies) and folders, keeps `order` lists consistent and never overwrites or leaves the collection root. The app gained highlight spans with hover text and palette ranking, response pretty-printing with paging and cookie parsing, and a portable `settings.toml` with theme switching.
 **Cost:** Task 23 took four review rounds (the fourth test-only, user-approved); safety rules for sidecar sharing, case aliases and rename had to be amended into the task twice, so do not assume sidecar names are unique per request. Task 26 first bounded pretty-print memory at max(1 MiB, 4x input), which the user judged too small and is raising to 32 MiB in task 36. Task 27's `save` first overwrote unparsable settings files; it now returns Err, which task 28 must surface.
