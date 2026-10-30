@@ -8,7 +8,8 @@
 - crates/app/src/tab.rs
 - crates/app/src/ui/root.rs
 - crates/app/src/view.rs (delete)
-- crates/app/src/actions.rs (keystroke strings in `bind_keys` only; see amendment)
+- crates/app/src/actions.rs (keystroke strings in `bind_keys`, its key-string helpers and their doc comment, and the binding test only; see amendment and review round 1)
+- crates/app/src/settings.rs (`save` / `set_if_differs` bodies and their tests only; see amendment)
 
 ## Goal
 Replace the walking-skeleton window with the v1 shell: a `Workspace` entity holding the open collection, active environment, `Engine`, settings and tabs; `RequestTab` entities with draft, saved snapshot and response; one background task draining engine events and routing them by `RequestId` through weak handles; the watcher wired to reload or flag tabs; explicit save; and the root view with sidebar | (tab bar, request pane, draggable response split). The `WISP_AUTOSEND_URL` hook moves here and keeps its exact output.
@@ -41,7 +42,7 @@ Replace the walking-skeleton window with the v1 shell: a `Workspace` entity hold
 
 ## Out of scope
 - The contents of the sidebar, URL bar, request editors, response panes and palette (tasks 30–34); they stay as task 21's placeholders here.
-- Pure logic in `draft.rs`, `settings.rs`, `theme.rs` (tasks 24, 27).
+- Pure logic in `draft.rs`, `settings.rs`, `theme.rs` (tasks 24, 27), except `settings::save` per the amendment below.
 - Removing the `#[allow(dead_code)]` markers on modules this task does not own (task 35).
 - A cookie jar, history UI, or reopening the last collection on launch.
 
@@ -58,3 +59,28 @@ Decision (orchestrator): `crates/app/src/actions.rs` (frozen in task 21) binds k
 Additional acceptance:
 - [ ] A unit test asserts every binding string in `bind_keys` parses (e.g. via gpui's `Keystroke::parse`) on the build platform.
 - [ ] The app launches without panic: `RENDERER=hardware scripts/measure/measure.sh` reports status `measured`.
+
+### Amendment (2026-10-30, opening another collection)
+Decision (user): when `OpenCollection` replaces an open collection, all open tabs close. If any tab is dirty, a prompt (Discard / Cancel) is shown first; Cancel aborts the open and leaves the collection, tabs and drafts unchanged. In-flight requests from the old collection are cancelled, and their terminal events write no history into the new root.
+
+Additional acceptance:
+- [ ] A test (pure helper level is fine) shows that opening a new collection while all tabs are clean closes them, and that with a dirty tab the open requires confirmation (Cancel leaves tabs unchanged).
+- [ ] Hand check (orchestrator): open collection A, open a request, ⌘O to collection B → no tabs from A remain.
+
+### Amendment (2026-10-30, settings save writes only changed keys)
+Decision (orchestrator): `settings::save` in `crates/app/src/settings.rs` writes a key that is absent from the file only when its value differs from `Settings::default()`; keys present in the file are updated only when they differ (as now). Changes are limited to `save` / `set_if_differs`; no signature change.
+
+Additional acceptance:
+- [ ] A test: with no `settings.toml`, saving settings equal to the defaults except `theme` writes a file containing only `theme`.
+- [ ] Existing `settings` tests still pass.
+
+## Review round 1 — findings
+Before anything else, merge current `main` into the branch: the branch predates task 24 landing (`draft::on_disk_change` is a stub in its base).
+
+- [ ] [P2] `crates/app/src/workspace.rs:436-445` (`send`) and `:585-597` (`append_history`): `send` resets only `phase` / `request_id` / `received`; `status`, `reason`, `version`, `headers`, `ttfb`, `total`, `size` and `error` keep the previous response's values, so a Failed/Cancelled send after a 200 records `status=Some(200)` and the old timings in `HistoryEntry` and shows them in `ResponseState`. Route: implementer — reset the whole response state on send. Input: send → 200, then send to an unreachable host → history entry has outcome Failed but status `Some(200)`.
+- [ ] [P2] `open_collection` keeps old tabs (relative paths now point into the new root; ⌘S overwrites B's `users/get.toml` with A's request). Route: implementer, per amendment "opening another collection".
+- [ ] [P2] `ToggleTheme` writes `split` / `pretty_limit` / `body_memory_limit` on first launch. Route: implementer, per amendment "settings save writes only changed keys".
+- [ ] [STYLE] `crates/app/src/actions.rs:55`: `.unwrap()` in `bind_keys` with no adjacent comment proving infallibility; a misspelled `k("...")` lookup panics at launch, and `every_binding_string_parses` doesn't call `bind_keys`. Route: implementer — remove the unwrap (e.g. build bindings directly from static per-platform literals chosen with `cfg!`, which also removes the `Box::leak`) and make the test cover the strings `bind_keys` actually uses. Rule: `docs/conventions.md` Errors.
+- [ ] [STYLE] `crates/app/src/actions.rs:25-28`: the doc comment for `key_strings` is attached to `leak` and still mentions "secondary". Route: implementer.
+- [ ] [P3] `crates/app/src/workspace.rs:610-618` (`save`, scratch branch): the draft is renamed to "Untitled" before `create_request`, and a blank file is written before `save_request`; if `save_request` fails the draft is changed and an orphan `untitled.toml` remains. Route: implementer — rename/commit only after a successful save, and remove the created file if `save_request` fails.
+- [NOTE] (optional) Autosend now resolves the URL, so `{{…}}` in `WISP_AUTOSEND_URL` fails as `InvalidUrl`; superseded/closed-tab terminal events write no history. Leave as is; note both in a doc comment.
