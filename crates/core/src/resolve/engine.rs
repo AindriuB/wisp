@@ -13,6 +13,7 @@ use crate::model::{
     ClientSettings, Header, PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest,
 };
 use crate::request::{ApiKeyLocation, Auth, Body, KeyValue, PartValue, Request, TextBody};
+use crate::template::{self, PathToken};
 
 /// Maximum nesting of variables whose values contain further variables.
 const MAX_DEPTH: usize = 8;
@@ -39,17 +40,122 @@ fn encode_form(s: &str) -> String {
 }
 
 /// Find a variable by precedence. Borrows from the inputs, so no copy is made.
-fn lookup<'s>(req: &'s Request, scope: &'s Scope<'s>, name: &str) -> Option<&'s str> {
+fn lookup<'s>(req: &'s Request, scope: &'s Scope<'s>, name: &str) -> Option<(&'s str, VarSource)> {
     let find = |vars: &'s [crate::request::Var]| {
         vars.iter()
             .find(|v| v.name == name)
             .map(|v| v.value.as_str())
     };
     find(&req.vars)
-        .or_else(|| scope.folders.iter().rev().find_map(|f| find(&f.vars)))
-        .or_else(|| scope.environment.and_then(|e| find(&e.secrets)))
-        .or_else(|| scope.environment.and_then(|e| find(&e.vars)))
-        .or_else(|| find(&scope.collection.vars))
+        .map(|v| (v, VarSource::Request))
+        .or_else(|| {
+            scope
+                .folders
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(i, f)| find(&f.vars).map(|v| (v, VarSource::Folder(i))))
+        })
+        .or_else(|| {
+            scope
+                .environment
+                .and_then(|e| find(&e.secrets))
+                .map(|v| (v, VarSource::Secret))
+        })
+        .or_else(|| {
+            scope
+                .environment
+                .and_then(|e| find(&e.vars))
+                .map(|v| (v, VarSource::Environment))
+        })
+        .or_else(|| find(&scope.collection.vars).map(|v| (v, VarSource::Collection)))
+}
+
+/// Where a variable's value came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VarSource {
+    Request,
+    /// Index into `Scope::folders` (outermost = 0).
+    Folder(usize),
+    Environment,
+    Secret,
+    Collection,
+}
+
+/// The result of looking up one variable.
+#[derive(Clone, PartialEq, Eq)]
+pub enum VarLookup {
+    Found {
+        /// Fully expanded, with the same bounds as `resolve`.
+        value: String,
+        source: VarSource,
+        /// True when the variable, or any variable its expansion used, is a secret.
+        secret: bool,
+    },
+    /// `$uuid` / `$timestamp`: generated at resolve time.
+    Dynamic,
+    Unresolved,
+    Error(Problem),
+}
+
+impl std::fmt::Debug for VarLookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VarLookup::Found {
+                value,
+                source,
+                secret,
+            } => {
+                let shown: &str = if *secret { "<redacted>" } else { value };
+                f.debug_struct("Found")
+                    .field("value", &shown)
+                    .field("source", source)
+                    .field("secret", secret)
+                    .finish()
+            }
+            VarLookup::Dynamic => f.write_str("Dynamic"),
+            VarLookup::Unresolved => f.write_str("Unresolved"),
+            VarLookup::Error(p) => f.debug_tuple("Error").field(p).finish(),
+        }
+    }
+}
+
+/// Look up one variable through the same precedence and bounds as `resolve`.
+pub fn lookup_var(request: &Request, scope: &Scope, name: &str) -> VarLookup {
+    let name = name.trim();
+    if let Some(dynamic) = name.strip_prefix('$') {
+        return if matches!(dynamic, "uuid" | "timestamp") {
+            VarLookup::Dynamic
+        } else {
+            VarLookup::Unresolved
+        };
+    }
+    let Some((raw, source)) = lookup(request, scope, name) else {
+        return VarLookup::Unresolved;
+    };
+    let mut r = Resolver {
+        req: request,
+        scope,
+        problems: Vec::new(),
+        warnings: Vec::new(),
+        expansions: 0,
+        stop: false,
+        seen: HashSet::new(),
+        used_secret: matches!(source, VarSource::Secret),
+    };
+    let value = r.expand(
+        raw,
+        &Location::Var(name.to_string()),
+        &mut vec![name.to_string()],
+    );
+    match r.problems.into_iter().next() {
+        Some(p) => VarLookup::Error(p),
+        None => VarLookup::Found {
+            value,
+            source,
+            secret: r.used_secret,
+        },
+    }
 }
 
 /// Resolve an authored request against its scope. Pure: no I/O.
@@ -62,6 +168,7 @@ pub fn resolve(req: &Request, scope: &Scope) -> Result<PreparedRequest, ResolveE
         expansions: 0,
         stop: false,
         seen: HashSet::new(),
+        used_secret: false,
     };
     let prepared = r.run();
     if r.problems.is_empty() {
@@ -84,6 +191,8 @@ struct Resolver<'a> {
     stop: bool,
     /// Debug renderings of problems already recorded, for O(1) dedupe.
     seen: HashSet<String>,
+    /// Set when any expanded variable came from `Environment::secrets`.
+    used_secret: bool,
 }
 
 impl Resolver<'_> {
@@ -112,23 +221,22 @@ impl Resolver<'_> {
         // Bytes added by expansion. At the top level the literal text does not
         // count; inside a variable's value everything is expansion growth.
         let mut grown = 0usize;
-        let mut rest = s;
-        while let Some(start) = rest.find("{{") {
+        let mut rest = 0usize;
+        for var in template::var_refs(s) {
             if self.stop {
                 return out;
             }
-            out.push_str(&rest[..start]);
-            let after = &rest[start + 2..];
-            let Some(end) = after.find("}}") else {
+            out.push_str(&s[rest..var.range.start]);
+            if !var.terminated {
                 self.problem(Problem::Syntax {
                     location: loc.clone(),
                     message: "unclosed `{{`".into(),
                 });
-                out.push_str(&rest[start..]);
+                out.push_str(&s[var.range.start..]);
                 return out;
-            };
-            let name = after[..end].trim();
-            rest = &after[end + 2..];
+            }
+            let name = var.name.as_str();
+            rest = var.range.end;
             // Every placeholder processed (empty ones included) is charged, whether it resolves or not.
             self.expansions += 1;
             if self.expansions > MAX_EXPANSIONS {
@@ -157,7 +265,10 @@ impl Resolver<'_> {
                         location: loc.clone(),
                     }),
                 }
-            } else if let Some(value) = lookup(self.req, self.scope, name) {
+            } else if let Some((value, source)) = lookup(self.req, self.scope, name) {
+                if matches!(source, VarSource::Secret) {
+                    self.used_secret = true;
+                }
                 if stack.iter().any(|n| n == name) {
                     self.problem(Problem::VarCycle {
                         name: name.to_string(),
@@ -185,7 +296,7 @@ impl Resolver<'_> {
                 return out;
             }
         }
-        out.push_str(rest);
+        out.push_str(&s[rest..]);
         if !top && out.len() > MAX_OUTPUT {
             self.too_large(loc);
         }
@@ -231,90 +342,49 @@ impl Resolver<'_> {
     }
 
     fn apply_path_params(&mut self, url: &str) -> String {
-        // Path portion: after `scheme://authority`, before `?` or `#`.
-        let path_start = match url.find("://") {
-            Some(i) => url[i + 3..]
-                .find(['/', '?', '#'])
-                .map_or(url.len(), |j| i + 3 + j),
-            None => url.find(['/', '?', '#']).unwrap_or(url.len()),
-        };
-        let path_end = url[path_start..]
-            .find(['?', '#'])
-            .map_or(url.len(), |j| path_start + j);
-        let path = &url[path_start..path_end];
-        let new_path = self.expand_path(path);
-        format!("{}{}{}", &url[..path_start], new_path, &url[path_end..])
+        let pr = template::path_range_plain(url);
+        let new_path = self.expand_path(&url[pr.clone()]);
+        format!("{}{}{}", &url[..pr.start], new_path, &url[pr.end..])
     }
 
     fn expand_path(&mut self, path: &str) -> String {
         let mut out = String::new();
         let mut cache: HashMap<String, Option<String>> = HashMap::new();
-        let chars: Vec<(usize, char)> = path.char_indices().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            let (pos, c) = chars[i];
-            match c {
-                '}' => {
+        let mut last = 0usize;
+        for tok in template::scan_path(path, false) {
+            match tok {
+                PathToken::StrayClose => self.problem(Problem::Syntax {
+                    location: Location::Url,
+                    message: "unbalanced `}` in path".into(),
+                }),
+                PathToken::Unclosed => {
                     self.problem(Problem::Syntax {
                         location: Location::Url,
-                        message: "unbalanced `}` in path".into(),
+                        message: "unbalanced `{` in path".into(),
                     });
-                    i += 1;
+                    return out;
                 }
-                '{' => {
-                    let mut depth = 0usize;
-                    let mut j = i;
-                    let mut close = None;
-                    while j < chars.len() {
-                        match chars[j].1 {
-                            '{' => depth += 1,
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    close = Some(j);
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        j += 1;
-                    }
-                    let Some(j) = close else {
-                        self.problem(Problem::Syntax {
-                            location: Location::Url,
-                            message: "unbalanced `{` in path".into(),
-                        });
-                        break;
-                    };
-                    let inner = &path[pos + 1..chars[j].0];
+                PathToken::Param { range, inner } => {
+                    out.push_str(&path[last..range.start]);
+                    last = range.end;
                     out.push_str(&self.path_param(inner, &mut cache));
-                    i = j + 1;
-                }
-                _ => {
-                    out.push(c);
-                    i += 1;
                 }
             }
         }
+        out.push_str(&path[last..]);
         out
     }
 
     fn path_param(&mut self, inner: &str, cache: &mut HashMap<String, Option<String>>) -> String {
-        let (spec, pattern) = match inner.split_once(':') {
-            Some((a, b)) => (a, Some(b)),
-            None => (inner, None),
-        };
-        let (catch_all, name) = match spec.strip_prefix('*') {
-            Some(n) => (true, n),
-            None => (false, spec),
-        };
-        if name.is_empty() || name.contains(['{', '}']) {
+        let Some((name, pattern, catch_all)) = template::parse_param(inner) else {
             self.problem(Problem::Syntax {
                 location: Location::Url,
                 message: format!("invalid path parameter `{{{inner}}}`"),
             });
             return String::new();
-        }
+        };
+        let name = name.as_str();
+        let pattern = pattern.as_deref();
         let value = match cache.get(name) {
             Some(v) => v.clone(),
             None => {

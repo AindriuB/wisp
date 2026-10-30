@@ -59,4 +59,7 @@ mod engine;
 #[cfg(test)]
 mod tests;
 
-pub use engine::resolve;
+pub use engine::{VarLookup, VarSource, lookup_var, resolve};
+
+#[cfg(test)]
+mod lookup_tests;

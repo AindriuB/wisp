@@ -6,6 +6,7 @@ mod model;
 pub mod body;
 pub mod request;
 pub mod resolve;
+pub mod template;
 
 pub use engine::{Engine, EngineConfig, EventReceiver};
 pub use model::{
