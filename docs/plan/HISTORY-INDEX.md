@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 19 | Storage environments: list/load/save, comment-preserving edits, `*.secrets.toml` written 0600 via `atomic_write_private` and git-ignored, strict name allowlist, name-only logging | ## 2026-10-30 — Environment and secrets file storage |
 | 2026-10-30 | 16 | Engine emits Started/Headers/Progress(throttled)/Completed/Failed/Cancelled, streams bodies into `BodyStore`, real cancel, File and Multipart bodies sent, one cached client per `ClientSettings`; app reads first 64 KiB and shows body errors | ## 2026-10-30 — Engine full event set, real cancel and per-settings clients |
 | 2026-10-30 | 14 | Storage `Watcher::start`: 100 ms per-path coalescing, time-ordered `Changed` events, state/temp files and directories ignored (known dirs scanned at start and on move-in, never walked through symlinks), notify errors logged, channel closes on drop | ## 2026-10-30 — Collection file watcher |
 | 2026-10-30 | 13 | Storage TOML codec (vars, key-value arrays by LCS diff, auth; comments preserved) and atomic fs writes (create_new temp, mode kept, symlinks followed, `atomic_write_private`) | ## 2026-10-30 — Storage TOML codec and atomic file writes |
