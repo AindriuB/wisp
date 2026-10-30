@@ -43,3 +43,10 @@ Replace the walking-skeleton window with the v1 shell: a `Workspace` entity hold
 - Pure logic in `draft.rs`, `settings.rs`, `theme.rs` (tasks 24, 27).
 - Removing the `#[allow(dead_code)]` markers on modules this task does not own (task 35).
 - A cookie jar, history UI, or reopening the last collection on launch.
+
+### Amendment (2026-10-30, live system theme)
+Decision (orchestrator): when `Settings::theme` is `System`, the app follows the OS appearance live. Task 27's `theme::apply` reads the appearance once and its signature is frozen, so the live follow lives in this task's root view (`crates/app/src/ui/root.rs`, already owned): subscribe with `Window::observe_window_appearance` (gpui-pre 0.3.10) and, on change, call `theme::apply(settings.theme, Some(window), cx)` again only while the current setting is `System`; changes are ignored while it is `Light` or `Dark`. The setting is read at callback time, so a `ToggleTheme` to or from `System` takes effect without re-subscribing. `theme.rs` is not changed.
+
+Additional acceptance:
+- [ ] `ui/root.rs` holds a `Window::observe_window_appearance` subscription whose callback calls `theme::apply(settings.theme, Some(window), cx)` only when the current setting is `ThemeSetting::System` (or the equivalent variant) and returns without applying otherwise.
+- [ ] Hand check (orchestrator, window frontmost): with `theme = "system"` in `settings.toml`, switching macOS between Light and Dark in System Settings switches the window's theme without restart; with `theme = "dark"`, switching macOS appearance changes nothing.
