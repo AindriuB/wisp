@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 36 | `pretty_json` output budget raised to max(32 MiB, 4x input); nesting tests assert exact outcomes; `SPACES` tied to indent cap | ## 2026-10-30 — Pretty-print budget raised to 32 MiB |
 | 2026-10-30 | 24 | Per-section draft dirty diff and disk-change decisions; URL and params table kept in sync via order-preserving 3-level LCS merge | ## 2026-10-30 — Draft dirty tracking and URL/params sync |
 | 2026-10-30 | 23, 25, 26, 27 | Storage create/rename/move/delete ops with sidecar and order handling; highlight spans and palette ranking; response pretty-print, paging, cookies; portable settings and themes | ## 2026-10-30 — M2 storage ops, highlighting, formatting and settings |
 | 2026-10-30 | 29 | `KvTable` key-value editor: checkbox, masked values, trailing empty row, one Changed per edit, silent `set_rows`, annotations, virtual list over ~50 rows; hand check deferred to task 31 | ## 2026-10-30 — Reusable key-value table editor |

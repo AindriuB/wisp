@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Pretty-print budget raised to 32 MiB
+`pretty_json` output budget is now max(32 MiB, 4x input) instead of max(1 MiB, 4x input), so minified documents that grow about 6x when indented (row arrays, GeoJSON coordinates) up to the ~5 MB pretty limit pretty-print instead of falling back to Raw. Over-budget output still returns `Err`. The nesting tests now assert exact outcomes, and a compile-time assert ties `SPACES` to `MAX_INDENT_LEVELS` (260 workspace tests, fmt and clippy clean, one review pass with no rounds).
+**Cost:** The user raised the limit after judging 1 MiB too small; capacity must never be reserved from the budget, only from input length. Pretty-printing can now hold up to about 32 MiB of transient output, which task 35 must include when re-measuring memory. `sniff_kind` still strips the BOM after the UTF-8 check (see PLAN).
+
 ## 2026-10-30 — Draft dirty tracking and URL/params sync
 `draft.rs` now diffs a draft request against its saved copy per section (`DirtySections`) and decides what to do when the file changes on disk. `url_sync.rs` keeps the URL text and the params table in step, so typing in either updates the other without losing disabled or reordered rows. Both are pure, GPUI-free modules with unit tests (196 workspace tests, fmt and clippy clean).
 **Cost:** Three code-review rounds. Param merging started as a simple name match and lost rows when names repeated or the user edited a value; it ended as a 3-level order-preserving LCS (name+value, name, same slot), O(n*m) per keystroke. Do not go back to name-only matching. `Request.vars` has no dirty flag and names with `=`/`&` or empty names do not round-trip; both are accepted (see PLAN).
