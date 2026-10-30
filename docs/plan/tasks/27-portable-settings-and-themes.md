@@ -30,3 +30,19 @@ Settings live in `settings.toml` beside the executable when a `portable` marker 
 - Persisting window size, open tabs, last collection or anything else (spec: nothing else persisted).
 - A settings UI beyond the ToggleTheme / ToggleLayout actions (handled by the root view, task 28).
 - Custom theme files or colours.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 537a119e678a74674efaa1bdce5809ab54490888
+
+- [P1] crates/app/src/settings.rs:155-158 (`save`) — when the existing file can't be parsed, or can't be read for any reason other than NotFound, `save` starts from an empty document and replaces the whole file (comments and unknown keys lost).
+  route: implementer — return `Err` on a non-NotFound read error and on a TOML parse error instead of `unwrap_or_default()` / `DocumentMut::new()`. Add tests: a file with a syntax error and a non-UTF-8 file are left byte-identical and `save` returns Err.
+  input: settings.toml = `# my notes\ntheme = "dark\nextra = "keep"\n`; load → defaults + warning; ToggleTheme → save rewrites the file with only the four known keys.
+- [STYLE] crates/app/src/settings.rs:201 — test name `location_cases` isn't a sentence.
+  route: implementer
+  rule: docs/conventions.md, Tests: "Test names read as sentences".
+- [P3] crates/app/src/settings.rs:233 (`bad_value_keeps_valid_keys`) — no case for a bad `split`, a non-integer `body_memory_limit`, or an out-of-range value.
+  route: implementer — add those cases.
+  input: `_ => bad.push("split")` → `_ => {}` and every test still passes.
+
+Orchestrator decision (2026-10-30): following the OS appearance live when `theme = "system"` is implemented in task 28's root view (observe the window appearance and call `theme::apply` again); `theme::apply`'s frozen signature is unchanged. Task 27's hand check for live switching moves to task 28.
