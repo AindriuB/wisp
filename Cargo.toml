@@ -28,3 +28,10 @@ wiremock = { version = "0.6", default-features = false }
 gpui = { package = "gpui-pre", version = "=0.3.10", default-features = false }
 gpui-component = { version = "=0.8.1", default-features = false }
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.10", default-features = false, features = ["font-kit", "wayland", "x11"] }
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
+uuid = { version = "1", default-features = false, features = ["v4"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+percent-encoding = { version = "2", default-features = false, features = ["std"] }
+toml_edit = { version = "=0.22.27", default-features = false, features = ["parse", "display"] }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+tempfile = { version = "3", default-features = false }

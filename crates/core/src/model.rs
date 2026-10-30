@@ -1,8 +1,11 @@
 //! Plain-data command, event and error types. No locks, handles or runtime types.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::resolve::ResolveWarning;
 
 /// Identifier of one request, allocated monotonically by the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -33,8 +36,41 @@ pub struct PreparedRequest {
     pub method: Method,
     pub url: String,
     pub headers: Vec<Header>,
-    pub body: Option<Vec<u8>>,
+    pub body: PreparedBody,
     pub timeout: Option<Duration>,
+    pub client: ClientSettings,
+    pub warnings: Vec<ResolveWarning>,
+}
+
+/// Body of a prepared request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PreparedBody {
+    None,
+    Bytes(Vec<u8>),
+    File(PathBuf),
+    Multipart(Vec<PreparedPart>),
+}
+
+/// One multipart part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PreparedPart {
+    pub name: String,
+    pub value: PreparedPartValue,
+}
+
+/// Value of a multipart part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PreparedPartValue {
+    Text(String),
+    File(PathBuf),
+}
+
+/// Settings that select a reqwest client.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ClientSettings {
+    pub verify_tls: bool,
+    pub follow_redirects: bool,
+    pub proxy: Option<String>,
 }
 
 /// Input to the engine.
@@ -53,6 +89,7 @@ pub enum ErrorKind {
     Tls,
     Timeout,
     Body,
+    BodyFile,
     Cancelled,
     Other,
 }

@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde::{Serialize, de::DeserializeOwned};
 use wiremock::matchers::{body_bytes, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use wisp_core::resolve::ResolveWarning;
 use wisp_core::*;
 
 fn get(url: String) -> PreparedRequest {
@@ -10,8 +11,14 @@ fn get(url: String) -> PreparedRequest {
         method: Method::Get,
         url,
         headers: vec![],
-        body: None,
+        body: PreparedBody::None,
         timeout: None,
+        client: ClientSettings {
+            verify_tls: true,
+            follow_redirects: true,
+            proxy: None,
+        },
+        warnings: vec![],
     }
 }
 
@@ -63,8 +70,14 @@ async fn a_post_sends_the_given_headers_and_body() {
             name: "x-test".into(),
             value: "yes".into(),
         }],
-        body: Some(b"payload".to_vec()),
+        body: PreparedBody::Bytes(b"payload".to_vec()),
         timeout: None,
+        client: ClientSettings {
+            verify_tls: true,
+            follow_redirects: true,
+            proxy: None,
+        },
+        warnings: vec![],
     }));
     match rx.recv().await.unwrap() {
         Event::Completed { status, .. } => assert_eq!(status, 201),
@@ -214,8 +227,27 @@ fn commands_and_events_round_trip_through_serde_json() {
             name: "a".into(),
             value: "b".into(),
         }],
-        body: Some(b"hi".to_vec()),
+        body: PreparedBody::Multipart(vec![
+            PreparedPart {
+                name: "a".into(),
+                value: PreparedPartValue::Text("t".into()),
+            },
+            PreparedPart {
+                name: "f".into(),
+                value: PreparedPartValue::File("/x/y".into()),
+            },
+        ]),
         timeout: Some(Duration::from_millis(1500)),
+        client: ClientSettings {
+            verify_tls: false,
+            follow_redirects: true,
+            proxy: Some("http://p".into()),
+        },
+        warnings: vec![ResolveWarning::PatternMismatch {
+            name: "n".into(),
+            pattern: "p".into(),
+            value: "v".into(),
+        }],
     }));
     round_trip(Command::Cancel(RequestId(7)));
     round_trip(Event::Completed {
@@ -237,4 +269,14 @@ fn commands_and_events_round_trip_through_serde_json() {
             message: "m".into(),
         },
     });
+}
+
+#[tokio::test]
+async fn file_and_multipart_bodies_fail_as_unsupported() {
+    let mut req = get("http://127.0.0.1:1/".into());
+    req.body = PreparedBody::File("/nope".into());
+    assert_eq!(failure(req).await, ErrorKind::BodyFile);
+    let mut req = get("http://127.0.0.1:1/".into());
+    req.body = PreparedBody::Multipart(vec![]);
+    assert_eq!(failure(req).await, ErrorKind::BodyFile);
 }

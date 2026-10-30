@@ -7984,18 +7984,33 @@ name = "wisp-core"
 version = "0.0.0"
 dependencies = [
  "async-channel",
+ "base64 0.22.1",
+ "percent-encoding",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
  "wiremock",
 ]
 
 [[package]]
 name = "wisp-storage"
 version = "0.0.0"
+dependencies = [
+ "async-channel",
+ "notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml_edit 0.22.27",
+ "tracing",
+ "wisp-core",
+]
 
 [[package]]
 name = "wit-bindgen"

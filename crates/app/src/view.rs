@@ -9,7 +9,8 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::select::{Select, SelectState};
 use gpui_component::{ActiveTheme as _, IndexPath};
 use wisp_core::{
-    Command, Engine, EngineConfig, Event, EventReceiver, Method, PreparedRequest, RequestId,
+    ClientSettings, Command, Engine, EngineConfig, Event, EventReceiver, Method, PreparedBody,
+    PreparedRequest, RequestId,
 };
 
 use crate::format::{body_text, completed_line};
@@ -90,8 +91,14 @@ impl WispView {
             method,
             url,
             headers: Vec::new(),
-            body: None,
+            body: PreparedBody::None,
             timeout: None,
+            client: ClientSettings {
+                verify_tls: true,
+                follow_redirects: true,
+                proxy: None,
+            },
+            warnings: Vec::new(),
         }))
     }
 

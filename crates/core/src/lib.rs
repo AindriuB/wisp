@@ -3,7 +3,12 @@
 mod engine;
 mod model;
 
+pub mod body;
+pub mod request;
+pub mod resolve;
+
 pub use engine::{Engine, EngineConfig, EventReceiver};
 pub use model::{
-    Command, EngineError, ErrorKind, Event, Header, Method, PreparedRequest, RequestId,
+    ClientSettings, Command, EngineError, ErrorKind, Event, Header, Method, PreparedBody,
+    PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
 };

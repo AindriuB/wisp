@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use crate::model::{
-    Command, EngineError, ErrorKind, Event, Header, Method, PreparedRequest, RequestId,
+    Command, EngineError, ErrorKind, Event, Header, Method, PreparedBody, PreparedRequest,
+    RequestId,
 };
 
 /// Receiving end of the engine's event channel; works from any executor or plain threads.
@@ -192,8 +193,15 @@ async fn perform(
     for h in &req.headers {
         rb = rb.header(h.name.as_str(), h.value.as_str());
     }
-    if let Some(b) = req.body {
-        rb = rb.body(b);
+    match req.body {
+        PreparedBody::None => {}
+        PreparedBody::Bytes(b) => rb = rb.body(b),
+        PreparedBody::File(_) | PreparedBody::Multipart(_) => {
+            return Err(err(
+                ErrorKind::BodyFile,
+                "file and multipart bodies are unsupported until task 16",
+            ));
+        }
     }
     if let Some(t) = timeout {
         rb = rb.timeout(t);
