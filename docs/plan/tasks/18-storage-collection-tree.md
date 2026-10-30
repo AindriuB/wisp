@@ -29,6 +29,7 @@ for a request path. That is what M2's sidebar and send path will consume.
   - It skips `environments/`, `STATE_DIR`, dot-entries, `collection.toml`, `folder.toml`, any `*.body.*` sidecar and non-`.toml` files.
 - **Ordering.** `order = [...]` in `folder.toml` (or in `collection.toml` for the root) lists entry names: directory names for folders, and file stems without `.toml` for requests. Listed entries come first in list order. Unlisted entries follow, sorted alphabetically by name, case-insensitively. Listed names that do not exist are ignored.
 - `load_collection_defaults` and `save_collection_defaults(root, &CollectionDefaults)` work on `collection.toml`. Saving a new collection writes `format = 1`. `load_folder_defaults` and `save_folder_defaults(dir, &FolderDefaults)` work on `folder.toml`. All of them edit in place through the codec.
+- **Default auth (user decision, 2026-10-30).** `codec::write_auth(.., &Auth)` keeps its signature and always writes an `[auth]` table. The save functions skip calling it when the value equals that file's read default (`Auth::None` for `collection.toml`, `Auth::Inherit` for `folder.toml`) and the file had no `[auth]` table before, so an unchanged save never adds `[auth] type = "<default>"`. If the file already had `[auth]`, it is always written.
 - `CollectionTree::scope_for<'a>(&'a self, request: &Path, env: Option<&'a Environment>) -> Scope<'a>` builds `folders` from outermost to nearest, following the request's ancestor directories.
 
 ## Acceptance
@@ -40,6 +41,7 @@ for a request path. That is what M2's sidebar and send path will consume.
   - `environments/dev.toml`, `.wisp/history.jsonl` and `folder.toml` do not appear as nodes.
   - `scope_for("a/b/req.toml")` returns folders `[a, a/b]` in that order.
   - Saving a `folder.toml` that has comments, with one header changed, alters only that header's table.
+  - A `collection.toml` and a `folder.toml`, each with no `[auth]` table, loaded and saved unchanged, produce byte-identical output (no `[auth]` table is added).
 - [ ] `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` pass.
 
 ## Out of scope

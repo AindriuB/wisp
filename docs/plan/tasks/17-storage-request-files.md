@@ -31,6 +31,7 @@ formatting survive a save that changes one field.
   - With `sidecar = Some(name)`, the content goes to `<dir>/<name>` atomically and the TOML holds `file`, not `content`.
   - With `None`, the content goes inline. It is a multi-line literal string when the content has a newline and no `'''`, and an escaped basic string otherwise.
   - A sidecar the request no longer references is left on disk.
+  - **Default auth (user decision, 2026-10-30).** `codec::write_auth(.., &Auth)` keeps its signature and always writes an `[auth]` table. `save_request` skips calling it when `auth` is `Auth::Inherit` (the request file's read default) and the file had no `[auth]` table before, so an unchanged save never adds `[auth] type = "inherit"`. If the file already had `[auth]`, it is always written.
 
 ## Acceptance
 - [ ] Unit tests in `request.rs`, using `tempfile` directories, show the following:
@@ -42,6 +43,8 @@ formatting survive a save that changes one field.
   - `method = "BREW"` yields `Invalid { key: "method" }`.
   - A missing sidecar yields `Io` whose path is the sidecar's.
   - A `Body::File` under the request directory is written as a relative path.
+  - A request file with no `[auth]` table, loaded and saved unchanged, produces byte-identical output (no `[auth]` table is added).
+  - A request file with `[auth] type = "inherit"`, loaded and saved unchanged, keeps its `[auth]` table.
 - [ ] No serde-based TOML serialisation is used to write the file.
 - [ ] `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` pass.
 
