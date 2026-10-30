@@ -53,3 +53,10 @@ pub enum ResolveWarning {
         message: String,
     },
 }
+
+mod engine;
+
+#[cfg(test)]
+mod tests;
+
+pub use engine::resolve;
