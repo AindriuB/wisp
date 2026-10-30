@@ -156,6 +156,7 @@ recorded; the budget figures below are in MB (1 MB = 1,048,576 B, 1 MB RSS =
 | Target | Binary size | Idle RSS | RSS after one request | Renderer | Source commit |
 |---|---|---|---|---|---|
 | `aarch64-apple-darwin` | 16,660,480 B | 100,032 KiB | 103,296 KiB | hardware | `561807f` (`aarch64-apple-darwin.json`) |
+| `aarch64-apple-darwin` (after task 16, M1 core) | 16,710,288 B | 99,232 KiB | 102,560 KiB | hardware | `2e8d74b` (`RENDERER=hardware scripts/measure/measure.sh`, not a committed record) |
 | `x86_64-apple-darwin` | 18,052,632 B (local cross-build on arm64) | not measured: RSS on `macos-26-intel` CI hung in the icon service (`ISIconManager`) | not measured: same | n/a | `561807f` (`x86_64-apple-darwin.json`) |
 
 First `measure.yml` CI figures. Their renderers are software or unknown, so they are not comparable with the hardware row and are not held to the budgets below.
