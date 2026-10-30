@@ -86,9 +86,21 @@ is why it must stay cheap and side-effect free.
 
 ### storage
 
-A plain library: `open_collection(path)` returns the tree and request metadata
-only (bodies load lazily), plus `load_request`, `save_request` and a watcher
-emitting `Changed(path)`. Writes go through `toml_edit`.
+A plain library (`wisp-storage`), tested without a window. It provides:
+
+- `open_collection(path)`, which returns an ordered `CollectionTree` of folders
+  and request metadata only (bodies load lazily; broken request files appear as
+  `Node::Invalid`), and `scope_for`, which builds the folder chain for `resolve`.
+- `load_request` and `save_request`, with sidecar bodies; `load`/`save` of
+  `collection.toml` and `folder.toml` defaults; and environment list, load and
+  save, with `*.secrets.toml` written 0600 and git-ignored.
+- A `Watcher` emitting `Changed(path)` with 100 ms per-path coalescing. Consumers
+  must re-check the disk.
+- An append-only history log in `.wisp/history.jsonl`.
+
+Writes go through `toml_edit` and atomic file replacement, so comments and key
+order survive a save. The fixture test in `crates/storage/tests/` proves the
+whole path from disk through `resolve`.
 
 ## On-disk collection format
 

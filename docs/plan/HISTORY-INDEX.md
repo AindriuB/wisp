@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 10-20 | M1 summary: core and storage delivered and tested without a window; user amendments; wave-2 disk-full stall and shared-target-dir stale-binary mistake | ## 2026-10-30 — M1 complete: core and storage without a window |
+| 2026-10-30 | 20 | Fixture `my-api` collection and end-to-end disk → resolve test, byte-for-byte round-trip, watcher external-edit test; secrets fixture force-added | ## 2026-10-30 — Storage-to-resolve integration test and fixture collection |
 | 2026-10-30 | 17 | Storage `load_request`/`save_request`: sidecar bodies, in-place `toml_edit` via the codec, default-auth skip, settings defaults kept; sidecar name and identity rules enforced before any read or write | ## 2026-10-30 — Request file storage with sidecar bodies |
 | 2026-10-30 | 18 | Storage `open_collection` tree (`CollectionTree`/`Node`/`RequestMeta`, `Node::Invalid`), collection/folder defaults load/save, `scope_for`, symlink cycles skipped | ## 2026-10-30 — Collection tree and folder/collection defaults storage |
 | 2026-10-30 | 11 | Pure `resolve()`: precedence, dynamic vars, path params, query, header merge, auth inheritance, bodies, settings; bounded expansion (depth 8, 64 KiB, 10,000 budget) | ## 2026-10-30 — resolve(): variables, path params, inheritance and bounded expansion |
