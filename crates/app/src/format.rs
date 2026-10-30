@@ -28,6 +28,27 @@ pub fn completed_line(status: u16, reason: Option<&str>, total: Duration, size: 
     format!("{head} · {} ms · {}", total.as_millis(), format_size(size))
 }
 
+/// Duration as `N ms` below one second, otherwise `N.NN s`.
+// used by task 33, allow removed by 35
+#[allow(dead_code)]
+pub fn format_duration(d: Duration) -> String {
+    if d < Duration::from_secs(1) {
+        format!("{} ms", d.as_millis())
+    } else {
+        format!("{:.2} s", d.as_secs_f64())
+    }
+}
+
+/// `<status> <reason>`, or just the status when the reason is absent or empty.
+// used by task 33, allow removed by 35
+#[allow(dead_code)]
+pub fn status_text(status: u16, reason: Option<&str>) -> String {
+    match reason {
+        Some(r) if !r.is_empty() => format!("{status} {r}"),
+        _ => status.to_string(),
+    }
+}
+
 /// Lossy UTF-8 text of the first `BODY_LIMIT` bytes, with a marker if cut.
 pub fn body_text(body: &[u8]) -> String {
     if body.len() <= BODY_LIMIT {
@@ -73,5 +94,20 @@ mod tests {
         assert!(t.contains("truncated"));
         assert!(t.starts_with(&"a".repeat(BODY_LIMIT)));
         assert!(!t.starts_with(&"a".repeat(BODY_LIMIT + 1)));
+    }
+
+    #[test]
+    fn durations_use_ms_then_seconds() {
+        assert_eq!(format_duration(Duration::from_millis(0)), "0 ms");
+        assert_eq!(format_duration(Duration::from_millis(999)), "999 ms");
+        assert_eq!(format_duration(Duration::from_millis(1000)), "1.00 s");
+        assert_eq!(format_duration(Duration::from_millis(1234)), "1.23 s");
+    }
+
+    #[test]
+    fn status_text_with_and_without_reason() {
+        assert_eq!(status_text(404, Some("Not Found")), "404 Not Found");
+        assert_eq!(status_text(299, None), "299");
+        assert_eq!(status_text(200, Some("")), "200");
     }
 }

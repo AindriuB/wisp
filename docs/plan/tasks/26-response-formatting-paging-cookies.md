@@ -33,3 +33,19 @@ Pure logic for the response viewer. JSON is pretty-printed by re-indenting its t
 - Syntax colouring of the pretty output (would need `tree-sitter` features; a user decision).
 - A cookie jar or sending cookies back (engine change, user decision).
 - Rendering (task 33).
+
+### Amendment (2026-10-30, pretty-print memory bound — orchestrator)
+Decision: `pretty_json` keeps memory near input size on hostile input by (1) capping indentation at 32 levels — deeper lines get the same 64-space indent, nesting still handled iteratively — and (2) an output budget of `max(1 MiB, 4 × input length)`: if the output would exceed it, return `Err` so the view falls back to Raw. Reason: code review found `2*depth` spaces per line make output quadratic in nesting depth (`"["*32768 + "]"*32768`, a 64 KiB body, allocated 2 GiB; a 5 MiB body would abort). The "depth 10,000 handled iteratively" criterion stands; its output now stays bounded.
+Additional acceptance: the 64 KiB `[`×32768 input returns within the budget (Err or output ≤ 4× input) with no large allocation; a normal nested document ≤ 32 levels is indented exactly as before; a document deeper than 32 levels indents at most 64 spaces.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 0e85c9dc536f65ef76251b51a659dc44bf389af0
+
+- [P1] crates/app/src/pretty.rs:193 — `newline` writes `2*depth` spaces per line, so output is quadratic in nesting depth; a 64 KiB hostile body allocates 2 GiB. Settled by Amendment (2026-10-30, pretty-print memory bound) — implement it.
+  route: implementer
+  input: `"[" * 32768 + "]" * 32768` → 2,147,483,648-byte String, ~2.35 GB RSS.
+- [P3] crates/app/src/cookies.rs:54 — `Max-Age` uses `i64::parse`, accepting a leading `+` (RFC 6265 §5.2.2: ignore unless first char is a digit or `-`), and drops values past i64 range instead of saturating.
+  route: implementer
+  input: `Max-Age=+5` → Some(5), expected None; `Max-Age=99999999999999999999` → None, expected i64::MAX.
+- [NOTE] (optional) crates/app/src/pretty.rs:63 — `sniff_kind` doesn't skip a UTF-8 BOM while `pretty_json` accepts one.
