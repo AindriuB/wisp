@@ -20,6 +20,9 @@ pub enum StorageError {
         key: String,
         message: String,
     },
+    /// An operation would overwrite something that already exists.
+    #[error("already exists: {}", path.display())]
+    Exists { path: PathBuf },
     #[error("unsupported format {found} in {}", path.display())]
     UnsupportedFormat { path: PathBuf, found: i64 },
     #[error("not a collection: {}", path.display())]

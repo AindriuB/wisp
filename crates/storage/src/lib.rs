@@ -6,6 +6,7 @@ pub mod environment;
 pub mod error;
 pub mod fs;
 pub mod history;
+pub mod ops;
 pub mod request;
 pub mod watcher;
 
