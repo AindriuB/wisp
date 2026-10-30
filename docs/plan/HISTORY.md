@@ -18,8 +18,16 @@ in the same commit.
 -->
 
 ## 2026-10-30 — M1 complete: core and storage without a window
-Milestone M1 (tasks 10-20) delivered the frozen core types, pure `resolve`, the body store, the full Engine event set with real cancel, the `toml_edit` storage codec, request, collection and environment storage with git-ignored 0600 secrets, the file watcher, the history log, and a fixture integration test. All of it runs and is tested with no window. User decisions and amendments during M1: the sidecar name and identity rules (17), the bounded-expansion budgets (11), accepting the nested-rename `Changed` residual (14), and accepting that secret-bearing types print Debug in plain text under a logging rule (10).
-**Cost:** Wave 2 stalled when the disk filled with per-worktree build output; it was fixed by sharing one target directory. That fix caused the second mistake: with a shared target dir a tester ran a stale binary built from another worktree and reported a pass, so verification must build in the branch under test. Both are since fixed. Do not run `cargo clean` to recover space; trim worktrees instead.
+Milestone M1 (tasks 10-20) delivered the frozen core types, pure `resolve`, the body store, the full Engine event set with real cancel, the `toml_edit` storage codec, request, collection and environment storage with git-ignored 0600 secrets, the file watcher, the history log, and a fixture integration test. All of it runs and is tested with no window. User decisions and amendments during M1:
+- 10: secret-bearing types print Debug in plain text under a logging rule.
+- 11: the 64 KiB cap measures only bytes added by expansion (large literal bodies are fine); every placeholder counts against the 10,000 budget.
+- 12: response-body spill files go to a private per-user dir `<temp>/wisp-<uid>` (0700), named `wisp-<pid>-<uuid>.body`, created 0600 with create_new.
+- 13: `atomic_write` keeps the target's permissions and follows symlinks, temp files via create_new; `atomic_write_private` creates new files 0600.
+- 13: list saves (headers/params) match entries by LCS diff, then pair edits, so comments stay with the right entry.
+- 13: `write_auth` keeps its signature; callers skip writing a default auth to a file that had none.
+- 14: the nested-rename spurious `Changed` residual was accepted; consumers re-check the disk.
+- 17: the sidecar must be a plain file name in the request's folder, and must not resolve to the request file itself.
+**Cost:** Wave 2 stalled when the disk filled with per-worktree build output; it was fixed by sharing one `CARGO_TARGET_DIR`. That caused the second mistake: cargo reused another worktree's artefacts and a tester ran a stale binary, so it was fixed by giving each worktree its own target subdirectory. Both are since fixed. Do not run `cargo clean` to recover space; trim worktrees instead.
 
 ## 2026-10-30 — Storage-to-resolve integration test and fixture collection
 `crates/storage/tests/fixtures/my-api/` holds the spec's section 2 collection, and `resolve_integration.rs` runs it end to end: disk, `open_collection`, `load_request`, `load_environment`, `scope_for`, `resolve`, checking URL, auth, the disabled header, content-type and the sidecar body. A second test round-trips every file byte-for-byte; a third has the watcher see an external edit, using a sentinel write to rule out stale events. It landed as one squashed commit (a0f256e).
