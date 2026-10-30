@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 29 | `KvTable` key-value editor: checkbox, masked values, trailing empty row, one Changed per edit, silent `set_rows`, annotations, virtual list over ~50 rows; hand check deferred to task 31 | ## 2026-10-30 — Reusable key-value table editor |
 | 2026-10-30 | 21 | All M2 app modules as compiling stubs with frozen types, signatures and action names; Request/ResponsePane mount sub-editors; view.rs still live; toml_edit edge on wisp-app | ## 2026-10-30 — M2 app module layout frozen as compiling stubs |
 | 2026-10-30 | 22 | Public `wisp_core::template` (`var_refs`, `path_params`, `path_range`, `query_start`; linear, skip `{{...}}`), resolve uses them, `lookup_var` with redacting Debug | ## 2026-10-30 — Public template helpers and lookup_var in core |
 | 2026-10-30 | 10-20 | M1 summary: core and storage delivered and tested without a window; user amendments; wave-2 disk-full stall and shared-target-dir stale-binary mistake | ## 2026-10-30 — M1 complete: core and storage without a window |

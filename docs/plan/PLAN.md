@@ -22,7 +22,7 @@ than no plan.
 Build the portable GPUI HTTP client in three milestones, in this order. Spec: `docs/plan/specs/2026-10-29-http-client-v1.md`. Product is Wisp; crate naming is settled in `docs/conventions.md#naming`.
 - **M0 — Walking skeleton (complete).**
 - **M1 — Core and storage (complete):** tasks 10-20 landed. The full model, `resolve`, body store, full event set and cancel, `toml_edit` storage with secrets and watcher, and the fixture integration test all pass without a window. See HISTORY.
-- **M2 — UI v1 (in progress):** layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings. Tasks 21-35 in `docs/plan/tasks/`. 21 (module layout freeze) and 22 (template helpers) landed; 23 is in flight.
+- **M2 — UI v1 (in progress):** layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings. Tasks 21-35 in `docs/plan/tasks/`. 21 (module layout freeze), 22 (template helpers) and 29 (key-value table editor) landed; 23 is in flight.
 **In flight:** 23
 
 ### Open budget and measurement questions (from M0)
@@ -45,6 +45,7 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 ### Carry-forward: crates/app
 **Escape (21):** Escape is bound with context None to `CancelRequest`, so Escape inside the URL input may not cancel a send. Check at the task 28/35 hand check.
 **measure.sh (21):** the `WISP_EVENT` line was not separately confirmed in the output; status "measured" implies it.
+**KvTable (29):** the hand check (typing in Params adds rows and updates the URL bar; Tab goes name, value, next name in a real window) is deferred until task 31 mounts the table. Accepted residual: above the 50-row virtualisation threshold Tab cannot reach rows outside the viewport, because unpainted rows have no focus handle; scroll-to-focus is deferred. The table only virtualises if its container gives it a definite height (task 31). Optional: `locate` in `crates/app/src/ui/kv.rs` is O(n) per keystroke.
 **Stub allows (21):** each stub `mod` carries `#[allow(dead_code)]` (mounted by 28, allow removed by 35).
 
 ### Carry-forward: crates/storage

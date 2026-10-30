@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Reusable key-value table editor
+`KvTable` in `crates/app/src/ui/kv.rs` is now a working editor for `Vec<KeyValue>`: optional enabled checkbox, name and value inputs (values maskable with a reveal toggle), delete button, and an always-present trailing empty row that becomes a real row when typed into. It emits one `KvEvent::Changed` per user edit, `set_rows` resets without emitting and reuses input entities, `set_annotations` shows warning markers, and tables over about 50 rows use a virtual list. The row bookkeeping is a GPUI-free inner type with unit tests.
+**Cost:** One review round: the checkbox and delete button were Tab stops by default in gpui-base 0.8.1, so Tab did not go name, value, next name; fixed with `.tab_stop(false)`. Accepted residual: past the virtualisation threshold Tab cannot reach rows outside the viewport. The window hand check waits for task 31 to mount the table. Verified with 188 workspace tests, fmt and clippy clean.
+
 ## 2026-10-30 — M2 app module layout frozen as compiling stubs
 Every M2 app module (`actions`, `workspace`, `tab`, `draft`, `url_sync`, `highlight`, `palette`, `pretty`, `pager`, `cookies`, `settings`, `theme`, `ui/**`) now exists as a compiling stub with frozen public types, signatures and action names, so tasks 23-35 fill disjoint files. `RequestPane` and `ResponsePane` mount all sub-editors; `view.rs` stays the live window until task 28. `wisp-app` gained a `toml_edit` dependency edge; no new package. Amended in review: `hover_text(name, request, scope, folders: &[String])` takes folder names, and `WorkspaceEvent` derives `Eq`.
 **Cost:** One review round. Verified with fmt, clippy -D warnings, 161 workspace tests, a release build and `RENDERER=hardware measure.sh` (binary 16,726,992 B, idle 69,216 KiB, after request 70,480 KiB, all within budget). Escape is bound with no context, so it may not cancel from inside the URL input; see PLAN. Squashed to one commit, and the branch's copy of the task files was discarded in favour of main's amended 25/31/32.
