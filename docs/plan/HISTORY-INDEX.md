@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 15 | Append-only history log (`.wisp/history.jsonl`, 4 MiB rotation, torn-line recovery, bounded preview); stores no secrets, headers or error messages | ## 2026-10-30 — Append-only request history log |
 | 2026-10-30 | 10 | M1 core types frozen (authoring model, PreparedRequest, resolve and storage error types), all M1 deps added, scaffold modules; secret-bearing types print Debug in plain text | ## 2026-10-30 — M1 core types frozen, dependencies added, modules scaffolded |
 | 2026-10-29 | 09 | measure.sh/ps1 stderr capture and early failure reasons, Linux ICD fix, app exits on window failure; first CI measurements (Linux, Windows, macOS arm64; x64 macOS RSS blocked by icon service) | ## 2026-10-29 — Measure diagnostics and first CI measurements |
 | 2026-10-29 | 08 | Budgets recorded (macOS arm64: 20 MB binary, 120 MB idle, 128 MB after request); GPUI kept; other platforms unmeasured | ## 2026-10-29 — M0 budgets recorded and GPUI kept |

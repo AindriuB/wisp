@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Append-only request history log
+`crates/storage/src/history.rs` adds `HistoryEntry`, `Outcome` and `HistoryLog`, writing JSON lines to `<collection>/.wisp/history.jsonl` and creating `.wisp/.gitignore`. The log rotates past 4 MiB to `history.1.jsonl`; `read_all` skips malformed and invalid-UTF-8 lines, and `append` recovers from a torn last line. `preview_from` is bounded to 1 KiB on a char boundary. The URL template is stored unresolved, and no secrets, headers or error messages are stored. Code review was clean after one round; it landed as one squashed commit (4198ee4).
+**Cost:** The review round fixed robustness gaps (torn last line, invalid UTF-8) rather than design. `preview_from` decodes exactly 1024 bytes, so a 4-byte char straddling the limit becomes U+FFFD; left as an optional P3. Rotation is not safe against concurrent writers (single writer in v1). Never store `ResolveWarning`s in history, because `PatternMismatch.value` can hold a resolved secret. Task 15's file was retired here.
+
 ## 2026-10-30 — M1 core types frozen, dependencies added, modules scaffolded
 `crates/core` now has the frozen authoring model (`request.rs`), the final `PreparedRequest` and the `resolve` input and error types; `crates/storage` has its error type. All M1 dependencies are in the manifests and `Cargo.lock` (804 packages before and after; only dependency edges added), and empty module files exist in both crates, so tasks 11-20 can run in parallel without touching a manifest or `lib.rs`. The engine and app were adapted to the new `PreparedRequest` only. Code review was clean; it landed as one squashed commit (ec38e79).
 **Cost:** Secret-bearing types derive Debug in plain text (`Request`, the defaults types via `Auth`, `ClientSettings.proxy`); only `Environment` redacts, so never log the others with `?`. The engine ignores `PreparedRequest.client` and `.warnings` until task 16, so `verify_tls=false` is not yet honoured. Task 10's file was retired here. Review P3s are in PLAN.md.
