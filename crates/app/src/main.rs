@@ -3,6 +3,46 @@
 mod format;
 mod view;
 
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod actions;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod cookies;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod draft;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod highlight;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod pager;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod palette;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod pretty;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod settings;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod tab;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod theme;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod url_sync;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod ui;
+// mounted by 28, allow removed by 35
+#[allow(dead_code)]
+mod workspace;
+
 use gpui::{AppContext as _, WindowOptions};
 use gpui_component::Root;
 

@@ -16,3 +16,4 @@ gpui-platform.workspace = true
 gpui-component.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+toml_edit.workspace = true
