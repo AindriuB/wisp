@@ -22,8 +22,8 @@ than no plan.
 Build the portable GPUI HTTP client in three milestones, in this order. Spec: `docs/plan/specs/2026-10-29-http-client-v1.md`. Product is Wisp; crate naming is settled in `docs/conventions.md#naming`.
 - **M0 — Walking skeleton (complete).**
 - **M1 — Core and storage (complete):** tasks 10-20 landed. The full model, `resolve`, body store, full event set and cancel, `toml_edit` storage with secrets and watcher, and the fixture integration test all pass without a window. See HISTORY.
-- **M2 — UI v1 (next):** layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings. Needs `/plan` to split into tasks. The M1 API is ready to freeze against.
-**Blocked by:** nothing; M2 follows M1.
+- **M2 — UI v1 (in progress):** layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings. Tasks 21-35 in `docs/plan/tasks/`. 21 (module layout freeze) and 22 (template helpers) landed; 23 is in flight.
+**In flight:** 23
 
 ### Open budget and measurement questions (from M0)
 **Per-platform budgets:** the user has not set budgets for Windows, Linux or macOS x64. Windows (24.9 MB) and Linux (35.1 MB) release binaries exceed the 20 MB figure, and Linux software-rendered RSS (about 171 MB idle) exceeds 120 MB. CI renderers are software or unknown and not comparable with the hardware figure; the set budgets still apply to macOS arm64 hardware only. Per-platform budgets are the user's call.
@@ -41,6 +41,11 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 **Engine blocking I/O (16):** spill-file writes in `BodyWriter::write` block the async worker. `File` and `Multipart` bodies are read fully into memory before sending; stream them later.
 **Client cache (16):** `ClientCache` builds a client while holding a std `Mutex`. It is tested only through `ClientCache::get`, not `Engine::submit`.
 **Engine tests and limits (16):** the multipart test leaves a temp file behind if an assertion fails. The app's `BODY_LIMIT` is now 64 KiB (first 64 KiB read from `bodies()`).
+
+### Carry-forward: crates/app
+**Escape (21):** Escape is bound with context None to `CancelRequest`, so Escape inside the URL input may not cancel a send. Check at the task 28/35 hand check.
+**measure.sh (21):** the `WISP_EVENT` line was not separately confirmed in the output; status "measured" implies it.
+**Stub allows (21):** each stub `mod` carries `#[allow(dead_code)]` (mounted by 28, allow removed by 35).
 
 ### Carry-forward: crates/storage
 **Codec (13):** `write_vars` never reorders existing keys. Flipping an explicit `enabled = true` to false may drop a trailing comment on that line. New entries in multi-line inline arrays get `toml_edit` default spacing. The Windows readonly-target save path in `atomic_write` is untested. `write_auth` keeps its signature, so callers skip the call when the value equals that file's default and the file had no `[auth]`; use `atomic_write_private` for files that hold secrets.

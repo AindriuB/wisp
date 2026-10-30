@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — M2 app module layout frozen as compiling stubs
+Every M2 app module (`actions`, `workspace`, `tab`, `draft`, `url_sync`, `highlight`, `palette`, `pretty`, `pager`, `cookies`, `settings`, `theme`, `ui/**`) now exists as a compiling stub with frozen public types, signatures and action names, so tasks 23-35 fill disjoint files. `RequestPane` and `ResponsePane` mount all sub-editors; `view.rs` stays the live window until task 28. `wisp-app` gained a `toml_edit` dependency edge; no new package. Amended in review: `hover_text(name, request, scope, folders: &[String])` takes folder names, and `WorkspaceEvent` derives `Eq`.
+**Cost:** One review round. Verified with fmt, clippy -D warnings, 161 workspace tests, a release build and `RENDERER=hardware measure.sh` (binary 16,726,992 B, idle 69,216 KiB, after request 70,480 KiB, all within budget). Escape is bound with no context, so it may not cancel from inside the URL input; see PLAN. Squashed to one commit, and the branch's copy of the task files was discarded in favour of main's amended 25/31/32.
+
 ## 2026-10-30 — Public template helpers and lookup_var in core
 `wisp_core::template` is now public: `var_refs`, `path_params`, `path_range` and `query_start` are linear scans that skip `{{...}}`, and `resolve` uses them instead of its private copies. `lookup_var` returns `VarSource`/`VarLookup`, and the lookup's Debug redacts secret values. The UI can now share resolve's parsing for URL-bar highlighting and variable hover.
 **Cost:** The first scan was quadratic and review sent it back; the fix made it linear and made resolve use a non-skipping path split where needed. `resolve/tests.rs` is unchanged, which is the evidence that behaviour held. Known gaps are under Carry-forward in PLAN. Do not rely on `query_start_is_linear`'s 100 ms wall-clock bound on loaded CI.
