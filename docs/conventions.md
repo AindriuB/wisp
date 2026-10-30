@@ -61,6 +61,9 @@ tool, and Wisp ships as binaries from GitHub releases, not via crates.io.
 
 Use `tracing`. Never log secrets, auth headers, or values from
 `*.secrets.toml`; log header names, not values, for anything auth-related.
+`Request`, `FolderDefaults`, `CollectionDefaults` (via `Auth`) and
+`ClientSettings.proxy` derive Debug in plain text, so never log them with `?` or
+`{:?}`. Only `Environment` has a redacting Debug.
 
 ## GPUI
 
