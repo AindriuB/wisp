@@ -42,3 +42,15 @@ accident, and its values must never reach a log.
 - An OS keychain (not in v1)
 - Edits to the root `.gitignore`
 - Choosing the active environment, and the env switcher (M2)
+
+## Review round 1 — findings
+
+Reviewed HEAD: 5ba35e247b90092efdca2988065a95fdab9b33c5
+
+- [P2] crates/storage/src/environment.rs:24 — `check_name` accepts a name ending in `.secrets`, so environment `dev.secrets` gets `dev.secrets.toml` as its plain file — the same file as `dev`'s secrets file (data loss; secrets written through plain `atomic_write`; `load_environment("dev.secrets")` exposes `dev`'s secrets as plain vars).
+  route: implementer — reject names ending in `.secrets` (case-insensitively) in `check_name`.
+  input: save `dev{vars:[host=a], secrets:[token=s3cret]}`, then save `Environment{name:"dev.secrets", vars:[x=y]}` → `load_environment(root,"dev").secrets == [("x","y")]`.
+- [P2] crates/storage/src/environment.rs:25 — `check_name` lets `:` through; on Windows (a v1 platform) `C:evil` makes `Path::join` drop the root and `dev:x` writes an alternate data stream.
+  route: implementer — use an allowlist for names (e.g. ASCII letters, digits, `-`, `_`, `.` not leading, no `..`), rejecting `:`, `\`, `/`, control chars and Windows reserved names.
+- [NOTE] (optional) crates/storage/src/environment.rs:55-60 — `list_environments` can return names that `load_environment` rejects (`a..b`) and includes a directory named `x.toml`; make it skip non-files and names that fail `check_name`, keeping the two consistent.
+  route: implementer
