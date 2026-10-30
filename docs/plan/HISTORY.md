@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — M2 storage ops, highlighting, formatting and settings
+Four independent M2 pieces landed as one commit each. Storage `ops` creates, renames, moves and deletes requests (with sidecar bodies) and folders, keeps `order` lists consistent and never overwrites or leaves the collection root. The app gained highlight spans with hover text and palette ranking, response pretty-printing with paging and cookie parsing, and a portable `settings.toml` with theme switching.
+**Cost:** Task 23 took four review rounds (the fourth test-only, user-approved); safety rules for sidecar sharing, case aliases and rename had to be amended into the task twice, so do not assume sidecar names are unique per request. Task 26 first bounded pretty-print memory at max(1 MiB, 4x input), which the user judged too small and is raising to 32 MiB in task 36. Task 27's `save` first overwrote unparsable settings files; it now returns Err, which task 28 must surface.
+
 ## 2026-10-30 — Reusable key-value table editor
 `KvTable` in `crates/app/src/ui/kv.rs` is now a working editor for `Vec<KeyValue>`: optional enabled checkbox, name and value inputs (values maskable with a reveal toggle), delete button, and an always-present trailing empty row that becomes a real row when typed into. It emits one `KvEvent::Changed` per user edit, `set_rows` resets without emitting and reuses input entities, `set_annotations` shows warning markers, and tables over about 50 rows use a virtual list. The row bookkeeping is a GPUI-free inner type with unit tests.
 **Cost:** One review round: the checkbox and delete button were Tab stops by default in gpui-base 0.8.1, so Tab did not go name, value, next name; fixed with `.tab_stop(false)`. Accepted residual: past the virtualisation threshold Tab cannot reach rows outside the viewport. The window hand check waits for task 31 to mount the table. Verified with 188 workspace tests, fmt and clippy clean.
