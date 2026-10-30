@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-10-30 | 22 | Public `wisp_core::template` (`var_refs`, `path_params`, `path_range`, `query_start`; linear, skip `{{...}}`), resolve uses them, `lookup_var` with redacting Debug | ## 2026-10-30 — Public template helpers and lookup_var in core |
 | 2026-10-30 | 10-20 | M1 summary: core and storage delivered and tested without a window; user amendments; wave-2 disk-full stall and shared-target-dir stale-binary mistake | ## 2026-10-30 — M1 complete: core and storage without a window |
 | 2026-10-30 | 20 | Fixture `my-api` collection and end-to-end disk → resolve test, byte-for-byte round-trip, watcher external-edit test; secrets fixture force-added | ## 2026-10-30 — Storage-to-resolve integration test and fixture collection |
 | 2026-10-30 | 17 | Storage `load_request`/`save_request`: sidecar bodies, in-place `toml_edit` via the codec, default-auth skip, settings defaults kept; sidecar name and identity rules enforced before any read or write | ## 2026-10-30 — Request file storage with sidecar bodies |

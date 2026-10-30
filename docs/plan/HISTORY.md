@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-10-30 — Public template helpers and lookup_var in core
+`wisp_core::template` is now public: `var_refs`, `path_params`, `path_range` and `query_start` are linear scans that skip `{{...}}`, and `resolve` uses them instead of its private copies. `lookup_var` returns `VarSource`/`VarLookup`, and the lookup's Debug redacts secret values. The UI can now share resolve's parsing for URL-bar highlighting and variable hover.
+**Cost:** The first scan was quadratic and review sent it back; the fix made it linear and made resolve use a non-skipping path split where needed. `resolve/tests.rs` is unchanged, which is the evidence that behaviour held. Known gaps are under Carry-forward in PLAN. Do not rely on `query_start_is_linear`'s 100 ms wall-clock bound on loaded CI.
+
 ## 2026-10-30 — M1 complete: core and storage without a window
 Milestone M1 (tasks 10-20) delivered the frozen core types, pure `resolve`, the body store, the full Engine event set with real cancel, the `toml_edit` storage codec, request, collection and environment storage with git-ignored 0600 secrets, the file watcher, the history log, and a fixture integration test. All of it runs and is tested with no window. User decisions and amendments during M1:
 - 10: secret-bearing types print Debug in plain text under a logging rule.
