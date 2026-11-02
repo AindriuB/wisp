@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 41 | Hand check of M2 gaps passed (folder order, focus reclaim, URL resync, Raw prefetch, Pretty tooltip, Save sha256, Escape cancel, multipart file); 4 MB Raw cap line unreached, open P3 | ## 2026-11-02 — M2 verification gaps hand-checked |
 | 2026-11-02 | 38, 40 | Root reclaims focus on the next frame after an unmount (guarded for overlays and prompts); URL bar resyncs from the draft while focused | ## 2026-11-02 — Root focus reclaim and URL resync while focused |
 | 2026-11-02 | 39 | Folder `order` entries written as `stem.toml` now match requests in storage scan and rename/move/delete; window hand check deferred to task 41 | ## 2026-11-02 — Folder order honoured and maintained |
 | 2026-11-02 | 35 | Scaffold dead_code allows removed; M2 budgets measured (binary 18.97 MB, idle 97.5 MiB, after request 102.3 MiB); window hand check passed with three defects filed (focus loss, folder order, Params checkbox) | ## 2026-11-02 — M2 integration and budgets |
