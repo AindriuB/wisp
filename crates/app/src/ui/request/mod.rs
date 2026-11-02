@@ -112,6 +112,11 @@ impl Render for RequestPane {
             RequestSubTab::Body => div().child(self.body.clone()),
             RequestSubTab::Settings => div().child(self.settings.clone()),
         };
-        div().size_full().child(strip).child(editor)
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(strip)
+            .child(editor.flex_1().min_h_0())
     }
 }

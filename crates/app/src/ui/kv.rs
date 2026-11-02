@@ -8,6 +8,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, v_virtual_list};
 use wisp_core::request::KeyValue;
@@ -140,6 +141,7 @@ pub struct KvTable {
     options: KvOptions,
     notes: Vec<Option<SharedString>>,
     slots: Vec<Slot>,
+    scroll: gpui_component::VirtualListScrollHandle,
 }
 
 impl KvTable {
@@ -154,6 +156,7 @@ impl KvTable {
             options,
             notes: Vec::new(),
             slots: Vec::new(),
+            scroll: gpui_component::VirtualListScrollHandle::new(),
         };
         this.sync_slots(window, cx);
         this
@@ -363,23 +366,38 @@ impl Render for KvTable {
         let count = self.model.slots();
         if self.model.len() > VIRTUALISE_ABOVE {
             let sizes = Rc::new(vec![size(px(1.), px(ROW_HEIGHT)); count]);
-            div().size_full().child(v_virtual_list(
-                cx.entity(),
-                "kv-rows",
-                sizes,
-                |this, range, _window, cx| {
-                    range
-                        .filter(|i| *i < this.slots.len())
-                        .map(|i| this.render_row(i, cx))
-                        .collect::<Vec<_>>()
-                },
-            ))
+            let list = v_virtual_list(cx.entity(), "kv-rows", sizes, |this, range, _window, cx| {
+                range
+                    .filter(|i| *i < this.slots.len())
+                    .map(|i| this.render_row(i, cx))
+                    .collect::<Vec<_>>()
+            })
+            .track_scroll(&self.scroll);
+            div()
+                .id("kv-rows-scroll")
+                .relative()
+                .size_full()
+                .child(list)
+                .vertical_scrollbar(&self.scroll)
+                .into_any_element()
         } else {
-            let mut list = div().flex().flex_col().w_full();
+            let mut list = div()
+                .id("kv-plain-rows")
+                .flex()
+                .flex_col()
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll);
             for i in 0..count {
-                list = list.child(self.render_row(i, cx));
+                list = list.child(div().flex_none().child(self.render_row(i, cx)));
             }
-            list
+            div()
+                .id("kv-plain-scroll")
+                .relative()
+                .size_full()
+                .child(list)
+                .vertical_scrollbar(&*self.scroll)
+                .into_any_element()
         }
     }
 }

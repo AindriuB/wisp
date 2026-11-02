@@ -2,7 +2,7 @@
 
 use gpui::{
     AppContext as _, Context, Entity, IntoElement, ParentElement, Render, SharedString,
-    Subscription, Window,
+    Styled as _, Subscription, Window,
 };
 use wisp_core::request::{KeyValue, Request};
 use wisp_core::resolve::Scope;
@@ -130,6 +130,6 @@ impl ParamsEditor {
 
 impl Render for ParamsEditor {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        gpui::div().child(self.table.clone())
+        gpui::div().size_full().child(self.table.clone())
     }
 }

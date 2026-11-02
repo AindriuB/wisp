@@ -632,7 +632,7 @@ impl TrailingExt for gpui::Div {
 
 impl Render for BodyEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut col = div().flex().flex_col().gap_2().p_2().child(
+        let mut col = div().size_full().flex().flex_col().gap_2().p_2().child(
             div()
                 .w(px(180.))
                 .child(Select::new(&self.kind_select).id("body-kind")),
@@ -640,7 +640,7 @@ impl Render for BodyEditor {
         col = match self.kind {
             BodyKind::None => col,
             BodyKind::Json | BodyKind::Text | BodyKind::Xml => col.child(self.render_text(cx)),
-            BodyKind::Form => col.child(self.form.clone()),
+            BodyKind::Form => col.child(div().flex_1().min_h_0().child(self.form.clone())),
             BodyKind::Multipart => col.child(self.render_multipart(cx)),
             BodyKind::File => col.child(self.render_file(cx)),
         };

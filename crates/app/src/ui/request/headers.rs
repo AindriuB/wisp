@@ -187,7 +187,12 @@ impl Render for HeadersEditor {
             }
             list = list.child(row);
         }
-        div().child(self.table.clone()).child(list)
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(div().flex_1().min_h_0().child(self.table.clone()))
+            .child(list)
     }
 }
 
