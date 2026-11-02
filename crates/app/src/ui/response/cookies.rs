@@ -57,8 +57,18 @@ impl CookiesPane {
     }
 }
 
+/// Preferred column widths, shared by the header and every row. Columns grow
+/// and shrink from these bases to fit the pane and truncate their text.
+const WIDTHS: [f32; 6] = [140., 200., 140., 100., 160., 200.];
+
 fn cell(text: String, w: f32) -> gpui::Div {
-    div().w(px(w)).flex_none().overflow_hidden().child(text)
+    div()
+        .flex_basis(px(w))
+        .flex_grow(1.)
+        .flex_shrink(1.)
+        .min_w_0()
+        .truncate()
+        .child(text)
 }
 
 impl Render for CookiesPane {
@@ -84,7 +94,7 @@ impl Render for CookiesPane {
             "Expires / Max-Age",
             "Flags",
         ];
-        let widths = [140., 200., 140., 100., 160., 200.];
+        let widths = WIDTHS;
         let mut header = div().flex().gap_2().border_b_1().border_color(border);
         for (h, w) in head.iter().zip(widths) {
             header = header.child(cell(h.to_string(), w).font_weight(gpui::FontWeight::SEMIBOLD));
