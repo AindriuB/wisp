@@ -9,6 +9,8 @@ name = "wisp_core"
 
 [dependencies]
 reqwest.workspace = true
+rustls.workspace = true
+webpki-root-certs.workspace = true
 tokio.workspace = true
 async-channel.workspace = true
 serde.workspace = true

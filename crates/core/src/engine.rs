@@ -80,9 +80,17 @@ impl ClientCache {
         if let Some(c) = map.get(settings) {
             return Ok(c.clone());
         }
-        let mut builder = reqwest::Client::builder().use_rustls_tls();
+        install_crypto_provider();
+        // Bundled Mozilla roots only: rustls-platform-verifier is linked by reqwest but never used.
+        let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .filter_map(|c| reqwest::Certificate::from_der(c.as_ref()).ok());
+        let mut builder = reqwest::Client::builder()
+            .tls_backend_rustls()
+            .tls_certs_only(roots)
+            .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS);
         if !settings.verify_tls {
-            builder = builder.danger_accept_invalid_certs(true);
+            builder = builder.tls_danger_accept_invalid_certs(true);
         }
         if !settings.follow_redirects {
             builder = builder.redirect(reqwest::redirect::Policy::none());
@@ -431,8 +439,17 @@ async fn perform(
     Ok((received, handle))
 }
 
-/// hyper's HTTP/1 response header-count limit; reqwest 0.12.28 has no setter for it.
-const HTTP1_MAX_RESPONSE_HEADERS: usize = 100;
+/// HTTP/1 response header-count limit, passed to `ClientBuilder::http1_max_headers`.
+const HTTP1_MAX_RESPONSE_HEADERS: usize = 1000;
+
+/// reqwest is built with `rustls-no-provider`; install ring as the process default once.
+fn install_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Err means another provider is already installed, which is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
     // Only the causes: the top-level text embeds the URL, whose words must not influence the kind.

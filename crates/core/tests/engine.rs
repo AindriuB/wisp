@@ -337,6 +337,7 @@ async fn words_in_the_url_do_not_change_the_error_kind() {
     );
 }
 
+/// Serves a response with exactly `n` headers in total (Content-Length and Connection count).
 fn serve_headers(n: usize) -> u16 {
     use std::io::{Read, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -347,7 +348,7 @@ fn serve_headers(n: usize) -> u16 {
             let _ = s.read(&mut buf);
             let mut r =
                 String::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n");
-            for i in 0..n {
+            for i in 0..n.saturating_sub(2) {
                 r.push_str(&format!("X-H-{i}: v\r\n"));
             }
             r.push_str("\r\n");
@@ -364,15 +365,15 @@ async fn terminal(url: String) -> Event {
 }
 
 #[tokio::test]
-async fn a_response_with_150_headers_fails_naming_the_limit() {
-    let port = serve_headers(150);
+async fn a_response_with_1001_headers_fails_naming_the_limit() {
+    let port = serve_headers(1001);
     match terminal(format!("http://127.0.0.1:{port}/")).await {
         Event::Failed { error, .. } => {
             assert_eq!(error.kind, ErrorKind::Other);
             assert!(
                 error
                     .message
-                    .starts_with("response headers too large (limit 100 headers"),
+                    .starts_with("response headers too large (limit 1000 headers"),
                 "{}",
                 error.message
             );
@@ -380,6 +381,20 @@ async fn a_response_with_150_headers_fails_naming_the_limit() {
         }
         other => panic!("unexpected {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_response_with_150_headers_completes() {
+    let port = serve_headers(150);
+    let ev = terminal(format!("http://127.0.0.1:{port}/")).await;
+    assert!(matches!(ev, Event::Completed { .. }), "{ev:?}");
+}
+
+#[tokio::test]
+async fn a_response_with_1000_headers_completes() {
+    let port = serve_headers(1000);
+    let ev = terminal(format!("http://127.0.0.1:{port}/")).await;
+    assert!(matches!(ev, Event::Completed { .. }), "{ev:?}");
 }
 
 #[tokio::test]
