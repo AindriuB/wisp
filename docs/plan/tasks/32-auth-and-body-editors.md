@@ -34,3 +34,20 @@ The Auth sub-tab edits `none | inherit | basic | bearer | apikey`, showing for `
 - Digest, OAuth2, AWS SigV4 auth (spec: not in v1).
 - Editing folder or collection auth from the UI.
 - GraphQL bodies.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 0e1029a.
+
+- [P1] crates/app/src/ui/request/body.rs `choose` (`input.update(cx, |s, cx| s.set_value(text, window, cx))` inside `spawn_in`): Choose… never reaches the draft. gpui-component 0.8.1 `InputState::set_value` emits no `InputEvent::Change`, so `on_file_path` / `on_part_input` never run; `stash.file`, `stash.multipart` and `tab.draft.body` stay unchanged.
+  route: implementer — after `set_value`, update the stash and commit directly (set `stash.file` + `commit`, or `sync_parts` for a part).
+  input: Body type File, Choose… /tmp/a.bin → field shows the path but `draft.body` stays `Body::File("")`; ⌘S and Send use the old path; "File not found" line does not change. Same for a multipart File row.
+- [P2] body.rs `format_json`: `set_value` emits no Change, so Format updates the screen but not `stash.text.content` / `draft.body`.
+  route: implementer — assign `stash.text.content = pretty` and `commit`, or use `replace_all` (emits, keeps undo).
+  input: JSON body `{"a":1}`, Format, ⌘S → sidecar written unformatted.
+- [P2] crates/app/src/ui/request/auth.rs `inherit_line`: folder names are aligned "at the nearest end", which mislabels the source when a folder without folder.toml sits nearer than one with it (`scope_for` skips ancestors not in `tree.folders`).
+  route: implementer — build `names` from the request's parent ancestors filtered to keys of `ws.collection.tree.folders`, outermost first (the same filter `scope_for` applies).
+  input: users/folder.toml sets bearer, users/admin/ has no folder.toml, request users/admin/get.toml → line reads "Inherits Bearer from admin"; expected "from users".
+- [P3] body.rs `choose` with `PathTarget::Part(i)`: the target row is captured by index; a resync or row delete while the dialog is open sends the path to the wrong row.
+  route: implementer — capture the row's path entity (or a weak handle) instead of the index.
+- [NOTE] (optional) body.rs `render_file`: `path.exists()` stats the filesystem every render; cache on path change.
