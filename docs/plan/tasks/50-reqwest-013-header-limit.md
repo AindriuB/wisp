@@ -45,7 +45,9 @@ nothing and report `BLOCKED` with the measured size and what grew
 
 ## Acceptance
 - [ ] Cargo.lock has `reqwest` 0.13.5, and no 0.12.x copy remains.
-- [ ] `cargo tree -p wisp-core -e normal | rg -i 'aws-lc|platform-verifier|openssl|native-tls'` prints nothing. The same command against `-p wisp-app` also prints nothing.
+- [ ] *(amended 2026-11-02, see Amendment)* `cargo tree -p wisp-core -e normal | rg -i 'aws-lc|openssl|native-tls'` prints nothing. The same command against `-p wisp-app` also prints nothing. `rustls-platform-verifier` may appear.
+- [ ] *(amendment)* reqwest is enabled with `rustls-no-provider` (not `rustls`), and crates/core has a direct `rustls` dependency with the `ring` feature and without aws-lc.
+- [ ] *(amendment)* A test, or a code-level check cited by `path:line` in the report, shows every client `ClientCache::get` builds uses `tls_certs_only(...)` with the bundled `webpki-roots`, so rustls-platform-verifier is never the active verifier.
 - [ ] `cargo tree -p wisp-core -e normal | rg 'ring v|webpki-roots v'` shows both.
 - [ ] No C toolchain needed beyond what ring already needs: there is no `aws-lc-sys` or `cmake` in Cargo.lock.
 - [ ] engine.rs has `HTTP1_MAX_RESPONSE_HEADERS: usize = 1000` and passes it to `http1_max_headers` on every client `ClientCache::get` builds. The doc comment no longer says reqwest has no setter.
@@ -58,8 +60,37 @@ nothing and report `BLOCKED` with the measured size and what grew
 - [ ] Report idle and after-one-request RSS from `RENDERER=hardware scripts/measure/measure.sh` against 120 MiB and 128 MiB.
 
 ## Out of scope
-- Switching to the OS trust store or rustls-platform-verifier.
+- Switching to the OS trust store or making rustls-platform-verifier the active verifier (it is linked but unused, per the Amendment).
+- Patching, forking or vendoring reqwest.
 - HTTP/2 header-list limits (`http2_max_header_list_size`) and hyper's HTTP/1 byte-size limit.
 - Any change in crates/app, crates/storage, GPUI or gpui-component pins.
 - Using reqwest 0.13's `query`/`form` helpers or other new features in the engine.
 - Updating PLAN.md, HISTORY or docs (scribe's job).
+
+## Amendment (orchestrator, 2026-11-02)
+User decision: allow `rustls-platform-verifier` as a linked-but-unused
+dependency. In reqwest 0.13.5's Cargo.toml (lines 169-177) both public rustls
+features, `rustls` and `rustls-no-provider`, enable `dep:rustls-platform-verifier`,
+and the private `__rustls` is reachable only through them, so it cannot be
+excluded without patching reqwest.
+
+Still required:
+- `rustls-no-provider` plus a direct `rustls` dependency with `ring` (no aws-lc).
+- `tls_certs_only(...)` with bundled `webpki-roots` on every client, so the
+  platform verifier is never the active verifier.
+- `ring` and `webpki-roots` appear in `cargo tree -p wisp-core -e normal`;
+  `aws-lc`, `openssl` and `native-tls` do not.
+- Release binary size measured and ≤ 20,971,520 B, else BLOCKED as in Goal.
+
+Rejected alternatives: stay on reqwest 0.12 (it has no header-limit setter);
+patch or vendor reqwest (ongoing upkeep).
+
+The Acceptance list above is updated to match; items marked *(amended)* or
+*(amendment)* supersede the original wording.
+
+## Attempt 1 — blocked
+The implementer returned BLOCKED: the original acceptance item requiring no
+`platform-verifier` in `cargo tree` cannot be met with reqwest 0.13.5, because
+both public rustls features (Cargo.toml:169-177) enable
+`dep:rustls-platform-verifier`. Nothing was committed. Resolved by the
+Amendment above; the next attempt proceeds on the amended criteria.
