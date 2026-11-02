@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-02 — Command palette and environment switcher
+One overlay view serves ⌘K (requests and commands, ranked by `palette::filter` with matched-character highlighting and keybinding hints) and ⌘E (environment mode, active one pre-selected, "Open a collection first" when none is open). Confirming opens the request, switches the environment (failure shows a notice) or dispatches the command's action through one exhaustive `CommandId` match; this also makes ToggleTheme and ToggleLayout reachable. Escape and outside click dismiss.
+**Cost:** two review rounds. Key bindings dispatch before key-down listeners in gpui-pre 0.3.10, and the context-less escape binding to CancelRequest beat the palette's own context, so the overlay must handle such actions with `on_action` on its own div; do not rely on key-down listeners. An overlay that takes focus must restore it on dismiss, or shortcuts die after it closes. The window hand check was not done and is deferred to task 35.
+
 ## 2026-11-02 — Auth and body sub-tab editors
 The Auth sub-tab edits none, inherit, basic, bearer and API key with masked secret fields, and for inherit shows which type and folder or collection it comes from. The Body sub-tab edits none, JSON, text, XML, form, multipart and file: JSON shows a non-blocking invalid-offset line and a Format button, form uses `KvTable`, multipart has Text/File rows with Choose…, and File warns when the path is missing. Switching type keeps earlier values for the life of the tab, and sidecar bodies keep their sidecar (297 workspace tests, fmt and clippy clean, reviewer APPROVE, code review CLEAN after one round).
 

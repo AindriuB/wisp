@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 34 | ⌘K palette (quick-open and commands) and ⌘E environment switcher over one overlay view; key-binding-before-listener lesson; window hand check deferred to task 35 | ## 2026-11-02 — Command palette and environment switcher |
 | 2026-11-02 | 32 | Auth editor (none/inherit/basic/bearer/apikey, masked secrets, inherited line) and Body editor (JSON/text/XML/form/multipart/file); set_value-no-event lesson; window hand check deferred to task 35 | ## 2026-11-02 — Auth and body sub-tab editors |
 | 2026-11-02 | 31 | URL bar with method select, variable highlight strip and hover, resolve problems gating Send/Cancel; Params, Path, Headers, Settings sub-tabs with dirty dots; window hand check deferred to task 35 | ## 2026-11-02 — URL bar and request sub-tabs |
 | 2026-11-02 | 30 | Sidebar env select, collapsible ordered tree, context-menu create/rename/move/delete via storage ops; window hand check deferred to task 35 | ## 2026-11-02 — Sidebar tree, environment switcher and file operations |
