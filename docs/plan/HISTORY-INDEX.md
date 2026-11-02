@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 38, 40 | Root reclaims focus on the next frame after an unmount (guarded for overlays and prompts); URL bar resyncs from the draft while focused | ## 2026-11-02 — Root focus reclaim and URL resync while focused |
 | 2026-11-02 | 39 | Folder `order` entries written as `stem.toml` now match requests in storage scan and rename/move/delete; window hand check deferred to task 41 | ## 2026-11-02 — Folder order honoured and maintained |
 | 2026-11-02 | 35 | Scaffold dead_code allows removed; M2 budgets measured (binary 18.97 MB, idle 97.5 MiB, after request 102.3 MiB); window hand check passed with three defects filed (focus loss, folder order, Params checkbox) | ## 2026-11-02 — M2 integration and budgets |
 | 2026-11-02 | 37 | 19 embedded icons (gpui-kit-assets, Apache-2.0) with a walk test for missing IconNames; select chevrons fixed; binary 18.98 MB, headroom ~2 MB | ## 2026-11-02 — Embedded icon assets |
