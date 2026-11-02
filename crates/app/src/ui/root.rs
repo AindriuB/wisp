@@ -7,10 +7,10 @@ use gpui::{
     IntoElement, ParentElement, PathPromptOptions, PromptLevel, Render, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
 };
-use gpui_component::ActiveTheme as _;
-use gpui_component::button::Button;
+use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_component::tab::{Tab, TabBar};
+use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 
 use crate::actions::{
     CancelRequest, CloseTab, KeepMine, NewRequest, NextTab, OpenCollection, OpenPalette, PrevTab,
@@ -292,10 +292,28 @@ impl Render for WorkspaceView {
 
         let titles: Vec<Tab> = tabs
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(ix, t)| {
                 let t = t.read(cx);
                 let dirty = if t.is_dirty() { "● " } else { "" };
-                Tab::new().label(format!("{dirty}{}", t.title()))
+                let ws = self.workspace.clone();
+                let close = div()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::new(("tab-close", ix))
+                            .tab_stop(false)
+                            .icon(IconName::Close)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Close tab")
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                ws.update(cx, |w, cx| w.close_tab(ix, cx));
+                            }),
+                    );
+                Tab::new()
+                    .label(format!("{dirty}{}", t.title()))
+                    .suffix(close)
             })
             .collect();
         let ws = self.workspace.clone();
