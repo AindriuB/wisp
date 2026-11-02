@@ -84,7 +84,9 @@ impl ClientCache {
         // Bundled Mozilla roots only: rustls-platform-verifier is linked by reqwest but never used.
         let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
-            .filter_map(|c| reqwest::Certificate::from_der(c.as_ref()).ok());
+            .map(|c| reqwest::Certificate::from_der(c.as_ref()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| err(ErrorKind::Other, format!("cannot load bundled roots: {e}")))?;
         let mut builder = reqwest::Client::builder()
             .tls_backend_rustls()
             .tls_certs_only(roots)
@@ -446,8 +448,12 @@ const HTTP1_MAX_RESPONSE_HEADERS: usize = 1000;
 fn install_crypto_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // Err means another provider is already installed, which is fine.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        if rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_err()
+        {
+            tracing::debug!("a rustls crypto provider was already installed");
+        }
     });
 }
 
@@ -541,6 +547,21 @@ mod tests {
         assert_eq!(cache.len(), 1);
         cache.get(&settings(false)).unwrap();
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn every_bundled_root_is_accepted_by_a_root_store() {
+        let mut store = rustls::RootCertStore::empty();
+        let (added, ignored) = store
+            .add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
+        assert_eq!(ignored, 0);
+        assert_eq!(added, webpki_root_certs::TLS_SERVER_ROOT_CERTS.len());
+    }
+
+    #[test]
+    fn install_crypto_provider_leaves_a_default_provider() {
+        install_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 
     #[test]

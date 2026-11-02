@@ -87,7 +87,7 @@ async fn send(url: String, verify_tls: bool) -> (Engine, Vec<Event>) {
 #[tokio::test]
 async fn verify_tls_true_rejects_a_self_signed_certificate() {
     let port = serve_tls(b"hello", 0);
-    let (_e, mut evs) = send(format!("https://localhost:{port}/"), true).await;
+    let (_e, mut evs) = send(format!("https://127.0.0.1:{port}/"), true).await;
     match evs.pop().unwrap() {
         Event::Failed { error, .. } => {
             assert_eq!(error.kind, ErrorKind::Tls, "{}", error.message);
@@ -104,7 +104,7 @@ async fn verify_tls_true_rejects_a_self_signed_certificate() {
 #[tokio::test]
 async fn verify_tls_false_accepts_a_self_signed_certificate() {
     let port = serve_tls(b"hello over tls", 0);
-    let (engine, mut evs) = send(format!("https://localhost:{port}/"), false).await;
+    let (engine, mut evs) = send(format!("https://127.0.0.1:{port}/"), false).await;
     match evs.pop().unwrap() {
         Event::Completed { body, size, .. } => {
             assert_eq!(size, 14);
@@ -125,6 +125,6 @@ async fn verify_tls_false_accepts_a_self_signed_certificate() {
 #[tokio::test]
 async fn a_tls_response_with_1000_headers_completes() {
     let port = serve_tls(b"", 998);
-    let (_e, mut evs) = send(format!("https://localhost:{port}/"), false).await;
+    let (_e, mut evs) = send(format!("https://127.0.0.1:{port}/"), false).await;
     assert!(matches!(evs.pop().unwrap(), Event::Completed { .. }));
 }

@@ -32,3 +32,19 @@ M3 (v1 hardening). Closes the open reqwest 0.13 follow-ups in PLAN.md (tasks 50 
 - Streaming request bodies and the spill-write fix (task 57).
 - Client-cache locking (`ClientCache` builds under a std `Mutex`).
 - Any Cargo.toml, reqwest feature or rustls change.
+
+## Amendment (orchestrator, 2026-11-02)
+Code review found that with reqwest 0.13.5 built with `rustls-no-provider` (no native-tls), `reqwest::Certificate::from_der` does no parsing and always returns Ok (reqwest-0.13.5/src/tls.rs:166-172). So the per-root drop counter and its `warn!` (engine.rs:85-101) can never fire, and `every_bundled_root_parses` (engine.rs:564-571) can never fail. Real parsing happens in `reqwest::tls::rustls_store` (tls.rs:637-643) at `ClientBuilder::build()`. One bad root makes the build fail for every verify_tls=true client, and that failure is already reported as "cannot build client". Nothing is silently dropped, so the Goal's premise is wrong.
+
+User decision:
+- Remove the dead counter and its `warn!`. Restore the plain mapping: no `filter_map(.ok())` hiding anything. Collect with `from_der` and `?` or `expect`, whichever reads cleanest, since it is infallible.
+- Keep the existing loud build failure.
+- Replace the test with one that loads every bundled `webpki-root-certs` DER into a rustls `RootCertStore` (`add_parsable_certificates`, via the ring-free pki-types path already in the dependency tree). It asserts that zero are ignored and that the added count equals the bundle length.
+
+This supersedes the Acceptance items for the drop count with `warn!` and for the `from_der` parse test.
+
+Rejected alternatives: pre-parsing with rustls and passing only good roots on (more code for a failure the pinned bundle cannot have); deleting the counter with no test.
+
+## Review round 1 — findings
+- [P2] engine.rs:85-101 and :564-571 — the drop counter is dead code and `every_bundled_root_parses` is always true, because `from_der` never fails with these features. Settled by the amendment above.
+- [NOTE, optional] engine.rs:573-577 — `install_crypto_provider_leaves_a_default_provider` would also pass with the old `let _ =` code, so it does not exercise the new Err branch.
