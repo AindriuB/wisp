@@ -24,8 +24,10 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 - **M1 — Core and storage (complete):** tasks 10-20 landed. The full model, `resolve`, body store, full event set and cancel, `toml_edit` storage with secrets and watcher, and the fixture integration test all pass without a window. See HISTORY.
 - **M2 — UI v1 (complete):** tasks 21-37 landed (layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings, icons, integration and budgets). Window hand check passed on 2026-11-02; see HISTORY. Three defects were found there and all three are fixed and hand-checked in the running app (tasks 38, 39, 40, 41; see HISTORY).
 **Budgets (task 35, commit add9842, macOS 27.0.1 arm64, hardware renderer):** binary 18,965,216 B of 20,971,520 (headroom about 2 MB); idle RSS 99,808 KiB (about 97.5 MiB) of 120 MiB; after one request 104,784 KiB (about 102.3 MiB) of 128 MiB. Measured with a 64 KB response; RSS was about 127 MiB with a 20 MB response loaded.
-- **M3 — v1 hardening (in progress):** tasks 52-60. Landed: 55 (tab close button), 58 (storage method parser, folder walk budget, sidecar rejection); see HISTORY. Open: 52, 53, 54, 56, 57, 59, 60. In review or flight: 52, 53, 54, 56. Task 60 carries the integration check and budgets, including the deferred hand check of 55 (three tabs, close active, close while sending, URL focus kept).
+- **M3 — v1 hardening (in progress):** tasks 52-60. Landed: 54 (autosend resolve error), 55 (tab close button), 56 (engine roots, provider log, TLS URLs), 58 (storage method parser, folder walk budget, sidecar rejection); see HISTORY. Open: 52, 53, 57, 59, 60. In review or flight: 52, 53, 59. Task 60 carries the integration check and budgets (including the deferred `measure.sh` run for 54), including the deferred hand check of 55 (three tabs, close active, close while sending, URL focus kept).
 **Residuals (55):** closing a dirty tab has no prompt (same as ⌘W, out of scope); the mouse-down wrapper at `root.rs:301` needs a one-line comment so it is not removed as redundant; `gpui::MouseButton::Left` is written as a full path.
+**Residuals (54):** a `,` or `)` in a variable name can make the autosend `problems=` list ambiguous (nothing parses past the prefix); if autosend ever runs after an environment is selected, an unresolved `{{x}}` inside a secret's value would print `x`.
+**Residuals (56):** the `install_crypto_provider` unit test does not exercise the Err branch.
 **Residuals (58):** rejecting a symlink diamond takes about 7-10 s before the error; a Windows trailing-dot or trailing-space `.toml` alias passes (`request.rs:221`); the name check at `request.rs:224-226` is unreachable.
 
 ### Pane-scrollbar defects (tasks 46-49, fixed and hand-checked 2026-11-02)
@@ -34,8 +36,7 @@ All four defects found hand-checking 43-45 are fixed (see HISTORY). Combined bin
 **Header limit (47, resolved by 50):** the limit is now 1,000 headers; see the Task 50 residuals below.
 
 ### Reqwest 0.13 follow-ups (task 50)
-Optional, none blocking. Closed by 51: the runtime TLS test (`crates/core/tests/tls.rs`) and the `webpki-root-certs` `default-features = false` consistency fix. Still open: `engine.rs:87` `filter_map` silently drops unparseable roots (cannot fail today with rustls-only `from_der`); `install_crypto_provider` ignores the `install_default` Err.
-**Residual (51):** `tls.rs:89,107,128` use `https://localhost` while the server binds 127.0.0.1 only; it works through resolver fallback, and using `https://127.0.0.1` (the cert has that SAN) would remove the dependency.
+Optional, none blocking. Closed by 51: the runtime TLS test (`crates/core/tests/tls.rs`) and the `webpki-root-certs` `default-features = false` consistency fix. The `engine.rs:87`, `install_crypto_provider` and `https://localhost` residuals were closed by task 56 (see HISTORY).
 Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after one request 102.3 MiB.
 
 ### Open budget and measurement questions (from M0)
@@ -68,7 +69,7 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 **Workspace shell (28):**
 - *Measurement:* superseded by the task 35 figures under M2 (the shell measured about 96 MiB idle and binary 15.3 MB when it landed).
 - *Hand-checked in task 35:* ⌘O from A to B (with dirty tabs: Discard, Open panel) closes A's tabs and resets the environment; ToggleTheme and ToggleLayout from the palette write only `theme` and `split` to settings.toml; theme="system" follows macOS Light/Dark live. The dev build wrote `~/Library/Application Support/wisp/settings.toml` during the check.
-- *P3, mislabelled error:* with a collection open, autosend of a plain URL reports `WISP_EVENT failed kind=InvalidUrl` because the scratch tab inherits the collection's bearer auth `{{token}}`, which is unresolved without an environment. The fixed "InvalidUrl" label mislabels a resolve error; report the real resolve error kind.
+- *Mislabelled autosend error (fixed in task 54):* the failure line now reads `WISP_EVENT failed kind=Resolve problems=<names>`; see HISTORY.
 - *Gaps:* (tab close button landed in task 55.) Routing, history and watcher wiring have no end-to-end tests because gpui test support is not enabled; the open-collection test covers only the `open_needs_confirm` helper.
 - *Optional P3:* the `key` doc comment in `actions.rs` says "bound to `name`" but takes an index, and `bind_keys_indices_match_names` does not prove `key(i)` binds the right action.
 **Sidebar (30):**

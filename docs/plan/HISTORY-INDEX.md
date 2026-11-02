@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 54, 56 | Autosend failure line reports `kind=Resolve problems=<names>` (names only, escaped); dead root counter dropped, provider Err logged, every bundled root checked against a RootCertStore, TLS tests use 127.0.0.1 | ## 2026-11-02 — Autosend resolve error and engine roots/TLS cleanup |
 | 2026-11-02 | 55, 58 | Close button on each request tab; one case-insensitive method parser, folder walk bounded by ancestor cycle rule plus 10,000-folder budget, `.toml` sidecars rejected | ## 2026-11-02 — Tab close button and storage hardening (method parser, folder walk, sidecars) |
 | 2026-11-02 | 51 | Three runtime TLS tests through the Engine against a self-signed rustls server (UnknownIssuer, verify_tls false round-trip, 1,000 headers); no new TLS stack | ## 2026-11-02 — Runtime TLS tests against a self-signed local server |
 | 2026-11-02 | 50 | reqwest 0.13.5 (rustls ring, bundled webpki-root-certs); HTTP/1 response-header limit raised to 1000; binary +99,952 B | ## 2026-11-02 — reqwest 0.13.5 and a 1,000-header response limit |
