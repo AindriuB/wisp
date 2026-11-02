@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 55, 58 | Close button on each request tab; one case-insensitive method parser, folder walk bounded by ancestor cycle rule plus 10,000-folder budget, `.toml` sidecars rejected | ## 2026-11-02 — Tab close button and storage hardening (method parser, folder walk, sidecars) |
 | 2026-11-02 | 51 | Three runtime TLS tests through the Engine against a self-signed rustls server (UnknownIssuer, verify_tls false round-trip, 1,000 headers); no new TLS stack | ## 2026-11-02 — Runtime TLS tests against a self-signed local server |
 | 2026-11-02 | 50 | reqwest 0.13.5 (rustls ring, bundled webpki-root-certs); HTTP/1 response-header limit raised to 1000; binary +99,952 B | ## 2026-11-02 — reqwest 0.13.5 and a 1,000-header response limit |
 | 2026-11-02 | 46, 47, 48, 49 | Fixed KvTable virtual-row widths, clear error for >100 response headers (limit stays 100; reqwest bump open), URL strip clip, Cookies table fit | ## 2026-11-02 — Pane-scrollbar defects fixed: KvTable virtual rows, header limit, URL strip, Cookies width |
