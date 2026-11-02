@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-02 — Auth and body sub-tab editors
+The Auth sub-tab edits none, inherit, basic, bearer and API key with masked secret fields, and for inherit shows which type and folder or collection it comes from. The Body sub-tab edits none, JSON, text, XML, form, multipart and file: JSON shows a non-blocking invalid-offset line and a Format button, form uses `KvTable`, multipart has Text/File rows with Choose…, and File warns when the path is missing. Switching type keeps earlier values for the life of the tab, and sidecar bodies keep their sidecar (297 workspace tests, fmt and clippy clean, reviewer APPROVE, code review CLEAN after one round).
+
+**Cost:** Round 1 found that gpui-component 0.8.1 `InputState::set_value` emits no Change event, so programmatic sets (resync, Format, Choose…) left the model and draft stale; each now updates them by hand, and later UI work must do the same. No window hand check was run, so sidecar save, the Bearer-Inherit-Bearer round trip, a multipart File send and the inherited-folder name are verified by tests and review only; task 35 owns them. Known gaps: the File body stats the filesystem on every render, a relative typed path is checked against the process cwd instead of the collection dir, and a Choose… result for a row deleted meanwhile is dropped.
+
 ## 2026-11-02 — URL bar and request sub-tabs
 The request editor now has a method select, a URL input and a Send/Cancel button, with a strip under the input that colours `{{var}}`, dynamic vars, unresolved vars and `{name}` path params, and shows the resolved value on hover. The URL, Params table and Path inputs stay in sync through `url_sync` in one `tab.edit` per keystroke; resolve problems are listed in plain words and disable Send, and while sending the button becomes Cancel. The Params, Path, Headers (with inherited headers struck through where overridden) and Settings sub-tabs show per-section dirty dots and remember the selection in `tab.request_tab` (293 workspace tests, fmt and clippy clean, reviewer APPROVE, code review CLEAN after one round).
 
