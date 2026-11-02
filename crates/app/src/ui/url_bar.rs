@@ -315,7 +315,14 @@ impl Render for UrlBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sending = self.tab.read(cx).response.phase == Phase::Sending;
         let theme = cx.theme();
-        let mut strip = div().flex().flex_row().px_2().text_sm();
+        let mut strip = div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
+            .px_2()
+            .text_sm();
         for (i, seg) in self.segments.iter().enumerate() {
             let color = match &seg.kind {
                 SpanKind::Text => theme.foreground,
