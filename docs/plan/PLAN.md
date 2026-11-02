@@ -26,6 +26,13 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 **Budgets (task 35, commit add9842, macOS 27.0.1 arm64, hardware renderer):** binary 18,965,216 B of 20,971,520 (headroom about 2 MB); idle RSS 99,808 KiB (about 97.5 MiB) of 120 MiB; after one request 104,784 KiB (about 102.3 MiB) of 128 MiB. Measured with a 64 KB response; RSS was about 127 MiB with a 20 MB response loaded.
 **Next:** M3 is not yet planned.
 
+### Pane-scrollbar defects (found hand-checking 43-45, successor tasks to be filed)
+**P2, KvTable virtual rows:** above 50 rows the virtual branch renders rows with zero-width name and value columns (only the checkbox and × show) and the trailing row's inputs are invisible, so rows past 50 cannot be edited. Pre-existing: before task 45 the branch rendered nothing.
+**P2, header limit:** responses with more than 100 headers fail with "error sending request ... client error" (hyper's default max-headers limit). Raise it in the engine client or report it clearly.
+**P3, URL highlight strip:** it does not clip, so a long query string draws over the response pane in side-by-side layout.
+**P3, Cookies table width:** wider than the response pane in side-by-side layout; Path, Expires and Flags and the scrollbar are cut off (no horizontal scroll).
+**Residuals:** many inherited headers can squeeze the request-header table (the inherited list keeps natural height per spec). Path, Auth, Settings, Multipart and File sub-tabs keep content-height wrappers and still overflow.
+
 ### Open budget and measurement questions (from M0)
 **Per-platform budgets:** the user has not set budgets for Windows, Linux or macOS x64. Windows (24.9 MB) and Linux (35.1 MB) release binaries exceed the 20 MB figure, and Linux software-rendered RSS (about 171 MB idle) exceeds 120 MB. CI renderers are software or unknown and not comparable with the hardware figure; the set budgets still apply to macOS arm64 hardware only. Per-platform budgets are the user's call.
 **x86_64-apple-darwin RSS:** unmeasured on CI because the main thread blocks in the headless runner's icon service (see HISTORY). Binary size only.
@@ -78,7 +85,7 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 - *Hand-checked in task 35:* Pretty keeps key order; a 20.3 MB response shows Raw with Pretty disabled; two Set-Cookie rows; header cell click and ⌘C copy. Hand-checked in task 41: Raw prefetch while scrolling, over-limit Pretty tooltip, Save output sha256. The 4 MB Raw cap line was verified in task 42 (see below).
 - *Raw scrollbar and jump keys (42, hand-checked 2026-11-02):* Raw and Pretty show a draggable vertical scrollbar; End/⌘↓/Ctrl+↓ load to the 4 MB cap and jump to the bottom, Home/⌘↑/Ctrl+↑ jump to the top (any modifier works with End/Home; keys are handled on the BodyPane focus handle, and with the URL input focused End moves its text cursor). The 4 MB cap line ("Showing the first 4 MB — Save to read the rest") is verified on a 250,000-line body.
 - *Optional P3 (42):* the `jump_for_key` doc comment (`body.rs:64-65`) omits Ctrl and runs past the wrap; the `jump_still_valid` asserts sit inside the key test and could be split; when the 4 MB boundary falls mid-line the cap line follows a partial final line. Budgets measured: binary 18,998,304 B (+33,088), idle RSS 100,064 KiB, after request 104,512 KiB.
-- *Follow-up candidate:* headers, cookies, KvTable (>50 rows) and the sidebar still have no visible scrollbar.
+- *Scrollbars (43-45, hand-checked 2026-11-02):* sidebar, response Headers and Cookies and KvTable now have draggable scrollbars. Budgets: combined binary 19,014,912 B. See the pane-scrollbar defects below.
 - *Decision:* headers are per-cell selectable divs with ⌘C copy, not the gpui-component `Table`. There is no partial-text selection and no keyboard cell navigation.
 - *Optional:* header selection is cleared on every `ResponseChanged`, which sub-tab and Pretty/Raw switches also emit (consider a separate view-change notify). `failed_create_keeps_existing_target` silently skips its assertions when run as root. `File::create` truncates before writing, so a failed Replace leaves no original (not an atomic replace).
 **Icon assets (37):**
