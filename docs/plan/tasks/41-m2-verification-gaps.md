@@ -23,6 +23,7 @@ Task 35's window hand check left five behaviours unverified. Check each on a run
 - [ ] Multipart File part: a multipart body with one Text and one File part sent to an echo server arrives with both parts; the File part's bytes match the file (`shasum` of both quoted).
 - [ ] Escape during send: with the URL input focused and a request to a server that delays 10 s, Escape cancels the send (status shows cancelled) or does not; report which. If it does not, file a successor task naming `crates/app/src/actions.rs` and the URL input.
 - [ ] Save: Save of a binary or large response writes a file whose `shasum -a 256` equals that of the served file (both quoted).
+- [ ] Folder order (task 39): in a temp copy of the fixture, rename `get-user.toml` and delete `create-user.toml` in the running app; `users/folder.toml` `order` then lists the new name and not the deleted one, and the sidebar follows that order.
 - [ ] `git status` in the repository is clean at the end; generated fixtures live only in the scratchpad.
 
 ## Out of scope
