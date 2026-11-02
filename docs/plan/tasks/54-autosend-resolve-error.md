@@ -30,3 +30,8 @@ M3 (v1 hardening). Closes the PLAN.md P3 under "Workspace shell (28)": a resolve
 - Whether a scratch tab should inherit collection auth at all (it does, by design).
 - Engine-side failure lines and `error_words`.
 - The UI's display of resolve problems.
+
+## Review round 1 — findings
+
+- [STYLE] crates/app/src/workspace.rs:738 — the new test `describe_problems_names_all_variants_without_values` sits above `use super::*;` in `mod tests`. Every test module in the crate opens with `use super::*;` (crates/app/src/actions.rs:77, cookies.rs:83, draft.rs:95, highlight.rs:177).
+- [P3] crates/app/src/workspace.rs:727-730 — names are printed raw. `template::var_refs` (crates/core/src/template.rs:40) trims only the ends, so a newline, `,` or `)` inside a name gets through and breaks the one-line format. Input: `WISP_AUTOSEND_URL=$'http://127.0.0.1:9/{{a\nWISP_EVENT completed}}'` → stdout gets `WISP_EVENT failed kind=Resolve problems=UnresolvedVar(a` then a second line `WISP_EVENT completed)`, which matches measure.sh's `^WISP_EVENT completed`. Fix: print each name escaped, e.g. `name.escape_debug()`; ordinary names come out unchanged. Add a test for the newline case.

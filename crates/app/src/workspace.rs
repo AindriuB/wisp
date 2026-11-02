@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use gpui::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task, WeakEntity};
 use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::request::{CollectionDefaults, Environment};
-use wisp_core::resolve::{ResolveError, Scope, resolve};
+use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
 use wisp_core::{Command, Engine, EngineConfig, Event, EventReceiver, Method, RequestId};
 use wisp_storage::collection::{CollectionTree, open_collection};
 use wisp_storage::environment::{list_environments, load_environment};
@@ -123,7 +123,7 @@ impl Workspace {
         {
             eprintln!("wisp: cannot open collection {}: {e:#}", root.display());
         }
-        // The URL goes through `send`, so `{{...}}` in it fails as `InvalidUrl`.
+        // The URL goes through `send`, so a resolve failure prints its problems.
         // Terminal events of superseded or closed tabs write no history.
         if let Ok(url) = std::env::var("WISP_AUTOSEND_URL") {
             let tab = this.new_scratch_tab(url, cx);
@@ -132,7 +132,10 @@ impl Workspace {
                     this.autosend = Some(id);
                     crate::trace("autosend submitted");
                 }
-                Err(_) => println!("WISP_EVENT failed kind=InvalidUrl"),
+                Err(e) => println!(
+                    "WISP_EVENT failed kind=Resolve problems={}",
+                    describe_problems(&e)
+                ),
             }
         }
         this
@@ -705,9 +708,75 @@ impl Workspace {
     }
 }
 
+/// Names only, never values or syntax messages (conventions: logging).
+fn describe_problems(e: &ResolveError) -> String {
+    fn loc(l: &Location) -> String {
+        match l {
+            Location::Url => "Url".into(),
+            Location::PathParam(n) => format!("PathParam:{}", n.escape_debug()),
+            Location::Param(n) => format!("Param:{}", n.escape_debug()),
+            Location::Header(n) => format!("Header:{}", n.escape_debug()),
+            Location::Auth => "Auth".into(),
+            Location::Body => "Body".into(),
+            Location::Var(n) => format!("Var:{}", n.escape_debug()),
+        }
+    }
+    e.problems
+        .iter()
+        .map(|p| match p {
+            Problem::UnresolvedVar { name, .. } => {
+                format!("UnresolvedVar({})", name.escape_debug())
+            }
+            Problem::MissingPathParam { name } => {
+                format!("MissingPathParam({})", name.escape_debug())
+            }
+            Problem::Syntax { location, .. } => format!("Syntax({})", loc(location)),
+            Problem::VarCycle { name } => format!("VarCycle({})", name.escape_debug()),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_problems_names_all_variants_without_values() {
+        let e = ResolveError {
+            problems: vec![
+                Problem::UnresolvedVar {
+                    name: "token".into(),
+                    location: Location::Url,
+                },
+                Problem::MissingPathParam { name: "id".into() },
+                Problem::Syntax {
+                    location: Location::Url,
+                    message: "SECRETMARK".into(),
+                },
+                Problem::VarCycle { name: "a".into() },
+            ],
+        };
+        let out = describe_problems(&e);
+        assert_eq!(
+            out,
+            "UnresolvedVar(token),MissingPathParam(id),Syntax(Url),VarCycle(a)"
+        );
+        assert!(!out.contains("SECRETMARK"));
+    }
+
+    #[test]
+    fn describe_problems_escapes_newlines_in_names() {
+        let e = ResolveError {
+            problems: vec![Problem::UnresolvedVar {
+                name: "a\nWISP_EVENT completed".into(),
+                location: Location::Url,
+            }],
+        };
+        let out = describe_problems(&e);
+        assert!(!out.contains('\n'));
+        assert_eq!(out, "UnresolvedVar(a\\nWISP_EVENT completed)");
+    }
 
     #[test]
     fn open_confirmation_only_for_dirty_tabs() {
