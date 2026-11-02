@@ -1,6 +1,6 @@
 //! Collection tree scanning and ordering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
@@ -13,6 +13,8 @@ use crate::{STATE_DIR, StorageError, codec, fs};
 const COLLECTION_FILE: &str = "collection.toml";
 const FOLDER_FILE: &str = "folder.toml";
 const ENV_DIR: &str = "environments";
+/// Most folders one walk may visit; links can make one folder appear many times.
+const MAX_FOLDERS: usize = 10_000;
 
 /// Name and method of one request, read without loading its body.
 #[derive(Debug, Clone, PartialEq)]
@@ -222,26 +224,13 @@ pub fn save_folder_defaults(dir: &Path, defaults: &FolderDefaults) -> Result<(),
     fs::atomic_write(&path, doc.to_string().as_bytes())
 }
 
-fn parse_method(s: &str) -> Option<Method> {
-    Some(match s.to_ascii_uppercase().as_str() {
-        "GET" => Method::Get,
-        "POST" => Method::Post,
-        "PUT" => Method::Put,
-        "PATCH" => Method::Patch,
-        "DELETE" => Method::Delete,
-        "HEAD" => Method::Head,
-        "OPTIONS" => Method::Options,
-        _ => return None,
-    })
-}
-
 fn read_meta(root: &Path, rel: &Path, stem: &str) -> Result<RequestMeta, StorageError> {
     let abs = root.join(rel);
     let text = fs::read_to_string(&abs)?;
     let doc = codec::parse(&abs, &text)?;
     let name = codec::read_opt_str(doc.as_table(), "name", &abs)?.unwrap_or_else(|| stem.into());
     let m = codec::read_str(doc.as_table(), "method", &abs)?;
-    let method = parse_method(&m)
+    let method = crate::request::parse_method(&m)
         .ok_or_else(|| invalid(&abs, "method", &format!("unknown method `{m}`")))?;
     Ok(RequestMeta {
         path: rel.to_path_buf(),
@@ -256,7 +245,8 @@ fn scan_dir(
     rel: &Path,
     order: &[String],
     folders: &mut HashMap<PathBuf, FolderDefaults>,
-    visited: &mut HashSet<PathBuf>,
+    ancestors: &mut Vec<PathBuf>,
+    visited: &mut usize,
 ) -> Result<Vec<Node>, StorageError> {
     let dir = root.join(rel);
     let mut entries: Vec<(String, Node)> = Vec::new();
@@ -274,13 +264,34 @@ fn scan_dir(
             if rel.as_os_str().is_empty() && (file_name == ENV_DIR || file_name == STATE_DIR) {
                 continue;
             }
-            // Skip any directory already visited (symlink cycles, repeat links).
+            // Skip a directory that is one of its own ancestors (symlink cycle).
             let canon = std::fs::canonicalize(&abs).map_err(|e| io(&abs, e))?;
-            if !visited.insert(canon) {
+            if ancestors.contains(&canon) {
                 continue;
             }
+            *visited += 1;
+            if *visited > MAX_FOLDERS {
+                return Err(invalid(
+                    root,
+                    "collection",
+                    &format!(
+                        "more than {MAX_FOLDERS} folders (symbolic links may repeat folders); \
+                         remove links that fan out and rejoin"
+                    ),
+                ));
+            }
             let defaults = load_folder_defaults(&abs)?;
-            let children = scan_dir(root, &child_rel, &defaults.order, folders, visited)?;
+            ancestors.push(canon);
+            let children = scan_dir(
+                root,
+                &child_rel,
+                &defaults.order,
+                folders,
+                ancestors,
+                visited,
+            );
+            ancestors.pop();
+            let children = children?;
             folders.insert(child_rel.clone(), defaults);
             entries.push((
                 file_name.clone(),
@@ -342,13 +353,14 @@ pub fn open_collection(root: &Path) -> Result<CollectionTree, StorageError> {
     let root = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
     let defaults = load_collection_defaults(&root)?;
     let mut folders = HashMap::new();
-    let mut visited = HashSet::from([root.clone()]);
+    let mut ancestors = vec![root.clone()];
     let nodes = scan_dir(
         &root,
         Path::new(""),
         &defaults.order,
         &mut folders,
-        &mut visited,
+        &mut ancestors,
+        &mut 0,
     )?;
     Ok(CollectionTree {
         root,
@@ -497,6 +509,32 @@ mod tests {
         assert_eq!(t.folders.len(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn symlink_diamond_fails_with_folder_budget_error() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        w(r, "collection.toml", "format = 1\n");
+        for i in 0..15 {
+            stdfs::create_dir_all(r.join(format!("l{i}"))).unwrap();
+            for n in ["a", "b"] {
+                std::os::unix::fs::symlink(format!("../l{}", i + 1), r.join(format!("l{i}/{n}")))
+                    .unwrap();
+            }
+        }
+        stdfs::create_dir_all(r.join("l15")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = r.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_collection(&p));
+        });
+        let err = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("open_collection did not return")
+            .unwrap_err();
+        assert!(err.to_string().contains(&MAX_FOLDERS.to_string()));
+    }
+
     #[test]
     fn tiebreak_is_deterministic() {
         let d = tempfile::tempdir().unwrap();
@@ -613,5 +651,30 @@ mod tests {
         save_folder_defaults(d.path(), &FolderDefaults::default()).unwrap();
         let out = stdfs::read_to_string(d.path().join("folder.toml")).unwrap();
         assert!(out.contains("[auth]"));
+    }
+
+    #[test]
+    fn lowercase_method_loads_through_tree_and_load_request() {
+        let d = tempfile::tempdir().unwrap();
+        w(d.path(), "collection.toml", "format = 1\n");
+        w(d.path(), "r.toml", &req("r", "post"));
+        let t = open_collection(d.path()).unwrap();
+        assert!(matches!(&t.nodes[0], Node::Request(m) if m.method == Method::Post));
+        let r = crate::request::load_request(&d.path().join("r.toml")).unwrap();
+        assert_eq!(r.method, Method::Post);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_sibling_folder_shows_under_both_names() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        w(r, "collection.toml", "format = 1\n");
+        w(r, "a/r.toml", &req("r", "GET"));
+        std::os::unix::fs::symlink("a", r.join("b")).unwrap();
+        let t = open_collection(r).unwrap();
+        assert!(t.folders.contains_key(Path::new("a")));
+        assert!(t.folders.contains_key(Path::new("b")));
+        assert_eq!(t.nodes.len(), 2);
     }
 }

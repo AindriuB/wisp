@@ -49,3 +49,9 @@ Added acceptance:
 - [P2] crates/storage/src/collection.rs:264-273 — after the change, scan_dir only skips a directory that is one of its own ancestors, so nothing bounds how many times one directory is walked. Symlinks that fan out and rejoin (a "diamond") make the walk, and the `folders` map, grow exponentially. The old whole-walk `visited` set prevented this. Input: a collection whose root holds l0..lN, each l{i} containing symlinks a -> ../l{i+1} and b -> ../l{i+1}. l{i} is reached 2^(i+1)-1 times, so ~2^(N+2) folder visits, each with its own canonicalize and `folders` entry; at N=30 open_collection hangs or runs out of memory. Settled by the amendment above.
 - [NOTE, optional] crates/storage/src/request.rs:221 — the `.toml` suffix check is a plain string match. On Windows, `other.toml.` or `other.toml ` passes it, but the filesystem resolves it to other.toml. Same kind of alias as the out-of-scope ::$DATA items.
 - [NOTE, optional] crates/storage/src/request.rs:224-226 — the older "is the request file itself" name check is now unreachable, because the suffix check catches every case it did. Harmless.
+
+## Review round 2 — findings
+
+Reviewed HEAD: 31ff2472009263d223914a608adabae2ac5bc76c
+
+- [P3, optional but requested] crates/storage/src/collection.rs:512-536 — the diamond test takes ~10 s against its own 20 s timeout (≈2x headroom); it walks down ~30 chained symlinks and each visit runs canonicalize and load_folder_defaults. On a runner ~2x slower it fails with "open_collection did not return: Timeout" while the budget is correct. Fix: use ~15 layers instead of 30 (2^15 > 10000, so the budget is still hit, and each visit resolves half as many links). route: implementer — test shape only.

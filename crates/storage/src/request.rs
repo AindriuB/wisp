@@ -74,8 +74,8 @@ fn method_str(m: Method) -> &'static str {
     }
 }
 
-fn parse_method(s: &str) -> Option<Method> {
-    Some(match s {
+pub(crate) fn parse_method(s: &str) -> Option<Method> {
+    Some(match s.to_ascii_uppercase().as_str() {
         "GET" => Method::Get,
         "POST" => Method::Post,
         "PUT" => Method::Put,
@@ -218,6 +218,9 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
     if Path::new(name).is_absolute() || Path::new(name).components().count() != 1 {
         return Err(bad("must be a plain file name in the request's folder"));
     }
+    if name.to_ascii_lowercase().ends_with(".toml") {
+        return Err(bad("must not be a .toml file"));
+    }
     let own = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
     if own.as_deref() == Some(name.to_lowercase().as_str()) {
         return Err(bad("is the request file itself"));
@@ -327,7 +330,14 @@ pub fn save_request(path: &Path, request: &Request) -> Result<(), StorageError> 
     }
 
     codec::write_str(&mut doc, "name", &request.name);
-    codec::write_str(&mut doc, "method", method_str(request.method));
+    let method_unchanged = doc
+        .get("method")
+        .and_then(Item::as_str)
+        .and_then(parse_method)
+        == Some(request.method);
+    if !method_unchanged {
+        codec::write_str(&mut doc, "method", method_str(request.method));
+    }
     codec::write_str(&mut doc, "url", &request.url);
     codec::write_vars(&mut doc, "path", &request.path);
     codec::write_vars(&mut doc, "vars", &request.vars);
@@ -1027,5 +1037,36 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         std::env::set_current_dir(cwd).unwrap();
         let r = r.unwrap();
         assert!(matches!(&r.body, Body::Text(t) if t.content == "hi"));
+    }
+
+    #[test]
+    fn lowercase_method_save_is_byte_identical() {
+        let text = "name = \"n\"\nmethod = \"post\"\nurl = \"u\"\n";
+        let (_d, p) = setup(text);
+        let r = load_request(&p).unwrap();
+        assert_eq!(r.method, Method::Post);
+        save_request(&p, &r).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
+    }
+
+    #[test]
+    fn toml_sidecar_is_rejected_and_other_request_untouched() {
+        let d = tempfile::tempdir().unwrap();
+        let other = "name = \"o\"\nmethod = \"GET\"\nurl = \"x\"\n";
+        std::fs::write(d.path().join("other.toml"), other).unwrap();
+        std::fs::write(d.path().join("r.toml"), sidecar_req("other.toml")).unwrap();
+        bad_key(load_request(&d.path().join("r.toml")));
+        std::fs::write(d.path().join("r.toml"), sidecar_req("OTHER.TOML")).unwrap();
+        bad_key(load_request(&d.path().join("r.toml")));
+        let mut base = load_request(&d.path().join("other.toml")).unwrap();
+        base.body = Body::Text(TextBody {
+            content: "clobber".into(),
+            sidecar: Some("other.toml".into()),
+        });
+        bad_key(save_request(&d.path().join("r.toml"), &base));
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("other.toml")).unwrap(),
+            other
+        );
     }
 }
