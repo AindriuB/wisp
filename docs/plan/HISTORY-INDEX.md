@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 30 | Sidebar env select, collapsible ordered tree, context-menu create/rename/move/delete via storage ops; window hand check deferred to task 35 | ## 2026-11-02 — Sidebar tree, environment switcher and file operations |
 | 2026-10-30 | 28 | Workspace, RequestTab and root layout replace view.rs; event routing, save, history, watcher reload; idle ~96 MiB, binary 15.3 MB | ## 2026-10-30 — Workspace, request tabs and root layout replace the skeleton view |
 | 2026-10-30 | 36 | `pretty_json` output budget raised to max(32 MiB, 4x input); nesting tests assert exact outcomes; `SPACES` tied to indent cap | ## 2026-10-30 — Pretty-print budget raised to 32 MiB |
 | 2026-10-30 | 24 | Per-section draft dirty diff and disk-change decisions; URL and params table kept in sync via order-preserving 3-level LCS merge | ## 2026-10-30 — Draft dirty tracking and URL/params sync |
