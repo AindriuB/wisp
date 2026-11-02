@@ -318,7 +318,13 @@ fn scan_dir(
     });
     let mut out = Vec::with_capacity(entries.len());
     for name in order {
-        if let Some(i) = entries.iter().position(|(n, _)| n == name) {
+        // A request may be listed as `stem` or `stem.toml`; a folder only by name.
+        let pos = entries.iter().position(|(n, node)| {
+            n == name
+                || (!matches!(node, Node::Folder { .. })
+                    && name.strip_suffix(".toml") == Some(n.as_str()))
+        });
+        if let Some(i) = pos {
             out.push(entries.remove(i).1);
         }
     }
@@ -401,6 +407,22 @@ mod tests {
         };
         assert_eq!(names(children), ["Create user", "Get user"]);
         assert!(t.folders.contains_key(Path::new("users")));
+    }
+
+    #[test]
+    fn order_accepts_stem_and_toml_forms_in_one_list() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        w(
+            r,
+            "collection.toml",
+            "format = 1\norder = [\"c.toml\", \"a\", \"b.toml\"]\n",
+        );
+        for n in ["a", "b", "c", "d"] {
+            w(r, &format!("{n}.toml"), &req(n, "GET"));
+        }
+        let t = open_collection(r).unwrap();
+        assert_eq!(names(&t.nodes), ["c", "a", "b", "d"]);
     }
 
     #[test]

@@ -286,6 +286,7 @@ fn plan_order(
     rootc: &Path,
     parent_rel: &Path,
     edit: &OrderEdit,
+    is_request: bool,
 ) -> Result<Option<(PathBuf, String)>> {
     let path = if parent_rel.as_os_str().is_empty() {
         rootc.join(COLLECTION_FILE)
@@ -304,10 +305,26 @@ fn plan_order(
     let name = match edit {
         OrderEdit::Remove(n) | OrderEdit::Replace(n, _) => *n,
     };
-    let Some(i) = arr.iter().position(|v| v.as_str() == Some(name)) else {
+    // Requests may be listed as `stem` or `stem.toml`; keep the form written.
+    let with_ext = format!("{name}.toml");
+    let Some((i, ext_form)) = arr.iter().enumerate().find_map(|(i, v)| {
+        let s = v.as_str()?;
+        if s == name {
+            Some((i, false))
+        } else if is_request && s == with_ext {
+            Some((i, true))
+        } else {
+            None
+        }
+    }) else {
         return Ok(None);
     };
-    apply_edit(arr, i, edit);
+    if ext_form && let OrderEdit::Replace(_, new) = edit {
+        let renamed = format!("{new}.toml");
+        apply_edit(arr, i, &OrderEdit::Replace(name, &renamed));
+    } else {
+        apply_edit(arr, i, edit);
+    }
     Ok(Some((path, doc.to_string())))
 }
 
@@ -507,6 +524,7 @@ pub fn rename_request(root: &Path, rel: &Path, new_name: &str) -> Result<PathBuf
             &rootc,
             &parent_rel,
             &OrderEdit::Replace(&old_stem, &new_stem),
+            true,
         )?
     } else {
         None
@@ -569,7 +587,7 @@ pub fn rename_folder(root: &Path, rel: &Path, new_name: &str) -> Result<PathBuf>
     let abs = rootc.join(&rel);
     let target = rootc.join(&new_rel);
     ensure_stem_free(&rootc.join(&parent_rel), &new, Some(&abs), false)?;
-    let order = plan_order(&rootc, &parent_rel, &OrderEdit::Replace(&old, &new))?;
+    let order = plan_order(&rootc, &parent_rel, &OrderEdit::Replace(&old, &new), false)?;
     std::fs::rename(&abs, &target).map_err(|e| io(&abs, e))?;
     write_planned(order)?;
     Ok(new_rel)
@@ -621,6 +639,7 @@ pub fn move_node(root: &Path, rel: &Path, new_parent: &Path) -> Result<PathBuf> 
         &rootc,
         &parent_rel,
         &OrderEdit::Remove(&stem_of(&name_str, &kind)),
+        matches!(kind, Kind::Request),
     )?;
     if let Some((from, to)) = &sidecar_move {
         std::fs::rename(from, to).map_err(|e| io(from, e))?;
@@ -649,6 +668,7 @@ pub fn delete_node(root: &Path, rel: &Path) -> Result<()> {
         &rootc,
         &parent_rel,
         &OrderEdit::Remove(&stem_of(&name, &kind)),
+        matches!(kind, Kind::Request),
     )?;
     match kind {
         Kind::Folder => {
