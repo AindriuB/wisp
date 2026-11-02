@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 46, 47, 48, 49 | Fixed KvTable virtual-row widths, clear error for >100 response headers (limit stays 100; reqwest bump open), URL strip clip, Cookies table fit | ## 2026-11-02 — Pane-scrollbar defects fixed: KvTable virtual rows, header limit, URL strip, Cookies width |
 | 2026-11-02 | 43, 44, 45 | Draggable scrollbars on sidebar tree, response Headers/Cookies and KvTable; request sub-tabs bounded; virtual KvTable branch now renders (columns zero-width, open) | ## 2026-11-02 — Scrollbars on the sidebar, response Headers and Cookies, and KvTable |
 | 2026-11-02 | 42 | Body view scrollbar plus End/Home (and ⌘/Ctrl ↑↓) jump keys that load to the 4 MB cap; cap line hand-verified, closes the Raw-scrollbar P3 | ## 2026-11-02 — Raw and Pretty scrollbar with End/Home jump keys |
 | 2026-11-02 | 41 | Hand check of M2 gaps passed (folder order, focus reclaim, URL resync, Raw prefetch, Pretty tooltip, Save sha256, Escape cancel, multipart file); 4 MB Raw cap line unreached, open P3 | ## 2026-11-02 — M2 verification gaps hand-checked |
