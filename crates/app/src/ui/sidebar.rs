@@ -12,6 +12,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, IndexPath, Sizable as _};
@@ -216,6 +217,7 @@ pub struct Sidebar {
     selected: Option<PathBuf>,
     pending: Option<Pending>,
     focus: FocusHandle,
+    scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -255,6 +257,7 @@ impl Sidebar {
             selected: None,
             pending: None,
             focus,
+            scroll: gpui::ScrollHandle::new(),
             _subs: subs,
         };
         this.sync_env(window, cx);
@@ -816,7 +819,12 @@ impl Render for Sidebar {
                     }),
             );
 
-        let mut body = div().id("sidebar-tree").flex_1().overflow_y_scroll().py_1();
+        let mut body = div()
+            .id("sidebar-tree")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .py_1();
         if !open {
             body = body.child(
                 div().p_2().child(
@@ -837,6 +845,15 @@ impl Render for Sidebar {
             }
         }
         let this = cx.entity().downgrade();
+        // The scrolling tree sits in a bounded relative wrapper so the shared
+        // handle can drive a vertical scrollbar layer on top of it.
+        let body = div()
+            .id("sidebar-tree-wrap")
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(body)
+            .vertical_scrollbar(&self.scroll);
         let body = body.context_menu(move |menu, _, _| {
             if !open {
                 return menu;
