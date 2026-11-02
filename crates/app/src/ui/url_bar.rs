@@ -77,6 +77,24 @@ pub fn problem_text(problem: &Problem) -> String {
     }
 }
 
+/// `should_set_text`, and forget the own-edit record when an outside edit overwrites the text.
+fn take_resync(focused: bool, own_last: &mut Option<String>, current: &str, want: &str) -> bool {
+    let set = should_set_text(focused, own_last.as_deref(), current, want);
+    if set {
+        *own_last = None;
+    }
+    set
+}
+
+/// Whether the URL input's text must be replaced by `want`. A focused input keeps the text
+/// its own last edit produced (it may differ from `display_url`, e.g. a trailing `&`).
+fn should_set_text(focused: bool, own_last: Option<&str>, current: &str, want: &str) -> bool {
+    if current == want {
+        return false;
+    }
+    !(focused && own_last == Some(want))
+}
+
 struct Segment {
     text: String,
     kind: SpanKind,
@@ -90,6 +108,8 @@ pub struct UrlBar {
     input: Entity<InputState>,
     segments: Vec<Segment>,
     problems: Vec<String>,
+    /// What the draft's URL text was right after this input's own last edit.
+    own_last: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -131,6 +151,7 @@ impl UrlBar {
             input,
             segments: Vec::new(),
             problems: Vec::new(),
+            own_last: None,
             _subs: subs,
         };
         this.refresh(cx);
@@ -187,6 +208,8 @@ impl UrlBar {
                 cx,
             );
         });
+        let d = &self.tab.read(cx).draft;
+        self.own_last = Some(display_url(&d.url, &d.params));
     }
 
     fn on_tab(
@@ -199,11 +222,12 @@ impl UrlBar {
         match event {
             TabEvent::DraftEdited => {
                 let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
-                self.resync(!focused, window, cx);
+                self.resync(focused, window, cx);
                 self.refresh(cx);
             }
             TabEvent::DraftReplaced => {
-                self.resync(true, window, cx);
+                self.own_last = None;
+                self.resync(false, window, cx);
                 self.refresh(cx);
             }
             _ => {}
@@ -226,13 +250,14 @@ impl UrlBar {
         }
     }
 
-    /// Pull the draft into the inputs. `text` is false while the user is typing in the URL input.
-    fn resync(&mut self, text: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Pull the draft into the inputs. A focused URL input keeps the text its own edit produced.
+    fn resync(&mut self, focused: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (want, method) = {
             let d = &self.tab.read(cx).draft;
             (display_url(&d.url, &d.params), d.method)
         };
-        if text && self.input.read(cx).value().as_ref() != want {
+        let current = self.input.read(cx).value();
+        if take_resync(focused, &mut self.own_last, current.as_ref(), &want) {
             self.input.update(cx, |s, cx| s.set_value(want, window, cx));
         }
         let ix = method_index(method);
@@ -358,6 +383,33 @@ impl Render for UrlBar {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn untick_then_retick_while_focused_resyncs_both_times() {
+        // Typed `a?x=1&y=2`: the own edit is recorded.
+        let mut own = Some("a?x=1&y=2".to_string());
+        // Untick y: outside edit overwrites.
+        assert!(take_resync(true, &mut own, "a?x=1&y=2", "a?x=1"));
+        // Re-tick y: want equals the old record, but must still overwrite.
+        assert!(take_resync(true, &mut own, "a?x=1", "a?x=1&y=2"));
+    }
+
+    #[test]
+    fn should_set_text_cases() {
+        // Focused own edit with a trailing `&` is kept.
+        assert!(!should_set_text(true, Some("a?x=1"), "a?x=1&", "a?x=1"));
+        // Focused, a Params toggle changed the draft: overwrite.
+        assert!(should_set_text(
+            true,
+            Some("a?x=1&y=2"),
+            "a?x=1&y=2",
+            "a?x=1"
+        ));
+        // Unfocused and equal: nothing.
+        assert!(!should_set_text(false, None, "a", "a"));
+        // Unfocused and different: overwrite, even if it matches own_last.
+        assert!(should_set_text(false, Some("a"), "a&", "a"));
+    }
 
     #[test]
     fn folders_are_every_directory_component() {
