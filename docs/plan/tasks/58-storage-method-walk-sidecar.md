@@ -30,3 +30,22 @@ M3 (v1 hardening). Closes three PLAN.md storage carry-forwards. First, two metho
 - A broken `folder.toml` failing the whole open. It needs a sidebar decision on how an invalid folder is shown and deleted; file a successor task if wanted.
 - Directory symlinks pointing outside the root, `scope_for` with a non-canonical root, hard links, `::$DATA` aliases, the sidecar check-then-use race, and the drive-prefix check.
 - A `FromStr` for `Method` in `wisp-core`.
+
+## Amendment (orchestrator, 2026-11-02)
+Code review found that the ancestor-only skip rule (acceptance item 3) lets symlinks that fan out and rejoin make `scan_dir` (crates/storage/src/collection.rs:264-273) visit about 2^(N+2) folders. The shape is a "diamond": folders l0..lN, each holding two symlinks `a` and `b` -> `../l{i+1}`. On that input `open_collection` can hang or run out of memory.
+
+User decision: keep the ancestor rule, and add a fixed folder budget for the whole walk, as a named const (e.g. `MAX_FOLDERS = 10_000`). Once the walk passes it, open fails with a clear, user-readable error that names the limit. Under the budget, a linked folder still appears everywhere it is linked.
+
+Rejected:
+- Walking each canonical dir once. A folder linked from two places would show only in the first.
+- A depth cap. A wide diamond under the cap is still huge.
+
+Added acceptance:
+- [ ] A named const caps the folders visited in one walk. Passing it makes `open_collection` return Err, and the error message names the limit.
+- [ ] A `#[cfg(unix)]` test builds a symlink diamond deep enough to pass the budget and asserts that open fails fast with the budget error, not a hang.
+- [ ] The existing cycle and walk tests still pass.
+
+## Review round 1 — findings
+- [P2] crates/storage/src/collection.rs:264-273 — after the change, scan_dir only skips a directory that is one of its own ancestors, so nothing bounds how many times one directory is walked. Symlinks that fan out and rejoin (a "diamond") make the walk, and the `folders` map, grow exponentially. The old whole-walk `visited` set prevented this. Input: a collection whose root holds l0..lN, each l{i} containing symlinks a -> ../l{i+1} and b -> ../l{i+1}. l{i} is reached 2^(i+1)-1 times, so ~2^(N+2) folder visits, each with its own canonicalize and `folders` entry; at N=30 open_collection hangs or runs out of memory. Settled by the amendment above.
+- [NOTE, optional] crates/storage/src/request.rs:221 — the `.toml` suffix check is a plain string match. On Windows, `other.toml.` or `other.toml ` passes it, but the filesystem resolves it to other.toml. Same kind of alias as the out-of-scope ::$DATA items.
+- [NOTE, optional] crates/storage/src/request.rs:224-226 — the older "is the request file itself" name check is now unreachable, because the suffix check catches every case it did. Harmless.
