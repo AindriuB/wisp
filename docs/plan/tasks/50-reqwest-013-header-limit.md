@@ -94,3 +94,20 @@ The implementer returned BLOCKED: the original acceptance item requiring no
 both public rustls features (Cargo.toml:169-177) enable
 `dep:rustls-platform-verifier`. Nothing was committed. Resolved by the
 Amendment above; the next attempt proceeds on the amended criteria.
+
+## Amendment 2 (orchestrator, 2026-11-02)
+reqwest 0.13.5's `tls_certs_only` takes full DER `reqwest::Certificate`s.
+`webpki-roots` ships only `TrustAnchor`s (subject + SPKI), so it cannot feed
+that API. The implementation uses `webpki-root-certs = "1.0"` instead: the same
+Mozilla bundle from the same rustls project, shipped as full certificates.
+
+Acceptance items that name `webpki-roots` are satisfied by `webpki-root-certs`
+appearing in `cargo tree -p wisp-core -e normal`.
+
+Rejected alternative: `use_preconfigured_tls` with `webpki-roots` plus a
+hand-written no-verify verifier for `verify_tls: false`. It means more custom
+TLS code for us to own.
+
+Self-signed local TLS test: skipped, which the task permits when a note is
+written. It needs `rcgen` and `tokio-rustls` dev-dependencies, which is more
+than this task should take on. This is a residual for a later task.
