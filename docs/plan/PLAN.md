@@ -32,7 +32,8 @@ All four defects found hand-checking 43-45 are fixed (see HISTORY). Combined bin
 **Header limit (47, resolved by 50):** the limit is now 1,000 headers; see the Task 50 residuals below.
 
 ### Reqwest 0.13 follow-ups (task 50)
-Optional, none blocking. No runtime TLS test exists (a self-signed local server with `verify_tls` false would need `rcgen` and `tokio-rustls` dev-deps); candidate follow-up task. `engine.rs:87` `filter_map` silently drops unparseable roots (cannot fail today with rustls-only `from_der`). `Cargo.toml:20` `webpki-root-certs` lacks `default-features = false` (no-op, consistency). `install_crypto_provider` ignores the `install_default` Err.
+Optional, none blocking. Closed by 51: the runtime TLS test (`crates/core/tests/tls.rs`) and the `webpki-root-certs` `default-features = false` consistency fix. Still open: `engine.rs:87` `filter_map` silently drops unparseable roots (cannot fail today with rustls-only `from_der`); `install_crypto_provider` ignores the `install_default` Err.
+**Residual (51):** `tls.rs:89,107,128` use `https://localhost` while the server binds 127.0.0.1 only; it works through resolver fallback, and using `https://127.0.0.1` (the cert has that SAN) would remove the dependency.
 Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after one request 102.3 MiB.
 
 ### Open budget and measurement questions (from M0)
