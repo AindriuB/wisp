@@ -1,10 +1,11 @@
 //! Cookies sub-tab: `Set-Cookie` headers of this response only.
 
 use gpui::{
-    Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
+    Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render, Styled,
+    Subscription, Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
+use gpui_component::scroll::ScrollableElement as _;
 
 use crate::cookies::{ResponseCookie, parse_set_cookies};
 use crate::tab::{RequestTab, TabEvent};
@@ -94,8 +95,7 @@ impl Render for CookiesPane {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h_0()
-            .overflow_y_scroll();
+            .min_h_0();
         for c in &cookies {
             rows = rows.child(
                 div()
@@ -110,6 +110,6 @@ impl Render for CookiesPane {
                     .child(cell(flags(c), widths[5])),
             );
         }
-        root.child(rows)
+        root.child(rows.overflow_y_scrollbar())
     }
 }

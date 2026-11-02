@@ -5,6 +5,7 @@ use gpui::{
     ParentElement, Render, StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
+use gpui_component::scroll::ScrollableElement as _;
 use wisp_core::HttpVersion;
 
 use crate::tab::{RequestTab, TabEvent};
@@ -88,7 +89,8 @@ impl Render for HeadersPane {
             .id("headers-rows")
             .flex()
             .flex_col()
-            .overflow_y_scroll();
+            .flex_1()
+            .min_h_0();
         let selected_bg = cx.theme().selection;
         for (row, h) in response.headers.iter().enumerate() {
             let cell = |col: usize, text: String| {
@@ -119,6 +121,8 @@ impl Render for HeadersPane {
                     .child(cell(1, h.value.to_string()).flex_1()),
             );
         }
+        // The rows div becomes the scroll area; the bar overlays it.
+        let table = table.overflow_y_scrollbar();
         root.track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 let k = &ev.keystroke;
