@@ -34,3 +34,9 @@ M3 (v1 hardening). Closes the PLAN.md residual "Path, Auth, Settings, Multipart 
 - Scroll-to-focus when tabbing into an off-screen control.
 - The other body-editor residuals: `path.exists()` on every render, relative File paths checked against the cwd, a Choose… pick into a deleted row.
 - The Settings timeout residual (`settings.rs:73-75`).
+
+## Review round 1 — findings
+
+- [STYLE] crates/app/src/ui/request/path.rs:3, auth.rs:3, settings.rs:5, body.rs:5 — each file adds `use gpui::InteractiveElement as _;` on its own line above the existing `use gpui::{ ... }` group. It should go inside that group. rule: every other file in the app crate puts `InteractiveElement as _` inside the `gpui::{...}` import group (e.g. crates/app/src/ui/request/headers.rs:4, crates/app/src/ui/response/cookies.rs:4, crates/app/src/ui/kv.rs:4). `cargo fmt` will not merge the two lines.
+- [P3] crates/app/src/ui/request/body.rs:539-547 — the Multipart and File branches share one scroll position, because `scroll_area` creates both scrollables from the same source line. gpui-component 0.8.1 (`scroll/scrollable.rs:78`, `:262-267`) keys the scroll state on the call site of `overflow_y_scrollbar()`, not on the element's `.id(..)`, and replaces the element's id (`scrollable.rs:150`). Input: short editor area, scroll a 15-part Multipart body down, switch kind to File while the File content is taller than the area → File opens scrolled down. Fix: `.overflow_y_scrollbar().id(id)` (gpui-component's `Scrollable::id`).
+- [NOTE, optional] path.rs:145/167, auth.rs:357, settings.rs:164 — the `.id("path-editor")` / `.id("auth-editor")` / `.id("settings-editor")` calls are overwritten by the Scrollable and do nothing at runtime; no collision since each has its own call line.

@@ -3,11 +3,12 @@
 use std::time::Duration;
 
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
-    Window, div, px,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
+    Styled, Subscription, Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::switch::Switch;
 
 use crate::tab::{RequestTab, TabEvent};
@@ -104,59 +105,61 @@ impl Render for SettingsEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self.tab.read(cx).draft.settings.clone();
         let label = |text: &'static str| div().w(px(160.)).text_sm().child(text);
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(label("Timeout (ms)"))
-                    .child(div().w(px(160.)).child(Input::new(&self.timeout)))
-                    .child(
-                        div()
-                            .pl_2()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("empty = default"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(label("Follow redirects"))
-                    .child(
-                        Switch::new("follow-redirects")
-                            .checked(s.follow_redirects)
-                            .on_click(cx.listener(|this, on: &bool, _, cx| {
-                                let on = *on;
-                                this.tab.update(cx, |t, cx| {
-                                    t.edit(|d| d.settings.follow_redirects = on, cx)
-                                });
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(label("Verify TLS"))
-                    .child(
-                        Switch::new("verify-tls")
-                            .checked(s.verify_tls)
-                            .on_click(cx.listener(|this, on: &bool, _, cx| {
+        let col =
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_2()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(label("Timeout (ms)"))
+                        .child(div().w(px(160.)).child(Input::new(&self.timeout)))
+                        .child(
+                            div()
+                                .pl_2()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("empty = default"),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(label("Follow redirects"))
+                        .child(
+                            Switch::new("follow-redirects")
+                                .checked(s.follow_redirects)
+                                .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                    let on = *on;
+                                    this.tab.update(cx, |t, cx| {
+                                        t.edit(|d| d.settings.follow_redirects = on, cx)
+                                    });
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(label("Verify TLS"))
+                        .child(Switch::new("verify-tls").checked(s.verify_tls).on_click(
+                            cx.listener(|this, on: &bool, _, cx| {
                                 let on = *on;
                                 this.tab
                                     .update(cx, |t, cx| t.edit(|d| d.settings.verify_tls = on, cx));
-                            })),
-                    ),
-            )
+                            }),
+                        )),
+                );
+        div()
+            .size_full()
+            .child(col.id("settings-editor").size_full().overflow_y_scrollbar())
     }
 }
 

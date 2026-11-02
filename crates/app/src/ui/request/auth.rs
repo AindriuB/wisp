@@ -1,12 +1,13 @@
 //! Auth sub-tab: type select plus the fields of the selected scheme.
 
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
+    SharedString, Styled, Subscription, Window, div,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::IndexPath;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use wisp_core::request::{ApiKeyLocation, Auth};
 use wisp_core::resolve::Scope;
@@ -350,7 +351,9 @@ impl Render for AuthEditor {
                     Select::new(&self.loc_select).id("auth-location"),
                 )),
         };
-        col
+        div()
+            .size_full()
+            .child(col.id("auth-editor").size_full().overflow_y_scrollbar())
     }
 }
 

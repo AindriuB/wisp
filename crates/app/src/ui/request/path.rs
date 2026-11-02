@@ -1,11 +1,12 @@
 //! Path sub-tab: one labelled input per `{name}` in the URL.
 
 use gpui::{
-    AppContext as _, Context, Entity, EntityId, IntoElement, ParentElement, Render, Styled,
-    Subscription, Window, div, px,
+    AppContext as _, Context, Entity, EntityId, InteractiveElement as _, IntoElement,
+    ParentElement, Render, Styled, Subscription, Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use wisp_core::template::path_params;
 
 use crate::tab::{RequestTab, TabEvent};
@@ -139,11 +140,16 @@ impl Render for PathEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut col = div().flex().flex_col().gap_1().p_2();
         if self.slots.is_empty() {
-            return col.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No path parameters. Put {name} in the URL path to add one."),
+            return div().size_full().child(
+                col.id("path-editor")
+                    .size_full()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("No path parameters. Put {name} in the URL path to add one."),
+                    )
+                    .overflow_y_scrollbar(),
             );
         }
         for s in &self.slots {
@@ -157,6 +163,8 @@ impl Render for PathEditor {
                     .child(div().flex_1().child(Input::new(&s.input))),
             );
         }
-        col
+        div()
+            .size_full()
+            .child(col.id("path-editor").size_full().overflow_y_scrollbar())
     }
 }

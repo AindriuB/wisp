@@ -9,6 +9,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme as _, IconName, IndexPath, Sizable as _};
 use wisp_core::request::{Body, KeyValue, Part, PartValue, TextBody};
@@ -533,6 +534,17 @@ impl BodyEditor {
         col.child(Editor::new(&self.editor).h(px(260.)))
     }
 
+    /// Bounded, vertically scrolling area for the editors whose content can outgrow the pane.
+    fn scroll_area(id: &'static str, content: gpui::Div) -> impl IntoElement {
+        div().flex_1().min_h_0().child(
+            div()
+                .size_full()
+                .child(content)
+                .overflow_y_scrollbar()
+                .id(id),
+        )
+    }
+
     fn render_multipart(&self, cx: &mut Context<Self>) -> gpui::Div {
         let view = cx.entity();
         let last = self.rows.len().saturating_sub(1);
@@ -641,8 +653,11 @@ impl Render for BodyEditor {
             BodyKind::None => col,
             BodyKind::Json | BodyKind::Text | BodyKind::Xml => col.child(self.render_text(cx)),
             BodyKind::Form => col.child(div().flex_1().min_h_0().child(self.form.clone())),
-            BodyKind::Multipart => col.child(self.render_multipart(cx)),
-            BodyKind::File => col.child(self.render_file(cx)),
+            BodyKind::Multipart => col.child(Self::scroll_area(
+                "body-multipart",
+                self.render_multipart(cx),
+            )),
+            BodyKind::File => col.child(Self::scroll_area("body-file", self.render_file(cx))),
         };
         col
     }
