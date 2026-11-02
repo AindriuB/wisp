@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-02 — Request sub-tabs scroll
+The Path, Auth and Settings sub-tabs and the Multipart and File body views now scroll: each sits in a `size_full` / `flex_1().min_h_0()` chain with `overflow_y_scrollbar()`, and Multipart and File each get their own scroll state through `Scrollable::id`. 344 tests pass; binary 19,131,376 B (+16,512).
+**Cost:** One review round. The `.id("…-editor")` calls in `path.rs`, `auth.rs` and `settings.rs` are overwritten by `Scrollable` and do nothing. The hand check is deferred to task 60.
+
 ## 2026-11-02 — Autosend resolve error and engine roots/TLS cleanup
 Task 54: the autosend hook now prints `WISP_EVENT failed kind=Resolve problems=<names>` from a pure `describe_problems`, instead of the fixed `InvalidUrl` label. It prints variable names only, escaped with `escape_debug`; the Syntax message is dropped and no values appear. Binary 19,131,376 B (+16,512); all workspace tests pass. Task 56: bundled roots are collected with `?`, so a bad root still fails at client build ("cannot build client"); the new test `every_bundled_root_is_accepted_by_a_root_store` asserts 0 ignored through `RootCertStore::add_parsable_certificates`. `install_crypto_provider` logs the Err at debug, and `tls.rs` uses `https://127.0.0.1`. 346 tests pass (tls test 5/5 and 10/10); binary 19,114,864 B (+0), no aws-lc/openssl/native-tls.
 **Cost:** Each took one review round. For 56 the first design counted roots dropped by `from_der`; the user decided to remove the counter because reqwest's `from_der` never fails in a rustls-only build, so do not reintroduce it. The 56 branch predated main's 55/58 commits, so the squash was checked against the merge base (only the intended files changed). The `measure.sh` run for 54 is deferred to task 60.
