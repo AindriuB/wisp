@@ -1,7 +1,7 @@
 # 35 — Integrate M2, remove the scaffold allowances and re-measure the budgets
 
 **Repo:** .
-**Depends on:** 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34
+**Depends on:** 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 37
 **Owns:**
 - crates/app/** (wiring fixes only; runs alone in its wave)
 
@@ -10,6 +10,7 @@ Close M2: every view is reachable, the `#[allow(dead_code)]` scaffold markers fr
 
 ## Context
 - crates/app/src/main.rs — `// mounted by 28, allow removed by 35` markers
+- crates/app/src/main.rs — task 37 touched it only to register the embedded icon `AssetSource` (`mod assets;` and `.with_assets(...)`); keep that registration and `crates/app/src/assets.rs` when removing the scaffold markers
 - crates/app/src/format.rs — `BODY_LIMIT`, `body_text`, `completed_line` kept for `view.rs`
 - scripts/measure/measure.sh — the hook and budget run
 - docs/architecture.md#budgets — binary ≤ 20,971,520 B, idle ≤ 120 MB, after one request ≤ 128 MB (macOS arm64, hardware renderer)
