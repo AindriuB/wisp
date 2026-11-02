@@ -51,6 +51,16 @@ fn follows_system(mode: ThemeMode) -> bool {
     mode == ThemeMode::System
 }
 
+/// Focus must come back to the root only when it is unchanged since the
+/// render that scheduled the check (so focus given to an element created
+/// after that frame is never taken), no in-window prompt is up, and the
+/// focused element is not part of the drawn tree (its view unmounted).
+/// Future gpui-component Root dialogs/sheets/notifications need the same
+/// guard as prompts.
+fn should_reclaim(focus_unchanged: bool, prompt_active: bool, focus_in_tree: bool) -> bool {
+    focus_unchanged && !prompt_active && !focus_in_tree
+}
+
 fn next_theme(mode: ThemeMode) -> ThemeMode {
     match mode {
         ThemeMode::System => ThemeMode::Light,
@@ -262,6 +272,19 @@ impl WorkspaceView {
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tab_views(window, cx);
+        // The callback runs after this frame is drawn, so `contains_focused`
+        // reflects the new tree; focus that moved meanwhile is left alone.
+        let focus = self.focus.clone();
+        let focused_at_render = window.focused(cx);
+        window.on_next_frame(move |window, cx| {
+            if should_reclaim(
+                window.focused(cx) == focused_at_render,
+                window.has_active_prompt(),
+                focus.contains_focused(window, cx),
+            ) {
+                window.focus(&focus, cx);
+            }
+        });
         let (tabs, active, split) = {
             let w = self.workspace.read(cx);
             (w.tabs.clone(), w.active, w.settings.split)
@@ -420,6 +443,26 @@ impl Render for WorkspaceView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reclaims_when_focus_is_on_nothing() {
+        assert!(should_reclaim(true, false, false));
+    }
+
+    #[test]
+    fn keeps_focus_inside_the_tree() {
+        assert!(!should_reclaim(true, false, true));
+    }
+
+    #[test]
+    fn leaves_focus_that_moved_since_render() {
+        assert!(!should_reclaim(false, false, false));
+    }
+
+    #[test]
+    fn leaves_focus_while_prompt_active() {
+        assert!(!should_reclaim(true, true, false));
+    }
 
     #[test]
     fn appearance_followed_only_for_system() {
