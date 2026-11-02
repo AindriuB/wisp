@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-02 — Embedded icon assets
+The app now embeds 19 icons from gpui-kit-assets 0.8.1 (Apache-2.0, NOTICE kept) through an asset source in `crates/app/src/assets.rs`, so the method and environment selects show chevrons and checkboxes can draw ticks. A walk test fails naming any `IconName` used in app sources that is not embedded. Binary is 18,981,728 B (+16.5 KB), idle RSS about 97.3 MiB.
+**Cost:** Binary headroom fell to about 2 MB after wave 3, so size is now the tight budget for task 35. Checkbox ticks were not hand-checked because no fixture row has a checkbox and background typing does not reach GPUI inputs. `main.rs`'s run line was split to avoid a rustfmt reflow. One P3 review round.
+
 ## 2026-11-02 — Response viewer: status line, Pretty/Raw body, headers and cookies
 The response pane now shows the active tab's response: a status line for each phase, a Body tab with Pretty (JSON under the limit, formatted on the background executor and cached per body) and Raw (paged from the body handle into a virtualised list capped at `RAW_DISPLAY_CAP`), a Save button that streams the body to a chosen path, a Headers tab with selectable cells and ⌘C copy, and a Cookies tab built from `Set-Cookie`.
 **Cost:** two attempts and three review rounds. Round 1 of attempt 1 caught a prefetch gate that wrongly stopped Raw prefetching once Pretty was ready; the first regression test did not exercise it, so the gate became one tested helper. /verify then failed attempt 1 because headers were plain divs; attempt 2 uses per-cell selectable divs with ⌘C instead of gpui-component's `Table`, which gives no partial-text selection or keyboard cell navigation. Cleanup after a failed Save must remove the partial file only after `File::create` succeeded, or it deletes the user's existing file (a read-only target in a writable folder). `File::create` still truncates first, so Replace is not atomic. The window hand check was not done and is deferred to task 35.

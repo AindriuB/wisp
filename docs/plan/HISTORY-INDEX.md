@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 37 | 19 embedded icons (gpui-kit-assets, Apache-2.0) with a walk test for missing IconNames; select chevrons fixed; binary 18.98 MB, headroom ~2 MB | ## 2026-11-02 — Embedded icon assets |
 | 2026-11-02 | 33 | Response pane: status line, Body Pretty/Raw (background pretty, paged virtualised Raw with cap), streaming Save, selectable headers with ⌘C, cookies table; window hand check deferred to task 35 | ## 2026-11-02 — Response viewer: status line, Pretty/Raw body, headers and cookies |
 | 2026-11-02 | 34 | ⌘K palette (quick-open and commands) and ⌘E environment switcher over one overlay view; key-binding-before-listener lesson; window hand check deferred to task 35 | ## 2026-11-02 — Command palette and environment switcher |
 | 2026-11-02 | 32 | Auth editor (none/inherit/basic/bearer/apikey, masked secrets, inherited line) and Body editor (JSON/text/XML/form/multipart/file); set_value-no-event lesson; window hand check deferred to task 35 | ## 2026-11-02 — Auth and body sub-tab editors |

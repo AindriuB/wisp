@@ -1,5 +1,7 @@
 //! Wisp: portable HTTP client.
 
+mod assets;
+
 // kept for the response pane (task 31+), allow removed by 35
 #[allow(dead_code)]
 mod format;
@@ -60,7 +62,8 @@ pub fn trace(stage: &str) {
 
 fn main() {
     trace("app run start");
-    gpui_platform::application().run(|cx| {
+    let app = gpui_platform::application().with_assets(assets::Icons);
+    app.run(|cx| {
         gpui_component::init(cx);
         actions::bind_keys(cx);
         let settings_path = settings::settings_path();
