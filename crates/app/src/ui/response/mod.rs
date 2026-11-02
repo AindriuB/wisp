@@ -148,11 +148,24 @@ impl ResponsePane {
                     .as_ref()
                     .map(|e| (error_words(e.kind), e.message.clone()))
                     .unwrap_or(("Request failed", String::new()));
+                let muted = theme.muted_foreground;
+                let full = format!("{words} {msg}").trim_end().to_string();
                 Some(
                     row()
+                        .id("status-line")
+                        .min_w_0()
+                        .overflow_hidden()
                         .text_color(theme.danger)
-                        .child(words)
-                        .child(div().text_color(theme.muted_foreground).child(msg))
+                        .child(div().flex_none().child(words))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .text_color(muted)
+                                .child(msg),
+                        )
+                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
                         .into_any_element(),
                 )
             }

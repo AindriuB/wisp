@@ -1,8 +1,8 @@
 //! Cookies sub-tab: `Set-Cookie` headers of this response only.
 
 use gpui::{
-    Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render, Styled,
-    Subscription, Window, div, px,
+    Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::scroll::ScrollableElement as _;
@@ -57,16 +57,40 @@ impl CookiesPane {
     }
 }
 
+/// Column names, in display order.
+const HEAD: [&str; 6] = [
+    "Name",
+    "Value",
+    "Domain",
+    "Path",
+    "Expires / Max-Age",
+    "Flags",
+];
+
 /// Preferred column widths, shared by the header and every row. Columns grow
 /// and shrink from these bases to fit the pane and truncate their text.
-const WIDTHS: [f32; 6] = [140., 200., 140., 100., 160., 200.];
+const WIDTHS: [f32; 6] = [140., 200., 140., 100., 160., 256.];
 
-fn cell(text: String, w: f32) -> gpui::Div {
+/// Narrowest each column may get. Below their sum the table scrolls sideways.
+const MIN_WIDTHS: [f32; 6] = [60., 56., 56., 36., 68., 256.];
+
+/// Right gutter reserved by the header and every row for the vertical scrollbar.
+const GUTTER: f32 = 12.;
+
+/// Column gap (`gap_2`) in pixels.
+const GAP: f32 = 8.;
+
+/// Minimum width of the whole table: columns, gaps and the scrollbar gutter.
+fn min_table_width() -> f32 {
+    MIN_WIDTHS.iter().sum::<f32>() + GAP * (MIN_WIDTHS.len() - 1) as f32 + GUTTER
+}
+
+fn cell(text: String, i: usize) -> gpui::Div {
     div()
-        .flex_basis(px(w))
+        .flex_basis(px(WIDTHS[i]))
         .flex_grow(1.)
         .flex_shrink(1.)
-        .min_w_0()
+        .min_w(px(MIN_WIDTHS[i]))
         .truncate()
         .child(text)
 }
@@ -76,7 +100,7 @@ impl Render for CookiesPane {
         let cookies = parse_set_cookies(&self.tab.read(cx).response.headers);
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
-        let mut root = div()
+        let root = div()
             .flex()
             .flex_col()
             .size_full()
@@ -86,20 +110,15 @@ impl Render for CookiesPane {
         if cookies.is_empty() {
             return root.child(div().child("No cookies in this response"));
         }
-        let head = [
-            "Name",
-            "Value",
-            "Domain",
-            "Path",
-            "Expires / Max-Age",
-            "Flags",
-        ];
-        let widths = WIDTHS;
-        let mut header = div().flex().gap_2().border_b_1().border_color(border);
-        for (h, w) in head.iter().zip(widths) {
-            header = header.child(cell(h.to_string(), w).font_weight(gpui::FontWeight::SEMIBOLD));
+        let mut header = div()
+            .flex()
+            .gap(px(GAP))
+            .pr(px(GUTTER))
+            .border_b_1()
+            .border_color(border);
+        for (i, h) in HEAD.iter().enumerate() {
+            header = header.child(cell(h.to_string(), i).font_weight(gpui::FontWeight::SEMIBOLD));
         }
-        root = root.child(header);
         let mut rows = div()
             .id("cookies-rows")
             .flex()
@@ -110,16 +129,65 @@ impl Render for CookiesPane {
             rows = rows.child(
                 div()
                     .flex()
-                    .gap_2()
+                    .gap(px(GAP))
                     .py_0p5()
-                    .child(cell(c.name.clone(), widths[0]))
-                    .child(cell(c.value.clone(), widths[1]))
-                    .child(cell(c.domain.clone().unwrap_or_default(), widths[2]))
-                    .child(cell(c.path.clone().unwrap_or_default(), widths[3]))
-                    .child(cell(expiry(c), widths[4]))
-                    .child(cell(flags(c), widths[5])),
+                    .pr(px(GUTTER))
+                    .child(cell(c.name.clone(), 0))
+                    .child(cell(c.value.clone(), 1))
+                    .child(cell(c.domain.clone().unwrap_or_default(), 2))
+                    .child(cell(c.path.clone().unwrap_or_default(), 3))
+                    .child(cell(expiry(c), 4))
+                    .child(cell(flags(c), 5)),
             );
         }
-        root.child(rows.overflow_y_scrollbar())
+        let table = div()
+            .flex()
+            .flex_col()
+            .h_full()
+            .w_full()
+            .min_w(px(min_table_width()))
+            .child(header)
+            .child(rows.overflow_y_scrollbar());
+        root.child(
+            div()
+                .id("cookies-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .child(table),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn min_table_width_sums_columns_gaps_and_gutter() {
+        assert_eq!(min_table_width(), 532. + 40. + 12.);
+    }
+
+    #[test]
+    fn minimums_never_exceed_preferred() {
+        for (m, w) in MIN_WIDTHS.iter().zip(WIDTHS) {
+            assert!(*m <= w);
+        }
+    }
+
+    #[test]
+    fn table_fits_a_600px_pane_and_still_scrolls_at_200px() {
+        // 600 px pane less the root's `p_2` padding (8 px each side).
+        assert!(min_table_width() <= 584.);
+        assert!(min_table_width() > 200.);
+    }
+
+    #[test]
+    fn flags_minimum_fits_the_longest_flag_string() {
+        // "Secure, HttpOnly, SameSite=Strict" measured with AppKit in the
+        // SF system font at 16 px (regular weight): 249.45 px, rounded up.
+        const FLAGS_TEXT_PX: f32 = 250.;
+        const { assert!(MIN_WIDTHS[5] >= FLAGS_TEXT_PX) };
     }
 }
