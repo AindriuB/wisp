@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-02 | 53 | Cookies columns get minimum widths (584 px table, Flags 256 px) and scroll sideways below that; failed-status message truncates with tooltip | ## 2026-11-02 — Cookies table and failed-status line fit narrow panes |
 | 2026-11-02 | 52 | Path, Auth, Settings, Multipart and File sub-tabs scroll with a scrollbar | ## 2026-11-02 — Request sub-tabs scroll |
 | 2026-11-02 | 54, 56 | Autosend failure line reports `kind=Resolve problems=<names>` (names only, escaped); dead root counter dropped, provider Err logged, every bundled root checked against a RootCertStore, TLS tests use 127.0.0.1 | ## 2026-11-02 — Autosend resolve error and engine roots/TLS cleanup |
 | 2026-11-02 | 55, 58 | Close button on each request tab; one case-insensitive method parser, folder walk bounded by ancestor cycle rule plus 10,000-folder budget, `.toml` sidecars rejected | ## 2026-11-02 — Tab close button and storage hardening (method parser, folder walk, sidecars) |

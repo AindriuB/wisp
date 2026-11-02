@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-02 — Cookies table and failed-status line fit narrow panes
+The Cookies columns now have minimum widths (60, 56, 56, 36, 68, 256 px), so the table needs 584 px, the usable width of a 600 px pane; below that the header and rows scroll sideways together through `cookies-scroll` with `restrict_scroll_to_axis()`. Flags is 256 px because "Secure, HttpOnly, SameSite=Strict" measures 249.45 px (AppKit, .SystemUIFont 16 px), guarded by a const assert against `FLAGS_TEXT_PX` = 250. Header and rows reserve a gutter for the scrollbar. The failed-status message truncates on one line with a full-text tooltip (trailing space trimmed); `error_words` never truncates. 348 tests pass; binary 19,114,864 B on a branch that predates 52/54.
+**Cost:** Two review rounds, then attempt 1 failed verify because Flags was clipped at 600 px; attempt 2 rebalanced the minimums and took one more review round. At 600 px the "Expires / Max-Age" header and typical dates are cut (accepted trade-off). Below 584 px the rows' vertical scrollbar starts off-screen until you scroll sideways. Flags was measured against the macOS system font only. The hand check at 600 px and 200 px, and the real binary size, are deferred to task 60.
+
 ## 2026-11-02 — Request sub-tabs scroll
 The Path, Auth and Settings sub-tabs and the Multipart and File body views now scroll: each sits in a `size_full` / `flex_1().min_h_0()` chain with `overflow_y_scrollbar()`, and Multipart and File each get their own scroll state through `Scrollable::id`. 344 tests pass; binary 19,131,376 B (+16,512).
 **Cost:** One review round. The `.id("…-editor")` calls in `path.rs`, `auth.rs` and `settings.rs` are overwritten by `Scrollable` and do nothing. The hand check is deferred to task 60.
