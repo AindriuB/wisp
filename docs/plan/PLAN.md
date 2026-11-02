@@ -29,7 +29,11 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 ### Pane-scrollbar defects (tasks 46-49, fixed and hand-checked 2026-11-02)
 All four defects found hand-checking 43-45 are fixed (see HISTORY). Combined binary 19,014,912 B (+0 B).
 **Residuals:** the Cookies scrollbar overlays the right edge of the Flags column; the Cookies columns have no minimum width, so panes under about 245 px reduce short columns to "…"; the status-line error text is clipped at the pane edge. Many inherited headers can squeeze the request-header table (the inherited list keeps natural height per spec). Path, Auth, Settings, Multipart and File sub-tabs keep content-height wrappers and still overflow. Optional cosmetic (49): `WIDTHS` placement and the `let widths = WIDTHS;` alias in `cookies.rs`. Do not add `.flex()` to the `div().w_full()` wrapper around KvTable virtual rows (46).
-**Header limit (47), user decision open:** the limit stays at hyper's 100 headers and the failure now reads "response headers too large (limit 100 headers, or the head exceeds hyper's size limit)". reqwest 0.12.28 has no HTTP/1 max-headers setter. Raising it needs a reqwest bump or a direct hyper-util client, which is a dependency decision. Accepted: a Content-Length above u64::MAX-2 gets the same message.
+**Header limit (47, resolved by 50):** the limit is now 1,000 headers; see the Task 50 residuals below.
+
+### Reqwest 0.13 follow-ups (task 50)
+Optional, none blocking. No runtime TLS test exists (a self-signed local server with `verify_tls` false would need `rcgen` and `tokio-rustls` dev-deps); candidate follow-up task. `engine.rs:87` `filter_map` silently drops unparseable roots (cannot fail today with rustls-only `from_der`). `Cargo.toml:20` `webpki-root-certs` lacks `default-features = false` (no-op, consistency). `install_crypto_provider` ignores the `install_default` Err.
+Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after one request 102.3 MiB.
 
 ### Open budget and measurement questions (from M0)
 **Per-platform budgets:** the user has not set budgets for Windows, Linux or macOS x64. Windows (24.9 MB) and Linux (35.1 MB) release binaries exceed the 20 MB figure, and Linux software-rendered RSS (about 171 MB idle) exceeds 120 MB. CI renderers are software or unknown and not comparable with the hardware figure; the set budgets still apply to macOS arm64 hardware only. Per-platform budgets are the user's call.
