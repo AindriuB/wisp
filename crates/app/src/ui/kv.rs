@@ -369,7 +369,14 @@ impl Render for KvTable {
             let list = v_virtual_list(cx.entity(), "kv-rows", sizes, |this, range, _window, cx| {
                 range
                     .filter(|i| *i < this.slots.len())
-                    .map(|i| this.render_row(i, cx))
+                    .map(|i| {
+                        // The list lays an item out at the list width but the row has
+                        // no width of its own, so its flex_1 cells shrink to zero.
+                        div()
+                            .w_full()
+                            .child(this.render_row(i, cx))
+                            .into_any_element()
+                    })
                     .collect::<Vec<_>>()
             })
             .track_scroll(&self.scroll);
