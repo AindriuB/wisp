@@ -5,10 +5,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Entity, IntoElement, ParentElement, Render, SharedString, Size, Styled, Subscription,
-    Window, div, px, size,
+    Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement, Render, ScrollStrategy, SharedString, Size, Styled, Subscription, Window, div,
+    px, size,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::spinner::Spinner;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, v_virtual_list,
@@ -50,6 +52,68 @@ fn should_prefetch(
     has_body
         && !pretty_on_screen(view, pretty_ok, pretty)
         && range_end + PREFETCH_LINES >= lines_len
+}
+
+/// A jump requested from the keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Jump {
+    Top,
+    End,
+}
+
+/// Maps a key press on the body list to a jump. End and Cmd+Down go to the
+/// end, Home and Cmd/Ctrl+Up to the top (End and Home with any modifier); anything else is not ours.
+fn jump_for_key(key: &str, platform: bool) -> Option<Jump> {
+    match (key, platform) {
+        ("end", _) | ("down", true) => Some(Jump::End),
+        ("home", _) | ("up", true) => Some(Jump::Top),
+        _ => None,
+    }
+}
+
+/// Whether a Raw or Pretty line list is on screen (not the placeholder,
+/// the spinner or the binary notice), so the jump keys have something to move.
+fn list_on_screen(has_body: bool, kind: Option<ContentKind>, pretty_working_shown: bool) -> bool {
+    has_body && kind.is_some_and(|k| k != ContentKind::Binary) && !pretty_working_shown
+}
+
+/// Index of the last item of the list on screen: the Pretty lines when
+/// Pretty is shown, else the raw lines plus the note and spare rows.
+fn last_index(pretty_len: Option<usize>, raw_lines: usize) -> usize {
+    pretty_len.map_or(raw_lines + 1, |n| n.saturating_sub(1))
+}
+
+/// A pending jump belongs to the view it started in; switching views drops it.
+fn jump_still_valid(started_in_pretty: bool, pretty_now: bool) -> bool {
+    started_in_pretty == pretty_now
+}
+
+/// What to do next for a pending jump to the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JumpStep {
+    Nothing,
+    LoadMore,
+    Wait,
+    /// Scroll to the bottom and clear the pending flag.
+    ScrollToEnd,
+}
+
+fn jump_step(
+    pending: bool,
+    pretty_shown: bool,
+    loading: bool,
+    done: bool,
+    capped: bool,
+) -> JumpStep {
+    if !pending {
+        JumpStep::Nothing
+    } else if pretty_shown || done || capped {
+        JumpStep::ScrollToEnd
+    } else if loading {
+        JumpStep::Wait
+    } else {
+        JumpStep::LoadMore
+    }
 }
 
 /// Appends `text` to `lines`, carrying an unterminated tail in `partial`.
@@ -122,6 +186,10 @@ pub struct BodyPane {
     raw: Raw,
     sizes: Rc<Vec<Size<gpui::Pixels>>>,
     scroll: gpui_component::VirtualListScrollHandle,
+    focus: FocusHandle,
+    pending_jump_end: bool,
+    /// Whether Pretty was on screen when the pending jump started.
+    jump_in_pretty: bool,
     _sub: Subscription,
 }
 
@@ -132,6 +200,7 @@ impl BodyPane {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus = cx.focus_handle();
         let sub = cx.subscribe(&tab, |this, _, event: &TabEvent, cx| {
             if *event == TabEvent::ResponseChanged {
                 this.sync(cx);
@@ -147,6 +216,9 @@ impl BodyPane {
             raw: Raw::default(),
             sizes: Rc::new(Vec::new()),
             scroll: gpui_component::VirtualListScrollHandle::new(),
+            focus,
+            pending_jump_end: false,
+            jump_in_pretty: false,
             _sub: sub,
         };
         this.sync(cx);
@@ -166,6 +238,7 @@ impl BodyPane {
             self.probing = false;
             self.pretty = Pretty::Idle;
             self.raw = Raw::default();
+            self.pending_jump_end = false;
             self.sizes = Rc::new(Vec::new());
         }
         cx.notify();
@@ -317,10 +390,74 @@ impl BodyPane {
                 }
                 let n = this.raw.lines.len() + 2;
                 this.set_sizes(n);
+                this.advance_jump(cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn pretty_working_shown(&self, cx: &Context<Self>) -> bool {
+        matches!(self.pretty, Pretty::Working) && self.showing_pretty(cx)
+    }
+
+    fn on_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        if !list_on_screen(
+            self.body.is_some(),
+            self.kind,
+            self.pretty_working_shown(cx),
+        ) {
+            return;
+        }
+        match jump_for_key(&k.key, k.modifiers.platform || k.modifiers.control) {
+            Some(Jump::End) => {
+                self.pending_jump_end = true;
+                self.jump_in_pretty = self.showing_pretty(cx);
+                self.advance_jump(cx);
+            }
+            Some(Jump::Top) => {
+                self.pending_jump_end = false;
+                self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+            }
+            None => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Takes the next step of a pending jump to the end.
+    fn advance_jump(&mut self, cx: &mut Context<Self>) {
+        if !jump_still_valid(self.jump_in_pretty, self.showing_pretty(cx)) {
+            self.pending_jump_end = false;
+            return;
+        }
+        let step = jump_step(
+            self.pending_jump_end,
+            self.showing_pretty(cx),
+            self.raw.loading,
+            self.raw.done,
+            self.raw.capped,
+        );
+        match step {
+            JumpStep::Nothing | JumpStep::Wait => {}
+            JumpStep::LoadMore => {
+                self.load_more(cx);
+                // load_more may finish at once without a page landing.
+                if self.raw.done || self.raw.capped {
+                    self.advance_jump(cx);
+                }
+            }
+            JumpStep::ScrollToEnd => {
+                self.pending_jump_end = false;
+                let pretty_len = match &self.pretty {
+                    Pretty::Ready(l) if self.showing_pretty(cx) => Some(l.len()),
+                    _ => None,
+                };
+                let last = last_index(pretty_len, self.raw.lines.len());
+                self.scroll.scroll_to_item(last, ScrollStrategy::Top);
+            }
+        }
     }
 
     fn finish_raw(&mut self) {
@@ -382,7 +519,7 @@ impl BodyPane {
             self.set_sizes(count);
         }
         let sizes = self.sizes.clone();
-        v_virtual_list(cx.entity(), id, sizes, move |this, range, _window, cx| {
+        let list = v_virtual_list(cx.entity(), id, sizes, move |this, range, _window, cx| {
             if should_prefetch(
                 this.body.is_some(),
                 this.tab.read(cx).body_view,
@@ -418,8 +555,17 @@ impl BodyPane {
                 })
                 .collect::<Vec<_>>()
         })
-        .track_scroll(&self.scroll)
-        .into_any_element()
+        .track_scroll(&self.scroll);
+        // v_virtual_list has no scrollbar of its own, so the list sits in a
+        // relative wrapper and the shared handle drives a vertical scrollbar
+        // layer (ScrollableElement::vertical_scrollbar, as in scroll/scrollable.rs).
+        div()
+            .id(SharedString::from(format!("{id}-scroll")))
+            .relative()
+            .size_full()
+            .child(list)
+            .vertical_scrollbar(&self.scroll)
+            .into_any_element()
     }
 
     fn raw_item(&self, i: usize) -> Option<SharedString> {
@@ -556,7 +702,14 @@ impl Render for BodyPane {
             let n = self.raw.lines.len() + 2;
             div().flex_1().child(self.lines_view("raw-lines", n, cx))
         };
-        root.child(body.min_h_0())
+        root.id("body-pane")
+            .track_focus(&self.focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
+            )
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.on_key(ev, cx)))
+            .child(body.min_h_0())
     }
 }
 
@@ -651,6 +804,71 @@ mod tests {
     fn page_size_is_a_divisor_of_the_cap() {
         use crate::pager::PAGE_SIZE;
         assert_eq!(RAW_DISPLAY_CAP % PAGE_SIZE as u64, 0);
+    }
+
+    #[test]
+    fn a_pending_jump_loads_waits_or_scrolls_by_state() {
+        // (a) pending, idle, not finished: load the next page.
+        assert_eq!(
+            jump_step(true, false, false, false, false),
+            JumpStep::LoadMore
+        );
+        // (b) pending, a page in flight: wait.
+        assert_eq!(jump_step(true, false, true, false, false), JumpStep::Wait);
+        // (c) pending, done or capped: scroll to the end.
+        assert_eq!(
+            jump_step(true, false, false, true, false),
+            JumpStep::ScrollToEnd
+        );
+        assert_eq!(
+            jump_step(true, false, false, false, true),
+            JumpStep::ScrollToEnd
+        );
+        // (d) Pretty on screen: scroll at once, no raw load.
+        assert_eq!(
+            jump_step(true, true, false, false, false),
+            JumpStep::ScrollToEnd
+        );
+        assert_eq!(
+            jump_step(true, true, true, false, false),
+            JumpStep::ScrollToEnd
+        );
+        // (e) nothing pending: nothing.
+        assert_eq!(
+            jump_step(false, false, false, false, false),
+            JumpStep::Nothing
+        );
+        assert_eq!(jump_step(false, true, false, true, true), JumpStep::Nothing);
+    }
+
+    #[test]
+    fn list_gating_and_last_index_follow_the_view_on_screen() {
+        let t = Some(ContentKind::Text);
+        assert!(list_on_screen(true, t, false));
+        assert!(!list_on_screen(false, t, false));
+        assert!(!list_on_screen(true, None, false));
+        assert!(!list_on_screen(true, Some(ContentKind::Binary), false));
+        assert!(!list_on_screen(true, Some(ContentKind::Json), true));
+        assert_eq!(last_index(None, 10), 11);
+        assert_eq!(last_index(Some(5), 10), 4);
+        assert_eq!(last_index(Some(0), 10), 0);
+    }
+
+    #[test]
+    fn end_home_and_command_arrows_map_to_jumps() {
+        assert_eq!(jump_for_key("end", false), Some(Jump::End));
+        assert_eq!(jump_for_key("down", true), Some(Jump::End));
+        assert_eq!(jump_for_key("home", false), Some(Jump::Top));
+        assert_eq!(jump_for_key("up", true), Some(Jump::Top));
+        assert_eq!(jump_for_key("end", true), Some(Jump::End));
+        assert_eq!(jump_for_key("home", true), Some(Jump::Top));
+        assert!(jump_still_valid(false, false));
+        assert!(jump_still_valid(true, true));
+        assert!(!jump_still_valid(false, true));
+        assert!(!jump_still_valid(true, false));
+        assert_eq!(jump_for_key("down", false), None);
+        assert_eq!(jump_for_key("up", false), None);
+        assert_eq!(jump_for_key("a", true), None);
     }
 
     #[test]
