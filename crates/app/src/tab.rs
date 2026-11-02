@@ -88,7 +88,6 @@ pub struct RequestTab {
     pub request_tab: RequestSubTab,
     pub response_tab: ResponseSubTab,
     pub body_view: BodyView,
-    pub load_error: Option<String>,
 }
 
 impl EventEmitter<TabEvent> for RequestTab {}
@@ -105,7 +104,6 @@ impl RequestTab {
             request_tab: RequestSubTab::Params,
             response_tab: ResponseSubTab::Body,
             body_view: BodyView::Pretty,
-            load_error: None,
         }
     }
 
