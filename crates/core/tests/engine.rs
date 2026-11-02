@@ -337,6 +337,58 @@ async fn words_in_the_url_do_not_change_the_error_kind() {
     );
 }
 
+fn serve_headers(n: usize) -> u16 {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = l.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let mut r =
+                String::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n");
+            for i in 0..n {
+                r.push_str(&format!("X-H-{i}: v\r\n"));
+            }
+            r.push_str("\r\n");
+            let _ = s.write_all(r.as_bytes());
+        }
+    });
+    port
+}
+
+async fn terminal(url: String) -> Event {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(get(url)));
+    collect_until_terminal(&rx).await.pop().unwrap()
+}
+
+#[tokio::test]
+async fn a_response_with_150_headers_fails_naming_the_limit() {
+    let port = serve_headers(150);
+    match terminal(format!("http://127.0.0.1:{port}/")).await {
+        Event::Failed { error, .. } => {
+            assert_eq!(error.kind, ErrorKind::Other);
+            assert!(
+                error
+                    .message
+                    .starts_with("response headers too large (limit 100 headers"),
+                "{}",
+                error.message
+            );
+            assert!(!error.message.contains("client error"), "{}", error.message);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_response_with_90_headers_still_completes() {
+    let port = serve_headers(90);
+    let ev = terminal(format!("http://127.0.0.1:{port}/")).await;
+    assert!(matches!(ev, Event::Completed { .. }), "{ev:?}");
+}
+
 #[tokio::test]
 async fn a_bad_header_name_is_not_reported_as_an_invalid_url() {
     let mut req = get("http://127.0.0.1:1/".into());

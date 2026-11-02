@@ -431,6 +431,9 @@ async fn perform(
     Ok((received, handle))
 }
 
+/// hyper's HTTP/1 response header-count limit; reqwest 0.12.28 has no setter for it.
+const HTTP1_MAX_RESPONSE_HEADERS: usize = 100;
+
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
     // Only the causes: the top-level text embeds the URL, whose words must not influence the kind.
     let mut chain = String::new();
@@ -443,6 +446,15 @@ fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
         message.push_str(": ");
         message.push_str(&text);
         src = s.source();
+    }
+    if chain.contains("message head is too large") {
+        // hyper reports a head over its byte buffer and one over its header-count limit identically.
+        return EngineError {
+            kind: ErrorKind::Other,
+            message: format!(
+                "response headers too large (limit {HTTP1_MAX_RESPONSE_HEADERS} headers, or the head exceeds hyper's size limit)"
+            ),
+        };
     }
     let kind = if e.is_timeout() {
         ErrorKind::Timeout
