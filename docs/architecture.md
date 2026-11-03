@@ -172,7 +172,7 @@ recorded; the budget figures below are in MB (1 MB = 1,048,576 B, 1 MB RSS =
 | `aarch64-apple-darwin` (after task 21, M2 layout freeze) | 16,726,992 B | 69,216 KiB | 70,480 KiB | hardware | task 21 tester run (`RENDERER=hardware scripts/measure/measure.sh`, not a committed record) |
 | `x86_64-apple-darwin` | 18,052,632 B (local cross-build on arm64) | not measured: RSS on `macos-26-intel` CI hung in the icon service (`ISIconManager`) | not measured: same | n/a | `561807f` (`x86_64-apple-darwin.json`) |
 
-Current-main CI baseline (task 63, `measure.yml` run 41607658851 on `0d450de`). Renderers are software on Linux and Windows, so these are not comparable with the hardware row and are not held to the budgets below. RSS and the memory fields are in KiB, idle / after one request.
+Before task 64: current-main CI baseline (task 63, `measure.yml` run 41607658851 on `0d450de`). Renderers are software on Linux and Windows, so these are not comparable with the hardware row and are not held to the budgets below. RSS and the memory fields are in KiB, idle / after one request.
 
 | Target (CI) | Binary size | RSS | Other memory | Renderer |
 |---|---|---|---|---|
@@ -182,6 +182,17 @@ Current-main CI baseline (task 63, `measure.yml` run 41607658851 on `0d450de`). 
 | `x86_64-apple-darwin` | 20,714,504 B | unmeasured: no `WISP_EVENT` completed within 30 s (long-standing runner hang) | n/a | n/a |
 
 On Linux, RSS mostly counts shared llvmpipe driver pages; RssAnon is the closest figure to the app's own memory. On Windows, the private working set is the headline figure. These replace the task 09 skeleton figures (Windows 24,937,984 B, 39,600 / 45,940 KiB; Linux 35,134,344 B, 171,712 / 172,324 KiB; aarch64 16,660,480 B, 73,168 / 76,528 KiB).
+
+After task 64 (release-profile shrink), `measure.yml` run 41631211960 on `10e3b3f`. These are the current figures. Memory fields are in KiB, idle / after one request. The run conclusions read success only because `measure.yml` has `continue-on-error`; the macOS x64 job fails in every run, baseline included, so its size is the only figure.
+
+| Target (CI) | Binary size | RSS | Other memory | Change in size |
+|---|---|---|---|---|
+| `aarch64-apple-darwin` | 10,420,080 B | 73,152 / 77,728 | n/a | -45.7% |
+| `x86_64-pc-windows-msvc` | 13,450,240 B | 41,560 / 50,016 | private working set 9,208 / 12,940 | -53.5% |
+| `x86_64-unknown-linux-gnu` | 23,353,896 B | 167,640 / 163,652 | PSS 141,438 / 137,523; RssAnon 58,168 / 44,972 (llvmpipe) | -38.5% |
+| `x86_64-apple-darwin` | 12,884,616 B | unmeasured (the job fails; no artefact) | n/a | -37.8% |
+
+Release profile now (`Cargo.toml`, `.cargo/config.toml`): `panic = "abort"`; dependencies build at `opt-level = "z"` through `[profile.release.package."*"]`, while our `wisp-*` crates stay at 3; on Linux x64, `--gc-sections` and `--icf=all` are passed through rust-lld by `.cargo/config.toml`. Consequence: a panic anywhere, including in a spawned tokio task, ends the process; there is no unwinding and nothing recovers from a task panic. A `RUSTFLAGS` environment variable replaces the config's target rustflags, and GNU ld rejects `--icf=all`, so the Linux build needs lld.
 
 ### Set budgets
 

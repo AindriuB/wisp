@@ -1,0 +1,3 @@
+# rust-lld is rustc's default linker on x86_64 Linux, so --icf=all is available.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--gc-sections", "-C", "link-arg=-Wl,--icf=all"]

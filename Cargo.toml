@@ -11,6 +11,10 @@ lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = "z"
 
 [workspace.dependencies]
 wisp-core = { path = "crates/core" }
