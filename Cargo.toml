@@ -11,6 +11,7 @@ lto = true
 codegen-units = 1
 strip = true
 opt-level = 3
+panic = "abort"
 
 [workspace.dependencies]
 wisp-core = { path = "crates/core" }
