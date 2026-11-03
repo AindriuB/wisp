@@ -46,8 +46,8 @@ $osVersion = [System.Environment]::OSVersion.VersionString
 $bytes = $null
 $errFile = $null
 $budgetsFile = if ($env:BUDGETS) { $env:BUDGETS } else { Join-Path $PSScriptRoot 'budgets.json' }
-if (-not (Test-Path $budgetsFile)) { [Console]::Error.WriteLine("no such budgets file: $budgetsFile"); exit 2 }
-try { $budgetsData = Get-Content -Raw $budgetsFile | ConvertFrom-Json -ErrorAction Stop } catch { $budgetsData = $null }
+if (-not (Test-Path -PathType Leaf $budgetsFile)) { [Console]::Error.WriteLine("no such budgets file: $budgetsFile"); exit 2 }
+try { $budgetsData = Get-Content -Raw $budgetsFile | ConvertFrom-Json -NoEnumerate -ErrorAction Stop } catch { $budgetsData = $null }
 if ($budgetsData -isnot [System.Management.Automation.PSCustomObject]) { [Console]::Error.WriteLine("budgets file is not valid JSON: $budgetsFile"); exit 2 }
 $script:overBudget = @()
 

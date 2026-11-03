@@ -21,8 +21,9 @@
 # RSS also counts shared driver pages. renderer_device is the GPU/adapter name
 # from the app log or `vulkaninfo --summary`; null with renderer_device_reason
 # when neither gives one. renderer_device_source says which: "app_log" or
-# "vulkaninfo" when renderer_device is set, otherwise null. Those keys, and private_working_set_kib, are null
-# where not applicable (macOS; Windows has its own script).
+# "vulkaninfo" when renderer_device is set, otherwise null. Those keys, and
+# private_working_set_kib, are null where not applicable (macOS; Windows has
+# its own script).
 # Budgets: scripts/measure/budgets.json (or $BUDGETS) gives the target's limits;
 # the result JSON gets a `budget` object and `within_budget`. Exit codes: 2 usage,
 # 1 unmeasured, 3 measured but over budget, 0 otherwise.
