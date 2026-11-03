@@ -103,3 +103,9 @@ memory. The Linux rule uses RssAnon because llvmpipe dominates RSS and PSS in CI
   - Windows: binary 13,450,240; private_kib.idle 35,900; after 40,608.
   - Linux: binary 23,353,896; rss_anon_kib.idle 53,660; after 45,592.
   - x64: job `failure` (tolerated), result `unmeasured` (no 'WISP_EVENT completed' within 30 s); budget.binary_bytes 12,884,616 within, memory values null.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 37d6170.
+
+- [STYLE] scripts/measure/measure.ps1:1-24 — the header comment does not mention `BUDGETS`, `budgets.json`, the `budget`/`within_budget` keys or exit code 3. Match measure.sh:25-27's "Budgets: ... Exit codes: ..." paragraph, and keep the env-var list (:2-3) and exit behaviour (:17-18) complete.
