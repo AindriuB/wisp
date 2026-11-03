@@ -132,3 +132,5 @@ Reviewed HEAD: 51c90be.
 
 - [P2] .github/workflows/release.yml:106-115 — the tag guard and tag-release step check only `github.ref_type == 'tag'`, which is also true for a `workflow_dispatch` run on a tag ref, so a dispatch with `draft_release: false` still creates a draft release (and `-f draft_release=true` on a tag ref makes two drafts). Use `github.event_name == 'push' && github.ref_type == 'tag'` on both steps. Failing input: `gh workflow run release.yml --ref v0.1.0` after the tag exists → draft release v0.1.0 created.
 - [NOTE, optional] scripts/release/package.sh:58 — `tar -czf` records the runner's uid/gid; add `--owner=0 --group=0 --numeric-owner`.
+
+- Round 1: guards now `github.event_name == 'push' && github.ref_type == 'tag'` (release.yml, both tag steps); tar uses `--owner=0 --group=0 --numeric-owner`. Re-run dry run 41690366878 at head 7a21170: success (4 jobs), draft with 4 assets, tar owners listed as 0/0, draft deleted, `gh release list` empty.
