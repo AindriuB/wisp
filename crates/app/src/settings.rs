@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn location_prefers_env_then_config_dir_then_none() {
+    fn location_prefers_portable_then_env_then_config_dir_then_none() {
         let e = Path::new("/x");
         assert_eq!(
             location(e, true, None),

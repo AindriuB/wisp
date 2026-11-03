@@ -69,3 +69,7 @@ keep dead code. No behaviour changes.
 - docs/, PLAN.md, HISTORY*.md (scribe).
 
 ## Notes
+- All four `.id("…-editor")` calls removed; compiled and clippy clean. Removing them left `InteractiveElement` unused in path.rs, auth.rs and settings.rs, so those imports were dropped (outside the listed edits, same files). Scrolling not checked visually.
+- palette `sen` order is [1, 2, 3, 0] (Send request, Resend, Save token, scattered): consistent with the comment.
+- `wisp-core --test engine a_20_mib_file_body_streams_with_content_length` failed once under a parallel full run and passed on rerun; looks flaky, not touched.
+- Release build size not measured (deletion-only).

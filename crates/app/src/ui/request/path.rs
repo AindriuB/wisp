@@ -1,8 +1,8 @@
 //! Path sub-tab: one labelled input per `{name}` in the URL.
 
 use gpui::{
-    AppContext as _, Context, Entity, EntityId, InteractiveElement as _, IntoElement,
-    ParentElement, Render, Styled, Subscription, Window, div, px,
+    AppContext as _, Context, Entity, EntityId, IntoElement, ParentElement, Render, Styled,
+    Subscription, Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -141,8 +141,7 @@ impl Render for PathEditor {
         let mut col = div().flex().flex_col().gap_1().p_2();
         if self.slots.is_empty() {
             return div().size_full().child(
-                col.id("path-editor")
-                    .size_full()
+                col.size_full()
                     .child(
                         div()
                             .text_sm()
@@ -165,6 +164,6 @@ impl Render for PathEditor {
         }
         div()
             .size_full()
-            .child(col.id("path-editor").size_full().overflow_y_scrollbar())
+            .child(col.size_full().overflow_y_scrollbar())
     }
 }
