@@ -20,7 +20,7 @@ exists: existing clients are large and memory-heavy.
   folder and `settings.toml`.
 - **Lightweight.** Low idle memory and a small binary. The numeric budgets are
   set from Milestone 0 measurements (see Budgets).
-- **v1 platforms:** macOS (Apple Silicon and Intel), Windows x64, Linux x64
+- **v1 platforms:** macOS Apple silicon, Windows x64, Linux x64
   (Wayland or X11; GPUI needs a Vulkan-capable driver).
 - **License and version.** Apache-2.0 (`LICENSE`, `NOTICE`), version 0.1.0,
   both set once in `[workspace.package]` and inherited by every crate.
@@ -176,7 +176,7 @@ recorded; the budget figures below are in MB (1 MB = 1,048,576 B, 1 MB RSS =
 | `aarch64-apple-darwin` | 16,660,480 B | 100,032 KiB | 103,296 KiB | hardware | `561807f` (`aarch64-apple-darwin.json`) |
 | `aarch64-apple-darwin` (after task 16, M1 core) | 16,710,288 B | 99,232 KiB | 102,560 KiB | hardware | `2e8d74b` (`RENDERER=hardware scripts/measure/measure.sh`, not a committed record) |
 | `aarch64-apple-darwin` (after task 21, M2 layout freeze) | 16,726,992 B | 69,216 KiB | 70,480 KiB | hardware | task 21 tester run (`RENDERER=hardware scripts/measure/measure.sh`, not a committed record) |
-| `x86_64-apple-darwin` | 18,052,632 B (local cross-build on arm64) | not measured: RSS on `macos-26-intel` CI hung in the icon service (`ISIconManager`) | not measured: same | n/a | `561807f` (`x86_64-apple-darwin.json`) |
+| `x86_64-apple-darwin` (dropped for 0.1.0) | 18,052,632 B (local cross-build on arm64) | not measured: RSS on `macos-26-intel` CI hung in the icon service (`ISIconManager`) | not measured: same | n/a | `561807f` (`x86_64-apple-darwin.json`) |
 
 Before task 64: current-main CI baseline (task 63, `measure.yml` run 41607658851 on `0d450de`). Renderers are software on Linux and Windows, so these are not comparable with the hardware row and are not held to the budgets below. RSS and the memory fields are in KiB, idle / after one request.
 
@@ -185,18 +185,18 @@ Before task 64: current-main CI baseline (task 63, `measure.yml` run 41607658851
 | `aarch64-apple-darwin` | 19,181,056 B | 74,816 / 80,032 | n/a | not recorded |
 | `x86_64-pc-windows-msvc` | 28,947,456 B | 42,784 / 52,180 | private bytes 35,108 / 41,628; private working set 9,024 / 13,112 | WARP software |
 | `x86_64-unknown-linux-gnu` | 37,993,000 B | 175,192 / 172,864 | PSS 148,989 / 146,736; RssAnon 57,964 / 44,920 | llvmpipe (LLVM 21.1.8, 256 bits) under xvfb |
-| `x86_64-apple-darwin` | 20,714,504 B | unmeasured: no `WISP_EVENT` completed within 30 s (long-standing runner hang) | n/a | n/a |
+| `x86_64-apple-darwin` (dropped for 0.1.0) | 20,714,504 B | unmeasured: no `WISP_EVENT` completed within 30 s (long-standing runner hang) | n/a | n/a |
 
 On Linux, RSS mostly counts shared llvmpipe driver pages; RssAnon is the closest figure to the app's own memory. On Windows, the private working set is the headline figure. These replace the task 09 skeleton figures (Windows 24,937,984 B, 39,600 / 45,940 KiB; Linux 35,134,344 B, 171,712 / 172,324 KiB; aarch64 16,660,480 B, 73,168 / 76,528 KiB).
 
-After task 64 (release-profile shrink), `measure.yml` run 41631211960 on `10e3b3f`. These are the current figures. Memory fields are in KiB, idle / after one request. The run conclusions read success only because `measure.yml` has `continue-on-error`; the macOS x64 job fails in every run, baseline included, so its size is the only figure.
+After task 64 (release-profile shrink), `measure.yml` run 41631211960 on `10e3b3f`. These are the current figures. Memory fields are in KiB, idle / after one request. At that time the macOS x64 job failed in every run, baseline included, so its size is the only figure; that job was removed in task 71.
 
 | Target (CI) | Binary size | RSS | Other memory | Change in size |
 |---|---|---|---|---|
 | `aarch64-apple-darwin` | 10,420,080 B | 73,152 / 77,728 | n/a | -45.7% |
 | `x86_64-pc-windows-msvc` | 13,450,240 B | 41,560 / 50,016 | private working set 9,208 / 12,940 | -53.5% |
 | `x86_64-unknown-linux-gnu` | 23,353,896 B | 167,640 / 163,652 | PSS 141,438 / 137,523; RssAnon 58,168 / 44,972 (llvmpipe) | -38.5% |
-| `x86_64-apple-darwin` | 12,884,616 B | unmeasured (the job fails; no artefact) | n/a | -37.8% |
+| `x86_64-apple-darwin` (dropped for 0.1.0) | 12,884,616 B | unmeasured (the job fails; no artefact) | n/a | -37.8% |
 
 Release profile now (`Cargo.toml`, `.cargo/config.toml`): `panic = "abort"`; dependencies build at `opt-level = "z"` through `[profile.release.package."*"]`, while our `wisp-*` crates stay at 3; on Linux x64, `--gc-sections` and `--icf=all` are passed through rust-lld by `.cargo/config.toml`. Consequence: a panic anywhere, including in a spawned tokio task, ends the process; there is no unwinding and nothing recovers from a task panic. A `RUSTFLAGS` environment variable replaces the config's target rustflags, and GNU ld rejects `--icf=all`, so the Linux build needs lld.
 
@@ -210,7 +210,6 @@ by target triple; both measure scripts read it, and this table is its explanatio
 | Target | Binary size | Idle memory | Memory after one request | Memory metric |
 |---|---|---|---|---|
 | `aarch64-apple-darwin` | at most 20 MiB (20,971,520 B) | at most 120 MiB | at most 128 MiB | RSS (`idle_rss_kib`) |
-| `x86_64-apple-darwin` | at most 20 MiB | at most 120 MiB | at most 128 MiB | RSS; unmeasured, see below |
 | `x86_64-pc-windows-msvc` | at most 16 MiB (16,777,216 B) | at most 120 MiB | at most 128 MiB | private bytes (`private_kib`) |
 | `x86_64-unknown-linux-gnu` | at most 28 MiB (29,360,128 B) | at most 120 MiB | at most 128 MiB | RssAnon (`rss_anon_kib`) |
 
@@ -220,21 +219,32 @@ software, so figures are comparable only within one target.
 
 Each result JSON carries a `budget` object (`binary_bytes`, `idle`, `after_request`,
 each `{metric, limit, value, within}`) and `within_budget`. The scripts exit 3 when a
-measured result is over budget and 1 when it is unmeasured. `measure.yml` sets
-`continue-on-error` for `x86_64-apple-darwin` only, so a run now fails when arm64,
-Windows or Linux is over budget or unmeasured. The macOS x64 job hangs on its runner
-(see Open budget questions in PLAN), so its memory is unmeasured and that is not a
-failure; its binary size is still checked. First enforced run: `measure.yml` run
-41636483942 on `4ba28c1`; arm64, Windows and Linux were measured and within budget
-(binary 10,420,080 / 13,450,240 / 23,353,896 B), x64 unmeasured.
+measured result is over budget and 1 when it is unmeasured. A run fails when arm64,
+Windows or Linux is over budget or unmeasured. Intel macOS (`x86_64-apple-darwin`) was
+dropped from 0.1.0 on 2026-11-03 (user decision): macOS 27 is Apple-silicon-only and the
+x64 CI job hung in the runner's icon service in every run. `measure.yml` no longer builds it
+and `budgets.json` has no entry for it; `results/x86_64-apple-darwin.json` stays as a
+historical record. First enforced run: `measure.yml` run 41636483942 on `4ba28c1`; arm64,
+Windows and Linux were measured and within budget (binary 10,420,080 / 13,450,240 /
+23,353,896 B).
+
+The Linux job also uploads three diagnostic artefacts, taken after the after-request sample
+so they cannot change the measured figures. It runs under Xvfb at 1280x800x24.
+`measure-<target>.png` is a screenshot of the X root window (ImageMagick `import`, wrapped in
+`timeout 20`; set by `SCREENSHOT=<path>` in `measure.sh`, a failure prints one `screenshot: <reason>`
+line and changes nothing else). `<logbase>.libs.txt` is the sorted, unique list of shared objects
+in `/proc/<pid>/maps` of the running app. `measure-<target>.packages.txt` maps those to Debian
+packages (`dpkg -S`, arch suffix stripped, `unowned: <path>` for files dpkg does not own) and
+lists the binary's `readelf -d` NEEDED entries; it is the source of the README's Linux
+runtime-library list. In CI the Mesa, LLVM and DRM packages come from the software Vulkan driver
+and are not runtime requirements of a user's machine.
 
 The JSON also carries `renderer_device_source`, which says where `renderer_device`
 came from: `"app_log"`, `"vulkaninfo"` or null (null whenever `renderer_device` is
 unset, and always on Windows and macOS). The `vulkaninfo` fallback may name a
 different device than the one GPUI picked. A `budgets.json` that is malformed or
 whose top level is not an object makes either script exit 2 with one stderr line,
-before the app is launched. The `measure` job has `timeout-minutes: 45`, so the
-macOS x64 hang ends the job instead of running to GitHub's 6-hour default.
+before the app is launched. The `measure` job has `timeout-minutes: 45`.
 
 No change may be justified or rejected by reference to a number that is not in
 this section.
