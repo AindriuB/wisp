@@ -13,7 +13,7 @@ use gpui_component::spinner::Spinner;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Sizable as _};
-use wisp_core::ErrorKind;
+use wisp_core::{EngineError, ErrorKind};
 
 use crate::format::{format_duration, format_size, status_text};
 use crate::tab::{Phase, RequestTab, ResponseState, ResponseSubTab, TabEvent};
@@ -39,6 +39,23 @@ pub fn error_words(kind: ErrorKind) -> &'static str {
         ErrorKind::Body => "Body error",
         ErrorKind::BodyFile => "Body file error",
         ErrorKind::Other => "Request failed",
+    }
+}
+
+/// Full text of a failure: the heading, then the message when there is one.
+pub fn error_text(e: Option<&EngineError>) -> String {
+    match e {
+        Some(e) if !e.message.is_empty() => format!("{}: {}", error_words(e.kind), e.message),
+        Some(e) => error_words(e.kind).to_string(),
+        None => "Request failed".to_string(),
+    }
+}
+
+/// The Done line's timing segment; the total is left out when not recorded.
+fn timing_text(total: Option<String>, size: &str) -> String {
+    match total {
+        Some(t) => format!("· {t} · {size}"),
+        None => format!("· {size}"),
     }
 }
 
@@ -122,10 +139,10 @@ impl ResponsePane {
                     StatusClass::ServerError => theme.danger,
                     StatusClass::Other => theme.muted_foreground,
                 };
-                let total = r.total.map(format_duration).unwrap_or_default();
+                let total = r.total.map(format_duration);
                 let size = format_size(r.size.unwrap_or(r.received));
                 let status_str = status_text(status, r.reason.as_deref());
-                let timing = format!("· {total} · {size}");
+                let timing = timing_text(total, &size);
                 let full = done_tooltip(&status_str, &timing, r.ttfb.map(format_duration));
                 let line = row()
                     .id("status-line")
@@ -149,7 +166,7 @@ impl ResponsePane {
                     .map(|e| (error_words(e.kind), e.message.clone()))
                     .unwrap_or(("Request failed", String::new()));
                 let muted = theme.muted_foreground;
-                let full = format!("{words} {msg}").trim_end().to_string();
+                let full = error_text(r.error.as_ref());
                 Some(
                     row()
                         .id("status-line")
@@ -231,6 +248,29 @@ mod tests {
             done_tooltip("200 OK", "· 12 ms · 1.2 KB", None),
             "200 OK · 12 ms · 1.2 KB"
         );
+    }
+
+    #[test]
+    fn error_text_cases() {
+        let e = |m: &str| EngineError {
+            kind: ErrorKind::Connect,
+            message: m.into(),
+        };
+        assert_eq!(
+            error_text(Some(&e("error sending request: client error: refused"))),
+            "Connection failed: error sending request: client error: refused"
+        );
+        assert_eq!(error_text(Some(&e(""))), "Connection failed");
+        assert_eq!(error_text(None), "Request failed");
+    }
+
+    #[test]
+    fn timing_text_with_and_without_total() {
+        assert_eq!(
+            timing_text(Some("12 ms".into()), "1.2 KB"),
+            "· 12 ms · 1.2 KB"
+        );
+        assert_eq!(timing_text(None, "1.2 KB"), "· 1.2 KB");
     }
 
     #[test]
