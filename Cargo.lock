@@ -8187,7 +8187,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-app"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui-component",
@@ -8201,7 +8201,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
@@ -8222,7 +8222,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-storage"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-channel",
  "notify",
