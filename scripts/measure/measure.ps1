@@ -7,7 +7,9 @@
 # process's private working set (Win32_PerfFormattedData WorkingSetPrivate).
 # idle_rss_kib / after_request_rss_kib (WorkingSet64) and private_kib
 # (PrivateMemorySize64, committed private bytes) are kept for continuity.
-# pss_kib, rss_anon_kib and renderer_device are null here (Linux-only keys).
+# pss_kib, rss_anon_kib, renderer_device and renderer_device_source are null
+# here (Linux-only keys). renderer_device_source ("app_log"|"vulkaninfo") says
+# where a Linux renderer_device came from.
 #
 # Method: serve a fixed 64 KiB file from `python3 -m http.server` on 127.0.0.1.
 # Launch the binary once without the hook, wait settle_seconds, sample
@@ -45,6 +47,8 @@ $bytes = $null
 $errFile = $null
 $budgetsFile = if ($env:BUDGETS) { $env:BUDGETS } else { Join-Path $PSScriptRoot 'budgets.json' }
 if (-not (Test-Path $budgetsFile)) { [Console]::Error.WriteLine("no such budgets file: $budgetsFile"); exit 2 }
+try { $budgetsData = Get-Content -Raw $budgetsFile | ConvertFrom-Json -ErrorAction Stop } catch { $budgetsData = $null }
+if ($budgetsData -isnot [System.Management.Automation.PSCustomObject]) { [Console]::Error.WriteLine("budgets file is not valid JSON: $budgetsFile"); exit 2 }
 $script:overBudget = @()
 
 function Get-StderrTail {
@@ -53,8 +57,13 @@ function Get-StderrTail {
 }
 
 function Get-PrivateWs($procId) {
-  $p = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess=$procId" -ErrorAction Stop | Select-Object -First 1
-  if (-not $p) { throw "no perf counter row for pid $procId" }
+  try {
+    $p = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess=$procId" -ErrorAction Stop | Select-Object -First 1
+  } catch { $p = $null }
+  if (-not $p) {
+    [Console]::Error.WriteLine("warning: no private working set perf counter row for pid $procId")
+    return $null
+  }
   return [int64]($p.WorkingSetPrivate / 1KB)
 }
 
@@ -67,12 +76,12 @@ function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $s
     private_kib = [ordered]@{ idle = $idlePriv; after_request = $afterPriv }
     private_working_set_kib = [ordered]@{ idle = $idlePws; after_request = $afterPws }
     pss_kib = $null; rss_anon_kib = $null
-    renderer_device = $null; renderer_device_reason = 'not applicable on this OS'
+    renderer_device = $null; renderer_device_source = $null; renderer_device_reason = 'not applicable on this OS'
     settle_seconds = $settle; renderer = $renderer; status = $status
     reason = $reason; os_version = $osVersion
     stderr_tail = $stderrTail
   }
-  $entry = (Get-Content -Raw $budgetsFile | ConvertFrom-Json).$target
+  $entry = $budgetsData.$target
   $budget = $null; $within = $null
   if ($entry) {
     $budget = [ordered]@{}

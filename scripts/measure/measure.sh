@@ -9,7 +9,7 @@
 # `WISP_EVENT completed` stdout line (30 s max), wait settle_seconds, sample
 # RSS, kill. Fixed waits are fine: this is a measurement, not a test.
 # If the window fails to start or no WISP_EVENT line arrives, write
-# status "unmeasured" with a reason, exit non-zero, and record no numbers.
+# status "unmeasured" with a reason, exit 1, and record no numbers.
 # The waiting stops early when the app prints `WISP_EVENT failed` or exits.
 # Each launch's stdout/stderr are kept next to <output.json> as
 # <output stem>.{idle,req}.{out,err}.log; on "unmeasured" the last 20 stderr
@@ -20,12 +20,15 @@
 # Anonymous from /proc/<pid>/smaps_rollup, each {idle, after_request}); plain
 # RSS also counts shared driver pages. renderer_device is the GPU/adapter name
 # from the app log or `vulkaninfo --summary`; null with renderer_device_reason
-# when neither gives one. Those keys, and private_working_set_kib, are null
+# when neither gives one. renderer_device_source says which: "app_log" or
+# "vulkaninfo" when renderer_device is set, otherwise null. Those keys, and private_working_set_kib, are null
 # where not applicable (macOS; Windows has its own script).
 # Budgets: scripts/measure/budgets.json (or $BUDGETS) gives the target's limits;
 # the result JSON gets a `budget` object and `within_budget`. Exit codes: 2 usage,
 # 1 unmeasured, 3 measured but over budget, 0 otherwise.
 set -u
+# A set CDPATH makes `cd` print the directory, which would corrupt $(cd ... && pwd).
+unset CDPATH
 
 bin="${1:-}"; out="${2:-}"
 [ -n "$bin" ] && [ -n "$out" ] || { echo "usage: measure.sh <binary> <output.json>" >&2; exit 2; }
@@ -35,6 +38,10 @@ bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")"
 
 budgets="${BUDGETS:-$(cd "$(dirname "$0")" && pwd)/budgets.json}"
 [ -f "$budgets" ] || { echo "no such budgets file: $budgets" >&2; exit 2; }
+python3 -c 'import json, sys
+with open(sys.argv[1]) as f:
+    sys.exit(0 if isinstance(json.load(f), dict) else 1)' "$budgets" 2>/dev/null \
+  || { echo "budgets file is not valid JSON: $budgets" >&2; exit 2; }
 
 settle="${SETTLE_SECONDS:-5}"
 renderer="${RENDERER:-unknown}"
@@ -50,6 +57,7 @@ export RUST_BACKTRACE=1 RUST_LOG=info
 
 work="$(mktemp -d)"
 server_pid=""; app_pid=""
+# shellcheck disable=SC2329  # invoked via trap, not by name
 cleanup() {
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null
   [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
@@ -59,7 +67,7 @@ trap cleanup EXIT
 
 # Linux-only extras, filled in as they are sampled.
 pss_idle=""; pss_after=""; anon_idle=""; anon_after=""
-device=""
+device=""; device_source=""
 if [ "$(uname -s)" = Linux ]; then
   device_reason="not sampled: run failed before the renderer was probed"
 else
@@ -70,7 +78,7 @@ fi
 write_json() {
   mkdir -p "$(dirname "$out")"
   python3 - "$target" "$commit" "$bytes" "$3" "$4" "$settle" "$renderer" "$1" "$2" "$os_version" "${5:-}" \
-    "$pss_idle" "$pss_after" "$anon_idle" "$anon_after" "$device" "$device_reason" "$budgets" >"$out" <<'PY'
+    "$pss_idle" "$pss_after" "$anon_idle" "$anon_after" "$device" "$device_reason" "$budgets" "$device_source" >"$out" <<'PY'
 import json, sys
 a = sys.argv[1:]
 num = lambda s: int(s) if s else None
@@ -90,6 +98,7 @@ res = {
     "stderr_tail": tail,
     "pss_kib": pair(11, 12), "rss_anon_kib": pair(13, 14),
     "renderer_device": a[15] or None,
+    "renderer_device_source": (a[18] or None) if a[15] else None,
     "renderer_device_reason": None if a[15] else (a[16] or None),
     "private_working_set_kib": None,
 }
@@ -155,10 +164,10 @@ find_device() {
   local line=""
   line="$(sed -n 's/.*Selected GPU (passed configuration test):[[:space:]]*//p' "$@" 2>/dev/null | head -n 1)"
   line="$(printf '%s' "$line" | sed 's/[[:space:]]*([^()]*)[[:space:]]*$//' | cut -c1-200)"
-  if [ -n "$line" ]; then device="$line"; return; fi
+  if [ -n "$line" ]; then device="$line"; device_source=app_log; return; fi
   if command -v vulkaninfo >/dev/null 2>&1; then
     line="$(vulkaninfo --summary 2>/dev/null | sed -n 's/^[[:space:]]*deviceName[[:space:]]*=[[:space:]]*//p' | head -n 1)"
-    if [ -n "$line" ]; then device="$line"; return; fi
+    if [ -n "$line" ]; then device="$line"; device_source=vulkaninfo; return; fi
     device_reason="vulkaninfo gave no deviceName and the app log named no adapter"
   else
     device_reason="vulkaninfo not installed and the app log named no adapter"
