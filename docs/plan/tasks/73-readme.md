@@ -83,3 +83,14 @@ Not confirmed: the Windows hand-test and macOS hand-test statements are written 
 ### Correction (2026-11-03)
 
 Task 75 pinned Linux builds to ubuntu-24.04 and added `scripts/release/check-glibc.sh`, so the glibc floor is 2.39, not 2.43 (source: docs/architecture.md, Release section on main). The README now says "glibc 2.39 or newer (Ubuntu 24.04 or newer, or an equally recent distribution)"; the package list is unchanged. The README sentence about the missing app icon was removed, since task 76 is still in progress. The branch was merged with origin/main, keeping main's HISTORY.md, HISTORY-INDEX.md, PLAN.md, architecture.md and spec, so the branch's own content is README.md and this task file.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 54ce05b.
+
+- [P2] README.md:65 — "Wisp writes nothing outside the collection folder and `settings.toml`" is false: response bodies over the memory limit spill to a temp file under the OS temp dir (crates/core/src/body.rs:13, :86-133; docs/architecture.md:163 calls it "the one exception"), Unix startup creates and deletes a `.wisp-probe-*` file there (body.rs:75), and Save writes wherever the user picks. Reword to match.
+- [P3] README.md:17-24 — Terminal `unzip` doesn't carry the quarantine flag (the zip is built with `ditto --noqtn`), so the block and the xattr step only apply when the zip is opened in Finder; and Finder quarantines every file in the bundle. Say the block happens when extracted with Finder, and use `xattr -dr com.apple.quarantine Wisp.app` (orchestrator decision: `-dr` supersedes the amendment's `-d`).
+- [P3] README.md:65 — portable mode: user decision 2026-11-03, portable mode is Windows and Linux only for 0.1.0; macOS always uses ~/Library/Application Support/wisp. Say so.
+- [P3] README.md:57 — "the X11/xcb and xkbcommon libraries it links directly": the binary's NEEDED entries are libxcb, libxkbcommon, libxkbcommon-x11, libgcc_s, libm, libc; libx11-6/libx11-xcb1 come via the graphics stack. Reword; also replace the awkward "A driver is something the list … can only show indirectly" with a plain statement that the Vulkan driver depends on your GPU (mesa-vulkan-drivers for AMD/Intel/software, vendor driver for NVIDIA).
+- [NOTE] README.md:5 — say "Developer ID signing" rather than "code signing" (the app is ad-hoc signed). README.md:48 — make clear whether "it" is the folder or the binary.
+- Out of this task (orchestrator): wisp.exe opens a console window and needs the VC++ runtime — fixed by a separate task; leave the README's Windows wording as is unless it claims the opposite.
