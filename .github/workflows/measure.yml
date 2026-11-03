@@ -28,7 +28,8 @@ jobs:
             binary: wisp.exe
             renderer: software
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            # glibc floor 2.39: ubuntu-latest is 26.04 and would need GLIBC_2.43
+            os: ubuntu-24.04
             binary: wisp
             renderer: software
     runs-on: ${{ matrix.os }}
@@ -68,6 +69,9 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked -p wisp-app --target ${{ matrix.target }}
+      - name: Check glibc floor (Linux)
+        if: runner.os == 'Linux'
+        run: scripts/release/check-glibc.sh target/${{ matrix.target }}/release/${{ matrix.binary }} 2.39
       - name: Measure (Linux, software Vulkan under xvfb)
         if: runner.os == 'Linux'
         env:
