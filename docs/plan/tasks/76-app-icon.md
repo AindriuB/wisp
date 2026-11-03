@@ -152,3 +152,11 @@ Replaces the first amendment's "explicit tinted asset" approach (actool cannot t
 - Local .app: CFBundleIconFile=wisp, CFBundleIconName=AppIcon, Resources has wisp.icns and Assets.car, codesign --verify --strict passes, NSWorkspace iconForFile returns a 32-representation non-generic icon. Layered preview (actool's AppIcon.icns, 256 px): /private/tmp/claude-501/-Users-Andrew-workspace-wisp/24a22d9f-a0ec-4839-8ef4-6802e403ebab/scratchpad/layered-preview-512.png
 - Dry run: run 41704554331 on task/76-app-icon, green on macOS, Linux, Windows and release. Assets: macos-arm64.zip 8431094, windows-x64.zip 5901596, linux-x64.tar.gz 9957501 bytes. Previous main run 40964841352 only has raw per-target binaries (artifacts 7930932 / 9639814 / 15225808 bytes compressed), so not like-for-like. Downloaded .app: plist keys present, Assets.car lists AppIcon with ISAppearanceTintable, Aqua and DarkAqua entries, codesign ok. Linux tar lists icons/wisp-{48,64,128,256,512}.png. Draft release deleted, no tag pushed.
 - Pushing needed `git -c http.postBuffer=524288000` (HTTP 400 otherwise).
+
+## Review round 1 — findings
+
+Reviewed HEAD: e0f9abc.
+
+- [STYLE] docs/plan/tasks/76-app-icon.md:147-154 — the implementer's eight Notes bullets (commit e0f9abc) sit at the end of the second Amendment section, so they read as user decisions; `## Notes` (~:125) is empty. Move the bullets unchanged under `## Notes` (also correct "256 px" to the preview's real size).
+- [P3] scripts/release/package.sh:52-54 — `xcrun actool … >/dev/null` discards actool's stdout, which carries its errors/warnings plist; a failure prints no reason, and a warnings-only run can produce an Assets.car without AppIcon while the existence check passes. Capture stdout to a file and print it on failure; also verify AppIcon is in Assets.car (e.g. `assetutil --info` grep) rather than only that the file exists.
+- [P3] scripts/icon/icon.json and assets/icon/AppIcon.icon/icon.json are mode 100755; `chmod 644` the source and regenerate.
