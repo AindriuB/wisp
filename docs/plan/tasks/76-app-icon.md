@@ -133,3 +133,6 @@ in the generator script is enough.
   resource ID 1 also feeds the GPUI window class icon.
 
 ## Notes
+
+## Amendment — user decision (2026-11-03)
+macOS also ships a tinted (monochrome) appearance. Source: assets/icon/wisp-mono.svg. A classic .icns cannot carry appearance variants, so the macOS bundle additionally gets an asset catalog compiled with `actool` (Xcode; present on the dev Mac and on macos-latest runners) into Contents/Resources/Assets.car: an AppIcon with the default artwork plus a tinted appearance (and dark, if the tool requires one, reusing the default). Info.plist sets CFBundleIconName=AppIcon and keeps CFBundleIconFile=wisp with wisp.icns as the fallback for older macOS. Whether the catalog source (.xcassets or an Icon Composer `.icon`) is committed and compiled at package time, or Assets.car is committed, is the implementer's call — record which and why in Notes. Owns gains assets/icon/** (already owned) and the macOS packaging steps in scripts/release/package.sh (already owned); no workflow edit unless actool cannot run from package.sh on the runner. Acceptance adds: `assetutil --info Contents/Resources/Assets.car` (or equivalent) lists the AppIcon with a tinted appearance in the dry-run .app, and the local .app still passes codesign. The user's visual check of tinted mode is part of the release hand test.
