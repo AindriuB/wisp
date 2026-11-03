@@ -108,3 +108,11 @@ runtime-library list from that output.
   Binary NEEDED: libxcb.so.1, libxkbcommon.so.0, libxkbcommon-x11.so.0, libgcc_s.so.1,
   libm.so.6, libc.so.6. (Mesa/llvm/drm entries come from the software Vulkan driver in CI;
   fontconfig is not loaded at runtime, and libwayland-client0 is loaded though only X11 was used.)
+
+## Review round 1 — findings
+
+Reviewed HEAD: 8746f4e.
+
+- [P3] .github/workflows/measure.yml:85 — the runtime-packages pipeline runs under `bash -eo pipefail`; if any loaded `.so` isn't owned by dpkg, `dpkg -S` exits 1, `xargs` exits 123 and the Linux job fails although measurement passed; where it doesn't fail, `2>/dev/null` silently drops the unowned path. Make the step non-fatal (`|| true`) and write unowned paths as `unowned: <path>` lines.
+- [NOTE, optional] same line — strip the `:amd64` suffix and split multi-owner lines so task 73 can read the file directly.
+- [NOTE, optional] scripts/measure/measure.sh:236 — `import -window root` has no timeout; wrap it (e.g. `timeout 20` on the Linux runner) if cheap.
