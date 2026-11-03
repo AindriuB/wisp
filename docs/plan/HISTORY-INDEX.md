@@ -21,6 +21,7 @@ no row is one `planner` cannot find, and will re-plan.
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
 | 2026-11-03 | 76 | App icon: layered .icon compiled to Assets.car plus icns fallback on macOS, ico via winresource on Windows, PNGs in Linux tar; generate.sh with --check; no Linux window icon yet | ## 2026-11-03 — App icon on macOS, Windows and Linux |
+| 2026-11-03 | 77 | Windows release links as a GUI-subsystem exe (no console from Explorer) with static CRT (no VC++ runtime); binary +1.34% to 13,630,464 B | ## 2026-11-03 — Windows release is a GUI-subsystem exe with a static CRT |
 | 2026-11-03 | 73 | README.md covers install per platform, unsigned-build steps (Finder quarantine, `xattr -dr`), Linux libraries and glibc 2.39 floor, platform testing, write locations, portable mode on Windows/Linux only, license | ## 2026-11-03 — README for 0.1.0 |
 | 2026-11-03 | 75 | Linux built on ubuntu-24.04 in release, measure and ci; check-glibc.sh fails the build above glibc 2.39 (was GLIBC_2.43 on ubuntu-latest) | ## 2026-11-03 — Linux builds pinned to Ubuntu 24.04 with a glibc floor guard |
 | 2026-11-03 | 74 | Sidebar palette hint was hard-coded ⌘K; `palette_hint()` formats the registered KEYS binding per OS (⌘K macOS, Ctrl+K Windows/Linux) | ## 2026-11-03 — Shortcut hints show each platform's real binding |
