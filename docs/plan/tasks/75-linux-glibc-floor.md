@@ -49,3 +49,12 @@ make the release fail if the binary ever needs a glibc symbol version above
 - Guard runs in measure.yml too (a few ms, reads the already-built binary).
 - Negative check: `check-glibc.sh wisp 2.30` exits 1, prints "highest GLIBC required: 2.39 (max allowed: 2.30)", "FAIL: ... needs GLIBC_2.39 ...", offending symbols incl. GLIBC_2.39 pidfd_spawnp, pidfd_getpid. `2.4` also fails (numeric compare); default 2.39 exits 0.
 - No apt package changes were needed on 24.04.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 3f66af1.
+
+- [P2] Notes, "Linux measure before" — cites run 40964848611 (2026-10-29, pre-task-64, 35,133,064 B, RSS null), which is not the latest measurement of main's code. Use run 41686669384 (task/74 at c05f6ae, merged as 4bf7098, ubuntu-latest): binary_bytes 23,359,144; rss_anon_kib idle 53,376 / after-request 45,096. State the deltas against the after-figures: size -632 B (unchanged); RssAnon idle +7,756 KiB (+14.5%), after-request +6,160 KiB (+13.7%) — all within budget.
+- [P3] scripts/release/check-glibc.sh:29-34 — the inner `echo "  $v $sym" >&2` bypasses the `| sort -u >&2` pipe, so offending symbols print unsorted with duplicates. Drop the inner `>&2`.
+- [P3] scripts/release/check-glibc.sh:15 — if objdump fails (non-ELF/corrupt input) the script exits 1, the "above max" code, instead of the documented 2. Check objdump's status and exit 2 with a message. Input: `check-glibc.sh README.md`.
+- [NOTE, optional] scripts/release/check-glibc.sh:14 — the comment "Undefined (required) only" doesn't match the code (no `*UND*` filter); fix the comment.
