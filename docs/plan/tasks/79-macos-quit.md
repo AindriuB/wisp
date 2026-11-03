@@ -95,3 +95,12 @@ a windowless process is useless, and that state is what exposes the crash. Both
 2. Relaunch, Cmd-Q: exits.
 3. Relaunch, Dock right-click, Quit: exits, no crash dialog.
 4. Afterwards no new `wisp*.ips` in `~/Library/Logs/DiagnosticReports`.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 19c8d00.
+
+- [P2] scripts/measure/quit-check.sh:46 — run (a) sends the AppleScript quit to whatever app has the bundle id, so with the user's own Wisp open (same id as a package.sh build) it can quit the user's copy and lose drafts. Before launching, abort with exit 2 and a clear message if `application id "$id" is running` is already true.
+- [STYLE] crates/app/src/actions.rs:148 — rename `quit_hints` to a sentence (docs/conventions.md:104), e.g. `quit_hint_reads_cmd_q_on_mac_and_ctrl_q_elsewhere`.
+- [P3] scripts/measure/quit-check.sh:48 — run (a) discards the child's exit status; capture it and fail on a non-zero/signal exit, and wait for ReportCrash longer than a fixed `sleep 2` (poll up to ~10 s for a new .ips).
+- [Accepted limit, orchestrator decision] main.rs:112-123 — the WISP_CLOSE_WINDOW_AFTER_MS hook calls quit_app directly rather than through on_window_should_close, so check (b) doesn't prove the close button path; a real-close hook would need objc or remove_window (the crashing teardown). Accepted: the user's hand test on the Touch Bar Mac covers the real close button. Record in Notes.
