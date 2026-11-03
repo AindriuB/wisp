@@ -233,7 +233,7 @@ if [ "$(uname -s)" = Linux ]; then
   if [ -n "${SCREENSHOT:-}" ] && [ -n "${DISPLAY:-}" ]; then
     if ! command -v import >/dev/null 2>&1; then
       echo "screenshot: 'import' (ImageMagick) not installed" >&2
-    elif ! shot_err="$(import -window root "$SCREENSHOT" 2>&1)"; then
+    elif ! shot_err="$(timeout 20 import -window root "$SCREENSHOT" 2>&1)"; then
       echo "screenshot: $(printf '%s' "$shot_err" | head -n 1 | cut -c1-200)" >&2
     fi
   fi

@@ -83,7 +83,13 @@ jobs:
           {
             echo "## Debian packages owning the loaded shared objects"
             if [ -s "$libs" ]; then
-              xargs -a "$libs" dpkg -S 2>/dev/null | sed 's/:[^:]*$//' | sed 's/: .*//' | sort -u
+              while IFS= read -r lib; do
+                if owners="$(dpkg -S "$lib" 2>/dev/null)" && [ -n "$owners" ]; then
+                  printf '%s\n' "$owners" | sed 's/: \/.*$//' | tr ',' '\n' | sed 's/^ *//; s/:[^:]*$//'
+                else
+                  echo "unowned: $lib"
+                fi
+              done <"$libs" | sort -u || true
             fi
             echo "## NEEDED entries of the binary"
             readelf -d target/${{ matrix.target }}/release/${{ matrix.binary }} | grep NEEDED || true
