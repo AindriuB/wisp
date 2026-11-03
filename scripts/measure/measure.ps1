@@ -1,6 +1,7 @@
 # measure.ps1 -Binary <wisp.exe> -Output <out.json>   (Windows)
 # Env: TARGET (default x86_64-pc-windows-msvc), RENDERER (hardware|software|unknown,
-#      default unknown), SETTLE_SECONDS (default 5).
+#      default unknown), SETTLE_SECONDS (default 5), BUDGETS (path to the budgets
+#      file, default budgets.json next to this script).
 #
 # Headline memory figure: private_working_set_kib {idle, after_request}, the
 # process's private working set (Win32_PerfFormattedData WorkingSetPrivate).
@@ -15,13 +16,16 @@
 # stdout line (30 s max), wait settle_seconds, sample again, kill. Fixed waits
 # are fine: this is a measurement, not a test.
 # If the window fails to start or no WISP_EVENT line arrives, write status
-# "unmeasured" with a reason, exit non-zero, and record no numbers. The wait
+# "unmeasured" with a reason, exit 1, and record no numbers. The wait
 # stops early when the app prints `WISP_EVENT failed` or exits, and any thrown
 # exception also ends as "unmeasured" with its message as the reason.
 # Each launch's stdout/stderr are kept next to -Output as
 # <output stem>.{idle,req}.{out,err}.log; on "unmeasured" the last 20 stderr
 # lines go into the JSON key stderr_tail and the job log. The app runs with
 # RUST_BACKTRACE=1 and RUST_LOG=info.
+# Budgets: scripts/measure/budgets.json (or $env:BUDGETS) gives the target's limits;
+# the result JSON gets a `budget` object and `within_budget`. Exit codes: 2 usage
+# (missing budgets file), 1 unmeasured, 3 measured but over budget, 0 otherwise.
 param(
   [Parameter(Mandatory = $true)][string]$Binary,
   [Parameter(Mandatory = $true)][string]$Output
