@@ -47,4 +47,13 @@ produced the number.
 - Opening a pull request (opened at /record per docs/workflow.md). Pushing the task branch to run the workflow is allowed.
 
 ## Notes
-<!-- implementer: run id, commit SHA, per-target numbers go here -->
+Run 41602926409, commit 7231d4945025a622d1482471f51b988d1b5d103e (the notes commit after it changes only this file). One artefact per target, each with its JSON.
+
+| target | status | binary_bytes | idle / after RSS KiB | extra |
+|---|---|---|---|---|
+| x86_64-unknown-linux-gnu | measured | 37993000 | 173976 / 173160 | PSS 147808 / 147025; RssAnon 57728 / 45264 (Anonymous from smaps_rollup); renderer_device `llvmpipe (LLVM 21.1.8, 256 bits)` |
+| x86_64-pc-windows-msvc | measured | 28947456 | 42708 / 52152 | private working set 8972 / 12980; private_kib 35080 / 41472 |
+| aarch64-apple-darwin | measured | 19181056 | 74688 / 79952 | pss/anon/device null (n/a) |
+| x86_64-apple-darwin | unmeasured | 20714504 | none | reason: no 'WISP_EVENT completed' line within 30 s (stderr 2 lines) |
+
+Linux note: PSS and RssAnon are both far below RSS; anon is the closest to the app's own memory.
