@@ -62,7 +62,7 @@ cleanup() {
     fi
   fi
   [ -e "$keychain" ] && { security delete-keychain "$keychain" || true; }
-  rm -rf "$state" "$tmp/Wisp-notarize.zip" "$tmp/wisp-notary"
+  rm -rf "$state" "$tmp/wisp-notary"
   return 0
 }
 

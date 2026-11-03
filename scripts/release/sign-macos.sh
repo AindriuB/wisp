@@ -43,13 +43,17 @@ ditto -c -k --keepParent "$app" "$zip"
 result="$work/result.json"
 # notarytool exits non-zero on some failures; the status check below decides.
 xcrun notarytool submit "$zip" --key "$p8" --key-id "$APPLE_API_KEY_ID" \
-  --issuer "$APPLE_API_ISSUER_ID" --wait --output-format json > "$result" || true
+  --issuer "$APPLE_API_ISSUER_ID" --wait --timeout 90m --output-format json > "$result" || true
 id="$(plutil -extract id raw -o - "$result" 2>/dev/null || true)"
 status="$(plutil -extract status raw -o - "$result" 2>/dev/null || true)"
 echo "notarisation submission: ${id:-unknown} status: ${status:-unknown}"
 if [ "$status" != "Accepted" ]; then
   if [ -n "$id" ]; then
     xcrun notarytool log "$id" --key "$p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" >&2 || true
+  fi
+  if [ -z "$status" ] || [ "$status" = "In Progress" ]; then
+    echo "notarisation did not finish within 90m (or notarytool failed); submission id: ${id:-unknown}." >&2
+    echo "Check later with: xcrun notarytool info|log ${id:-<id>} --key <p8> --key-id <id> --issuer <issuer>" >&2
   fi
   echo "notarisation not accepted" >&2
   exit 1

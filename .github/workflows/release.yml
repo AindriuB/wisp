@@ -71,9 +71,9 @@ jobs:
         env:
           APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER_ID || '' }}
+          APPLE_API_KEY_P8: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_P8 || '' }}
         run: |
           missing=""
           for n in APPLE_DEVELOPER_ID_P12 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8; do
@@ -103,9 +103,9 @@ jobs:
       - name: Package
         shell: bash
         env:
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER_ID || '' }}
+          APPLE_API_KEY_P8: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_P8 || '' }}
         run: scripts/release/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/${{ matrix.binary }} dist
       - name: Clean up signing material (macOS)
         if: always() && runner.os == 'macOS'

@@ -56,9 +56,10 @@ case "$platform" in
     fi
     [ -f "$actool_out/Assets.car" ] || { cat "$actool_out/actool.log" >&2; echo "actool produced no Assets.car" >&2; exit 1; }
     # To a file, not a pipe: grep -q exiting early would SIGPIPE assetutil under pipefail.
-    xcrun assetutil --info "$actool_out/Assets.car" > "$actool_out/assets.json"
-    grep -q '"Name" : "AppIcon"' "$actool_out/assets.json" \
-      || { cat "$actool_out/actool.log" >&2; echo "AppIcon missing from Assets.car" >&2; exit 1; }
+    if ! xcrun assetutil --info "$actool_out/Assets.car" > "$actool_out/assets.json" 2>>"$actool_out/actool.log" \
+      || ! grep -q '"Name" : "AppIcon"' "$actool_out/assets.json"; then
+      { cat "$actool_out/actool.log" >&2; echo "AppIcon missing from Assets.car (or assetutil failed)" >&2; exit 1
+    fi
     cp "$actool_out/Assets.car" "$app/Resources/Assets.car"
     # WISP_MACOS_SIGN=developer-id signs, notarises and staples; unset or adhoc
     # keeps the ad-hoc signature.
