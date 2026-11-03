@@ -19,6 +19,9 @@ out="$root/THIRD-PARTY-NOTICES"
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
+# Make sure every crate source is in the local registry; cargo-about then runs offline.
+cargo fetch --locked
+
 cargo about generate --locked --offline \
   --config about.toml \
   --manifest-path crates/app/Cargo.toml \
