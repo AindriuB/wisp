@@ -86,3 +86,8 @@ where a Done line with no recorded time reads `· · 1.2 KB`.
 - docs/, PLAN.md, HISTORY*.md (scribe).
 
 ## Notes
+
+Measure (aarch64-apple-darwin, RENDERER=hardware, within budget, exit 0):
+- Branch: binary 10436688 B, idle RSS 97696 KiB, after-request RSS 102176 KiB.
+- main b91117a: binary 10420160 B, idle RSS 98224 KiB, after-request RSS 101952 KiB.
+- Delta binary: +16528 bytes. RSS deltas are within run noise (idle -528 KiB, after request +224 KiB).
