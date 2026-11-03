@@ -213,6 +213,7 @@ runner; persisted cookie jar; phase timings; code signing/notarization.
 - `core`: minimal `Engine` (`Send` / `Completed` / `Failed`) over reqwest + rustls.
 - CI (GitHub Actions) building release binaries for macOS (arm64 + x64),
   Windows x64, Linux x64.
+  (2026-11-03 note: Intel macOS was dropped for 0.1.0; `release.yml` now packages archives into a draft release. See `docs/architecture.md#release`.)
 - Measure and record idle RSS, RSS after one request, and binary size per
   platform. These numbers become the budgets in `docs/architecture.md`.
 - Exit: decide GPUI stays (or revisit) on the evidence.

@@ -239,6 +239,23 @@ macOS x64 hang ends the job instead of running to GitHub's 6-hour default.
 No change may be justified or rejected by reference to a number that is not in
 this section.
 
+## Release
+
+`.github/workflows/release.yml` builds `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` with the same steps and `Build` command as `measure.yml`, packages each with `scripts/release/package.sh`, and a final job writes `SHA256SUMS` and creates the release. `<v>` below is the `wisp-app` version from `cargo metadata`.
+
+| Asset | Contents (inside `Wisp-<v>-<platform>/`) |
+|---|---|
+| `Wisp-<v>-macos-arm64.zip` | `Wisp.app/`, `LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES` |
+| `Wisp-<v>-windows-x64.zip` | `wisp.exe` and the three notice files |
+| `Wisp-<v>-linux-x64.tar.gz` | `wisp` (mode 0755, owner 0/0) and the three notice files |
+| `SHA256SUMS` | one `sha256sum -c` line per archive |
+
+The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is ad-hoc signed (`codesign --sign -`), which stops macOS calling it damaged but is not Developer ID signing or notarisation. It has no icon. The Linux binary is built on ubuntu-latest, so its glibc floor is Ubuntu 24.04 or newer.
+
+To cut a release: make sure the workspace version is the one you want, tag `v<version>` (it must equal the workspace version or the final job fails before creating anything), push the tag, check the draft release and its four assets, then publish with `gh release edit v<version> --draft=false`. A tag push never publishes by itself. If a tag-push run is re-run after failing, it creates a second draft for the same tag; delete the stale one first.
+
+To test without a tag: `gh workflow run release.yml --ref <branch> -f draft_release=true` builds the same assets and creates a draft `dryrun-<run_id>`. Check it, then remove it with `gh release delete dryrun-<run_id> --yes` (`--cleanup-tag` prints a harmless HTTP 422 because a draft has no tag). With `draft_release` false a dispatch run creates no release.
+
 ## Decisions worth knowing
 
 All dated 2026-10-29; rationale in the spec's Decisions table.
