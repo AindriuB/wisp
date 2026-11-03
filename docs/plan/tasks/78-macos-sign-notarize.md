@@ -86,6 +86,7 @@ The user does this once. Never generate, request, print or store the values.
 - Signed dry run (`-f draft_release=true`): run 41718679603 succeeded. Notarisation submission e2cb1752-fef5-444a-9f6b-78fcecb81275 status Accepted; stapled. Downloaded app: `codesign --verify --strict --deep` valid; `spctl` accepted, `source=Notarized Developer ID`, `origin=Developer ID Application: Andrew Bannister (UB89GDN343)`; `stapler validate` worked; `TeamIdentifier=UB89GDN343`, `flags=0x10000(runtime)`. Draft dryrun-41718679603 deleted. (An earlier draft, run 41716718217, was ad-hoc; deleted.)
 - Launch: System Events reported a `wisp` process with 1 window. No entitlements file was needed. Resources contain Assets.car (lists AppIcon) and wisp.icns.
 - The notarisation step took ~19 minutes of the macOS job in this run.
+- Review round 1 signed dry run: run 41726270801 succeeded (all jobs). Downloaded macOS app: `codesign --verify --strict --deep` valid; `spctl` accepted, `source=Notarized Developer ID`; `stapler validate` worked. Draft dryrun-41726270801 deleted. (Two earlier round-1 runs were cancelled after a bad intermediate push; no artefacts.)
 
 ## Review round 1 — findings
 
