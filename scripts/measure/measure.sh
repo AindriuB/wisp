@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # measure.sh <binary> <output.json>   (macOS, Linux)
 # Env: TARGET (default: rustc host triple), RENDERER (hardware|software|unknown,
-#      default unknown), SETTLE_SECONDS (default 5).
+#      default unknown), SETTLE_SECONDS (default 5), SCREENSHOT=<path.png>
+#      (Linux with DISPLAY set: save the X root window after the request run's
+#      sample; a failure prints one `screenshot: <reason>` line and changes
+#      nothing else). On Linux <output stem>.libs.txt always lists the shared
+#      objects the running app had mapped.
 #
 # Method: serve a fixed 64 KiB file from `python3 -m http.server` on 127.0.0.1.
 # Launch the binary once without the hook, wait settle_seconds, sample RSS with
@@ -224,6 +228,15 @@ kill -0 "$app_pid" 2>/dev/null || fail "app exited after the request"
 after="$(rss_of "$app_pid")"
 if [ "$(uname -s)" = Linux ]; then
   pss_after="$(smaps_field "$app_pid" Pss)"; anon_after="$(smaps_field "$app_pid" Anonymous)"
+  # After the samples, before kill: these cannot change the measured figures.
+  { awk '$6 ~ /^\// && $6 ~ /\.so(\.|$)/ { print $6 }' "/proc/$app_pid/maps" | sort -u >"$logbase.libs.txt"; } 2>/dev/null || true
+  if [ -n "${SCREENSHOT:-}" ] && [ -n "${DISPLAY:-}" ]; then
+    if ! command -v import >/dev/null 2>&1; then
+      echo "screenshot: 'import' (ImageMagick) not installed" >&2
+    elif ! shot_err="$(timeout 20 import -window root "$SCREENSHOT" 2>&1)"; then
+      echo "screenshot: $(printf '%s' "$shot_err" | head -n 1 | cut -c1-200)" >&2
+    fi
+  fi
 fi
 kill "$app_pid" 2>/dev/null; wait "$app_pid" 2>/dev/null; app_pid=""
 [ -n "$after" ] || fail "could not sample RSS after request"

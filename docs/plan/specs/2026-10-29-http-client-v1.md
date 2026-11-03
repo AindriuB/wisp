@@ -20,6 +20,7 @@ existing client is large and memory-heavy.
 - **Lightweight.** Low idle memory and small binary. Budgets are set from the
   walking skeleton's measurements and then enforced (see Milestone 0).
 - **Platforms for v1:** macOS (Apple Silicon + Intel), Windows x64, Linux x64
+  (Note, 2026-11-03: Intel macOS was dropped from 0.1.0 releases and measurement; macOS 27 is Apple-silicon-only and the x64 CI hang was never fixed.)
   (Wayland/X11; GPUI needs a Vulkan-capable driver).
 
 ## Decisions
@@ -213,6 +214,7 @@ runner; persisted cookie jar; phase timings; code signing/notarization.
 - `core`: minimal `Engine` (`Send` / `Completed` / `Failed`) over reqwest + rustls.
 - CI (GitHub Actions) building release binaries for macOS (arm64 + x64),
   Windows x64, Linux x64.
+  (Note, 2026-11-03: the macOS x64 build was dropped from 0.1.0; see the platforms line above.)
 - Measure and record idle RSS, RSS after one request, and binary size per
   platform. These numbers become the budgets in `docs/architecture.md`.
 - Exit: decide GPUI stays (or revisit) on the evidence.
