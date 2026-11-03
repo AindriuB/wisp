@@ -37,6 +37,8 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 **Budgets (task 61, macOS arm64, hardware renderer):** binary 19,181,072 B (+0); idle RSS 98.7 MiB of 120 MiB; after one request 103.6 MiB of 128 MiB. RSS is about 30 MiB above task 60's figures; the change cannot explain it, so it is probably run-to-run noise. Re-measure main on the same machine to confirm the baseline.
 **Residuals (61):** at 720 px wide the sidebar can still take 480 px and panes can be dragged to 100 px (clipping covers it); the minimum size was checked on macOS arm64 only. Do not re-add `overflow_hidden` to the `resizable_panel()` calls: it clips the splitter's 9 px grab band to 5 px.
 
+**Residuals (70):** the Bundled assets header in `scripts/notices/generate.sh:37` hard-codes "19 SVG icons" and the gpui-kit-assets and gpui-component versions, so it can go stale without the CI `notices` job noticing; `about.toml` accepts OpenSSL and BSL-1.0 though nothing uses them (OpenSSL contradicts the rustls-only rule in `docs/conventions.md#dependencies`).
+
 **Residuals (67, optional P3):** `safe_sidecar` (`ops.rs:416-420`) still compares with `to_lowercase` rather than `fold_case`; it errs toward keeping a sidecar, so no data is lost. Task 67's head has not run on Linux; its own PR CI is the first run.
 
 **Residuals (66):** the "Request failed" fallback heading is written in three places (`mod.rs:50`, `mod.rs:167`, `body.rs:727-729`); a shared helper would keep them in step. The macOS arm64 hand check of the error panel passed on 2026-11-03 (with task 69's sub-tab scroll check); only the Windows and Linux hand checks remain for the user.
