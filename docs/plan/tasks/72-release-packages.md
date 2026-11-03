@@ -113,6 +113,15 @@ made with `ditto -c -k --keepParent`.
 
 ## Notes
 
+- Dry run: run 41686673200, head commit b3bacbff45b20389d5af4765967f816fe32bb91f, conclusion success (all 4 jobs). Artefact `wisp-0.1.0-release`.
+- `gh release view dryrun-41686673200 --json assets,isDraft`: isDraft true; assets SHA256SUMS (280 B), Wisp-0.1.0-linux-x64.tar.gz (9,813,028), Wisp-0.1.0-macos-arm64.zip (5,481,043), Wisp-0.1.0-windows-x64.zip (5,843,025). Then `gh release delete dryrun-41686673200 --yes --cleanup-tag`: release gone (`gh release list` empty); the cleanup-tag call printed HTTP 422 "Reference does not exist" because a draft has no tag; no dryrun tag on origin.
+- `shasum -a 256 -c SHA256SUMS`: all three OK. Listings matched the contract (one top-level folder; mac: Wisp.app/Contents/{MacOS/wisp,Info.plist,_CodeSignature}, LICENSE, NOTICE, THIRD-PARTY-NOTICES; windows: wisp.exe + 3 notices; tar: `-rwxr-xr-x` wisp + 3 notices). No `._` AppleDouble entries (ditto uses --norsrc --noextattr --noqtn --noacl).
+- `file`: Mach-O 64-bit executable arm64; PE32+ executable (console) x86-64; ELF 64-bit LSB pie executable x86-64 (stripped). `plutil -lint` OK; CFBundleShortVersionString 0.1.0; LSMinimumSystemVersion 11.0 (read from load commands); `codesign --verify --deep --strict` exit 0, no output.
+- Local run of unzipped Wisp.app binary with WISP_AUTOSEND_URL=https://example.com: `WISP_EVENT completed status=200 size=577`. `open Wisp.app`: process "wisp" frontmost with 1 window (checked via System Events; no screenshot available, so window appearance itself not eyeballed).
+- Sizes (this run vs measure.yml at 4ba28c1): macOS arm64 10,377,632 B vs 10,420,080; Linux 23,358,504 B vs 23,353,896. Within 0.5%, and the commit ranges differ (tasks 70 version/licence work in between).
+- Windows zip's LICENSE is 11,560 B and NOTICE 237 B vs 11,358/230 on mac/Linux: the Windows checkout converted LF to CRLF. Not fixed (adjacent; consider `.gitattributes eol=lf` in task 70's area).
+- Tag-push path not run. For review read release.yml: line 106 `Check tag matches version (tag push)` (guard) and lines 112-115 `Create draft release (tag push)` with `gh release create ... --draft --verify-tag`; dry run at 117-120. Version comes from the archive names (from `cargo metadata` in package.sh), checked to agree across all three.
+
 ## Amendment — user decisions (2026-11-03)
 
 Confirmed by the user: bundle id `io.github.aindriub.wisp`; ad-hoc signing (`codesign --sign -`) of the .app is acceptable within "unsigned, no Developer ID"; Linux binary built on ubuntu-latest, README states the glibc floor (Ubuntu 24.04 or newer). Gatekeeper instructions use System Settings → Privacy & Security → Open Anyway plus `xattr -d com.apple.quarantine`, not Control-click → Open.
