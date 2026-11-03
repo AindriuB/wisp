@@ -82,3 +82,7 @@ The user does this once. Never generate, request, print or store the values.
 - Creating Apple certificates or keys, or setting secrets: the user does that (see User setup).
 
 ## Notes
+- Ad-hoc fallback dispatch (no secrets): run 41715118789 succeeded; macOS log shows the ad-hoc `::notice::`; artefacts pkg-macos-arm64, pkg-windows-x64, pkg-linux-x64 and wisp-0.1.0-release (with SHA256SUMS).
+- Signed dry run (`-f draft_release=true`): run 41718679603 succeeded. Notarisation submission e2cb1752-fef5-444a-9f6b-78fcecb81275 status Accepted; stapled. Downloaded app: `codesign --verify --strict --deep` valid; `spctl` accepted, `source=Notarized Developer ID`, `origin=Developer ID Application: Andrew Bannister (UB89GDN343)`; `stapler validate` worked; `TeamIdentifier=UB89GDN343`, `flags=0x10000(runtime)`. Draft dryrun-41718679603 deleted. (An earlier draft, run 41716718217, was ad-hoc; deleted.)
+- Launch: System Events reported a `wisp` process with 1 window. No entitlements file was needed. Resources contain Assets.car (lists AppIcon) and wisp.icns.
+- The notarisation step took ~19 minutes of the macOS job in this run.
