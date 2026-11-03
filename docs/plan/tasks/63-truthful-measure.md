@@ -57,3 +57,12 @@ Run 41602926409, commit 7231d4945025a622d1482471f51b988d1b5d103e (the notes comm
 | x86_64-apple-darwin | unmeasured | 20714504 | none | reason: no 'WISP_EVENT completed' line within 30 s (stderr 2 lines) |
 
 Linux note: PSS and RssAnon are both far below RSS; anon is the closest to the app's own memory.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 18669c7. Verdict CLEAN; both P3s taken as cheap fixes.
+
+- [P3] scripts/measure/measure.sh:123 (find_device): the app-log branch matches any line containing `adapter` and stores the whole line. Match GPUI's `Selected GPU (passed configuration test): <name> (<backend>)` line instead and keep only the name. Failing input: a logger at RUST_LOG=info makes gpui-pre-wgpu log `Found 1 GPU adapter(s):` first → renderer_device is that line, reason null.
+- [P3] scripts/measure/measure.sh:56 with :89 (fail path): a Linux `unmeasured` run writes `renderer_device_reason: "not applicable on this OS"`, which is false on Linux. Set the default reason per OS, or call find_device on Linux before write_json in fail.
+- [NOTE, optional] measure.sh:126: the vulkaninfo fallback names the first Vulkan device, not GPUI's chosen adapter; say so in the reason/field doc if cheap.
+- [NOTE, optional] measure.ps1:48-52: Get-PrivateWs with -ErrorAction Stop turns a missing perf counter into `unmeasured`; degrade to null for that field only if cheap.
