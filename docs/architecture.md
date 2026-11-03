@@ -222,6 +222,14 @@ failure; its binary size is still checked. First enforced run: `measure.yml` run
 41636483942 on `4ba28c1`; arm64, Windows and Linux were measured and within budget
 (binary 10,420,080 / 13,450,240 / 23,353,896 B), x64 unmeasured.
 
+The JSON also carries `renderer_device_source`, which says where `renderer_device`
+came from: `"app_log"`, `"vulkaninfo"` or null (null whenever `renderer_device` is
+unset, and always on Windows and macOS). The `vulkaninfo` fallback may name a
+different device than the one GPUI picked. A `budgets.json` that is malformed or
+whose top level is not an object makes either script exit 2 with one stderr line,
+before the app is launched. The `measure` job has `timeout-minutes: 45`, so the
+macOS x64 hang ends the job instead of running to GitHub's 6-hour default.
+
 No change may be justified or rejected by reference to a number that is not in
 this section.
 

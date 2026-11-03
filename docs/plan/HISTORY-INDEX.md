@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-03 | 68 | Measure scripts: missing Windows perf counter nulls the field, `renderer_device_source` key, malformed budgets exit 2, CDPATH-proof, 45-min job timeout | ## 2026-11-03 — The measure scripts degrade and report instead of failing or guessing |
+| 2026-11-03 | 67 | clean() folds reserved names with fold_case; reserved-source and wide-alias tests added; red-checked on Linux CI run 41651467164; safe_sidecar still to_lowercase | ## 2026-11-03 — Reserved-name case folding unified on fold_case in storage ops |
 | 2026-11-03 | 69 | Dead scroll ids removed, close-button and key comments fixed, settings test renamed, sen ranking asserts full order, stray eprintln removed | ## 2026-11-03 — Small app and core nits cleared |
 | 2026-11-03 | 66 | Failed request shows full wrapped, scrollable error with Copy in the Body area; Done line no longer reads `· · size`; +16,528 B binary | ## 2026-11-03 — A failed request shows its full error in the Body area |
 | 2026-11-03 | 65 | Per-platform budgets in budgets.json enforced by measure.sh/ps1 (exit 3) and measure.yml; only macOS x64 tolerated; both Linux backends kept | ## 2026-11-03 — Per-platform budgets enforced by the measure scripts and measure.yml |
@@ -74,4 +76,3 @@ no row is one `planner` cannot find, and will re-plan.
 | 2026-10-29 | 06 | GPUI window (method dropdown, URL, Send, status line, body) wired to Engine; WISP_AUTOSEND_URL measurement hook | ## 2026-10-29 — GPUI walking-skeleton window wired to the Engine |
 | 2026-10-29 | 04, 05 | Minimal core Engine over reqwest + rustls with Send/Cancel and Completed/Failed events; CI and four-target release workflows (Linux/Windows jobs unverified) | ## 2026-10-29 — Minimal core Engine and CI/release workflows |
 | 2026-10-29 | 02, 03 | Cargo workspace with exact crates.io GPUI pins (gpui-component 0.8.1, gpui-pre and gpui-pre-platform 0.3.10); CLAUDE.md trimmed under 50 lines | ## 2026-10-29 — Cargo workspace scaffold and trimmed CLAUDE.md |
-| 2026-11-03 | 67 | clean() folds reserved names with fold_case; reserved-source and wide-alias tests added; red-checked on Linux CI run 41651467164; safe_sidecar still to_lowercase | ## 2026-11-03 — Reserved-name case folding unified on fold_case in storage ops |
