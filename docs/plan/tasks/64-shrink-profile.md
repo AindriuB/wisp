@@ -149,3 +149,10 @@ Conclusion: nothing needs unwinding at runtime; A kept. `cargo test` uses test/d
 - macOS x64 is `unmeasured` in every run including baseline: the app logs `before open_window` then no completion within 30 s on the Intel runner (pre-existing, not caused by this task). Binary builds and size is recorded.
 - Timings recorded by the scripts: `settle_seconds` is 5 in every run, baseline included; no other timings exist, so no time regression is visible.
 - Manual responsiveness check for the user (smaller opt-level in dependencies could slow them): text shaping, rendering and scrolling of a large response, on a Windows and a Linux build.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 723f030.
+
+- [STYLE] .cargo/config.toml:1-3 — the comment names "(variant C)" and restates that macOS/Windows are unaffected (the target header already says so). Per docs/conventions.md:103-104 keep only the rust-lld / `--icf=all` reason.
+- [NOTE, optional] Results table rows B3 and C cite commits b240014 and 362e6f5, which no branch contains. Add one line each in Notes saying what those commits changed, so the rows stay traceable after GC.
