@@ -314,7 +314,7 @@ mod tests {
             item("Save token", ""),
         ];
         // prefix first, then contiguous mid-word, then scattered
-        assert_eq!(order(&v, "sen")[..2], [1, 2]);
+        assert_eq!(order(&v, "sen"), vec![1, 2, 3, 0]);
         // word-start beats mid-word
         let w = vec![item("xrequest", ""), item("Send request", "")];
         assert_eq!(order(&w, "req"), vec![1, 0]);

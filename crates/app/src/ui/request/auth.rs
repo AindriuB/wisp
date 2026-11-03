@@ -1,8 +1,8 @@
 //! Auth sub-tab: type select plus the fields of the selected scheme.
 
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
-    SharedString, Styled, Subscription, Window, div,
+    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
+    Subscription, Window, div,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::IndexPath;
@@ -353,7 +353,7 @@ impl Render for AuthEditor {
         };
         div()
             .size_full()
-            .child(col.id("auth-editor").size_full().overflow_y_scrollbar())
+            .child(col.size_full().overflow_y_scrollbar())
     }
 }
 
