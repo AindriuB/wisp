@@ -21,6 +21,7 @@ no row is one `planner` cannot find, and will re-plan.
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
 | 2026-11-03 | 71 | measure.yml drops Intel macOS (no tolerated job); Linux job under 1280x800x24 Xvfb uploads window screenshot, loaded-library list and Debian package list | ## 2026-11-03 — Intel macOS dropped from measurement; Linux job saves a screenshot and library list |
+| 2026-11-03 | 72 | release.yml builds three packaged archives plus SHA256SUMS; tag push creates a draft release, dispatch dry run; ad-hoc signed Wisp.app, bundle id io.github.aindriub.wisp | ## 2026-11-03 — Release workflow builds packaged archives into a draft GitHub Release |
 | 2026-11-03 | 70 | Apache-2.0 LICENSE/NOTICE, workspace version 0.1.0, committed THIRD-PARTY-NOTICES from scripts/notices/generate.sh with CI `notices` check; notices over-list across three targets (accepted) | ## 2026-11-03 — Apache-2.0 license, version 0.1.0 and generated third-party notices |
 | 2026-11-03 | 68 | Measure scripts: missing Windows perf counter nulls the field, `renderer_device_source` key, malformed budgets exit 2, CDPATH-proof, 45-min job timeout | ## 2026-11-03 — The measure scripts degrade and report instead of failing or guessing |
 | 2026-11-03 | 67 | clean() folds reserved names with fold_case; reserved-source and wide-alias tests added; red-checked on Linux CI run 41651467164; safe_sidecar still to_lowercase | ## 2026-11-03 — Reserved-name case folding unified on fold_case in storage ops |

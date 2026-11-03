@@ -215,6 +215,8 @@ runner; persisted cookie jar; phase timings; code signing/notarization.
 - CI (GitHub Actions) building release binaries for macOS (arm64 + x64),
   Windows x64, Linux x64.
   (Note, 2026-11-03: the macOS x64 build was dropped from 0.1.0; see the platforms line above.)
+
+  (2026-11-03 note: Intel macOS was dropped for 0.1.0; `release.yml` now packages archives into a draft release. See `docs/architecture.md#release`.)
 - Measure and record idle RSS, RSS after one request, and binary size per
   platform. These numbers become the budgets in `docs/architecture.md`.
 - Exit: decide GPUI stays (or revisit) on the evidence.
