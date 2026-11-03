@@ -106,3 +106,10 @@ A committed file can be reviewed when a dependency changes, the release job
 - Any dependency change, including removing a dependency to avoid a license.
 
 ## Notes
+
+- cargo-about 0.9.3 needs `--features cli` to install the binary; the script and CI job use it.
+- `about.toml` accepted list is permissive plus MPL-2.0. `0BSD` was added (enum-iterator, enum-iterator-derive); it is permissive. Nothing was rejected otherwise.
+- Negative check: after deleting line 5 of `THIRD-PARTY-NOTICES`, `git diff --exit-code THIRD-PARTY-NOTICES` exited 1; restored with `git checkout`, then it exited 0.
+- Generating twice leaves `git status --porcelain` empty (outputs compared with cmp).
+- DEVIATION, tempfile: the grep for `tempfile` matches line 6696 (`tempfile 3.27.0`). With the three targets configured together, cargo-about includes `uds_windows` (a Windows-only dep of `zbus`, which only Linux reaches) so `tempfile` appears. Run with one `--target` at a time cargo-about matches `cargo tree` exactly and omits `tempfile`, but then `dwrote` is also absent: `dwrote` is not in the normal graph of any of the three targets (cargo tree confirms). So the task's checks "dwrote appears" and "tempfile absent" cannot both hold; the committed file is the 3-target superset (safe for notices; over-lists tempfile, uds_windows, dwrote and ~20 Windows-only/other-OS crates). A per-target union would be exact but needs a JSON merge step; left for the orchestrator to decide.
+- CI run 41684364745 on this branch: see result recorded below.
