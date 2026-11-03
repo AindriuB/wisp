@@ -131,6 +131,8 @@ Linux -38.5%, macOS x64 -37.8%. ci.yml is green on 10e3b3f. Local
   Linux idle RSS is about 4,000 KiB higher with C (167,640 vs 163,184 for B2 alone);
   after-request RSS is lower, so likely noise or ICF page layout. Flag for the user.
   Config file applies identically to measure.yml and release.yml (neither sets RUSTFLAGS), so no workflow edits were needed.
+- Row B3 (commit b240014, unreachable after GC): variant A plus `opt-level = "s"` for the whole release profile instead of deps only.
+- Row C (commit 362e6f5, unreachable after GC): variant A plus the Linux-only `.cargo/config.toml` link flags, without any B change to deps.
 - Not tried: `lto = "fat"` is already `true`; `opt-level = "s"` for wisp-* crates (task says they stay at 3).
 
 ### Unwinding audit (variant A)
