@@ -53,7 +53,12 @@ trap cleanup EXIT
 
 # Linux-only extras, filled in as they are sampled.
 pss_idle=""; pss_after=""; anon_idle=""; anon_after=""
-device=""; device_reason="not applicable on this OS"
+device=""
+if [ "$(uname -s)" = Linux ]; then
+  device_reason="not sampled: run failed before the renderer was probed"
+else
+  device_reason="not applicable on this OS"
+fi
 
 # write_json <status> <reason|""> <idle> <after> [stderr-file]
 write_json() {
@@ -117,11 +122,13 @@ rss_of() { ps -o rss= -p "$1" | tr -d ' '; }
 # smaps_field <pid> <Pss|Anonymous>: kB from smaps_rollup (Linux), else empty.
 smaps_field() { awk -v k="$2:" '$1 == k { print $2 }' "/proc/$1/smaps_rollup" 2>/dev/null; }
 
-# find_device <err-log>...: adapter name from the app log, else vulkaninfo.
+# find_device <err-log>...: adapter name from GPUI's "Selected GPU" log line,
+# else the first Vulkan device from vulkaninfo (not necessarily GPUI's choice).
 find_device() {
   local line=""
-  line="$(grep -ihE 'llvmpipe|lavapipe|swiftshader|adapter|deviceName' "$@" 2>/dev/null | head -n 1)"
-  if [ -n "$line" ]; then device="$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-200)"; return; fi
+  line="$(sed -n 's/.*Selected GPU (passed configuration test):[[:space:]]*//p' "$@" 2>/dev/null | head -n 1)"
+  line="$(printf '%s' "$line" | sed 's/[[:space:]]*([^()]*)[[:space:]]*$//' | cut -c1-200)"
+  if [ -n "$line" ]; then device="$line"; return; fi
   if command -v vulkaninfo >/dev/null 2>&1; then
     line="$(vulkaninfo --summary 2>/dev/null | sed -n 's/^[[:space:]]*deviceName[[:space:]]*=[[:space:]]*//p' | head -n 1)"
     if [ -n "$line" ]; then device="$line"; return; fi
