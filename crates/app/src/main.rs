@@ -44,12 +44,40 @@ fn window_options() -> WindowOptions {
     }
 }
 
+/// The one close path: the window's close button, the last-window backstop and
+/// the `WISP_CLOSE_WINDOW_AFTER_MS` hook all quit the app rather than tearing a
+/// window down while the process lives on (that teardown crashes on macOS).
+fn quit_app(cx: &mut gpui::App) {
+    cx.quit();
+}
+
+/// Menus: macOS only. GPUI 0.3.10 has no About or Hide item (no `OsAction` or
+/// selector for them), so the app menu holds Services and Quit.
+#[cfg(target_os = "macos")]
+fn install_menus(cx: &mut gpui::App) {
+    use gpui::{Menu, MenuItem, SystemMenuType};
+    cx.set_menus(vec![Menu::new("Wisp").items([
+        MenuItem::os_submenu("Services", SystemMenuType::Services),
+        MenuItem::separator(),
+        MenuItem::action("Quit Wisp", actions::Quit),
+    ])]);
+}
+
 fn main() {
     trace("app run start");
     let app = gpui_platform::application().with_assets(assets::Icons);
     app.run(|cx| {
         gpui_component::init(cx);
         actions::bind_keys(cx);
+        cx.on_action(|_: &actions::Quit, cx| quit_app(cx));
+        #[cfg(target_os = "macos")]
+        install_menus(cx);
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                quit_app(cx);
+            }
+        })
+        .detach();
         let settings_path = settings::settings_path();
         let loaded = match &settings_path {
             Some(path) => {
@@ -67,6 +95,10 @@ fn main() {
         let opened = cx.open_window(window_options(), |window, cx| {
             let workspace = cx.new(|cx| Workspace::new(loaded, settings_path, open, cx));
             let view = cx.new(|cx| WorkspaceView::new(workspace, window, cx));
+            window.on_window_should_close(cx, |_, cx| {
+                quit_app(cx);
+                false
+            });
             trace("window opened");
             cx.new(|cx| Root::new(view, window, cx))
         });
@@ -77,6 +109,18 @@ fn main() {
             std::process::exit(1);
         }
         cx.activate(true);
+        if let Some(ms) = std::env::var("WISP_CLOSE_WINDOW_AFTER_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(ms))
+                    .await;
+                cx.update(quit_app);
+            })
+            .detach();
+        }
     });
 }
 

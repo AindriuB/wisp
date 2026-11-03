@@ -282,6 +282,10 @@ The sources are in `assets/icon/`: `wisp.svg` (large sizes, with sparkles), `wis
 
 macOS: `package.sh` compiles `AppIcon.icon` with `actool` into `Assets.car`, so the system derives the dark, tinted and clear appearances, and puts `wisp.icns` in the bundle as the fallback; `Info.plist` carries `CFBundleIconFile` and `CFBundleIconName`. The macOS runner must have a full Xcode with Icon Composer support, and the Xcode version is not pinned. Xcode 27.2 `actool` ignores explicit tinted images, which is why the icon is layered rather than supplied as three variants. Windows: `crates/app/build.rs` embeds `wisp.ico` through the `winresource` build-dependency (MIT), and GPUI uses it for the window class. Linux: the 48 to 512 px PNGs go in the tar. A Linux window icon and a `.desktop` file are not done. The macOS binary size is unchanged.
 
+### App lifecycle
+
+Wisp has one window, and closing it quits the app: every window close is routed through `cx.quit()`, so the process never runs windowless. Quit is the `Quit` action (cmd-q on macOS, ctrl-q elsewhere) and, on macOS, the Quit item in the "Wisp" app menu. This also avoids a Touch Bar Mac abort in Dock Quit, caused upstream by `accesskit_macos` restoring the content view's class on window drop; `scripts/measure/quit-check.sh` checks a clean exit.
+
 ## Decisions worth knowing
 
 All dated 2026-10-29; rationale in the spec's Decisions table.
