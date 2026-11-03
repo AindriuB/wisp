@@ -1,6 +1,6 @@
 //! Keyboard actions and their default bindings.
 
-use gpui::{App, KeyBinding, actions};
+use gpui::{App, KeyBinding, OperatingSystem, actions};
 
 actions!(
     wisp,
@@ -56,6 +56,52 @@ const fn key(index: usize) -> &'static str {
     KEYS[index].0
 }
 
+/// Format a keystroke string for display: `⌘K` on macOS, `Ctrl+K` elsewhere.
+/// Falls back to the raw string if it does not parse.
+pub fn format_hint(keystroke: &'static str, os: OperatingSystem) -> String {
+    let Ok(ks) = gpui::Keystroke::parse(keystroke) else {
+        return keystroke.to_string();
+    };
+    let mac = os == OperatingSystem::Mac;
+    let m = &ks.modifiers;
+    let mut out = String::new();
+    let mut push = |on: bool, mac_sym: &str, name: &str| {
+        if on {
+            if mac {
+                out.push_str(mac_sym);
+            } else {
+                out.push_str(name);
+                out.push('+');
+            }
+        }
+    };
+    push(m.control, "⌃", "Ctrl");
+    push(m.alt, "⌥", "Alt");
+    push(m.shift, "⇧", "Shift");
+    push(m.platform, "⌘", "Win");
+    let key = match ks.key.as_str() {
+        "enter" => "Enter".to_string(),
+        "escape" => "Esc".to_string(),
+        "tab" => "Tab".to_string(),
+        k => k.to_uppercase(),
+    };
+    out.push_str(&key);
+    out
+}
+
+/// The hint for the command palette, read from the same `KEYS` entry that
+/// `bind_keys` registers, formatted for the host OS.
+pub fn palette_hint() -> String {
+    let os = if cfg!(target_os = "macos") {
+        OperatingSystem::Mac
+    } else if cfg!(target_os = "windows") {
+        OperatingSystem::Windows
+    } else {
+        OperatingSystem::Linux
+    };
+    format_hint(key(2), os)
+}
+
 /// Bind the default keys.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -81,6 +127,27 @@ mod tests {
         for (key, name) in KEYS {
             assert!(gpui::Keystroke::parse(key).is_ok(), "{name}: {key}");
         }
+    }
+
+    #[test]
+    fn hints_per_platform() {
+        assert_eq!(format_hint("ctrl-k", OperatingSystem::Linux), "Ctrl+K");
+        assert_eq!(format_hint("ctrl-k", OperatingSystem::Windows), "Ctrl+K");
+        assert_eq!(format_hint("cmd-k", OperatingSystem::Mac), "⌘K");
+        assert_eq!(
+            format_hint("ctrl-shift-tab", OperatingSystem::Linux),
+            "Ctrl+Shift+Tab"
+        );
+    }
+
+    #[test]
+    fn palette_hint_reads_keys() {
+        let expected = if cfg!(target_os = "macos") {
+            "⌘K"
+        } else {
+            "Ctrl+K"
+        };
+        assert_eq!(palette_hint(), expected);
     }
 
     #[test]
