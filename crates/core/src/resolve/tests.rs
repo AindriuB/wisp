@@ -454,7 +454,6 @@ fn assert_too_large_promptly(r: &Request) {
     let start = std::time::Instant::now();
     let result = run(r);
     let elapsed = start.elapsed();
-    eprintln!("elapsed: {elapsed:?}");
     assert!(elapsed < std::time::Duration::from_secs(1));
     let err = result.unwrap_err();
     assert!(err.problems.iter().any(|p| matches!(

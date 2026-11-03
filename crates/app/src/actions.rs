@@ -51,7 +51,7 @@ const KEYS: [(&str, &str); 10] = [
     ("escape", "cancel"),
 ];
 
-/// The keystroke bound to `name` (see `KEYS`); the order below mirrors it.
+/// The keystroke of entry `index` in `KEYS`; the order below mirrors it.
 const fn key(index: usize) -> &'static str {
     KEYS[index].0
 }

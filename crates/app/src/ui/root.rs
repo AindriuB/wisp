@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use gpui::{
     AppContext as _, Context, DismissEvent, Entity, EntityId, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement, PathPromptOptions, PromptLevel, Render, SharedString,
+    IntoElement, MouseButton, ParentElement, PathPromptOptions, PromptLevel, Render, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
@@ -297,8 +297,9 @@ impl Render for WorkspaceView {
                 let t = t.read(cx);
                 let dirty = if t.is_dirty() { "● " } else { "" };
                 let ws = self.workspace.clone();
+                // Stop mouse-down so pressing × does not activate the tab first.
                 let close = div()
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         Button::new(("tab-close", ix))
                             .tab_stop(false)

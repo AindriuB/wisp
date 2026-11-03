@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
-    Styled, Subscription, Window, div, px,
+    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
+    Window, div, px,
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -159,7 +159,7 @@ impl Render for SettingsEditor {
                 );
         div()
             .size_full()
-            .child(col.id("settings-editor").size_full().overflow_y_scrollbar())
+            .child(col.size_full().overflow_y_scrollbar())
     }
 }
 
