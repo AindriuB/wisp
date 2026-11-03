@@ -78,3 +78,10 @@ fold_case check, drop the duplicate, and close the test gaps 62 left.
   `ops::tests::move_into_wide_case_fold_alias_rejected`,
   `ops::tests::reserved_source_spellings_rejected_not_notfound`
   (the unconditional Invalid assertions got Io NotFound). This supersedes the macOS note above.
+
+## Review round 1 — findings
+
+Reviewed HEAD: e5b7e94.
+
+- [P3] crates/storage/src/ops.rs (clean_node, the `lower == COLLECTION_FILE || lower == FOLDER_FILE` check using `to_lowercase`, ~:190-195) — unreachable: the `fold_case` check earlier in `clean()`/`clean_node` already rejects every such name, and it is a leftover `to_lowercase` reserved-name check that the first Acceptance item says should be gone. Drop the two comparisons (or reuse the folded name). No behaviour change. Example: `rename_request(r, "f/collect\u{131}on.toml", ..)` is rejected earlier by fold_case; this line can never give a different answer.
+- [NOTE, optional] ops.rs `safe_sidecar` (~:421) compares with `to_lowercase`; it errs toward keeping a sidecar, so leave it unless switching is trivial.
