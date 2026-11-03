@@ -90,3 +90,21 @@ still hold.
 - The Linux section of `.cargo/config.toml` and any further size work.
 
 ## Notes
+
+- Attribute: `#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]`
+  as suggested; debug builds keep the console. No stdout/stderr fix was needed.
+- measure.yml run 41704961344 (commit e71314a): all three jobs `measured`, within budget.
+  The Windows job log `measure-x86_64-pc-windows-msvc.req.out.log` contains
+  `WISP_EVENT completed status=200 size=65536`, so redirected stdout reaches the log from the
+  GUI-subsystem process.
+- Windows binary size: before 13,450,240 B (docs/architecture.md, after task 64), after
+  13,630,464 B, +180,224 B (+1.34%). Budget 16,777,216 B. Idle private 35,924 KiB, after
+  request 41,488 KiB.
+- release.yml dispatch run 41704966546 succeeded. Tool: Apple `/usr/bin/objdump -p` on the
+  downloaded `pkg-windows-x64` wisp.exe (13,630,464 B). Output: `Subsystem 00000002 (Windows GUI)`.
+  Import table lists only system DLLs (kernel32, advapi32, ntdll, ws2_32, user32, gdi32,
+  d3d11, dxgi, dwrite, ...); no VCRUNTIME140*, MSVCP140* or api-ms-win-crt-* entries
+  (`api-ms-win-core-*`/`shcore`/`winrt` are OS API sets, not the CRT). No inspect workflow
+  was needed.
+- Draft release `dryrun-41704966546` deleted; no tag was created; `gh release list` is empty.
+- ci.yml run on branch head e71314a: success.
