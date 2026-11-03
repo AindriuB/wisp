@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-03 — Small app and core nits cleared
+Dead `.id("…-editor")` calls before `.overflow_y_scrollbar()` in the Path, Auth and Settings sub-tabs are gone, the tab-close mouse-down wrapper in `root.rs` has a comment saying why it stops the event, the `key` doc comment in `actions.rs` is correct, the settings location test is renamed, the palette `sen` ranking test asserts the full order, and the stray `eprintln!` in `resolve/tests.rs` is removed. No behaviour change; 369 tests, fmt and clippy pass.
+**Cost:** Removing the ids left `InteractiveElement` imports unused in three files, so those were dropped too. The first test rename still named an env case that `location()` never checks; review round 1 fixed it. The id removal was not checked visually; the sub-tab scroll hand check is pending with task 66's. `a_20_mib_file_body_streams_with_content_length` failed once under a heavily parallel run and passed alone; unconfirmed flake.
+
 ## 2026-11-03 — Per-platform budgets enforced by the measure scripts and measure.yml
 Each measure run now compares its sample with its own target's budget from `scripts/measure/budgets.json` (binary 20 MiB macOS, 16 MiB Windows, 28 MiB Linux; memory 120 / 128 MiB idle / after request, as RSS on macOS, private bytes on Windows, RssAnon on Linux). The result JSON has a `budget` object and `within_budget`; the scripts exit 3 when over budget; `measure.yml` now fails the run for arm64, Windows and Linux and tolerates only x86_64-apple-darwin.
 **Cost:** The user kept both Linux backends, so no backend was dropped. CI run 41636483942 (head 4ba28c1) was green with all three enforced targets within budget; the x64 job still hangs, so its memory stays unmeasured and only its size is checked. The Windows over-budget path and `measure.ps1` have never run locally (no pwsh), so only the first real over-budget CI run will test them. One review round: `measure.ps1`'s header did not document the new keys and exit code 3.
