@@ -112,3 +112,7 @@ made with `ditto -c -k --keepParent`.
   (docs/plan/specs/2026-10-29-http-client-v1.md:214) with a dated note.
 
 ## Notes
+
+## Amendment — user decisions (2026-11-03)
+
+Confirmed by the user: bundle id `io.github.aindriub.wisp`; ad-hoc signing (`codesign --sign -`) of the .app is acceptable within "unsigned, no Developer ID"; Linux binary built on ubuntu-latest, README states the glibc floor (Ubuntu 24.04 or newer). Gatekeeper instructions use System Settings → Privacy & Security → Open Anyway plus `xattr -d com.apple.quarantine`, not Control-click → Open.
