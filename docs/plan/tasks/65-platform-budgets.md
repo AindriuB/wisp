@@ -93,3 +93,13 @@ memory. The Linux rule uses RssAnon because llvmpipe dominates RSS and PSS in CI
 - Opening a PR or pushing to `main`. The PR is opened at /record.
 
 ## Notes
+
+- Negative check (local): `BUDGETS=<scratch, aarch64 binary limit 1> TARGET=aarch64-apple-darwin
+  SETTLE_SECONDS=1 scripts/measure/measure.sh /bin/sleep <out>.json` exited 1 (unmeasured) and wrote
+  `budget.binary_bytes {limit 1, value 166512, within false}` and `within_budget: false`.
+- CI run 41636483942, head commit 4ba28c1617f65b1643d4135aed7aac4a7477d192: run conclusion `success`.
+  arm64, Windows and Linux jobs `success`, status `measured`, `within_budget: true`:
+  - arm64: binary 10,420,080; idle 73,040; after 77,824 KiB.
+  - Windows: binary 13,450,240; private_kib.idle 35,900; after 40,608.
+  - Linux: binary 23,353,896; rss_anon_kib.idle 53,660; after 45,592.
+  - x64: job `failure` (tolerated), result `unmeasured` (no 'WISP_EVENT completed' within 30 s); budget.binary_bytes 12,884,616 within, memory values null.
