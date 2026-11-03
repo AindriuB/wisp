@@ -65,3 +65,7 @@ platform has been tested, and its license.
 - Release notes for the GitHub Release (the orchestrator writes them at publication).
 
 ## Notes
+
+## Amendment — user decisions (2026-11-03)
+
+Confirmed by the user: bundle id `io.github.aindriub.wisp`; ad-hoc signing (`codesign --sign -`) of the .app is acceptable within "unsigned, no Developer ID"; Linux binary built on ubuntu-latest, README states the glibc floor (Ubuntu 24.04 or newer). Gatekeeper instructions use System Settings → Privacy & Security → Open Anyway plus `xattr -d com.apple.quarantine`, not Control-click → Open.
