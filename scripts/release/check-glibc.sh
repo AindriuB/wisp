@@ -11,8 +11,8 @@ bin="${1:-}"; max="${2:-2.39}"
 [ -f "$bin" ] || { echo "no such binary: $bin" >&2; exit 2; }
 [[ "$max" =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "bad max version: $max" >&2; exit 2; }
 
-# One line per dynamic symbol: "... GLIBC_2.43  asinf". Undefined (required) only.
-dyn="$(objdump -T "$bin")"
+# One line per dynamic symbol: "... GLIBC_2.43  asinf" (defined and required alike).
+dyn="$(objdump -T "$bin" 2>&1)" || { echo "objdump failed on $bin (not an ELF binary?)" >&2; exit 2; }
 versions="$(printf '%s\n' "$dyn" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/^GLIBC_//' | sort -uV || true)"
 [ -n "$versions" ] || { echo "no GLIBC_ version requirements found in $bin" >&2; exit 2; }
 
@@ -29,7 +29,7 @@ printf '%s\n' "$dyn" | awk 'match($0, /GLIBC_[0-9]+(\.[0-9]+)+/) { print substr(
   | while read -r v sym; do
       ver="${v#GLIBC_}"
       if [ "$(printf '%s\n%s\n' "$ver" "$max" | sort -V | tail -n 1)" != "$max" ]; then
-        echo "  $v $sym" >&2
+        echo "  $v $sym"
       fi
     done | sort -u >&2
 exit 1
