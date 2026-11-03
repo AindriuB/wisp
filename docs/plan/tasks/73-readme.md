@@ -94,3 +94,7 @@ Reviewed HEAD: 54ce05b.
 - [P3] README.md:57 — "the X11/xcb and xkbcommon libraries it links directly": the binary's NEEDED entries are libxcb, libxkbcommon, libxkbcommon-x11, libgcc_s, libm, libc; libx11-6/libx11-xcb1 come via the graphics stack. Reword; also replace the awkward "A driver is something the list … can only show indirectly" with a plain statement that the Vulkan driver depends on your GPU (mesa-vulkan-drivers for AMD/Intel/software, vendor driver for NVIDIA).
 - [NOTE] README.md:5 — say "Developer ID signing" rather than "code signing" (the app is ad-hoc signed). README.md:48 — make clear whether "it" is the folder or the binary.
 - Out of this task (orchestrator): wisp.exe opens a console window and needs the VC++ runtime — fixed by a separate task; leave the README's Windows wording as is unless it claims the opposite.
+
+### Review round 1 fixes (2026-11-03)
+
+README.md only. The Linux package paragraph, the "Where Wisp writes" section (temp-file spill, probe file, Save, portable mode on Windows and Linux only), the macOS quarantine wording (Finder extraction, `xattr -dr`), "Developer ID signing" and the "binary" referent were reworded per the findings. The Windows wording is unchanged; the console window and VC++ runtime issue is left to the separate task.

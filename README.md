@@ -2,7 +2,7 @@
 
 Wisp is a portable, lightweight HTTP client for developers working locally, in the spirit of Postman, Bruno and Insomnia. It ships as one self-contained binary per platform, with no installer, and it keeps its collections as TOML files in an ordinary folder, so they diff and review well in git. You open a collection folder, pick an environment, send a request and read the response. Its reason to exist is staying small and light on memory. The interface is built with GPUI, the framework behind the Zed editor.
 
-This is version 0.1.0, the first release. Scripting, importers (Postman, OpenAPI, curl), GraphQL, OAuth2, a history view, and code signing are not in it.
+This is version 0.1.0, the first release. Scripting, importers (Postman, OpenAPI, curl), GraphQL, OAuth2, a history view, and Developer ID signing are not in it.
 
 ## Install
 
@@ -17,10 +17,10 @@ shasum -a 256 -c --ignore-missing SHA256SUMS
 unzip Wisp-0.1.0-macos-arm64.zip
 ```
 
-The zip holds a `Wisp-0.1.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is ad-hoc signed, not signed with a Developer ID and not notarised, so macOS blocks the first launch. To open it, try to launch it once, then open System Settings, go to Privacy & Security, and click "Open Anyway" next to the message about Wisp. On macOS 15 and later, Control-click and Open no longer gets past Gatekeeper. Alternatively, remove the quarantine flag before the first launch:
+The zip holds a `Wisp-0.1.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is ad-hoc signed, not signed with a Developer ID and not notarised, so macOS blocks the first launch when the zip is extracted with Finder (double-clicking it). Extracting with `unzip` in a terminal does not set the quarantine flag, so there is no block. To open it, try to launch it once, then open System Settings, go to Privacy & Security, and click "Open Anyway" next to the message about Wisp. On macOS 15 and later, Control-click and Open no longer gets past Gatekeeper. Alternatively, remove the quarantine flag from the app and everything inside it before the first launch:
 
 ```sh
-xattr -d com.apple.quarantine Wisp.app
+xattr -dr com.apple.quarantine Wisp.app
 ```
 
 The command palette opens with ⌘K.
@@ -45,7 +45,7 @@ sha256sum -c --ignore-missing SHA256SUMS
 tar -xzf Wisp-0.1.0-linux-x64.tar.gz
 ```
 
-The archive holds a `Wisp-0.1.0-linux-x64` folder with the `wisp` binary. Put it anywhere on your path, for example `~/.local/bin`. The command palette opens with Ctrl+K.
+The archive holds a `Wisp-0.1.0-linux-x64` folder with the `wisp` binary. Put the `wisp` binary anywhere on your path, for example `~/.local/bin`. The command palette opens with Ctrl+K.
 
 The Linux binary is built on a pinned Ubuntu 24.04 runner and needs glibc 2.39 or newer (Ubuntu 24.04 or newer, or an equally recent distribution). Wisp opens an X11 or Wayland window and draws it with Vulkan, so it needs a working Vulkan driver. On Debian or Ubuntu, install:
 
@@ -54,7 +54,7 @@ sudo apt install libvulkan1 mesa-vulkan-drivers libxcb1 libx11-6 libx11-xcb1 \
     libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libgcc-s1 libc6
 ```
 
-`mesa-vulkan-drivers` covers Intel, AMD and the software renderer; for NVIDIA, install the vendor's driver instead. A driver is something the list of libraries the running binary loads can only show indirectly, so choose the one that matches your GPU. The other packages are the libraries that list shows the binary loading, which includes the X11/xcb and xkbcommon libraries it links directly, plus the Wayland client library that the graphics stack loads. Other distributions have equivalent packages under their own names.
+The Vulkan driver depends on your GPU: `mesa-vulkan-drivers` covers AMD, Intel and the software renderer, and for NVIDIA you install the vendor's driver instead. Of the other packages, the `wisp` binary links `libxcb`, `libxkbcommon`, `libxkbcommon-x11`, `libgcc_s`, `libm` and `libc` directly; `libx11-6`, `libx11-xcb1` and the Wayland client library are loaded by the graphics stack. Other distributions have equivalent packages under their own names.
 
 ## Platform testing
 
@@ -62,7 +62,7 @@ The maintainer hand-tested macOS on Apple silicon and Windows x64 before release
 
 ## Where Wisp writes
 
-Wisp writes nothing outside the collection folder and `settings.toml`. Settings live beside the executable when a file named `portable` is next to it, and in the operating system's config directory otherwise.
+Apart from the files you ask it to save, Wisp writes only to the collection folder and `settings.toml`, with one exception: a response body larger than the in-memory limit is spilled to a temporary file in the operating system's temp directory, and on Unix startup briefly creates and deletes a small `.wisp-probe-*` file there. Save writes wherever you choose. On Windows and Linux, settings live beside the executable when a file named `portable` is next to it, and in the operating system's config directory otherwise. macOS has no portable mode; settings are always in `~/Library/Application Support/wisp`.
 
 ## Building from source
 
