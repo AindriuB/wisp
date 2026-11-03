@@ -18,6 +18,12 @@ than no plan.
 **In flight:** 01, 02
 -->
 
+### v0.1.0 is tagged
+Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY.
+
+### Windows hand test of v0.1.0 (user, 2026-11-04)
+Windows is covered by CI only (measure.yml build, launch and request; release dry-run binary checks). Until the user has run it by hand, the README says so; update the README's "Platform testing" section afterwards.
+
 ### HTTP client v1
 Build the portable GPUI HTTP client in three milestones, in this order. Spec: `docs/plan/specs/2026-10-29-http-client-v1.md`. Product is Wisp; crate naming is settled in `docs/conventions.md#naming`.
 - **M0 — Walking skeleton (complete).**
