@@ -260,11 +260,17 @@ this section.
 | `Wisp-<v>-linux-x64.tar.gz` | `wisp` (mode 0755, owner 0/0) and the three notice files |
 | `SHA256SUMS` | one `sha256sum -c` line per archive |
 
-The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is ad-hoc signed (`codesign --sign -`), which stops macOS calling it damaged but is not Developer ID signing or notarisation. It has no icon. The Linux binary is built on a pinned `ubuntu-24.04` runner (release, measure and the ci `check` job), so its measured glibc floor is 2.39: Ubuntu 24.04 or newer. `ubuntu-latest` is not used because it moved to 26.04, whose binary needed GLIBC_2.43. `scripts/release/check-glibc.sh` runs after Build in release and measure and fails if any symbol needs a glibc version above 2.39.
+The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is ad-hoc signed (`codesign --sign -`), which stops macOS calling it damaged but is not Developer ID signing or notarisation. It carries the app icon (see below). The Linux binary is built on a pinned `ubuntu-24.04` runner (release, measure and the ci `check` job), so its measured glibc floor is 2.39: Ubuntu 24.04 or newer. `ubuntu-latest` is not used because it moved to 26.04, whose binary needed GLIBC_2.43. `scripts/release/check-glibc.sh` runs after Build in release and measure and fails if any symbol needs a glibc version above 2.39.
 
 To cut a release: make sure the workspace version is the one you want, tag `v<version>` (it must equal the workspace version or the final job fails before creating anything), push the tag, check the draft release and its four assets, then publish with `gh release edit v<version> --draft=false`. A tag push never publishes by itself. If a tag-push run is re-run after failing, it creates a second draft for the same tag; delete the stale one first.
 
 To test without a tag: `gh workflow run release.yml --ref <branch> -f draft_release=true` builds the same assets and creates a draft `dryrun-<run_id>`. Check it, then remove it with `gh release delete dryrun-<run_id> --yes` (`--cleanup-tag` prints a harmless HTTP 422 because a draft has no tag). With `draft_release` false a dispatch run creates no release.
+
+### App icon
+
+The sources are in `assets/icon/`: `wisp.svg` (large sizes, with sparkles), `wisp-small.svg` (16 to 48 px, simplified), `wisp-layer.svg` and the layered Icon Composer document `AppIcon.icon/`, and `wisp-mono.svg`, which is kept as a reference and used by nothing. `scripts/icon/generate.sh` renders every output with resvg 0.49.0; `generate.sh --check` regenerates into a scratch directory and fails if the committed outputs differ, and it does not flag stale extra files. The committed outputs are the PNGs in `assets/icon/png/` (16 to 1024), `wisp.ico` and `wisp.icns`.
+
+macOS: `package.sh` compiles `AppIcon.icon` with `actool` into `Assets.car`, so the system derives the dark, tinted and clear appearances, and puts `wisp.icns` in the bundle as the fallback; `Info.plist` carries `CFBundleIconFile` and `CFBundleIconName`. The macOS runner must have a full Xcode with Icon Composer support, and the Xcode version is not pinned. Xcode 27.2 `actool` ignores explicit tinted images, which is why the icon is layered rather than supplied as three variants. Windows: `crates/app/build.rs` embeds `wisp.ico` through the `winresource` build-dependency (MIT), and GPUI uses it for the window class. Linux: the 48 to 512 px PNGs go in the tar. A Linux window icon and a `.desktop` file are not done. The macOS binary size is unchanged.
 
 ## Decisions worth knowing
 
