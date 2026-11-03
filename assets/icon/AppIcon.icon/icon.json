@@ -1,0 +1,12 @@
+{
+  "fill": {"solid": "srgb:0.06667,0.07451,0.09804,1.00000"},
+  "groups": [
+    {
+      "layers": [
+        {"image-name": "wisp.png", "name": "wisp"},
+        {"image-name": "background.png", "name": "background"}
+      ]
+    }
+  ],
+  "supported-platforms": {"squares": ["macOS"]}
+}

@@ -10,6 +10,10 @@
   <string>io.github.aindriub.wisp</string>
   <key>CFBundleExecutable</key>
   <string>wisp</string>
+  <key>CFBundleIconFile</key>
+  <string>wisp</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
