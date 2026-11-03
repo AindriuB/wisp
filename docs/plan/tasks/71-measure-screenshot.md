@@ -109,6 +109,8 @@ runtime-library list from that output.
   libm.so.6, libc.so.6. (Mesa/llvm/drm entries come from the software Vulkan driver in CI;
   fontconfig is not loaded at runtime, and libwayland-client0 is loaded though only X11 was used.)
 
+- Round 1 confirmation: `measure.yml` run 41686028996 on the round 1 fix commit; all three jobs `success`. Packages file now strips `:amd64`, splits multi-owner lines, writes `unowned: <path>` lines and is non-fatal; screenshot wrapped in `timeout 20`.
+
 ## Review round 1 — findings
 
 Reviewed HEAD: 8746f4e.
