@@ -1,0 +1,36 @@
+# cargo-about configuration for THIRD-PARTY-NOTICES (see scripts/notices/generate.sh).
+# Only permissive licenses and MPL-2.0 (weak copyleft) are accepted. Where a
+# package offers a choice (OR), cargo-about picks the first accepted license in
+# this list, so permissive licenses come first and MPL-2.0 last.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "OpenSSL",
+    "MPL-2.0",
+]
+
+# The three 0.1.0 release targets.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+
+# Only what ships in a release binary.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Our own unpublished crates (publish = false) are not third-party.
+private = { ignore = true }
+
+# Never query clearlydefined: output depends only on Cargo.lock and crate sources.
+# generate.sh enforces this by passing --offline to cargo-about.
