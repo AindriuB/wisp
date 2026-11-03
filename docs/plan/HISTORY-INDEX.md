@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-03 | 68 | Measure scripts: missing Windows perf counter nulls the field, `renderer_device_source` key, malformed budgets exit 2, CDPATH-proof, 45-min job timeout | ## 2026-11-03 — The measure scripts degrade and report instead of failing or guessing |
 | 2026-11-03 | 66 | Failed request shows full wrapped, scrollable error with Copy in the Body area; Done line no longer reads `· · size`; +16,528 B binary | ## 2026-11-03 — A failed request shows its full error in the Body area |
 | 2026-11-03 | 65 | Per-platform budgets in budgets.json enforced by measure.sh/ps1 (exit 3) and measure.yml; only macOS x64 tolerated; both Linux backends kept | ## 2026-11-03 — Per-platform budgets enforced by the measure scripts and measure.yml |
 | 2026-11-03 | 64 | Release profile panic=abort, deps opt-level z, Linux gc-sections/ICF: binaries -38% to -54%; macOS x64 job still fails | ## 2026-11-03 — Release binaries shrunk 38-54% with panic=abort, size-optimised dependencies and Linux link flags |
