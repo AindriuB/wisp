@@ -33,3 +33,4 @@ ignore-dev-dependencies = true
 private = { ignore = true }
 
 # Never query clearlydefined: output depends only on Cargo.lock and crate sources.
+# generate.sh enforces this by passing --offline to cargo-about.
