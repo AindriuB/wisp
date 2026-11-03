@@ -158,3 +158,10 @@ Reviewed HEAD: 723f030.
 
 - [STYLE] .cargo/config.toml:1-3 — the comment names "(variant C)" and restates that macOS/Windows are unaffected (the target header already says so). Per docs/conventions.md:103-104 keep only the rust-lld / `--icf=all` reason.
 - [NOTE, optional] Results table rows B3 and C cite commits b240014 and 362e6f5, which no branch contains. Add one line each in Notes saying what those commits changed, so the rows stay traceable after GC.
+
+## Amendment
+
+User decision 2026-11-03:
+
+- Acceptance item 3's "every target's status shows the round-trip completed" is waived for x86_64-apple-darwin. That target is `unmeasured` (no WISP_EVENT completed within 30 s on the macos-26-intel runner) in every run, including the pre-task baseline 41607658851. It is a pre-existing runner/app hang, not caused by this task. The target still builds and its binary size is measured. The hang is tracked as its own residual in PLAN.md at /record.
+- User hand check on macOS arm64 (6.7 MB JSON response, scrolling, End/Home, editor typing, tab switching): the A+B2+C build is the same speed as the 19.2 MB baseline.
