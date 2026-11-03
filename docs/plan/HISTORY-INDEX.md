@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-03 | 65 | Per-platform budgets in budgets.json enforced by measure.sh/ps1 (exit 3) and measure.yml; only macOS x64 tolerated; both Linux backends kept | ## 2026-11-03 — Per-platform budgets enforced by the measure scripts and measure.yml |
 | 2026-11-03 | 64 | Release profile panic=abort, deps opt-level z, Linux gc-sections/ICF: binaries -38% to -54%; macOS x64 job still fails | ## 2026-11-03 — Release binaries shrunk 38-54% with panic=abort, size-optimised dependencies and Linux link flags |
 | 2026-11-03 | 63 | measure.sh/ps1 add PSS, RssAnon, Windows private working set and renderer device; current-main baseline recorded for all four targets | ## 2026-11-03 — Truthful per-platform measurement: PSS, RssAnon, private working set, renderer device |
 | 2026-11-03 | 62 | Storage ops reject reserved names before any filesystem lookup (fold_case); Linux CI green for the first time since task 23 | ## 2026-11-03 — Linux CI green: reserved names rejected before any filesystem lookup |
