@@ -20,27 +20,18 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            tolerate_failure: false
             os: macos-latest
             binary: wisp
             renderer: unknown
-          - target: x86_64-apple-darwin
-            tolerate_failure: true
-            os: macos-26-intel
-            binary: wisp
-            renderer: unknown
           - target: x86_64-pc-windows-msvc
-            tolerate_failure: false
             os: windows-latest
             binary: wisp.exe
             renderer: software
           - target: x86_64-unknown-linux-gnu
-            tolerate_failure: false
             os: ubuntu-latest
             binary: wisp
             renderer: software
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.tolerate_failure }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install GPUI build packages (Linux)
@@ -52,7 +43,7 @@ jobs:
             libxkbcommon-x11-dev libzstd-dev make cmake clang lld llvm jq git curl \
             gettext-base elfutils libsqlite3-dev musl-tools musl-dev build-essential \
             pipewire xdg-desktop-portal libstdc++-14-dev \
-            xvfb mesa-vulkan-drivers
+            xvfb mesa-vulkan-drivers imagemagick
       - name: Install EGL/GL userspace and Vulkan tools (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -82,7 +73,28 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           RENDERER: ${{ matrix.renderer }}
-        run: xvfb-run -a scripts/measure/measure.sh target/${{ matrix.target }}/release/${{ matrix.binary }} measure-${{ matrix.target }}.json
+          SCREENSHOT: measure-${{ matrix.target }}.png
+        run: xvfb-run -a -s "-screen 0 1280x800x24" scripts/measure/measure.sh target/${{ matrix.target }}/release/${{ matrix.binary }} measure-${{ matrix.target }}.json
+      - name: List runtime packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          out=measure-${{ matrix.target }}.packages.txt
+          libs=measure-${{ matrix.target }}.libs.txt
+          {
+            echo "## Debian packages owning the loaded shared objects"
+            if [ -s "$libs" ]; then
+              while IFS= read -r lib; do
+                if owners="$(dpkg -S "$lib" 2>/dev/null)" && [ -n "$owners" ]; then
+                  printf '%s\n' "$owners" | sed 's/: \/.*$//' | tr ',' '\n' | sed 's/^ *//; s/:[^:]*$//'
+                else
+                  echo "unowned: $lib"
+                fi
+              done <"$libs" | sort -u || true
+            fi
+            echo "## NEEDED entries of the binary"
+            readelf -d target/${{ matrix.target }}/release/${{ matrix.binary }} | grep NEEDED || true
+          } >"$out"
+          cat "$out"
       - name: Measure (macOS)
         if: runner.os == 'macOS'
         env:
@@ -104,4 +116,7 @@ jobs:
           path: |
             measure-${{ matrix.target }}.json
             measure-${{ matrix.target }}.*.log
+            measure-${{ matrix.target }}.png
+            measure-${{ matrix.target }}.libs.txt
+            measure-${{ matrix.target }}.packages.txt
           if-no-files-found: warn
