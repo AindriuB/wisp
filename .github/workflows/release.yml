@@ -65,9 +65,52 @@ jobs:
       - name: Check glibc floor (Linux)
         if: runner.os == 'Linux'
         run: scripts/release/check-glibc.sh target/${{ matrix.target }}/release/${{ matrix.binary }} 2.39
+      - name: Select macOS signing mode
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          missing=""
+          for n in APPLE_DEVELOPER_ID_P12 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8; do
+            [ -n "${!n}" ] || missing="$missing $n"
+          done
+          if [ -z "$missing" ]; then
+            echo "WISP_MACOS_SIGN=developer-id" >> "$GITHUB_ENV"
+          elif [ "$missing" = " APPLE_DEVELOPER_ID_P12 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8" ]; then
+            if [ "$GITHUB_EVENT_NAME" = push ]; then
+              echo "::error::Release tag push needs the Developer ID secrets; missing:$missing"
+              exit 1
+            fi
+            echo "::notice::macOS release is ad-hoc signed and not notarised because the Developer ID secrets are absent"
+            echo "WISP_MACOS_SIGN=adhoc" >> "$GITHUB_ENV"
+          else
+            echo "::error::Incomplete Developer ID secrets; missing:$missing"
+            exit 1
+          fi
+      - name: Set up signing keychain (macOS)
+        if: runner.os == 'macOS' && env.WISP_MACOS_SIGN == 'developer-id'
+        shell: bash
+        env:
+          APPLE_TEAM_ID: UB89GDN343
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+        run: scripts/release/macos-keychain.sh setup
       - name: Package
         shell: bash
+        env:
+          APPLE_API_KEY_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER_ID: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER_ID || '' }}
+          APPLE_API_KEY_P8: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_P8 || '' }}
         run: scripts/release/package.sh ${{ matrix.platform }} target/${{ matrix.target }}/release/${{ matrix.binary }} dist
+      - name: Clean up signing material (macOS)
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: scripts/release/macos-keychain.sh cleanup
       - name: Upload package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -264,11 +264,17 @@ this section.
 
 The Windows release `wisp.exe` is a GUI-subsystem executable (`windows_subsystem = "windows"` in release builds, so no console window from Explorer, and stderr goes nowhere there) with a static CRT (`+crt-static` in `.cargo/config.toml`, so no VC++ runtime is needed); measured size is 13,630,464 B, within the 16 MiB budget.
 
-The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is ad-hoc signed (`codesign --sign -`), which stops macOS calling it damaged but is not Developer ID signing or notarisation. It carries the app icon (see below). The Linux binary is built on a pinned `ubuntu-24.04` runner (release, measure and the ci `check` job), so its measured glibc floor is 2.39: Ubuntu 24.04 or newer. `ubuntu-latest` is not used because it moved to 26.04, whose binary needed GLIBC_2.43. `scripts/release/check-glibc.sh` runs after Build in release and measure and fails if any symbol needs a glibc version above 2.39.
+The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is signed with a Developer ID Application certificate and notarised (see below). It carries the app icon (see below). The Linux binary is built on a pinned `ubuntu-24.04` runner (release, measure and the ci `check` job), so its measured glibc floor is 2.39: Ubuntu 24.04 or newer. `ubuntu-latest` is not used because it moved to 26.04, whose binary needed GLIBC_2.43. `scripts/release/check-glibc.sh` runs after Build in release and measure and fails if any symbol needs a glibc version above 2.39.
 
 To cut a release: make sure the workspace version is the one you want, tag `v<version>` (it must equal the workspace version or the final job fails before creating anything), push the tag, check the draft release and its four assets, then publish with `gh release edit v<version> --draft=false`. A tag push never publishes by itself. If a tag-push run is re-run after failing, it creates a second draft for the same tag; delete the stale one first.
 
 To test without a tag: `gh workflow run release.yml --ref <branch> -f draft_release=true` builds the same assets and creates a draft `dryrun-<run_id>`. Check it, then remove it with `gh release delete dryrun-<run_id> --yes` (`--cleanup-tag` prints a harmless HTTP 422 because a draft has no tag). With `draft_release` false a dispatch run creates no release.
+
+### macOS signing and notarisation
+
+The macOS build job signs `Wisp.app` with the Developer ID Application certificate (team `UB89GDN343`) and the hardened runtime, submits the zip to Apple with `notarytool`, and staples the ticket. `scripts/release/macos-keychain.sh` creates and removes a temporary keychain on the runner, and `scripts/release/sign-macos.sh` signs, notarises and staples. Five repository secrets drive it: `APPLE_DEVELOPER_ID_P12`, `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID` (an App Store Connect API key authenticates `notarytool`). These are names only; the values live in the repository's secret store. `APPLE_TEAM_ID` is a plain `env` value in the workflow, not a secret. `notarytool` waits at most 90 minutes; the first submission for the account took about 19 minutes.
+
+Fallback rules: a `workflow_dispatch` run without the secrets signs ad-hoc and prints a notice, so forks and dry runs still build; a `v*` tag push without the secrets fails; a run with only some of the secrets fails. Windows and Linux are unaffected, and the Windows executable is still unsigned.
 
 ### App icon
 
