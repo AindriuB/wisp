@@ -46,3 +46,18 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+
+  notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rustup reads rust-toolchain.toml and installs the pinned toolchain.
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      # Keep the version in step with CARGO_ABOUT_VERSION in scripts/notices/generate.sh.
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+      - name: Generate THIRD-PARTY-NOTICES
+        run: scripts/notices/generate.sh
+      - name: Fail if THIRD-PARTY-NOTICES is out of date
+        run: git diff --exit-code THIRD-PARTY-NOTICES
