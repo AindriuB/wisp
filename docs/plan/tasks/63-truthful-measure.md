@@ -47,7 +47,16 @@ produced the number.
 - Opening a pull request (opened at /record per docs/workflow.md). Pushing the task branch to run the workflow is allowed.
 
 ## Notes
-Run 41602926409, commit 7231d4945025a622d1482471f51b988d1b5d103e (the notes commit after it changes only this file). One artefact per target, each with its JSON.
+Final-code run: run 41607658851, commit 0d450de (the final code; only this file changes after it). One artefact per target, each with its JSON.
+
+| target | status | binary_bytes | idle / after RSS KiB | extra |
+|---|---|---|---|---|
+| x86_64-unknown-linux-gnu | measured | 37993000 | 175192 / 172864 | PSS 148989 / 146736; RssAnon 57964 / 44920; renderer_device `llvmpipe (LLVM 21.1.8, 256 bits)` |
+| x86_64-pc-windows-msvc | measured | 28947456 | 42784 / 52180 | private working set 9024 / 13112; private_kib 35108 / 41628 |
+| aarch64-apple-darwin | measured | 19181056 | 74816 / 80032 | pss/anon/device null (n/a) |
+| x86_64-apple-darwin | unmeasured | 20714504 | none | reason: no 'WISP_EVENT completed' line within 30 s |
+
+Earlier run (history), run 41602926409, commit 7231d4945025a622d1482471f51b988d1b5d103e (the notes commit after it changes only this file). One artefact per target, each with its JSON.
 
 | target | status | binary_bytes | idle / after RSS KiB | extra |
 |---|---|---|---|---|
