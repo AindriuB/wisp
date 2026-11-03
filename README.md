@@ -62,7 +62,7 @@ The maintainer hand-tested macOS on Apple silicon and Windows x64 before release
 
 ## Where Wisp writes
 
-Apart from the files you ask it to save, Wisp writes only to the collection folder and `settings.toml`, with one exception: a response body larger than the in-memory limit is spilled to a temporary file in the operating system's temp directory, and on Unix startup briefly creates and deletes a small `.wisp-probe-*` file there. Save writes wherever you choose. On Windows and Linux, settings live beside the executable when a file named `portable` is next to it, and in the operating system's config directory otherwise. macOS has no portable mode; settings are always in `~/Library/Application Support/wisp`.
+Wisp writes to the collection folder, to `settings.toml`, and to wherever you choose when you save a response. It also writes in the operating system's temp directory in two cases: a response body larger than the in-memory limit is spilled to a temporary file, and on Unix startup briefly creates and deletes a small `.wisp-probe-*` file. On Windows and Linux, settings live beside the executable when a file named `portable` is next to it, and in the operating system's config directory otherwise. macOS has no portable mode; settings are always in `~/Library/Application Support/wisp`.
 
 ## Building from source
 
