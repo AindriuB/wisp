@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-03 | 57 | File and Multipart bodies over 1 MiB stream from disk in 64 KiB chunks with exact Content-Length; spill writes use block_in_place | ## 2026-11-03 — Large File and Multipart bodies stream from disk; spill writes run off the async worker |
 | 2026-11-03 | 59 | History previews cut on a char boundary; list_environments follows symlinks; save_environment writes the file gaining a moved var name first | ## 2026-11-03 — History previews on char boundaries, linked environments, safe environment save order |
 | 2026-11-02 | 53 | Cookies columns get minimum widths (584 px table, Flags 256 px) and scroll sideways below that; failed-status message truncates with tooltip | ## 2026-11-02 — Cookies table and failed-status line fit narrow panes |
 | 2026-11-02 | 52 | Path, Auth, Settings, Multipart and File sub-tabs scroll with a scrollbar | ## 2026-11-02 — Request sub-tabs scroll |
