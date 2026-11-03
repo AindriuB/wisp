@@ -72,3 +72,9 @@ fold_case check, drop the duplicate, and close the test gaps 62 left.
 - Also switched the two reserved-name `to_lowercase` checks in `confine` to `fold_case`
   so none remain outside `fold_case`.
 - Binary size: not measured (storage-only logic change).
+- Linux red check: CI run 41651467164 (`check (ubuntu-latest)`) on a throwaway branch with
+  `clean()` reverted to `to_lowercase` and the new tests kept. Three tests failed:
+  `ops::tests::delete_refuses_wide_case_fold_alias`,
+  `ops::tests::move_into_wide_case_fold_alias_rejected`,
+  `ops::tests::reserved_source_spellings_rejected_not_notfound`
+  (the unconditional Invalid assertions got Io NotFound). This supersedes the macOS note above.
