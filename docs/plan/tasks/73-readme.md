@@ -69,3 +69,13 @@ platform has been tested, and its license.
 ## Amendment — user decisions (2026-11-03)
 
 Confirmed by the user: bundle id `io.github.aindriub.wisp`; ad-hoc signing (`codesign --sign -`) of the .app is acceptable within "unsigned, no Developer ID"; Linux binary built on ubuntu-latest, README states the glibc floor (Ubuntu 24.04 or newer). Gatekeeper instructions use System Settings → Privacy & Security → Open Anyway plus `xattr -d com.apple.quarantine`, not Control-click → Open.
+
+### Notes (implementer, 2026-11-03)
+
+Merged origin/main, task/71 and task/72 into this branch; the 71/72 merge conflicted only in HISTORY.md, HISTORY-INDEX.md and the spec's platform note, resolved by keeping both sides.
+
+Linux package list is from measure run 41686028996 (`measure-x86_64-unknown-linux-gnu.packages.txt`). The README names only packages that appear in it (libvulkan1, libxcb1, libx11-6, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libgcc-s1, libc6) plus mesa-vulkan-drivers, which is in the list as the driver. fontconfig and freetype do not appear in the list, so they are not named. The binary's NEEDED entries are only libxcb, libxkbcommon, libxkbcommon-x11, libgcc_s, libm and libc; Wayland and X11 libraries come in through the graphics stack.
+
+glibc floor, read from the release artefact `Wisp-0.1.0-linux-x64.tar.gz` of dry-run 41690366878 with `objdump -T wisp`: highest versions are GLIBC_2.43 (six symbols: asinf, acosf, coshf, sinhf, atan2f, acoshf), GLIBC_2.39 (pidfd_spawnp, pidfd_getpid), GLIBC_2.35, GLIBC_2.34 (15). So the floor is glibc 2.43, not Ubuntu 24.04 (glibc 2.39) as the amendment assumed; ubuntu-latest is now 26.04. The README says glibc 2.43 or newer, Ubuntu 26.04. Not verified: that Ubuntu 26.04 ships 2.43 (inferred from the libgallium 26.0.8-1ubuntu0.3 in the library list).
+
+Not confirmed: the Windows hand-test and macOS hand-test statements are written as the state at release, per the orchestrator. The tag-push release path and the assets' presence on a published release have not run, so the Install steps assume the archives sit beside `SHA256SUMS` after download. Windows checksum check is a manual compare (Get-FileHash plus Select-String), since PowerShell has no `-c` equivalent.
