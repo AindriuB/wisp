@@ -19,13 +19,15 @@ Body only when the *why* is not obvious from the diff. No emoji.
 agent-authored commits. The operating harness appends both automatically to
 every commit; they are accurate provenance, not noise, and a rule the tooling
 cannot follow costs a review round trip on every commit without improving the
-history. A reviewer must not block a merge over their presence, and no existing
+history. A reviewer must not block a PR over their presence, and no existing
 commit needs amending to strip them.
 
 ## Branches
 
 `task/<id>-<slug>`, created by `.claude/scripts/wt-new.sh`. Never work directly
-on the default branch.
+on the default branch, and never push to it: every branch, docs-only ones
+included, goes to `main` through a pull request that the user merges. Agents
+open PRs and never merge them.
 
 ## Toolchain
 
@@ -125,7 +127,8 @@ carry no information.
 leaving the working tree dirty for a later session to pick up or lose. This is
 not optional cleanup: uncommitted scribe output has already gone missing, and a
 retired task file once had to be reconstructed from a transcript. A `scribe`
-turn that has not run `git commit` has not finished.
+turn that has not run `git commit` has not finished. It commits on the task's
+branch, not on `main`.
 
 *(kit)* `docs/plan/tasks/retired/` is archive, not working set: exclude it from
 default `rg` searches with an `.ignore` file, placed both at the repo root and
@@ -153,7 +156,7 @@ against the same extraction over `HISTORY.md` and the task directories.
 
 ## Progress reporting *(kit)*
 
-After each task closes — merged or otherwise resolved, not only at wave or
+After each task closes — merged by the user or otherwise resolved, not only at wave or
 milestone boundaries — the orchestrator reports a markdown table of every task in
 the current milestone or phase, including tasks not yet started. A table of only
 completed work hides the point, which is to make remaining work visible at a
