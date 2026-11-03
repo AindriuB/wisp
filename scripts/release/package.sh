@@ -49,10 +49,14 @@ case "$platform" in
     mkdir -p "$app/Resources"
     cp "$root/assets/icon/wisp.icns" "$app/Resources/wisp.icns"
     actool_out="$stage/actool"; mkdir -p "$actool_out"
-    xcrun actool "$root/assets/icon/AppIcon.icon" --compile "$actool_out" \
+    if ! xcrun actool "$root/assets/icon/AppIcon.icon" --compile "$actool_out" \
       --platform macosx --minimum-deployment-target "$minos" --app-icon AppIcon \
-      --output-partial-info-plist "$actool_out/partial.plist" >/dev/null
-    [ -f "$actool_out/Assets.car" ] || { echo "actool produced no Assets.car" >&2; exit 1; }
+      --output-partial-info-plist "$actool_out/partial.plist" >"$actool_out/actool.log" 2>&1; then
+      cat "$actool_out/actool.log" >&2; echo "actool failed" >&2; exit 1
+    fi
+    [ -f "$actool_out/Assets.car" ] || { cat "$actool_out/actool.log" >&2; echo "actool produced no Assets.car" >&2; exit 1; }
+    xcrun assetutil --info "$actool_out/Assets.car" | grep -q '"Name" : "AppIcon"' \
+      || { cat "$actool_out/actool.log" >&2; echo "AppIcon missing from Assets.car" >&2; exit 1; }
     cp "$actool_out/Assets.car" "$app/Resources/Assets.car"
     codesign --force --sign - "$dir/Wisp.app"
     asset="$name.zip"; rm -f "$out/$asset"
