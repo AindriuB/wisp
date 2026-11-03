@@ -196,19 +196,31 @@ Release profile now (`Cargo.toml`, `.cargo/config.toml`): `panic = "abort"`; dep
 
 ### Set budgets
 
-Set by the user on 2026-10-29 from the `aarch64-apple-darwin` hardware-renderer
-figures, with about 20% headroom:
+Set by the user on 2026-11-03 from the post-task-64 figures. Both Linux backends
+(x11 and wayland) stay. The enforced copy is `scripts/measure/budgets.json`, keyed
+by target triple; both measure scripts read it, and this table is its explanation.
+1 MiB = 1,024 KiB.
 
-| Measure | Budget |
-|---|---|
-| Binary size | at most 20 MB (20,971,520 B) |
-| Idle RSS | at most 120 MB |
-| RSS after one request | at most 128 MB |
+| Target | Binary size | Idle memory | Memory after one request | Memory metric |
+|---|---|---|---|---|
+| `aarch64-apple-darwin` | at most 20 MiB (20,971,520 B) | at most 120 MiB | at most 128 MiB | RSS (`idle_rss_kib`) |
+| `x86_64-apple-darwin` | at most 20 MiB | at most 120 MiB | at most 128 MiB | RSS; unmeasured, see below |
+| `x86_64-pc-windows-msvc` | at most 16 MiB (16,777,216 B) | at most 120 MiB | at most 128 MiB | private bytes (`private_kib`) |
+| `x86_64-unknown-linux-gnu` | at most 28 MiB (29,360,128 B) | at most 120 MiB | at most 128 MiB | RssAnon (`rss_anon_kib`) |
 
-These apply to the macOS arm64 hardware-renderer figure only, as measured by
-`scripts/measure/measure.sh`. Other platforms have no budget yet: they are not
-measured, and CI figures are not comparable. The user will set per-platform
-budgets after a `measure.yml` run.
+Windows uses private bytes because on WARP the working set leaves out GPU memory.
+Linux uses RssAnon because llvmpipe dominates RSS and PSS in CI. CI renderers are
+software, so figures are comparable only within one target.
+
+Each result JSON carries a `budget` object (`binary_bytes`, `idle`, `after_request`,
+each `{metric, limit, value, within}`) and `within_budget`. The scripts exit 3 when a
+measured result is over budget and 1 when it is unmeasured. `measure.yml` sets
+`continue-on-error` for `x86_64-apple-darwin` only, so a run now fails when arm64,
+Windows or Linux is over budget or unmeasured. The macOS x64 job hangs on its runner
+(see Open budget questions in PLAN), so its memory is unmeasured and that is not a
+failure; its binary size is still checked. First enforced run: `measure.yml` run
+41636483942 on `4ba28c1`; arm64, Windows and Linux were measured and within budget
+(binary 10,420,080 / 13,450,240 / 23,353,896 B), x64 unmeasured.
 
 No change may be justified or rejected by reference to a number that is not in
 this section.

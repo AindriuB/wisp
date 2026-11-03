@@ -1,0 +1,22 @@
+{
+  "aarch64-apple-darwin": {
+    "binary_bytes": {"metric": "binary_bytes", "limit": 20971520},
+    "idle": {"metric": "idle_rss_kib", "limit": 122880},
+    "after_request": {"metric": "after_request_rss_kib", "limit": 131072}
+  },
+  "x86_64-apple-darwin": {
+    "binary_bytes": {"metric": "binary_bytes", "limit": 20971520},
+    "idle": {"metric": "idle_rss_kib", "limit": 122880},
+    "after_request": {"metric": "after_request_rss_kib", "limit": 131072}
+  },
+  "x86_64-pc-windows-msvc": {
+    "binary_bytes": {"metric": "binary_bytes", "limit": 16777216},
+    "idle": {"metric": "private_kib.idle", "limit": 122880},
+    "after_request": {"metric": "private_kib.after_request", "limit": 131072}
+  },
+  "x86_64-unknown-linux-gnu": {
+    "binary_bytes": {"metric": "binary_bytes", "limit": 29360128},
+    "idle": {"metric": "rss_anon_kib.idle", "limit": 122880},
+    "after_request": {"metric": "rss_anon_kib.after_request", "limit": 131072}
+  }
+}

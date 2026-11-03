@@ -1,6 +1,7 @@
 # measure.ps1 -Binary <wisp.exe> -Output <out.json>   (Windows)
 # Env: TARGET (default x86_64-pc-windows-msvc), RENDERER (hardware|software|unknown,
-#      default unknown), SETTLE_SECONDS (default 5).
+#      default unknown), SETTLE_SECONDS (default 5), BUDGETS (path to the budgets
+#      file, default budgets.json next to this script).
 #
 # Headline memory figure: private_working_set_kib {idle, after_request}, the
 # process's private working set (Win32_PerfFormattedData WorkingSetPrivate).
@@ -15,13 +16,16 @@
 # stdout line (30 s max), wait settle_seconds, sample again, kill. Fixed waits
 # are fine: this is a measurement, not a test.
 # If the window fails to start or no WISP_EVENT line arrives, write status
-# "unmeasured" with a reason, exit non-zero, and record no numbers. The wait
+# "unmeasured" with a reason, exit 1, and record no numbers. The wait
 # stops early when the app prints `WISP_EVENT failed` or exits, and any thrown
 # exception also ends as "unmeasured" with its message as the reason.
 # Each launch's stdout/stderr are kept next to -Output as
 # <output stem>.{idle,req}.{out,err}.log; on "unmeasured" the last 20 stderr
 # lines go into the JSON key stderr_tail and the job log. The app runs with
 # RUST_BACKTRACE=1 and RUST_LOG=info.
+# Budgets: scripts/measure/budgets.json (or $env:BUDGETS) gives the target's limits;
+# the result JSON gets a `budget` object and `within_budget`. Exit codes: 2 usage
+# (missing budgets file), 1 unmeasured, 3 measured but over budget, 0 otherwise.
 param(
   [Parameter(Mandatory = $true)][string]$Binary,
   [Parameter(Mandatory = $true)][string]$Output
@@ -39,6 +43,9 @@ $commit = (git rev-parse HEAD 2>$null); if (-not $commit) { $commit = 'unknown' 
 $osVersion = [System.Environment]::OSVersion.VersionString
 $bytes = $null
 $errFile = $null
+$budgetsFile = if ($env:BUDGETS) { $env:BUDGETS } else { Join-Path $PSScriptRoot 'budgets.json' }
+if (-not (Test-Path $budgetsFile)) { [Console]::Error.WriteLine("no such budgets file: $budgetsFile"); exit 2 }
+$script:overBudget = @()
 
 function Get-StderrTail {
   if (-not $errFile) { return $null }
@@ -54,7 +61,7 @@ function Get-PrivateWs($procId) {
 function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $stderrTail, $idlePws = $null, $afterPws = $null) {
   $dir = Split-Path -Parent $Output
   if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  [ordered]@{
+  $res = [ordered]@{
     target = $target; commit = $commit; binary_bytes = $bytes
     idle_rss_kib = $idle; after_request_rss_kib = $after
     private_kib = [ordered]@{ idle = $idlePriv; after_request = $afterPriv }
@@ -64,12 +71,31 @@ function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $s
     settle_seconds = $settle; renderer = $renderer; status = $status
     reason = $reason; os_version = $osVersion
     stderr_tail = $stderrTail
-  } | ConvertTo-Json | Set-Content -Encoding utf8 $Output
+  }
+  $entry = (Get-Content -Raw $budgetsFile | ConvertFrom-Json).$target
+  $budget = $null; $within = $null
+  if ($entry) {
+    $budget = [ordered]@{}
+    $flags = @()
+    foreach ($key in 'binary_bytes', 'idle', 'after_request') {
+      $m = $entry.$key.metric; $lim = [int64]$entry.$key.limit
+      $val = $res
+      foreach ($part in $m.Split('.')) { if ($null -ne $val) { $val = $val[$part] } }
+      $ok = if ($null -eq $val) { $null } else { [int64]$val -le $lim }
+      $budget[$key] = [ordered]@{ metric = $m; limit = $lim; value = $val; within = $ok }
+      $flags += , $ok
+      if ($ok -eq $false) { $script:overBudget += "over budget: $key $val > $lim" }
+    }
+    $within = if ($flags -contains $false) { $false } elseif (($flags | Where-Object { $_ -eq $true }).Count -eq 3) { $true } else { $null }
+  }
+  $res['budget'] = $budget
+  $res['within_budget'] = $within
+  $res | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $Output
 }
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $work | Out-Null
-$server = $null; $app = $null
+$server = $null; $app = $null; $exitCode = 0
 function Stop-All {
   if ($app -and -not $app.HasExited) { $app.Kill() }
   if ($server -and -not $server.HasExited) { $server.Kill() }
@@ -150,6 +176,10 @@ try {
 
   Write-Result 'measured' $null $idle $idlePriv $after $afterPriv $null $idlePws $afterPws
   Get-Content $Output
+  if ($script:overBudget.Count -gt 0) {
+    $script:overBudget | ForEach-Object { [Console]::Error.WriteLine($_) }
+    $exitCode = 3
+  }
 }
 catch {
   # Fail's own `exit 1` does not land here; this is for unexpected throws.
@@ -164,3 +194,4 @@ finally {
   Stop-All
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
+exit $exitCode

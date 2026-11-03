@@ -22,6 +22,9 @@
 # from the app log or `vulkaninfo --summary`; null with renderer_device_reason
 # when neither gives one. Those keys, and private_working_set_kib, are null
 # where not applicable (macOS; Windows has its own script).
+# Budgets: scripts/measure/budgets.json (or $BUDGETS) gives the target's limits;
+# the result JSON gets a `budget` object and `within_budget`. Exit codes: 2 usage,
+# 1 unmeasured, 3 measured but over budget, 0 otherwise.
 set -u
 
 bin="${1:-}"; out="${2:-}"
@@ -29,6 +32,9 @@ bin="${1:-}"; out="${2:-}"
 [ -f "$bin" ] || { echo "no such binary: $bin" >&2; exit 2; }
 # Absolute path, so a bare name is never looked up on PATH.
 bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")"
+
+budgets="${BUDGETS:-$(cd "$(dirname "$0")" && pwd)/budgets.json}"
+[ -f "$budgets" ] || { echo "no such budgets file: $budgets" >&2; exit 2; }
 
 settle="${SETTLE_SECONDS:-5}"
 renderer="${RENDERER:-unknown}"
@@ -64,7 +70,7 @@ fi
 write_json() {
   mkdir -p "$(dirname "$out")"
   python3 - "$target" "$commit" "$bytes" "$3" "$4" "$settle" "$renderer" "$1" "$2" "$os_version" "${5:-}" \
-    "$pss_idle" "$pss_after" "$anon_idle" "$anon_after" "$device" "$device_reason" >"$out" <<'PY'
+    "$pss_idle" "$pss_after" "$anon_idle" "$anon_after" "$device" "$device_reason" "$budgets" >"$out" <<'PY'
 import json, sys
 a = sys.argv[1:]
 num = lambda s: int(s) if s else None
@@ -76,7 +82,7 @@ if a[10]:
             tail = f.read().splitlines()[-20:]
     except OSError:
         tail = []
-print(json.dumps({
+res = {
     "target": a[0], "commit": a[1], "binary_bytes": num(a[2]),
     "idle_rss_kib": num(a[3]), "after_request_rss_kib": num(a[4]),
     "settle_seconds": int(a[5]), "renderer": a[6], "status": a[7],
@@ -86,7 +92,28 @@ print(json.dumps({
     "renderer_device": a[15] or None,
     "renderer_device_reason": None if a[15] else (a[16] or None),
     "private_working_set_kib": None,
-}, indent=2))
+}
+def lookup(path):
+    v = res
+    for part in path.split("."):
+        v = v.get(part) if isinstance(v, dict) else None
+    return v
+with open(a[17]) as f:
+    entry = json.load(f).get(a[0])
+if entry is None:
+    res["budget"] = None
+    res["within_budget"] = None
+else:
+    budget = {}
+    for key in ("binary_bytes", "idle", "after_request"):
+        m, lim = entry[key]["metric"], entry[key]["limit"]
+        val = lookup(m)
+        budget[key] = {"metric": m, "limit": lim, "value": val,
+                       "within": None if val is None else val <= lim}
+    w = [b["within"] for b in budget.values()]
+    res["budget"] = budget
+    res["within_budget"] = False if False in w else (True if all(x is True for x in w) else None)
+print(json.dumps(res, indent=2))
 PY
 }
 # err_file is the stderr log of the launch in progress (empty before any launch).
@@ -196,3 +223,13 @@ if [ "$(uname -s)" = Linux ]; then
 fi
 write_json measured "" "$idle" "$after"
 cat "$out"
+python3 - "$out" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+if r.get("within_budget") is False:
+    for k, b in r["budget"].items():
+        if b["within"] is False:
+            print(f"over budget: {k} {b['value']} > {b['limit']}", file=sys.stderr)
+    sys.exit(3)
+PY
+exit $?

@@ -19,23 +19,27 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
+            tolerate_failure: false
             os: macos-latest
             binary: wisp
             renderer: unknown
           - target: x86_64-apple-darwin
+            tolerate_failure: true
             os: macos-26-intel
             binary: wisp
             renderer: unknown
           - target: x86_64-pc-windows-msvc
+            tolerate_failure: false
             os: windows-latest
             binary: wisp.exe
             renderer: software
           - target: x86_64-unknown-linux-gnu
+            tolerate_failure: false
             os: ubuntu-latest
             binary: wisp
             renderer: software
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
+    continue-on-error: ${{ matrix.tolerate_failure }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install GPUI build packages (Linux)
