@@ -73,3 +73,9 @@ keep dead code. No behaviour changes.
 - palette `sen` order is [1, 2, 3, 0] (Send request, Resend, Save token, scattered): consistent with the comment.
 - `wisp-core --test engine a_20_mib_file_body_streams_with_content_length` failed once under a parallel full run and passed on rerun; looks flaky, not touched.
 - Release build size not measured (deletion-only).
+
+## Review round 1 — findings
+
+Reviewed HEAD: a4385e1.
+
+- [P3] crates/app/src/settings.rs:226 — the renamed test `location_prefers_portable_then_env_then_config_dir_then_none` still names an "env" case it never checks; `location()` (:42-51) has no env branch. Rename to `location_prefers_portable_then_config_dir_then_none`; body unchanged.
