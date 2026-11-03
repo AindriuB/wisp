@@ -104,12 +104,12 @@ jobs:
           path: dist/*
           if-no-files-found: error
       - name: Check tag matches version (tag push)
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         run: |
           [ "$GITHUB_REF_NAME" = "v${{ steps.meta.outputs.version }}" ] || {
             echo "tag $GITHUB_REF_NAME does not equal v${{ steps.meta.outputs.version }}" >&2; exit 1; }
       - name: Create draft release (tag push)
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         run: |
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
             --title "Wisp ${{ steps.meta.outputs.version }}" --notes "" dist/*

@@ -55,7 +55,7 @@ case "$platform" in
   linux-x64)
     cp "$bin" "$dir/wisp"; chmod 0755 "$dir/wisp"
     asset="$name.tar.gz"; rm -f "$out/$asset"
-    tar -C "$stage" -czf "$out/$asset" "$name"
+    tar --owner=0 --group=0 --numeric-owner -C "$stage" -czf "$out/$asset" "$name"
     ;;
   *) echo "unknown platform: $platform" >&2; exit 2 ;;
 esac
