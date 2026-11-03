@@ -125,3 +125,10 @@ made with `ditto -c -k --keepParent`.
 ## Amendment — user decisions (2026-11-03)
 
 Confirmed by the user: bundle id `io.github.aindriub.wisp`; ad-hoc signing (`codesign --sign -`) of the .app is acceptable within "unsigned, no Developer ID"; Linux binary built on ubuntu-latest, README states the glibc floor (Ubuntu 24.04 or newer). Gatekeeper instructions use System Settings → Privacy & Security → Open Anyway plus `xattr -d com.apple.quarantine`, not Control-click → Open.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 51c90be.
+
+- [P2] .github/workflows/release.yml:106-115 — the tag guard and tag-release step check only `github.ref_type == 'tag'`, which is also true for a `workflow_dispatch` run on a tag ref, so a dispatch with `draft_release: false` still creates a draft release (and `-f draft_release=true` on a tag ref makes two drafts). Use `github.event_name == 'push' && github.ref_type == 'tag'` on both steps. Failing input: `gh workflow run release.yml --ref v0.1.0` after the tag exists → draft release v0.1.0 created.
+- [NOTE, optional] scripts/release/package.sh:58 — `tar -czf` records the runner's uid/gid; add `--owner=0 --group=0 --numeric-owner`.
