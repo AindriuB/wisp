@@ -62,3 +62,13 @@ fold_case check, drop the duplicate, and close the test gaps 62 left.
 - docs/, PLAN.md, HISTORY*.md (scribe).
 
 ## Notes
+
+- Red check: reverted `clean()` to `to_lowercase` (with the clean_node block gone) and ran
+  `cargo test -p wisp-storage --lib` on macOS/APFS: all 139 still passed, because APFS
+  resolves `environment\u{17f}` to `environments` and `confine` rejects it. The failure
+  (Io NotFound from `move_node`/`rename_*`) only reproduces on a case-sensitive file
+  system; no Linux runner (Docker daemon down) was available, so the red run is not shown.
+  Reserved-source cases using ordinary case (`Environments`, `.WISP`) were never red.
+- Also switched the two reserved-name `to_lowercase` checks in `confine` to `fold_case`
+  so none remain outside `fold_case`.
+- Binary size: not measured (storage-only logic change).

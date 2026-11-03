@@ -82,7 +82,8 @@ fn clean(rel: &Path) -> Result<PathBuf> {
     }
     if let Some(Component::Normal(first)) = out.components().next() {
         let first = first.to_string_lossy();
-        if first.starts_with('.') || first.to_lowercase() == ENV_DIR {
+        let folded = fold_case(&first);
+        if folded.starts_with('.') || folded == ENV_DIR {
             return Err(invalid(rel, format!("`{first}` is not editable here")));
         }
     }
@@ -120,7 +121,7 @@ fn confine(rootc: &Path, rel: &Path, abs: &Path) -> Result<()> {
         return Err(invalid(rel, "resolves outside the collection"));
     };
     if let Some(Component::Normal(first)) = inside.components().next() {
-        let lower = first.to_string_lossy().to_lowercase();
+        let lower = fold_case(&first.to_string_lossy());
         if lower.starts_with('.')
             || lower == ENV_DIR
             || same_entry(&rootc.join(first), &rootc.join(ENV_DIR))
@@ -129,7 +130,7 @@ fn confine(rootc: &Path, rel: &Path, abs: &Path) -> Result<()> {
         }
     }
     if let Some(name) = inside.file_name() {
-        let lower = name.to_string_lossy().to_lowercase();
+        let lower = fold_case(&name.to_string_lossy());
         if lower == COLLECTION_FILE || lower == FOLDER_FILE {
             return Err(invalid(rel, "resolves to a collection or folder file"));
         }
@@ -166,15 +167,9 @@ fn clean_node(rootc: &Path, rel: &Path, follow: bool) -> Result<(PathBuf, Kind)>
     else {
         return Err(invalid(rel, "names the collection root"));
     };
-    // Textual reserved-name checks come first: on a case-sensitive file system
-    // the lookups below would otherwise fail with NotFound for a spelling that
-    // does not exist on disk.
-    if let Some(Component::Normal(first)) = rel_clean.components().next() {
-        let folded = fold_case(&first.to_string_lossy());
-        if folded.starts_with('.') || folded == ENV_DIR {
-            return Err(invalid(rel, "is a reserved entry"));
-        }
-    }
+    // Textual reserved-name checks come first (the first component was already
+    // folded in `clean`): on a case-sensitive file system the lookups below
+    // would otherwise fail with NotFound for a spelling that does not exist.
     let folded_name = fold_case(&name);
     if folded_name == COLLECTION_FILE || folded_name == FOLDER_FILE {
         return Err(invalid(rel, "is a collection or folder file"));
@@ -1292,6 +1287,53 @@ mod tests {
     }
 
     #[test]
+    fn move_into_wide_case_fold_alias_rejected() {
+        let d = col();
+        let r = d.path();
+        w(r, "a.toml", &req("A"));
+        w(r, "environments/dev.toml", "[vars]\n");
+        let before = snapshot(r);
+        let e = move_node(r, Path::new("a.toml"), Path::new("environment\u{17f}")).unwrap_err();
+        assert!(matches!(e, StorageError::Invalid { .. }), "{e:?}");
+        assert_eq!(snapshot(r), before);
+    }
+
+    #[test]
+    fn reserved_source_spellings_rejected_not_notfound() {
+        let d = col();
+        let r = d.path();
+        w(r, "a.toml", &req("A"));
+        w(r, "f/x.toml", &req("X"));
+        w(r, "f/folder.toml", "order = []\n");
+        w(r, "environments/dev.toml", "[vars]\n");
+        let before = snapshot(r);
+        for p in [
+            "Environments",
+            "environment\u{17f}",
+            ".WISP",
+            "f/Folder.toml",
+        ] {
+            let p = Path::new(p);
+            let e = rename_request(r, p, "z").unwrap_err();
+            assert!(
+                matches!(e, StorageError::Invalid { .. }),
+                "rename_request {p:?}: {e:?}"
+            );
+            let e = rename_folder(r, p, "z").unwrap_err();
+            assert!(
+                matches!(e, StorageError::Invalid { .. }),
+                "rename_folder {p:?}: {e:?}"
+            );
+            let e = move_node(r, p, Path::new("f")).unwrap_err();
+            assert!(
+                matches!(e, StorageError::Invalid { .. }),
+                "move_node {p:?}: {e:?}"
+            );
+            assert_eq!(snapshot(r), before, "{p:?}");
+        }
+    }
+
+    #[test]
     fn dot_names_rejected() {
         let d = col();
         let r = d.path();
@@ -1393,11 +1435,9 @@ mod tests {
         w(r, "environments/dev.toml", "[vars]\n");
         let before = snapshot(r);
         // On a case-folding file system U+017F opens `environments`; elsewhere
-        // the entry does not exist. Either way nothing may be removed.
+        // the entry does not exist. Either way it is refused textually.
         let e = delete_node(r, Path::new("environment\u{17f}"));
-        if r.join("environment\u{17f}").exists() {
-            assert!(matches!(e, Err(StorageError::Invalid { .. })), "{e:?}");
-        }
+        assert!(matches!(e, Err(StorageError::Invalid { .. })), "{e:?}");
         assert_eq!(snapshot(r), before);
     }
 
