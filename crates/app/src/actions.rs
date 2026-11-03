@@ -18,14 +18,15 @@ actions!(
         ReloadFromDisk,
         KeepMine,
         ToggleTheme,
-        ToggleLayout
+        ToggleLayout,
+        Quit
     ]
 );
 
 /// Every default binding as (keystroke, action name), with the primary modifier
 /// (`cmd` on macOS, `ctrl` elsewhere) spelled out per platform.
 #[cfg(target_os = "macos")]
-const KEYS: [(&str, &str); 10] = [
+const KEYS: [(&str, &str); 11] = [
     ("cmd-enter", "send"),
     ("cmd-s", "save"),
     ("cmd-k", "palette"),
@@ -36,9 +37,10 @@ const KEYS: [(&str, &str); 10] = [
     ("ctrl-tab", "next"),
     ("ctrl-shift-tab", "prev"),
     ("escape", "cancel"),
+    ("cmd-q", "quit"),
 ];
 #[cfg(not(target_os = "macos"))]
-const KEYS: [(&str, &str); 10] = [
+const KEYS: [(&str, &str); 11] = [
     ("ctrl-enter", "send"),
     ("ctrl-s", "save"),
     ("ctrl-k", "palette"),
@@ -49,6 +51,7 @@ const KEYS: [(&str, &str); 10] = [
     ("ctrl-tab", "next"),
     ("ctrl-shift-tab", "prev"),
     ("escape", "cancel"),
+    ("ctrl-q", "quit"),
 ];
 
 /// The keystroke of entry `index` in `KEYS`; the order below mirrors it.
@@ -115,6 +118,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new(key(7), NextTab, None),
         KeyBinding::new(key(8), PrevTab, None),
         KeyBinding::new(key(9), CancelRequest, None),
+        KeyBinding::new(key(10), Quit, None),
     ]);
 }
 
@@ -141,6 +145,21 @@ mod tests {
     }
 
     #[test]
+    fn quit_hints() {
+        let quit = KEYS.iter().find(|(_, n)| *n == "quit").unwrap().0;
+        let mac = if cfg!(target_os = "macos") {
+            quit
+        } else {
+            "cmd-q"
+        };
+        assert_eq!(format_hint(mac, OperatingSystem::Mac), "⌘Q");
+        assert_eq!(format_hint("ctrl-q", OperatingSystem::Linux), "Ctrl+Q");
+        if !cfg!(target_os = "macos") {
+            assert_eq!(quit, "ctrl-q");
+        }
+    }
+
+    #[test]
     fn palette_hint_reads_keys() {
         let expected = if cfg!(target_os = "macos") {
             "⌘K"
@@ -154,6 +173,7 @@ mod tests {
     fn bind_keys_indices_match_names() {
         let names = [
             "send", "save", "palette", "env", "new", "close", "open", "next", "prev", "cancel",
+            "quit",
         ];
         for (i, n) in names.iter().enumerate() {
             assert_eq!(KEYS[i].1, *n);

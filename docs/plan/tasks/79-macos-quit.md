@@ -68,3 +68,30 @@ last window closes, and must not crash when it quits.
 - Changing the existing keys or the Cmd-W (CloseTab) behaviour.
 
 ## Notes
+
+### Crash cause
+Not reproduced here (no Touch Bar hardware); the analysis above was read against
+the source and stands as written: `SubclassingAdapter::drop` restores the saved
+class with `object_setClass`, which clobbers AppKit's KVO isa-swizzle on the
+content view. Whether Zed or accesskit upstream changed `SubclassingAdapter::drop`
+or the Touch Bar handling: not traced (offline). Workaround only: no window is
+ever dropped while the app keeps running.
+
+### Why macOS quits on last window close
+Wisp is single-window with no document model and no reopen-from-Dock handler, so
+a windowless process is useless, and that state is what exposes the crash. Both
+`on_window_should_close` (returns false after `cx.quit()`) and an
+`on_window_closed` backstop quit the app, so the window drops inside
+`applicationWillTerminate:`.
+
+### Implementation notes
+- App menu "Wisp" holds Services, a separator and "Quit Wisp" (Cmd-Q from the keymap). "About Wisp" and "Hide Wisp" are omitted: GPUI 0.3.10 has no `OsAction`/selector for them and About needs a panel.
+- `WISP_CLOSE_WINDOW_AFTER_MS` calls the same `quit_app` the close handlers use.
+- `scripts/measure/quit-check.sh` reads the bundle id from Info.plist. It passed on a `package.sh macos-arm64` bundle re-id'd to `io.github.aindriub.wisp.test79` and ad-hoc signed (so a real running Wisp is untouched). It only signals pids it started.
+- The script cannot prove the Touch Bar crash is gone (needs that hardware); it checks quit paths and absence of new `.ips`.
+
+### Manual steps (Touch Bar Mac)
+1. Launch, click the red button: process exits; `pgrep -x wisp` is empty.
+2. Relaunch, Cmd-Q: exits.
+3. Relaunch, Dock right-click, Quit: exits, no crash dialog.
+4. Afterwards no new `wisp*.ips` in `~/Library/Logs/DiagnosticReports`.
