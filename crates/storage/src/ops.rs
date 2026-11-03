@@ -188,12 +188,7 @@ fn clean_node(rootc: &Path, rel: &Path, follow: bool) -> Result<(PathBuf, Kind)>
         return Ok((rel_clean, Kind::Folder));
     }
     let lower = name.to_lowercase();
-    if !lower.ends_with(".toml")
-        || lower == COLLECTION_FILE
-        || lower == FOLDER_FILE
-        || name.contains(".body.")
-        || name.starts_with('.')
-    {
+    if !lower.ends_with(".toml") || name.contains(".body.") || name.starts_with('.') {
         return Err(invalid(rel, "is not a request or folder"));
     }
     Ok((rel_clean, Kind::Request))
