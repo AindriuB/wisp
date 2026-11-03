@@ -1,12 +1,13 @@
 {
   "target": "aarch64-apple-darwin",
-  "commit": "561807fb0a8ad259500ee0f2b8e5c927e7b44b58",
-  "binary_bytes": 16660480,
-  "idle_rss_kib": 100032,
-  "after_request_rss_kib": 103296,
+  "commit": "f116a690c063e7a14101e3b213ee2a1312dedc07",
+  "binary_bytes": 19181072,
+  "idle_rss_kib": 70496,
+  "after_request_rss_kib": 75648,
   "settle_seconds": 5,
   "renderer": "hardware",
   "status": "measured",
   "reason": null,
-  "os_version": "macOS 27.0.1 arm64"
+  "os_version": "macOS 27.0.1 arm64",
+  "stderr_tail": null
 }
