@@ -166,6 +166,19 @@ fn clean_node(rootc: &Path, rel: &Path, follow: bool) -> Result<(PathBuf, Kind)>
     else {
         return Err(invalid(rel, "names the collection root"));
     };
+    // Textual reserved-name checks come first: on a case-sensitive file system
+    // the lookups below would otherwise fail with NotFound for a spelling that
+    // does not exist on disk.
+    if let Some(Component::Normal(first)) = rel_clean.components().next() {
+        let folded = fold_case(&first.to_string_lossy());
+        if folded.starts_with('.') || folded == ENV_DIR {
+            return Err(invalid(rel, "is a reserved entry"));
+        }
+    }
+    let folded_name = fold_case(&name);
+    if folded_name == COLLECTION_FILE || folded_name == FOLDER_FILE {
+        return Err(invalid(rel, "is a collection or folder file"));
+    }
     let abs = rootc.join(&rel_clean);
     if let Some(parent) = abs.parent() {
         confine(rootc, rel, parent)?;
