@@ -373,13 +373,16 @@ impl Render for UrlBar {
                     .items_center()
                     .gap_2()
                     .px_2()
+                    .min_w_0()
+                    .overflow_hidden()
                     .child(
                         div()
+                            .flex_none()
                             .w(px(110.))
                             .child(Select::new(&self.method).id("url-method")),
                     )
-                    .child(div().flex_1().child(Input::new(&self.input)))
-                    .child(button),
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
+                    .child(div().flex_none().child(button)),
             )
             .child(strip)
             .child(problems)

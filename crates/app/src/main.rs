@@ -18,7 +18,7 @@ mod ui;
 mod url_sync;
 mod workspace;
 
-use gpui::{AppContext as _, WindowOptions};
+use gpui::{AppContext as _, WindowOptions, px, size};
 use gpui_component::Root;
 
 use crate::ui::root::WorkspaceView;
@@ -29,6 +29,17 @@ use crate::workspace::Workspace;
 pub fn trace(stage: &str) {
     if std::env::var_os("WISP_AUTOSEND_URL").is_some() {
         eprintln!("WISP_TRACE {stage}");
+    }
+}
+
+/// Smallest window the layout is designed for (logical px).
+const MIN_WINDOW_WIDTH: f32 = 720.;
+const MIN_WINDOW_HEIGHT: f32 = 480.;
+
+fn window_options() -> WindowOptions {
+    WindowOptions {
+        window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
+        ..WindowOptions::default()
     }
 }
 
@@ -52,7 +63,7 @@ fn main() {
         theme::apply(loaded.theme, None, cx);
         let open = std::env::args_os().nth(1).map(std::path::PathBuf::from);
         trace("before open_window");
-        let opened = cx.open_window(WindowOptions::default(), |window, cx| {
+        let opened = cx.open_window(window_options(), |window, cx| {
             let workspace = cx.new(|cx| Workspace::new(loaded, settings_path, open, cx));
             let view = cx.new(|cx| WorkspaceView::new(workspace, window, cx));
             trace("window opened");
@@ -66,4 +77,15 @@ fn main() {
         }
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_has_a_720_by_480_minimum() {
+        let min = window_options().window_min_size.expect("min size set");
+        assert_eq!(min, size(px(720.), px(480.)));
+    }
 }

@@ -333,11 +333,17 @@ impl Render for WorkspaceView {
             Some(v) => {
                 let request = div()
                     .size_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .flex_col()
                     .child(v.url_bar.clone())
                     .child(div().flex_1().min_h_0().child(v.request.clone()));
-                let response = div().size_full().child(v.response.clone());
+                let response = div()
+                    .size_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(v.response.clone());
                 let group = match split {
                     SplitAxis::Vertical => v_resizable("split-v"),
                     SplitAxis::Horizontal => h_resizable("split-h"),
@@ -359,6 +365,8 @@ impl Render for WorkspaceView {
         let banner = active_tab.as_ref().and_then(|t| self.banner(t, cx));
         let main = div()
             .size_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .child(tab_bar)

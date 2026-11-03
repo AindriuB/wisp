@@ -124,23 +124,23 @@ impl ResponsePane {
                 };
                 let total = r.total.map(format_duration).unwrap_or_default();
                 let size = format_size(r.size.unwrap_or(r.received));
-                let tip = r
-                    .ttfb
-                    .map(|t| format!("Time to first byte: {}", format_duration(t)));
+                let status_str = status_text(status, r.reason.as_deref());
+                let timing = format!("· {total} · {size}");
+                let full = done_tooltip(&status_str, &timing, r.ttfb.map(format_duration));
                 let line = row()
                     .id("status-line")
+                    .min_w_0()
+                    .overflow_hidden()
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .text_color(color)
-                            .child(status_text(status, r.reason.as_deref())),
+                            .child(status_str),
                     )
-                    .child(format!("· {total} · {size}"));
-                Some(match tip {
-                    Some(tip) => line
-                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                        .into_any_element(),
-                    None => line.into_any_element(),
-                })
+                    .child(div().min_w_0().truncate().child(timing))
+                    .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+                Some(line.into_any_element())
             }
             Phase::Failed => {
                 let (words, msg) = r
@@ -205,9 +205,33 @@ impl Render for ResponsePane {
     }
 }
 
+/// Full text of the Done status line for its tooltip; TTFB goes on a second line.
+fn done_tooltip(status: &str, timing: &str, ttfb: Option<String>) -> String {
+    match ttfb {
+        Some(t) => format!("{status} {timing}\nTime to first byte: {t}"),
+        None => format!("{status} {timing}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn done_tooltip_with_and_without_ttfb() {
+        assert_eq!(
+            done_tooltip(
+                "500 Internal Server Error",
+                "· 12 ms · 1.2 KB",
+                Some("5 ms".into())
+            ),
+            "500 Internal Server Error · 12 ms · 1.2 KB\nTime to first byte: 5 ms"
+        );
+        assert_eq!(
+            done_tooltip("200 OK", "· 12 ms · 1.2 KB", None),
+            "200 OK · 12 ms · 1.2 KB"
+        );
+    }
 
     #[test]
     fn status_classes() {

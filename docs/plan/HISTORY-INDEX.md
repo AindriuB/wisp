@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-03 | 61 | Window minimum 720×480; URL row and panes clip; Done status line truncates with full tooltip; 369 tests, binary 19,181,072 B | ## 2026-11-03 — Minimum window size; URL row and Done status line fit narrow panes |
 | 2026-11-03 | 52-60 | M3 v1 hardening closed: 367 tests pass; binary 19,181,072 B, idle RSS 68.8 MiB, after request 73.9 MiB; narrow-window defect found (task 61) | ## 2026-11-03 — M3 v1 hardening closed: integration check and macOS arm64 budgets |
 | 2026-11-03 | 57 | File and Multipart bodies over 1 MiB stream from disk in 64 KiB chunks with exact Content-Length; spill writes use block_in_place | ## 2026-11-03 — Large File and Multipart bodies stream from disk; spill writes run off the async worker |
 | 2026-11-03 | 59 | History previews cut on a char boundary; list_environments follows symlinks; save_environment writes the file gaining a moved var name first | ## 2026-11-03 — History previews on char boundaries, linked environments, safe environment save order |
