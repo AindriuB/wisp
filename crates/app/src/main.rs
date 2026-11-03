@@ -1,4 +1,5 @@
 //! Wisp: portable HTTP client.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod assets;
 

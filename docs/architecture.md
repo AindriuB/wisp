@@ -198,6 +198,8 @@ After task 64 (release-profile shrink), `measure.yml` run 41631211960 on `10e3b3
 | `x86_64-unknown-linux-gnu` | 23,353,896 B | 167,640 / 163,652 | PSS 141,438 / 137,523; RssAnon 58,168 / 44,972 (llvmpipe) | -38.5% |
 | `x86_64-apple-darwin` (dropped for 0.1.0) | 12,884,616 B | unmeasured (the job fails; no artefact) | n/a | -37.8% |
 
+Task 77 made the Windows binary 13,630,464 B (static CRT, +1.34% over the 13,450,240 B above); it is within budget.
+
 Release profile now (`Cargo.toml`, `.cargo/config.toml`): `panic = "abort"`; dependencies build at `opt-level = "z"` through `[profile.release.package."*"]`, while our `wisp-*` crates stay at 3; on Linux x64, `--gc-sections` and `--icf=all` are passed through rust-lld by `.cargo/config.toml`. Consequence: a panic anywhere, including in a spawned tokio task, ends the process; there is no unwinding and nothing recovers from a task panic. A `RUSTFLAGS` environment variable replaces the config's target rustflags, and GNU ld rejects `--icf=all`, so the Linux build needs lld.
 
 ### Set budgets
@@ -259,6 +261,8 @@ this section.
 | `Wisp-<v>-windows-x64.zip` | `wisp.exe` and the three notice files |
 | `Wisp-<v>-linux-x64.tar.gz` | `wisp` (mode 0755, owner 0/0) and the three notice files |
 | `SHA256SUMS` | one `sha256sum -c` line per archive |
+
+The Windows release `wisp.exe` is a GUI-subsystem executable (`windows_subsystem = "windows"` in release builds, so no console window from Explorer, and stderr goes nowhere there) with a static CRT (`+crt-static` in `.cargo/config.toml`, so no VC++ runtime is needed); measured size is 13,630,464 B, within the 16 MiB budget.
 
 The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is ad-hoc signed (`codesign --sign -`), which stops macOS calling it damaged but is not Developer ID signing or notarisation. It has no icon. The Linux binary is built on a pinned `ubuntu-24.04` runner (release, measure and the ci `check` job), so its measured glibc floor is 2.39: Ubuntu 24.04 or newer. `ubuntu-latest` is not used because it moved to 26.04, whose binary needed GLIBC_2.43. `scripts/release/check-glibc.sh` runs after Build in release and measure and fails if any symbol needs a glibc version above 2.39.
 
