@@ -20,7 +20,7 @@ use wisp_core::Method;
 use wisp_storage::collection::Node;
 use wisp_storage::ops;
 
-use crate::actions::{OpenCollection, OpenPalette};
+use crate::actions::{OpenCollection, OpenPalette, palette_hint};
 use crate::workspace::{Workspace, WorkspaceEvent};
 
 const NO_ENV: &str = "No environment";
@@ -813,7 +813,7 @@ impl Render for Sidebar {
                 Button::new("sidebar-palette")
                     .small()
                     .ghost()
-                    .label("⌘K")
+                    .label(palette_hint())
                     .on_click(|_: &ClickEvent, window, cx| {
                         window.dispatch_action(Box::new(OpenPalette), cx)
                     }),

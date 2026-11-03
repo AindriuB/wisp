@@ -23,7 +23,7 @@ The zip holds a `Wisp-0.1.0-macos-arm64` folder containing `Wisp.app`. Move `Wis
 xattr -d com.apple.quarantine Wisp.app
 ```
 
-The app has no icon yet, so it shows the generic one. The command palette opens with ⌘K.
+The command palette opens with ⌘K.
 
 ### Windows (x64)
 
@@ -47,7 +47,7 @@ tar -xzf Wisp-0.1.0-linux-x64.tar.gz
 
 The archive holds a `Wisp-0.1.0-linux-x64` folder with the `wisp` binary. Put it anywhere on your path, for example `~/.local/bin`. The command palette opens with Ctrl+K.
 
-The binary was built on Ubuntu's current CI image and needs glibc 2.43 or newer. That is the highest symbol version in the binary's dynamic symbol table (`objdump -T wisp`), so it runs on Ubuntu 26.04 or a distribution with an equally new glibc, and not on Ubuntu 24.04. Wisp opens an X11 or Wayland window and draws it with Vulkan, so it needs a working Vulkan driver. On Debian or Ubuntu, install:
+The Linux binary is built on a pinned Ubuntu 24.04 runner and needs glibc 2.39 or newer (Ubuntu 24.04 or newer, or an equally recent distribution). Wisp opens an X11 or Wayland window and draws it with Vulkan, so it needs a working Vulkan driver. On Debian or Ubuntu, install:
 
 ```sh
 sudo apt install libvulkan1 mesa-vulkan-drivers libxcb1 libx11-6 libx11-xcb1 \

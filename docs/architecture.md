@@ -260,7 +260,7 @@ this section.
 | `Wisp-<v>-linux-x64.tar.gz` | `wisp` (mode 0755, owner 0/0) and the three notice files |
 | `SHA256SUMS` | one `sha256sum -c` line per archive |
 
-The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is ad-hoc signed (`codesign --sign -`), which stops macOS calling it damaged but is not Developer ID signing or notarisation. It has no icon. The Linux binary is built on ubuntu-latest, so its glibc floor is Ubuntu 24.04 or newer.
+The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is ad-hoc signed (`codesign --sign -`), which stops macOS calling it damaged but is not Developer ID signing or notarisation. It has no icon. The Linux binary is built on a pinned `ubuntu-24.04` runner (release, measure and the ci `check` job), so its measured glibc floor is 2.39: Ubuntu 24.04 or newer. `ubuntu-latest` is not used because it moved to 26.04, whose binary needed GLIBC_2.43. `scripts/release/check-glibc.sh` runs after Build in release and measure and fails if any symbol needs a glibc version above 2.39.
 
 To cut a release: make sure the workspace version is the one you want, tag `v<version>` (it must equal the workspace version or the final job fails before creating anything), push the tag, check the draft release and its four assets, then publish with `gh release edit v<version> --draft=false`. A tag push never publishes by itself. If a tag-push run is re-run after failing, it creates a second draft for the same tag; delete the stale one first.
 
