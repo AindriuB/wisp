@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
-    Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, Render, ScrollStrategy, SharedString, Size, Styled, Subscription, Window, div,
-    px, size,
+    ClipboardItem, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, MouseButton, ParentElement, Render, ScrollStrategy, SharedString, Size, Styled,
+    Subscription, Window, div, px, size,
 };
+use gpui_component::IconName;
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::spinner::Spinner;
@@ -19,7 +20,8 @@ use wisp_core::body::{BodyHandle, BodyId, BodyStore};
 
 use crate::pager::{RAW_DISPLAY_CAP, Utf8Decoder, page};
 use crate::pretty::{ContentKind, content_kind, pretty_json};
-use crate::tab::{BodyView, RequestTab, TabEvent};
+use crate::tab::{BodyView, Phase, RequestTab, TabEvent};
+use crate::ui::response::{error_text, error_words};
 use crate::workspace::{Workspace, WorkspaceEvent};
 
 const LINE_HEIGHT: f32 = 18.0;
@@ -61,8 +63,9 @@ enum Jump {
     End,
 }
 
-/// Maps a key press on the body list to a jump. End and Cmd+Down go to the
-/// end, Home and Cmd/Ctrl+Up to the top (End and Home with any modifier); anything else is not ours.
+/// Maps a key press on the body list to a jump. End and Cmd/Ctrl+Down go to
+/// the end, Home and Cmd/Ctrl+Up to the top (End and Home with any modifier);
+/// anything else is not ours.
 fn jump_for_key(key: &str, platform: bool) -> Option<Jump> {
     match (key, platform) {
         ("end", _) | ("down", true) => Some(Jump::End),
@@ -623,6 +626,9 @@ fn write_pages(
 impl Render for BodyPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure(cx);
+        if self.tab.read(cx).response.phase == Phase::Failed {
+            return self.error_panel(cx).into_any_element();
+        }
         let size = self.body.map_or(0, |h| h.len);
         let view = self.tab.read(cx).body_view;
         let pretty_ok = self.pretty_ok(cx);
@@ -710,6 +716,50 @@ impl Render for BodyPane {
             )
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| this.on_key(ev, cx)))
             .child(body.min_h_0())
+            .into_any_element()
+    }
+}
+
+impl BodyPane {
+    /// The whole failure in place of the body: heading, wrapped scrollable message, Copy.
+    fn error_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let err = self.tab.read(cx).response.error.clone();
+        let text = error_text(err.as_ref());
+        let words = err
+            .as_ref()
+            .map_or("Request failed", |e| error_words(e.kind));
+        let message = err.map(|e| e.message).unwrap_or_default();
+        let danger = cx.theme().danger;
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .size_full()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().text_color(danger).child(words))
+                    .child(
+                        Button::new("copy-error")
+                            .icon(IconName::Copy)
+                            .label("Copy error")
+                            .small()
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("error-message")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(div().w_full().child(message)),
+            )
     }
 }
 

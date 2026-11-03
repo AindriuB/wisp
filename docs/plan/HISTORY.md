@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-03 — A failed request shows its full error in the Body area
+When a request fails, the Body sub-tab now shows the error heading in the danger colour, the full message wrapped and vertically scrollable, and a Copy error button; the one-line truncated status line is unchanged and its tooltip uses the same shared text. The Done line also no longer reads `· · 1.2 KB` when no total time was recorded, and the `jump_for_key` doc comment now names Ctrl.
+**Cost:** Binary grew 16,528 B on macOS arm64 (10,436,688 B against 10,420,160 B on main at b91117a); idle and after-request RSS are unchanged within noise. The panel has not been checked visually: the macOS hand check (with task 69's sub-tab scroll check) is in progress, and Windows and Linux hand checks remain. The "Request failed" fallback heading is written in three places (`mod.rs:50`, `mod.rs:167`, `body.rs:727-729`); a shared helper would keep them in step.
+
 ## 2026-11-03 — Per-platform budgets enforced by the measure scripts and measure.yml
 Each measure run now compares its sample with its own target's budget from `scripts/measure/budgets.json` (binary 20 MiB macOS, 16 MiB Windows, 28 MiB Linux; memory 120 / 128 MiB idle / after request, as RSS on macOS, private bytes on Windows, RssAnon on Linux). The result JSON has a `budget` object and `within_budget`; the scripts exit 3 when over budget; `measure.yml` now fails the run for arm64, Windows and Linux and tolerates only x86_64-apple-darwin.
 **Cost:** The user kept both Linux backends, so no backend was dropped. CI run 41636483942 (head 4ba28c1) was green with all three enforced targets within budget; the x64 job still hangs, so its memory stays unmeasured and only its size is checked. The Windows over-budget path and `measure.ps1` have never run locally (no pwsh), so only the first real over-budget CI run will test them. One review round: `measure.ps1`'s header did not document the new keys and exit code 3.
