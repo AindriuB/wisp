@@ -87,6 +87,7 @@ a windowless process is useless, and that state is what exposes the crash. Both
 ### Implementation notes
 - App menu "Wisp" holds Services, a separator and "Quit Wisp" (Cmd-Q from the keymap). "About Wisp" and "Hide Wisp" are omitted: GPUI 0.3.10 has no `OsAction`/selector for them and About needs a panel.
 - `WISP_CLOSE_WINDOW_AFTER_MS` calls the same `quit_app` the close handlers use.
+- Accepted limit: that hook calls `quit_app` directly, not through `on_window_should_close`, so check (b) does not prove the real close-button path (a real-close hook would need objc or `remove_window`, the crashing teardown). Manual step 1 on the Touch Bar Mac covers it.
 - `scripts/measure/quit-check.sh` reads the bundle id from Info.plist. It passed on a `package.sh macos-arm64` bundle re-id'd to `io.github.aindriub.wisp.test79` and ad-hoc signed (so a real running Wisp is untouched). It only signals pids it started.
 - The script cannot prove the Touch Bar crash is gone (needs that hardware); it checks quit paths and absence of new `.ips`.
 

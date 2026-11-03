@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_hints() {
+    fn quit_hint_reads_cmd_q_on_mac_and_ctrl_q_elsewhere() {
         let quit = KEYS.iter().find(|(_, n)| *n == "quit").unwrap().0;
         let mac = if cfg!(target_os = "macos") {
             quit

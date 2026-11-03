@@ -23,11 +23,15 @@ trap cleanup EXIT
 ls "$reports" 2>/dev/null | grep -E '^wisp.*\.ips$' | sort >"$before" || true
 
 no_new_reports() {
-  sleep 2
-  local now new
+  local now new i
   now="$(mktemp)"
-  ls "$reports" 2>/dev/null | grep -E '^wisp.*\.ips$' | sort >"$now" || true
-  new="$(comm -13 "$before" "$now")"; rm -f "$now"
+  for ((i = 0; i < 100; i++)); do # poll up to ~10 s for ReportCrash
+    ls "$reports" 2>/dev/null | grep -E '^wisp.*\.ips$' | sort >"$now" || true
+    new="$(comm -13 "$before" "$now")"
+    [ -z "$new" ] || break
+    sleep 0.1
+  done
+  rm -f "$now"
   [ -z "$new" ] || { echo "FAIL ($1): new crash report(s): $new" >&2; exit 1; }
 }
 
@@ -40,13 +44,19 @@ wait_gone() { # pid, seconds
   return 1
 }
 
+if [ "$(osascript -e "application id \"$id\" is running")" = true ]; then
+  echo "quit-check: an app with id $id is already running; quit it first (not touching it)" >&2
+  exit 2
+fi
+
 echo "(a) AppleScript quit of $id"
 "$bin" >/dev/null 2>&1 & pid=$!
 sleep 3
 kill -0 "$pid" 2>/dev/null || { echo "FAIL (a): app did not stay running" >&2; exit 1; }
 osascript -e "tell application id \"$id\" to quit"
 wait_gone "$pid" 5 || { echo "FAIL (a): still running 5 s after quit" >&2; exit 1; }
-wait "$pid" 2>/dev/null || true; pid=""
+rc=0; wait "$pid" 2>/dev/null || rc=$?; pid=""
+[ "$rc" -eq 0 ] || { echo "FAIL (a): exit status $rc" >&2; exit 1; }
 no_new_reports a
 
 echo "(b) close hook"
