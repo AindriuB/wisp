@@ -13,6 +13,9 @@ strip = true
 opt-level = 3
 panic = "abort"
 
+[profile.release.package."*"]
+opt-level = "s"
+
 [workspace.dependencies]
 wisp-core = { path = "crates/core" }
 wisp-storage = { path = "crates/storage" }
