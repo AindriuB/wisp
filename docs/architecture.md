@@ -172,13 +172,16 @@ recorded; the budget figures below are in MB (1 MB = 1,048,576 B, 1 MB RSS =
 | `aarch64-apple-darwin` (after task 21, M2 layout freeze) | 16,726,992 B | 69,216 KiB | 70,480 KiB | hardware | task 21 tester run (`RENDERER=hardware scripts/measure/measure.sh`, not a committed record) |
 | `x86_64-apple-darwin` | 18,052,632 B (local cross-build on arm64) | not measured: RSS on `macos-26-intel` CI hung in the icon service (`ISIconManager`) | not measured: same | n/a | `561807f` (`x86_64-apple-darwin.json`) |
 
-First `measure.yml` CI figures. Their renderers are software or unknown, so they are not comparable with the hardware row and are not held to the budgets below.
+Current-main CI baseline (task 63, `measure.yml` run 41607658851 on `0d450de`). Renderers are software on Linux and Windows, so these are not comparable with the hardware row and are not held to the budgets below. RSS and the memory fields are in KiB, idle / after one request.
 
-| Target (CI) | Binary size | Idle RSS | RSS after one request | Renderer |
+| Target (CI) | Binary size | RSS | Other memory | Renderer |
 |---|---|---|---|---|
-| `aarch64-apple-darwin` | 16,660,480 B | 73,168 KiB | 76,528 KiB | unknown |
-| `x86_64-pc-windows-msvc` | 24,937,984 B | 39,600 KiB (private 32,332) | 45,940 KiB (private 34,976) | software (WARP) |
-| `x86_64-unknown-linux-gnu` | 35,134,344 B | 171,712 KiB | 172,324 KiB | llvmpipe software Vulkan under xvfb |
+| `aarch64-apple-darwin` | 19,181,056 B | 74,816 / 80,032 | n/a | not recorded |
+| `x86_64-pc-windows-msvc` | 28,947,456 B | 42,784 / 52,180 | private bytes 35,108 / 41,628; private working set 9,024 / 13,112 | WARP software |
+| `x86_64-unknown-linux-gnu` | 37,993,000 B | 175,192 / 172,864 | PSS 148,989 / 146,736; RssAnon 57,964 / 44,920 | llvmpipe (LLVM 21.1.8, 256 bits) under xvfb |
+| `x86_64-apple-darwin` | 20,714,504 B | unmeasured: no `WISP_EVENT` completed within 30 s (long-standing runner hang) | n/a | n/a |
+
+On Linux, RSS mostly counts shared llvmpipe driver pages; RssAnon is the closest figure to the app's own memory. On Windows, the private working set is the headline figure. These replace the task 09 skeleton figures (Windows 24,937,984 B, 39,600 / 45,940 KiB; Linux 35,134,344 B, 171,712 / 172,324 KiB; aarch64 16,660,480 B, 73,168 / 76,528 KiB).
 
 ### Set budgets
 

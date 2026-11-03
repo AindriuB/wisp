@@ -2,6 +2,12 @@
 # Env: TARGET (default x86_64-pc-windows-msvc), RENDERER (hardware|software|unknown,
 #      default unknown), SETTLE_SECONDS (default 5).
 #
+# Headline memory figure: private_working_set_kib {idle, after_request}, the
+# process's private working set (Win32_PerfFormattedData WorkingSetPrivate).
+# idle_rss_kib / after_request_rss_kib (WorkingSet64) and private_kib
+# (PrivateMemorySize64, committed private bytes) are kept for continuity.
+# pss_kib, rss_anon_kib and renderer_device are null here (Linux-only keys).
+#
 # Method: serve a fixed 64 KiB file from `python3 -m http.server` on 127.0.0.1.
 # Launch the binary once without the hook, wait settle_seconds, sample
 # WorkingSet64 (idle_rss_kib) and PrivateMemorySize64 (private_kib), kill.
@@ -39,13 +45,22 @@ function Get-StderrTail {
   try { return , @(Get-Content -Path $errFile -Tail 20 -ErrorAction Stop | ForEach-Object { [string]$_ }) } catch { return , @() }
 }
 
-function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $stderrTail) {
+function Get-PrivateWs($procId) {
+  $p = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess=$procId" -ErrorAction Stop | Select-Object -First 1
+  if (-not $p) { throw "no perf counter row for pid $procId" }
+  return [int64]($p.WorkingSetPrivate / 1KB)
+}
+
+function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $stderrTail, $idlePws = $null, $afterPws = $null) {
   $dir = Split-Path -Parent $Output
   if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   [ordered]@{
     target = $target; commit = $commit; binary_bytes = $bytes
     idle_rss_kib = $idle; after_request_rss_kib = $after
     private_kib = [ordered]@{ idle = $idlePriv; after_request = $afterPriv }
+    private_working_set_kib = [ordered]@{ idle = $idlePws; after_request = $afterPws }
+    pss_kib = $null; rss_anon_kib = $null
+    renderer_device = $null; renderer_device_reason = 'not applicable on this OS'
     settle_seconds = $settle; renderer = $renderer; status = $status
     reason = $reason; os_version = $osVersion
     stderr_tail = $stderrTail
@@ -101,6 +116,7 @@ try {
   if ($app.HasExited) { Fail 'window failed to start (process exited during idle run)' }
   $app.Refresh()
   $idle = [int64]($app.WorkingSet64 / 1KB); $idlePriv = [int64]($app.PrivateMemorySize64 / 1KB)
+  $idlePws = Get-PrivateWs $app.Id
   $app.Kill(); $app.WaitForExit(); $app = $null
 
   # Run 2: after one request.
@@ -129,9 +145,10 @@ try {
   if ($app.HasExited) { Fail 'app exited after the request' }
   $app.Refresh()
   $after = [int64]($app.WorkingSet64 / 1KB); $afterPriv = [int64]($app.PrivateMemorySize64 / 1KB)
+  $afterPws = Get-PrivateWs $app.Id
   $app.Kill(); $app.WaitForExit(); $app = $null
 
-  Write-Result 'measured' $null $idle $idlePriv $after $afterPriv $null
+  Write-Result 'measured' $null $idle $idlePriv $after $afterPriv $null $idlePws $afterPws
   Get-Content $Output
 }
 catch {
