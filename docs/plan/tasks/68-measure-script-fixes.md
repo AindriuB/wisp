@@ -77,3 +77,15 @@ GitHub's 6-hour default. Fix each without changing what is measured or the budge
 - docs/architecture.md and other docs (scribe adds the new key there).
 
 ## Notes
+
+- Bad budgets file (sh): `BUDGETS=<file with "{not json"> scripts/measure/measure.sh /bin/ls out.json`
+  printed `budgets file is not valid JSON: <path>` and exited 2; same for a file
+  containing `[1]`. With `CDPATH=/tmp` the paths still resolved and the run was fine.
+- `shellcheck scripts/measure/measure.sh` exits 0.
+- Local macOS run: `CDPATH=/tmp RENDERER=hardware scripts/measure/measure.sh target/wt-68/release/wisp logs/68-measure.json`
+  exit 0, `renderer_device_source: null`, `within_budget: true`.
+- measure.yml run 41651470290 on the branch: Windows, Linux, aarch64 macOS jobs
+  succeeded. Windows JSON had `private_working_set_kib` {9204, 13040} and
+  `renderer_device_source: null`; Linux had `renderer_device_source: "vulkaninfo"`.
+  The Windows CIM-failure path was not triggered (counter present), so it is
+  verified by reading only. The x86_64 macOS job hung as known; I cancelled the run.
