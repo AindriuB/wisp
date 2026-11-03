@@ -34,3 +34,9 @@ drift: ⌘K on macOS, Ctrl+K on Windows and Linux.
 - `palette.rs`, the doc comments that mention ⌘, and every file under `docs/`. The scribe updates the ⌘-only wording in PLAN.md.
 - The macOS and Windows measure jobs, `scripts/measure/**`, and changes to the RSS measurement itself.
 - Opening a PR or merging. Pushing the branch only to run measure.yml is allowed.
+
+## Amendment — orchestrator (2026-11-03)
+
+The Linux screenshot step already exists on task 71's branch (task/71-measure-screenshot, not yet on main), which owns .github/workflows/measure.yml. To keep Owns disjoint:
+- .github/workflows/measure.yml is removed from this task's Owns. Acceptance item 4 is withdrawn.
+- For acceptance item 5, merge `origin/task/71-measure-screenshot` into this branch before the measure.yml run (its screenshot is uploaded as `measure-x86_64-unknown-linux-gnu.png`), then run measure.yml on this branch. Depends on: 71 (for the screenshot run only; the code work does not).
