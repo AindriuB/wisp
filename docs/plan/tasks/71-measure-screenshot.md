@@ -87,3 +87,24 @@ runtime-library list from that output.
   Intel macOS was dropped from 0.1.0 on 2026-11-03.
 
 ## Notes
+
+- Run: `measure.yml` run 41684148256, head commit 3f7e00fe30a84aff0ee9da595702e98894ab5545
+  (task/71-measure-screenshot). Concluded `success`; arm64, Windows and Linux jobs each
+  `success`, `status: measured`, `within_budget: true`.
+- Linux (Xvfb 1280x800x24): binary 23,357,608 B (was 23,353,896); RssAnon idle 57,832 /
+  after-request 45,064 KiB (was 58,168 / 44,972). No meaningful change from the larger screen.
+- Screenshot: 1280x800 PNG. Shows the full app window: tab "Untitled", GET, the URL
+  `http://127.0.0.1:45953/file.bin`, and in the response pane a green "200 OK · 1 ms · 64.0 KB"
+  with "Binary body, 65536 bytes". All legible. Not committed.
+- Capture tool: ImageMagick `import -window root` (apt `imagemagick`).
+- Packages for task 73 (dpkg -S of loaded shared objects; arch suffix :amd64 omitted):
+  libbsd0, libc6, libdisplay-info3, libdrm-amdgpu1, libdrm-intel1, libdrm2, libedit2,
+  libegl-mesa0, libegl1, libelf1t64, libexpat1, libffi8, libgbm1, libgcc-s1, libglvnd0,
+  libllvm21, libmd0, libpciaccess0, libsensors5, libstdc++6, libtinfo6, libvulkan1,
+  libwayland-client0, libx11-6, libx11-xcb1, libxau6, libxcb-dri3-0, libxcb-present0,
+  libxcb-randr0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxcb-xkb1, libxcb1, libxdmcp6,
+  libxkbcommon-x11-0, libxkbcommon0, libxml2-16, libxshmfence1, libzstd1, mesa-libgallium,
+  mesa-vulkan-drivers, zlib1g.
+  Binary NEEDED: libxcb.so.1, libxkbcommon.so.0, libxkbcommon-x11.so.0, libgcc_s.so.1,
+  libm.so.6, libc.so.6. (Mesa/llvm/drm entries come from the software Vulkan driver in CI;
+  fontconfig is not loaded at runtime, and libwayland-client0 is loaded though only X11 was used.)
