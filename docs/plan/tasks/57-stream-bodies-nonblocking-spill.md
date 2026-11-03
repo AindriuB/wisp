@@ -41,3 +41,13 @@ M3 (v1 hardening). Closes the PLAN.md carry-forward "Engine blocking I/O (16)". 
 - `ClientCache` locking, root parsing and `install_crypto_provider` (task 56).
 - The body-store test residuals (uid check, real temp dir, non-unix spill dir).
 - Redirect following for streamed bodies over 1 MiB (reqwest cannot replay a stream). Note it in the report for the scribe.
+
+## Orchestrator decision (2026-11-02)
+
+User decision: special files whose metadata does not give the real size are an accepted residual. These are /proc-style entries that report size 0, FIFOs and /dev/stdin. Today they are sent empty or refused with "not a regular file". The clear "not a regular file" error stays as it is. Rejected: a read-to-EOF fallback.
+
+## Review round 1 — findings
+
+- [P3] crates/core/src/engine.rs:519-524, :428-430 — a user-set Content-Length or Transfer-Encoding header is passed through alongside the engine's own Content-Length. hyper then switches a streamed body to chunked, which breaks the "never `Transfer-Encoding: chunked`" acceptance item. Input: POST with header `Content-Length: 5` and a 20 MiB `PreparedBody::File`. That gives two Content-Length values that disagree; hyper's `content_length_parse_all` returns None and `set_length` sends chunked. Fix: when the engine sets the body length, skip user `content-length` and `transfer-encoding` headers, the same way `content-type` is already skipped for multipart at :519-522. Add a test.
+- [P3] crates/core/src/engine.rs:378 — the comment "Two chunks in flight bounds memory at about 128 KiB" understates it. The real bound is about 256 KiB: two queued chunks, the sender's 64 KiB buffer and the chunk hyper is writing. Fix the figure or drop it.
+- [NOTE, optional] engine.rs:393 — `ErrorKind::Interrupted` on `file.read` aborts the upload instead of retrying.

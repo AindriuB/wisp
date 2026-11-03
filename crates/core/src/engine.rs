@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -278,15 +278,158 @@ fn body_file_error(path: &Path, e: &std::io::Error) -> EngineError {
     )
 }
 
-async fn read_file(path: &Path) -> Result<Vec<u8>, EngineError> {
+/// Bodies up to this size are sent from memory so a 307/308 redirect can resend them.
+const MEMORY_BODY_LIMIT: u64 = 1024 * 1024;
+
+/// Largest chunk read from disk when streaming a request body.
+const STREAM_CHUNK: usize = 64 * 1024;
+
+/// One run of request-body bytes: literal bytes, or a file opened and measured up front.
+enum Segment {
+    Mem(Vec<u8>),
+    File {
+        file: std::fs::File,
+        path: PathBuf,
+        len: u64,
+    },
+}
+
+impl Segment {
+    fn len(&self) -> u64 {
+        match self {
+            Segment::Mem(b) => b.len() as u64,
+            Segment::File { len, .. } => *len,
+        }
+    }
+}
+
+/// Opens the file and records its size, so a bad path fails before any connection is made.
+async fn open_segment(path: &Path) -> Result<Segment, EngineError> {
     let owned = path.to_owned();
-    match tokio::task::spawn_blocking(move || std::fs::read(&owned)).await {
-        Ok(Ok(bytes)) => Ok(bytes),
+    let opened = tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&owned)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        Ok((file, meta.len()))
+    })
+    .await;
+    match opened {
+        Ok(Ok((file, len))) => Ok(Segment::File {
+            file,
+            path: path.to_owned(),
+            len,
+        }),
         Ok(Err(e)) => Err(body_file_error(path, &e)),
         Err(e) => Err(err(
             ErrorKind::BodyFile,
             format!("cannot read {}: {e}", path.display()),
         )),
+    }
+}
+
+/// Reads exactly `len` bytes of `file`, or fails if it is shorter.
+fn read_exact_vec(
+    file: &mut std::fs::File,
+    len: u64,
+    out: &mut Vec<u8>,
+) -> Result<(), std::io::Error> {
+    use std::io::Read;
+    let before = out.len();
+    file.take(len).read_to_end(out)?;
+    if (out.len() - before) as u64 != len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "file shrank while reading",
+        ));
+    }
+    Ok(())
+}
+
+/// Reads small segments into one buffer on the blocking pool.
+async fn gather(segments: Vec<Segment>) -> Result<Vec<u8>, EngineError> {
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for seg in segments {
+            match seg {
+                Segment::Mem(b) => out.extend_from_slice(&b),
+                Segment::File {
+                    mut file,
+                    path,
+                    len,
+                } => read_exact_vec(&mut file, len, &mut out).map_err(|e| (path, e))?,
+            }
+        }
+        Ok(out)
+    })
+    .await;
+    match joined {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err((path, e))) => Err(body_file_error(&path, &e)),
+        Err(e) => Err(err(ErrorKind::BodyFile, format!("body read failed: {e}"))),
+    }
+}
+
+/// Streams segments in chunks of at most `STREAM_CHUNK`; reads happen on the blocking pool.
+fn stream_body(segments: Vec<Segment>) -> reqwest::Body {
+    use std::io::Read;
+    // Two chunks in flight bounds memory at about 256 KiB
+    // (two queued, the sender's buffer and the chunk being written).
+    let (tx, rx) = async_channel::bounded::<Result<Vec<u8>, std::io::Error>>(2);
+    // Detached: it ends when the receiver is dropped (send fails) or the data runs out.
+    drop(tokio::task::spawn_blocking(move || {
+        for seg in segments {
+            match seg {
+                Segment::Mem(b) => {
+                    for c in b.chunks(STREAM_CHUNK) {
+                        if tx.send_blocking(Ok(c.to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Segment::File { mut file, len, .. } => {
+                    let mut left = len;
+                    while left > 0 {
+                        let n = STREAM_CHUNK.min(usize::try_from(left).unwrap_or(STREAM_CHUNK));
+                        let mut buf = vec![0u8; n];
+                        let item = match file.read(&mut buf) {
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            Ok(0) => Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "file shrank while sending",
+                            )),
+                            Ok(got) => {
+                                buf.truncate(got);
+                                left -= got as u64;
+                                Ok(buf)
+                            }
+                            Err(e) => Err(e),
+                        };
+                        let failed = item.is_err();
+                        if tx.send_blocking(item).is_err() || failed {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }));
+    reqwest::Body::wrap_stream(rx)
+}
+
+/// Attaches a body: from memory when small, else streamed with an exact `Content-Length`.
+async fn attach_segments(
+    rb: reqwest::RequestBuilder,
+    segments: Vec<Segment>,
+) -> Result<reqwest::RequestBuilder, EngineError> {
+    let total: u64 = segments.iter().map(Segment::len).sum();
+    if total <= MEMORY_BODY_LIMIT {
+        Ok(rb.body(gather(segments).await?))
+    } else {
+        Ok(rb
+            .header("content-length", total.to_string())
+            .body(stream_body(segments)))
     }
 }
 
@@ -304,37 +447,43 @@ fn quote_param(s: &str) -> String {
         .collect()
 }
 
-async fn build_multipart(boundary: &str, parts: &[PreparedPart]) -> Result<Vec<u8>, EngineError> {
-    let mut out = Vec::new();
+async fn build_multipart(
+    boundary: &str,
+    parts: &[PreparedPart],
+) -> Result<Vec<Segment>, EngineError> {
+    let mut out: Vec<Segment> = Vec::new();
+    let mut head = Vec::new();
     for part in parts {
-        out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        head.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         let name = quote_param(&part.name);
         match &part.value {
             PreparedPartValue::Text(t) => {
-                out.extend_from_slice(
+                head.extend_from_slice(
                     format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
                 );
-                out.extend_from_slice(t.as_bytes());
+                head.extend_from_slice(t.as_bytes());
             }
             PreparedPartValue::File(path) => {
                 let filename = path
                     .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let data = read_file(path).await?;
-                out.extend_from_slice(
+                let seg = open_segment(path).await?;
+                head.extend_from_slice(
                     format!(
                         "Content-Disposition: form-data; name=\"{name}\"; filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
                         quote_param(&filename)
                     )
                     .as_bytes(),
                 );
-                out.extend_from_slice(&data);
+                out.push(Segment::Mem(std::mem::take(&mut head)));
+                out.push(seg);
             }
         }
-        out.extend_from_slice(b"\r\n");
+        head.extend_from_slice(b"\r\n");
     }
-    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    head.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    out.push(Segment::Mem(head));
     Ok(out)
 }
 
@@ -367,10 +516,18 @@ async fn perform(
         Method::Options => reqwest::Method::OPTIONS,
     };
     let multipart = matches!(req.body, PreparedBody::Multipart(_));
+    // The engine sets the length of these bodies itself; a user value would conflict.
+    let engine_length = multipart || matches!(req.body, PreparedBody::File(_));
     let mut rb = client.request(method, url);
     for h in &req.headers {
         // The engine owns the multipart content type: it carries the boundary.
         if multipart && h.name.eq_ignore_ascii_case("content-type") {
+            continue;
+        }
+        if engine_length
+            && (h.name.eq_ignore_ascii_case("content-length")
+                || h.name.eq_ignore_ascii_case("transfer-encoding"))
+        {
             continue;
         }
         rb = rb.header(h.name.as_str(), h.value.as_str());
@@ -383,16 +540,17 @@ async fn perform(
     match req.body {
         PreparedBody::None => {}
         PreparedBody::Bytes(b) => rb = rb.body(b),
-        PreparedBody::File(path) => rb = rb.body(read_file(&path).await?),
+        PreparedBody::File(path) => {
+            rb = attach_segments(rb, vec![open_segment(&path).await?]).await?;
+        }
         PreparedBody::Multipart(parts) => {
             let boundary = format!("wisp-{}", uuid::Uuid::new_v4().simple());
-            let data = build_multipart(&boundary, &parts).await?;
-            rb = rb
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(data);
+            let segments = build_multipart(&boundary, &parts).await?;
+            rb = rb.header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            );
+            rb = attach_segments(rb, segments).await?;
         }
     }
     if let Some(t) = timeout {
@@ -422,8 +580,9 @@ async fn perform(
     let mut throttle = Throttle::new(PROGRESS_INTERVAL);
     let mut received: u64 = 0;
     while let Some(chunk) = resp.chunk().await.map_err(|e| classify(&e, true))? {
-        writer
-            .write(&chunk)
+        // `block_in_place` (the runtime is always multi-thread): the write may hit the spill
+        // file, and this keeps the blocking disk I/O from stalling other tasks on this worker.
+        tokio::task::block_in_place(|| writer.write(&chunk))
             .map_err(|e| err(ErrorKind::Body, e.to_string()))?;
         received += chunk.len() as u64;
         if throttle.allow(Instant::now()) {
@@ -435,8 +594,8 @@ async fn perform(
                 .await;
         }
     }
-    let handle = writer
-        .finish()
+    // Same reason as the write above: `finish` flushes the spill file.
+    let handle = tokio::task::block_in_place(|| writer.finish())
         .map_err(|e| err(ErrorKind::Body, e.to_string()))?;
     Ok((received, handle))
 }

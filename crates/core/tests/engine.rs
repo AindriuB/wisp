@@ -491,3 +491,171 @@ fn commands_and_events_round_trip_through_serde_json() {
         round_trip(e);
     }
 }
+
+fn pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| ((i * 31 + i / 251) % 256) as u8).collect()
+}
+
+fn post_with(url: String, body: PreparedBody) -> PreparedRequest {
+    let mut req = get(url);
+    req.method = Method::Post;
+    req.body = body;
+    req
+}
+
+fn temp_file(tag: &str, data: &[u8]) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("wisp-{tag}-{}.bin", std::process::id()));
+    std::fs::write(&p, data).unwrap();
+    p
+}
+
+#[tokio::test]
+async fn a_small_file_body_is_resent_after_a_307_redirect() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/first"))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "/second"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/second"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let data = pattern(100_000);
+    let file = temp_file("small307", &data);
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(post_with(
+        format!("{}/first", server.uri()),
+        PreparedBody::File(file.clone()),
+    )));
+    let evs = collect_until_terminal(&rx).await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let got = server.received_requests().await.unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[1].url.path(), "/second");
+    assert_eq!(got[1].body, data);
+    let _ = std::fs::remove_file(file);
+}
+
+fn assert_streamed(got: &wiremock::Request, expected_len: usize) {
+    let cl = got.headers.get("content-length").expect("content-length");
+    assert_eq!(cl.to_str().unwrap(), expected_len.to_string());
+    assert!(!got.headers.contains_key("transfer-encoding"));
+    assert_eq!(got.body.len(), expected_len);
+}
+
+#[tokio::test]
+async fn a_20_mib_file_body_streams_with_content_length() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let data = pattern(20 * 1024 * 1024);
+    let file = temp_file("big-file", &data);
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(post_with(
+        server.uri(),
+        PreparedBody::File(file.clone()),
+    )));
+    let evs = collect_until_terminal(&rx).await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let got = &server.received_requests().await.unwrap()[0];
+    assert_streamed(got, data.len());
+    // Byte-exact comparison (stronger than a digest; no hashing crate is a dependency).
+    assert!(got.body == data, "received bytes differ");
+    let _ = std::fs::remove_file(file);
+}
+
+#[tokio::test]
+async fn user_length_headers_do_not_turn_a_streamed_file_body_chunked() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let data = pattern(20 * 1024 * 1024);
+    let file = temp_file("big-file-hdr", &data);
+    let mut req = post_with(server.uri(), PreparedBody::File(file.clone()));
+    for (n, v) in [("Content-Length", "5"), ("Transfer-Encoding", "chunked")] {
+        req.headers.push(Header {
+            name: n.into(),
+            value: v.into(),
+        });
+    }
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(req));
+    let evs = collect_until_terminal(&rx).await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let got = &server.received_requests().await.unwrap()[0];
+    assert_streamed(got, data.len());
+    let _ = std::fs::remove_file(file);
+}
+
+#[tokio::test]
+async fn a_multipart_body_with_a_20_mib_file_streams_with_exact_content_length() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let data = pattern(20 * 1024 * 1024);
+    let file = temp_file("big-mp", &data);
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(post_with(
+        server.uri(),
+        PreparedBody::Multipart(vec![
+            PreparedPart {
+                name: "t".into(),
+                value: PreparedPartValue::Text("hello".into()),
+            },
+            PreparedPart {
+                name: "f".into(),
+                value: PreparedPartValue::File(file.clone()),
+            },
+        ]),
+    )));
+    let evs = collect_until_terminal(&rx).await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let got = &server.received_requests().await.unwrap()[0];
+    let ct = got.headers.get("content-type").unwrap().to_str().unwrap();
+    let boundary = ct.strip_prefix("multipart/form-data; boundary=").unwrap();
+    let cl: usize = got
+        .headers
+        .get("content-length")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(cl, got.body.len());
+    assert!(!got.headers.contains_key("transfer-encoding"));
+    let start = got
+        .body
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .and_then(|first| {
+            let tail = &got.body[first + 4..];
+            tail.windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| first + 4 + p + 4)
+        })
+        .unwrap();
+    assert_eq!(&got.body[start..start + data.len()], &data[..]);
+    let trailer = format!("\r\n--{boundary}--\r\n");
+    assert_eq!(&got.body[start + data.len()..], trailer.as_bytes());
+    let _ = std::fs::remove_file(file);
+}
