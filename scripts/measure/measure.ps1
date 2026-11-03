@@ -39,6 +39,9 @@ $commit = (git rev-parse HEAD 2>$null); if (-not $commit) { $commit = 'unknown' 
 $osVersion = [System.Environment]::OSVersion.VersionString
 $bytes = $null
 $errFile = $null
+$budgetsFile = if ($env:BUDGETS) { $env:BUDGETS } else { Join-Path $PSScriptRoot 'budgets.json' }
+if (-not (Test-Path $budgetsFile)) { [Console]::Error.WriteLine("no such budgets file: $budgetsFile"); exit 2 }
+$script:overBudget = @()
 
 function Get-StderrTail {
   if (-not $errFile) { return $null }
@@ -54,7 +57,7 @@ function Get-PrivateWs($procId) {
 function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $stderrTail, $idlePws = $null, $afterPws = $null) {
   $dir = Split-Path -Parent $Output
   if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  [ordered]@{
+  $res = [ordered]@{
     target = $target; commit = $commit; binary_bytes = $bytes
     idle_rss_kib = $idle; after_request_rss_kib = $after
     private_kib = [ordered]@{ idle = $idlePriv; after_request = $afterPriv }
@@ -64,12 +67,31 @@ function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $s
     settle_seconds = $settle; renderer = $renderer; status = $status
     reason = $reason; os_version = $osVersion
     stderr_tail = $stderrTail
-  } | ConvertTo-Json | Set-Content -Encoding utf8 $Output
+  }
+  $entry = (Get-Content -Raw $budgetsFile | ConvertFrom-Json).$target
+  $budget = $null; $within = $null
+  if ($entry) {
+    $budget = [ordered]@{}
+    $flags = @()
+    foreach ($key in 'binary_bytes', 'idle', 'after_request') {
+      $m = $entry.$key.metric; $lim = [int64]$entry.$key.limit
+      $val = $res
+      foreach ($part in $m.Split('.')) { if ($null -ne $val) { $val = $val[$part] } }
+      $ok = if ($null -eq $val) { $null } else { [int64]$val -le $lim }
+      $budget[$key] = [ordered]@{ metric = $m; limit = $lim; value = $val; within = $ok }
+      $flags += , $ok
+      if ($ok -eq $false) { $script:overBudget += "over budget: $key $val > $lim" }
+    }
+    $within = if ($flags -contains $false) { $false } elseif (($flags | Where-Object { $_ -eq $true }).Count -eq 3) { $true } else { $null }
+  }
+  $res['budget'] = $budget
+  $res['within_budget'] = $within
+  $res | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $Output
 }
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $work | Out-Null
-$server = $null; $app = $null
+$server = $null; $app = $null; $exitCode = 0
 function Stop-All {
   if ($app -and -not $app.HasExited) { $app.Kill() }
   if ($server -and -not $server.HasExited) { $server.Kill() }
@@ -150,6 +172,10 @@ try {
 
   Write-Result 'measured' $null $idle $idlePriv $after $afterPriv $null $idlePws $afterPws
   Get-Content $Output
+  if ($script:overBudget.Count -gt 0) {
+    $script:overBudget | ForEach-Object { [Console]::Error.WriteLine($_) }
+    $exitCode = 3
+  }
 }
 catch {
   # Fail's own `exit 1` does not land here; this is for unexpected throws.
@@ -164,3 +190,4 @@ finally {
   Stop-All
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
+exit $exitCode
