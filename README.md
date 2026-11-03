@@ -2,7 +2,7 @@
 
 Wisp is a portable, lightweight HTTP client for developers working locally, in the spirit of Postman, Bruno and Insomnia. It ships as one self-contained binary per platform, with no installer, and it keeps its collections as TOML files in an ordinary folder, so they diff and review well in git. You open a collection folder, pick an environment, send a request and read the response. Its reason to exist is staying small and light on memory. The interface is built with GPUI, the framework behind the Zed editor.
 
-This is version 0.1.0, the first release. Scripting, importers (Postman, OpenAPI, curl), GraphQL, OAuth2, a history view, and Developer ID signing are not in it.
+This is version 0.1.0, the first release. Scripting, importers (Postman, OpenAPI, curl), GraphQL, OAuth2, and a history view are not in it.
 
 ## Install
 
@@ -17,11 +17,7 @@ shasum -a 256 -c --ignore-missing SHA256SUMS
 unzip Wisp-0.1.0-macos-arm64.zip
 ```
 
-The zip holds a `Wisp-0.1.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is ad-hoc signed, not signed with a Developer ID and not notarised, so macOS blocks the first launch when the zip is extracted with Finder (double-clicking it). Extracting with `unzip` in a terminal does not set the quarantine flag, so there is no block. To open it, try to launch it once, then open System Settings, go to Privacy & Security, and click "Open Anyway" next to the message about Wisp. On macOS 15 and later, Control-click and Open no longer gets past Gatekeeper. Alternatively, remove the quarantine flag from the app and everything inside it before the first launch:
-
-```sh
-xattr -dr com.apple.quarantine Wisp.app
-```
+The zip holds a `Wisp-0.1.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is signed with a Developer ID certificate and notarised by Apple, so it opens without a Gatekeeper warning. A build you make from source is not signed, and macOS may block it.
 
 The command palette opens with ⌘K.
 

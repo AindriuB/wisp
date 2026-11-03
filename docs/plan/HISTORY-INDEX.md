@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-03 | 78 | macOS release signed with Developer ID (UB89GDN343), hardened runtime, notarised and stapled; ad-hoc fallback on dispatch without secrets, tag push or partial secrets fail; supersedes spec's no-signing and task 72 ad-hoc | ## 2026-11-03 — macOS release signed with Developer ID and notarised |
 | 2026-11-03 | 76 | App icon: layered .icon compiled to Assets.car plus icns fallback on macOS, ico via winresource on Windows, PNGs in Linux tar; generate.sh with --check; no Linux window icon yet | ## 2026-11-03 — App icon on macOS, Windows and Linux |
 | 2026-11-03 | 77 | Windows release links as a GUI-subsystem exe (no console from Explorer) with static CRT (no VC++ runtime); binary +1.34% to 13,630,464 B | ## 2026-11-03 — Windows release is a GUI-subsystem exe with a static CRT |
 | 2026-11-03 | 73 | README.md covers install per platform, unsigned-build steps (Finder quarantine, `xattr -dr`), Linux libraries and glibc 2.39 floor, platform testing, write locations, portable mode on Windows/Linux only, license | ## 2026-11-03 — README for 0.1.0 |
