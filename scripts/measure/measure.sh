@@ -16,6 +16,12 @@
 # lines go into the JSON key stderr_tail and the job log. The app runs with
 # RUST_BACKTRACE=1 and RUST_LOG=info. On macOS a request-run timeout also
 # saves `sample` output as <output stem>.req.sample.log.
+# On Linux the headline memory figures are pss_kib and rss_anon_kib (Pss and
+# Anonymous from /proc/<pid>/smaps_rollup, each {idle, after_request}); plain
+# RSS also counts shared driver pages. renderer_device is the GPU/adapter name
+# from the app log or `vulkaninfo --summary`; null with renderer_device_reason
+# when neither gives one. Those keys, and private_working_set_kib, are null
+# where not applicable (macOS; Windows has its own script).
 set -u
 
 bin="${1:-}"; out="${2:-}"
@@ -45,12 +51,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Linux-only extras, filled in as they are sampled.
+pss_idle=""; pss_after=""; anon_idle=""; anon_after=""
+device=""; device_reason="not applicable on this OS"
+
 # write_json <status> <reason|""> <idle> <after> [stderr-file]
 write_json() {
   mkdir -p "$(dirname "$out")"
-  python3 - "$target" "$commit" "$bytes" "$3" "$4" "$settle" "$renderer" "$1" "$2" "$os_version" "${5:-}" >"$out" <<'PY'
+  python3 - "$target" "$commit" "$bytes" "$3" "$4" "$settle" "$renderer" "$1" "$2" "$os_version" "${5:-}" \
+    "$pss_idle" "$pss_after" "$anon_idle" "$anon_after" "$device" "$device_reason" >"$out" <<'PY'
 import json, sys
 a = sys.argv[1:]
+num = lambda s: int(s) if s else None
+pair = lambda i, j: {"idle": num(a[i]), "after_request": num(a[j])} if (a[i] or a[j]) else None
 tail = None
 if a[10]:
     try:
@@ -58,13 +71,16 @@ if a[10]:
             tail = f.read().splitlines()[-20:]
     except OSError:
         tail = []
-num = lambda s: int(s) if s else None
 print(json.dumps({
     "target": a[0], "commit": a[1], "binary_bytes": num(a[2]),
     "idle_rss_kib": num(a[3]), "after_request_rss_kib": num(a[4]),
     "settle_seconds": int(a[5]), "renderer": a[6], "status": a[7],
     "reason": a[8] or None, "os_version": a[9],
     "stderr_tail": tail,
+    "pss_kib": pair(11, 12), "rss_anon_kib": pair(13, 14),
+    "renderer_device": a[15] or None,
+    "renderer_device_reason": None if a[15] else (a[16] or None),
+    "private_working_set_kib": None,
 }, indent=2))
 PY
 }
@@ -98,6 +114,22 @@ done
 curl -sf -o /dev/null "http://127.0.0.1:$port/file.bin" || fail "local http server did not start"
 
 rss_of() { ps -o rss= -p "$1" | tr -d ' '; }
+# smaps_field <pid> <Pss|Anonymous>: kB from smaps_rollup (Linux), else empty.
+smaps_field() { awk -v k="$2:" '$1 == k { print $2 }' "/proc/$1/smaps_rollup" 2>/dev/null; }
+
+# find_device <err-log>...: adapter name from the app log, else vulkaninfo.
+find_device() {
+  local line=""
+  line="$(grep -ihE 'llvmpipe|lavapipe|swiftshader|adapter|deviceName' "$@" 2>/dev/null | head -n 1)"
+  if [ -n "$line" ]; then device="$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | cut -c1-200)"; return; fi
+  if command -v vulkaninfo >/dev/null 2>&1; then
+    line="$(vulkaninfo --summary 2>/dev/null | sed -n 's/^[[:space:]]*deviceName[[:space:]]*=[[:space:]]*//p' | head -n 1)"
+    if [ -n "$line" ]; then device="$line"; return; fi
+    device_reason="vulkaninfo gave no deviceName and the app log named no adapter"
+  else
+    device_reason="vulkaninfo not installed and the app log named no adapter"
+  fi
+}
 
 # Run 1: idle.
 err_file="$logbase.idle.err.log"
@@ -106,6 +138,9 @@ app_pid=$!
 sleep "$settle"
 kill -0 "$app_pid" 2>/dev/null || fail "window failed to start (process exited during idle run)"
 idle="$(rss_of "$app_pid")"
+if [ "$(uname -s)" = Linux ]; then
+  pss_idle="$(smaps_field "$app_pid" Pss)"; anon_idle="$(smaps_field "$app_pid" Anonymous)"
+fi
 kill "$app_pid" 2>/dev/null; wait "$app_pid" 2>/dev/null; app_pid=""
 [ -n "$idle" ] || fail "could not sample idle RSS"
 
@@ -143,8 +178,14 @@ fi
 sleep "$settle"
 kill -0 "$app_pid" 2>/dev/null || fail "app exited after the request"
 after="$(rss_of "$app_pid")"
+if [ "$(uname -s)" = Linux ]; then
+  pss_after="$(smaps_field "$app_pid" Pss)"; anon_after="$(smaps_field "$app_pid" Anonymous)"
+fi
 kill "$app_pid" 2>/dev/null; wait "$app_pid" 2>/dev/null; app_pid=""
 [ -n "$after" ] || fail "could not sample RSS after request"
 
+if [ "$(uname -s)" = Linux ]; then
+  find_device "$logbase.idle.err.log" "$logbase.req.err.log" "$logbase.idle.out.log"
+fi
 write_json measured "" "$idle" "$after"
 cat "$out"
