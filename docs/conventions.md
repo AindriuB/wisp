@@ -82,6 +82,13 @@ PR for binary size and memory cost. Set `default-features = false` and enable
 only the features used. TLS is `rustls` only; OpenSSL and native-tls are never
 acceptable, including transitively through a feature of another crate.
 
+Any change to `Cargo.lock` is followed by `scripts/notices/generate.sh` and a
+commit of the regenerated `THIRD-PARTY-NOTICES`; CI's `notices` job fails the
+build if the committed file differs. The script needs cargo-about 0.9.3
+installed with `cargo install cargo-about --version 0.9.3 --locked --features cli`.
+A new dependency's license must be permissive or MPL-2.0 (the `accepted` list in
+`about.toml`); do not widen that list to a copyleft license.
+
 ## TOML
 
 Writes go through `toml_edit` so user comments and formatting survive. Do not
