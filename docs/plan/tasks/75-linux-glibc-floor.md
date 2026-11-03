@@ -41,3 +41,11 @@ make the release fail if the binary ever needs a glibc symbol version above
 - `scripts/measure/budgets.json`, `scripts/release/package.sh` and any crate source — even if the Linux size or RSS shifts, report it, do not retune budgets.
 - macOS and Windows runner choices (`macos-latest`, `windows-latest`).
 - Pushing a tag, publishing a release, or opening a PR.
+
+## Notes
+- Runs on task/75-linux-glibc-floor: release dry run 41697405027 (draft dryrun-41697405027, deleted with its tag), measure 41697410452, ci 41697404106 (all success).
+- Max GLIBC: before 2.43 (run 41690366878), after 2.39 (guard step in release and measure passed).
+- Linux measure before (main, run 40964848611): binary_bytes 35,133,064, idle/after-request RSS null (not measured then). After: binary_bytes 23,358,512; rss_anon idle 61,132 KiB, after-request 51,256 KiB (budgets 29,360,128 / 122,880 / 131,072); macOS and Windows also within budget. Screenshot shows the rendered window.
+- Guard runs in measure.yml too (a few ms, reads the already-built binary).
+- Negative check: `check-glibc.sh wisp 2.30` exits 1, prints "highest GLIBC required: 2.39 (max allowed: 2.30)", "FAIL: ... needs GLIBC_2.39 ...", offending symbols incl. GLIBC_2.39 pidfd_spawnp, pidfd_getpid. `2.4` also fails (numeric compare); default 2.39 exits 0.
+- No apt package changes were needed on 24.04.

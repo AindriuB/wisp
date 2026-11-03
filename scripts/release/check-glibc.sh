@@ -25,9 +25,8 @@ if [ "$(printf '%s\n%s\n' "$highest" "$max" | sort -V | tail -n 1)" = "$max" ]; 
 fi
 
 echo "FAIL: $bin needs GLIBC_$highest, above the allowed GLIBC_$max. Offending symbols:" >&2
-printf '%s\n' "$dyn" | awk '{print $(NF-1), $NF}' \
+printf '%s\n' "$dyn" | awk 'match($0, /GLIBC_[0-9]+(\.[0-9]+)+/) { print substr($0, RSTART, RLENGTH), $NF }' \
   | while read -r v sym; do
-      case "$v" in GLIBC_*) ;; *) continue ;; esac
       ver="${v#GLIBC_}"
       if [ "$(printf '%s\n%s\n' "$ver" "$max" | sort -V | tail -n 1)" != "$max" ]; then
         echo "  $v $sym" >&2
