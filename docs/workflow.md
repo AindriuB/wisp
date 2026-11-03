@@ -4,12 +4,18 @@ A five-phase loop designed so that the expensive phase — implementation — ru
 wide and in parallel, and the main session's context stays small.
 
 ```
-/plan <goal>     planner   →  docs/plan/tasks/NN-slug.md  (one file per unit)
+/plan <goal>     planner   →  docs/plan/tasks/NN-slug.md  (one file per unit,
+                              written on that task's branch)
 /fanout          implementer × N, one git worktree each
 /review          code-reviewer per branch; fixes loop back to the implementer
 /verify          tester + reviewer, one pair per reviewed task
-/record          scribe    →  PLAN.md, HISTORY.md, docs/
+/record          scribe    →  PLAN.md, HISTORY.md, docs/, then push + open the PR
 ```
+
+Every change lands through a GitHub pull request on `AindriuB/wisp` that the
+user reviews and merges. Nothing is committed or pushed straight to `main`, and
+no agent merges a PR, even an approved one. This covers code, task files,
+`PLAN.md`/`HISTORY*.md` updates and docs-only changes alike.
 
 ## Roles
 
@@ -50,7 +56,8 @@ That is the whole token strategy. Two corollaries:
 ## Phase 1 — plan
 
 `planner` reads the goal and the current `PLAN.md`, then writes one file per
-unit of work into `docs/plan/tasks/`. It returns only the task ids and their
+unit of work into `docs/plan/tasks/`, each on that task's own branch in its
+worktree (`.claude/scripts/wt-new.sh`). It returns only the task ids and their
 dependency edges.
 
 A task file is parallel-safe when it declares:
@@ -69,8 +76,8 @@ Tasks with `depends on: none` form the first wave. Everything else waits.
 For each task in the current wave, in a single message, spawn one `implementer`
 with the task id. Each one:
 
-1. runs `.claude/scripts/wt-new.sh <repo> <task-id>` to get its own worktree
-   and branch,
+1. uses the task's worktree and branch (the planner's, or
+   `.claude/scripts/wt-new.sh <repo> <task-id>` if it does not exist yet),
 2. reads only its task file and the files that task names,
 3. implements, commits on its branch,
 4. returns the branch name, the files touched and a one-line summary.
@@ -121,10 +128,18 @@ It does not get "fixed inline" — that is how the main context blows up.
 
 ## Phase 5 — record
 
-`scribe` merges the passing branches, removes their worktrees, moves the task
-files out of `tasks/`, and updates `PLAN.md` and `HISTORY.md`. It is the only
-role that touches those files, which is why they never end up with conflicting
-concurrent edits.
+For each passing branch, `scribe` works on that same branch: it moves the task
+file out of `tasks/`, updates `PLAN.md` and `HISTORY.md`, commits, pushes the
+branch and opens the PR with `gh pr create --base main`. It does not merge,
+squash or delete branches. One PR per task therefore carries plan, code and
+record. `scribe` is the only role that touches those files.
+
+Done means the PR is open and CI is green on every OS in `ci.yml`. Local macOS
+verification is not enough: Linux CI was red from 2026-10-30 to 2026-11-03
+unnoticed because verification only ran locally.
+
+After the user merges, the branch and worktree are removed and the target dir
+is cleaned with `cargo clean --target-dir target/wt-<id>`.
 
 Each `HISTORY.md` entry gets its row in `HISTORY-INDEX.md` in the same commit.
 That pairing is what keeps the index trustworthy enough for `planner` to rely
