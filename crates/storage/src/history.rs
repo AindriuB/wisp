@@ -49,7 +49,8 @@ pub struct HistoryEntry {
 impl HistoryEntry {
     /// Lossy-UTF-8 preview of `bytes`, cut on a char boundary to `PREVIEW_LIMIT` bytes.
     pub fn preview_from(bytes: &[u8]) -> String {
-        let mut s = String::from_utf8_lossy(&bytes[..bytes.len().min(PREVIEW_LIMIT)]).into_owned();
+        let mut s =
+            String::from_utf8_lossy(&bytes[..bytes.len().min(PREVIEW_LIMIT + 3)]).into_owned();
         if s.len() > PREVIEW_LIMIT {
             let mut end = PREVIEW_LIMIT;
             while !s.is_char_boundary(end) {
@@ -185,6 +186,23 @@ mod tests {
         let p = HistoryEntry::preview_from(&bytes);
         assert!(p.len() <= PREVIEW_LIMIT);
         assert!(!p.is_empty());
+    }
+
+    #[test]
+    fn preview_drops_a_four_byte_char_straddling_the_limit() {
+        let mut bytes = vec![b'a'; 1022];
+        bytes.extend("😀".as_bytes());
+        let p = HistoryEntry::preview_from(&bytes);
+        assert_eq!(p, "a".repeat(1022));
+    }
+
+    #[test]
+    fn preview_has_no_replacement_char_when_three_bytes_of_a_four_byte_char_fit() {
+        let mut bytes = vec![b'a'; 1021];
+        bytes.extend("😀".as_bytes());
+        let p = HistoryEntry::preview_from(&bytes);
+        assert!(!p.contains('\u{FFFD}'));
+        assert_eq!(p, "a".repeat(1021));
     }
 
     #[test]

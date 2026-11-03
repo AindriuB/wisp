@@ -73,7 +73,14 @@ pub fn list_environments(root: &Path) -> Result<Vec<String>, StorageError> {
         if file.ends_with(SECRETS_SUFFIX) || file.starts_with('.') {
             continue;
         }
-        let is_file = entry.file_type().map_err(|e| io(&dir, e))?.is_file();
+        // `DirEntry::metadata` does not follow links; `std::fs::metadata` does.
+        let is_file = match std::fs::metadata(entry.path()) {
+            Ok(m) => m.is_file(),
+            Err(e) => {
+                tracing::warn!(file = %file, error = %e, "skipping environment entry: cannot read metadata");
+                continue;
+            }
+        };
         if let Some(name) = file.strip_suffix(".toml")
             && is_file
             && valid_name(name)
@@ -147,6 +154,40 @@ fn ensure_gitignore(dir: &Path) -> Result<(), StorageError> {
     fs::atomic_write(&path, text.as_bytes())
 }
 
+/// True when `vars` holds a name that the file at `other` currently holds,
+/// that is, a var moving from `other` into the file being written.
+fn gains_moved_name(other: &Path, vars: &[wisp_core::request::Var]) -> bool {
+    let current = if other.exists() {
+        load_vars(other).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    vars.iter()
+        .any(|v| current.iter().any(|c| c.name == v.name))
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_SECOND_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test hook: fails between the first and second file write.
+#[cfg(test)]
+fn fail_point() -> Result<(), StorageError> {
+    if FAIL_SECOND_WRITE.with(|f| f.get()) {
+        return Err(StorageError::Io {
+            path: PathBuf::from("injected"),
+            source: std::io::Error::other("injected fault"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_point() -> Result<(), StorageError> {
+    Ok(())
+}
+
 /// Save an environment, editing both files in place.
 pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageError> {
     check_name(root, &env.name)?;
@@ -162,10 +203,27 @@ pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageErr
         None
     };
 
-    fs::atomic_write(&pp, plain_text.as_bytes())?;
-    if let Some(text) = secrets_text {
-        ensure_gitignore(&dir)?;
-        fs::atomic_write_private(&sp, text.as_bytes())?;
+    let plain_gains = gains_moved_name(&sp, &env.vars);
+    let secrets_gains = secrets_text.is_some() && gains_moved_name(&pp, &env.secrets);
+    let write_plain = || fs::atomic_write(&pp, plain_text.as_bytes());
+    let write_secrets = || -> Result<(), StorageError> {
+        if let Some(text) = &secrets_text {
+            ensure_gitignore(&dir)?;
+            fs::atomic_write_private(&sp, text.as_bytes())?;
+        }
+        Ok(())
+    };
+    // Write the file that gains a moved name first, so a half-failed save
+    // leaves the var in both files rather than neither. A true swap (both
+    // files gain a moved name) has no safe order; plain then secrets is kept.
+    if secrets_gains && !plain_gains {
+        write_secrets()?;
+        fail_point()?;
+        write_plain()?;
+    } else {
+        write_plain()?;
+        fail_point()?;
+        write_secrets()?;
     }
     let names: Vec<&str> = env
         .vars
@@ -346,5 +404,85 @@ mod tests {
         write(t.path(), "a..b.toml", "");
         std::fs::create_dir_all(t.path().join(DIR).join("x.toml")).unwrap();
         assert_eq!(list_environments(t.path()).unwrap(), ["ok"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lists_symlinked_env_and_skips_dangling() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "real.toml.src", "[vars]\n");
+        let dir = d.path().join(DIR);
+        std::os::unix::fs::symlink(dir.join("real.toml.src"), dir.join("dev.toml")).unwrap();
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("gone.toml")).unwrap();
+        write(d.path(), "prod.toml", "[vars]\n");
+        assert_eq!(list_environments(d.path()).unwrap(), vec!["dev", "prod"]);
+    }
+
+    fn save_with_fault(root: &Path, env: &Environment) {
+        FAIL_SECOND_WRITE.with(|f| f.set(true));
+        let r = save_environment(root, env);
+        FAIL_SECOND_WRITE.with(|f| f.set(false));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn var_moving_plain_to_secrets_survives_a_failed_second_write() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "dev.toml", "[vars]\ntoken = \"x\"\n");
+        let env = Environment {
+            name: "dev".into(),
+            vars: vec![],
+            secrets: vec![var("token", "x")],
+        };
+        save_with_fault(d.path(), &env);
+        let loaded = load_environment(d.path(), "dev").unwrap();
+        assert!(
+            loaded
+                .vars
+                .iter()
+                .chain(&loaded.secrets)
+                .any(|v| v.name == "token")
+        );
+    }
+
+    #[test]
+    fn var_moving_secrets_to_plain_survives_a_failed_second_write() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "dev.toml", "[vars]\n");
+        write(d.path(), "dev.secrets.toml", "[vars]\ntoken = \"x\"\n");
+        let env = Environment {
+            name: "dev".into(),
+            vars: vec![var("token", "x")],
+            secrets: vec![],
+        };
+        save_with_fault(d.path(), &env);
+        let loaded = load_environment(d.path(), "dev").unwrap();
+        assert!(
+            loaded
+                .vars
+                .iter()
+                .chain(&loaded.secrets)
+                .any(|v| v.name == "token")
+        );
+    }
+
+    #[test]
+    fn var_moving_to_secrets_survives_when_plain_also_gains_a_name() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "dev.toml", "[vars]\na = \"1\"\ntoken = \"x\"\n");
+        let env = Environment {
+            name: "dev".into(),
+            vars: vec![var("a", "1"), var("b", "2")],
+            secrets: vec![var("token", "x")],
+        };
+        save_with_fault(d.path(), &env);
+        let loaded = load_environment(d.path(), "dev").unwrap();
+        assert!(
+            loaded
+                .vars
+                .iter()
+                .chain(&loaded.secrets)
+                .any(|v| v.name == "token")
+        );
     }
 }
