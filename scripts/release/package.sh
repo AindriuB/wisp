@@ -43,6 +43,17 @@ case "$platform" in
     sed -e "s/@VERSION@/$version/g" -e "s/@MINOS@/$minos/g" \
       "$here/Info.plist.template" > "$app/Info.plist"
     plutil -lint "$app/Info.plist"
+    # Icon: wisp.icns is the CFBundleIconFile fallback; the layered Icon Composer
+    # bundle is compiled into Assets.car (CFBundleIconName=AppIcon), which carries
+    # the dark/tinted/clear appearances on macOS 26+.
+    mkdir -p "$app/Resources"
+    cp "$root/assets/icon/wisp.icns" "$app/Resources/wisp.icns"
+    actool_out="$stage/actool"; mkdir -p "$actool_out"
+    xcrun actool "$root/assets/icon/AppIcon.icon" --compile "$actool_out" \
+      --platform macosx --minimum-deployment-target "$minos" --app-icon AppIcon \
+      --output-partial-info-plist "$actool_out/partial.plist" >/dev/null
+    [ -f "$actool_out/Assets.car" ] || { echo "actool produced no Assets.car" >&2; exit 1; }
+    cp "$actool_out/Assets.car" "$app/Resources/Assets.car"
     codesign --force --sign - "$dir/Wisp.app"
     asset="$name.zip"; rm -f "$out/$asset"
     (cd "$stage" && ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl "$name" "$out/$asset")
@@ -54,6 +65,8 @@ case "$platform" in
     ;;
   linux-x64)
     cp "$bin" "$dir/wisp"; chmod 0755 "$dir/wisp"
+    mkdir -p "$dir/icons"
+    for z in 48 64 128 256 512; do cp "$root/assets/icon/png/wisp-$z.png" "$dir/icons/wisp-$z.png"; done
     asset="$name.tar.gz"; rm -f "$out/$asset"
     tar --owner=0 --group=0 --numeric-owner -C "$stage" -czf "$out/$asset" "$name"
     ;;
