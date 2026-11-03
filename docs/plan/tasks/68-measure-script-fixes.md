@@ -89,3 +89,11 @@ GitHub's 6-hour default. Fix each without changing what is measured or the budge
   `renderer_device_source: null`; Linux had `renderer_device_source: "vulkaninfo"`.
   The Windows CIM-failure path was not triggered (counter present), so it is
   verified by reading only. The x86_64 macOS job hung as known; I cancelled the run.
+
+## Review round 1 — findings
+
+Reviewed HEAD: e03c139.
+
+- [STYLE] scripts/measure/measure.sh:24 — the rewrapped header line is 109 characters; neighbours (:15-23, :25-28) wrap at about 80. Rewrap the sentence.
+- [P3] scripts/measure/measure.ps1:50-51 — `ConvertFrom-Json` unrolls a top-level one-element array, so `[{"windows-x86_64":{}}]` passes the not-an-object check that measure.sh rejects (exit 2). Add `-NoEnumerate` so both scripts agree.
+- [NOTE, optional] measure.ps1:49-50 — a BUDGETS path that is a directory passes `Test-Path` and prints two stderr lines before exit 2; `Test-Path -PathType Leaf` would match measure.sh's `-f`.
