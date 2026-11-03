@@ -86,3 +86,12 @@ The user does this once. Never generate, request, print or store the values.
 - Signed dry run (`-f draft_release=true`): run 41718679603 succeeded. Notarisation submission e2cb1752-fef5-444a-9f6b-78fcecb81275 status Accepted; stapled. Downloaded app: `codesign --verify --strict --deep` valid; `spctl` accepted, `source=Notarized Developer ID`, `origin=Developer ID Application: Andrew Bannister (UB89GDN343)`; `stapler validate` worked; `TeamIdentifier=UB89GDN343`, `flags=0x10000(runtime)`. Draft dryrun-41718679603 deleted. (An earlier draft, run 41716718217, was ad-hoc; deleted.)
 - Launch: System Events reported a `wisp` process with 1 window. No entitlements file was needed. Resources contain Assets.car (lists AppIcon) and wisp.icns.
 - The notarisation step took ~19 minutes of the macOS job in this run.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 422baaa.
+
+- [P3] .github/workflows/release.yml:105-108 — APPLE_API_KEY_ID / APPLE_API_ISSUER_ID / APPLE_API_KEY_P8 are set on the shared Package step, so the Windows and Linux runners get them too. Gate each to macOS, e.g. `${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_P8 || '' }}`.
+- [P3] scripts/release/package.sh:59 — `xcrun assetutil --info` now runs bare under `set -e`; if it fails, actool.log and the "AppIcon missing" message are no longer printed. Keep writing to a file, but handle assetutil's failure the same way as a missing AppIcon (print actool.log and the message, then exit 1).
+- [P3] scripts/release/sign-macos.sh:44 — `notarytool submit --wait` has no `--timeout`; add one (e.g. 90m) so a stuck Apple queue fails the job with a clear message instead of running to the 6 h job limit; on timeout print the submission id and how to check it later (`notarytool info`/`log`).
+- [NOTE, optional] scripts/release/macos-keychain.sh:67 — cleanup removes `$tmp/Wisp-notarize.zip` but the zip lives at `$tmp/wisp-notary/Wisp-notarize.zip`; drop the dead path.
