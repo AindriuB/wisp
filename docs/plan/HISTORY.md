@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Streamed bodies are resent on 307/308 redirects
+With follow-redirects on, a File or Multipart body over 1 MiB is now resent on a 307 or 308: the engine re-opens each file, checks its length against the first send, and streams it again to the new URL, up to 10 hops. A cross-origin resend drops Authorization, Cookie, Cookie2, Proxy-Authorization and WWW-Authenticate, the same set reqwest strips. A file that changed length fails with `BodyFile`; before, the 3xx was shown as the result.
+**Cost:** The first version stripped only Authorization and Cookie, copied from the task's table; review found reqwest 0.13.5 strips five headers (redirect.rs:241-249), so the set must follow reqwest, not the table. The length check does not detect same-size edits, and custom auth headers such as `X-Api-Key` still cross origins; both are in PLAN. PUT/PATCH on 301/302 remains unhandled.
+
 ## 2026-11-09 — Windows v0.1.0 hand-tested; README updated
 The user hand-tested the released v0.1.0 Windows x64 build and reports it works perfectly. The README's "Platform testing" section now says the maintainer hand-tested Windows after release, and asks for reports only for Linux with a real GPU.
 **Cost:** None; the claim was held back until the test was done, as the 2026-11-03 entry required.
