@@ -554,3 +554,16 @@ fn fan_out_past_the_depth_limit_is_reported_as_too_large_promptly() {
         .collect();
     assert_too_large_promptly(&r);
 }
+
+#[test]
+fn debug_redacts_pattern_mismatch_value() {
+    let w = ResolveWarning::PatternMismatch {
+        name: "token".into(),
+        pattern: "^[a-z]+$".into(),
+        value: "WARNMARK".into(),
+    };
+    for s in [format!("{w:?}"), format!("{w:#?}")] {
+        assert!(!s.contains("WARNMARK"));
+        assert!(s.contains("token") && s.contains("pattern") && s.contains("<redacted>"));
+    }
+}

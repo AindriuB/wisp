@@ -659,3 +659,289 @@ async fn a_multipart_body_with_a_20_mib_file_streams_with_exact_content_length()
     assert_eq!(&got.body[start + data.len()..], trailer.as_bytes());
     let _ = std::fs::remove_file(file);
 }
+
+/// A temp file removed on drop, so a failed assertion leaves nothing behind.
+struct TempGuard(std::path::PathBuf);
+
+impl TempGuard {
+    fn new(tag: &str, data: &[u8]) -> Self {
+        TempGuard(temp_file(tag, data))
+    }
+}
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+const TWO_MIB: usize = 2 * 1024 * 1024 + 123;
+
+async fn redirecting_server(status: u16, to: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/first"))
+        .respond_with(ResponseTemplate::new(status).insert_header("location", to))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/second"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn send_and_collect(req: PreparedRequest) -> Vec<Event> {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(req));
+    collect_until_terminal(&rx).await
+}
+
+async fn streamed_file_resend(status: u16, tag: &str) {
+    let server = redirecting_server(status, "/second").await;
+    let data = pattern(TWO_MIB);
+    let file = TempGuard::new(tag, &data);
+    let evs = send_and_collect(post_with(
+        format!("{}/first", server.uri()),
+        PreparedBody::File(file.0.clone()),
+    ))
+    .await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let headers: Vec<_> = evs
+        .iter()
+        .filter_map(|e| match e {
+            Event::Headers { status, .. } => Some(*status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(headers, vec![200]);
+    let got = server.received_requests().await.unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[1].url.path(), "/second");
+    assert_streamed(&got[1], data.len());
+    assert_eq!(got[1].body, data);
+}
+
+#[tokio::test]
+async fn a_streamed_file_body_is_resent_after_a_307_redirect() {
+    streamed_file_resend(307, "stream307").await;
+}
+
+#[tokio::test]
+async fn a_streamed_file_body_is_resent_after_a_308_redirect() {
+    streamed_file_resend(308, "stream308").await;
+}
+
+#[tokio::test]
+async fn a_streamed_multipart_body_is_resent_after_a_307_redirect() {
+    let server = redirecting_server(307, "/second").await;
+    let data = pattern(TWO_MIB);
+    let file = TempGuard::new("mp307", &data);
+    let evs = send_and_collect(post_with(
+        format!("{}/first", server.uri()),
+        PreparedBody::Multipart(vec![
+            PreparedPart {
+                name: "t".into(),
+                value: PreparedPartValue::Text("hello".into()),
+            },
+            PreparedPart {
+                name: "f".into(),
+                value: PreparedPartValue::File(file.0.clone()),
+            },
+        ]),
+    ))
+    .await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let got = server.received_requests().await.unwrap();
+    assert_eq!(got.len(), 2);
+    let second = &got[1];
+    let cl: usize = second
+        .headers
+        .get("content-length")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(cl, second.body.len());
+    let find = |needle: &[u8]| {
+        second
+            .body
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap()
+    };
+    assert!(String::from_utf8_lossy(&second.body[..200]).contains("name=\"t\""));
+    find(b"hello");
+    let start = find(b"filename=");
+    let start = start + find_from(&second.body[start..], b"\r\n\r\n") + 4;
+    assert_eq!(&second.body[start..start + data.len()], &data[..]);
+}
+
+fn find_from(hay: &[u8], needle: &[u8]) -> usize {
+    hay.windows(needle.len()).position(|w| w == needle).unwrap()
+}
+
+/// Sends a streamed POST with credentials; returns the requests seen by (first, second) servers.
+async fn auth_resend(cross_origin: bool) -> (Vec<wiremock::Request>, Vec<wiremock::Request>) {
+    let second = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/second"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&second)
+        .await;
+    let first = if cross_origin {
+        redirecting_server(307, &format!("{}/second", second.uri())).await
+    } else {
+        redirecting_server(307, "/second").await
+    };
+    let file = TempGuard::new(
+        if cross_origin { "xorigin" } else { "sorigin" },
+        &pattern(TWO_MIB),
+    );
+    let mut req = post_with(
+        format!("{}/first", first.uri()),
+        PreparedBody::File(file.0.clone()),
+    );
+    req.headers = vec![
+        Header {
+            name: "Authorization".into(),
+            value: "Bearer secret".into(),
+        },
+        Header {
+            name: "Cookie".into(),
+            value: "a=b".into(),
+        },
+        Header {
+            name: "Cookie2".into(),
+            value: "c=d".into(),
+        },
+        Header {
+            name: "Proxy-Authorization".into(),
+            value: "Basic eDp5".into(),
+        },
+        Header {
+            name: "X-Keep".into(),
+            value: "yes".into(),
+        },
+    ];
+    let evs = send_and_collect(req).await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let a = first.received_requests().await.unwrap();
+    let b = second.received_requests().await.unwrap();
+    (a, b)
+}
+
+#[tokio::test]
+async fn a_cross_origin_redirect_drops_authorization_on_resend() {
+    let (first, second) = auth_resend(true).await;
+    assert!(first[0].headers.contains_key("authorization"));
+    assert_eq!(second.len(), 1);
+    assert!(!second[0].headers.contains_key("authorization"));
+    assert!(!second[0].headers.contains_key("cookie"));
+    assert!(!second[0].headers.contains_key("cookie2"));
+    assert!(!second[0].headers.contains_key("proxy-authorization"));
+    assert_eq!(second[0].headers.get("x-keep").unwrap(), "yes");
+    assert_streamed(&second[0], TWO_MIB);
+}
+
+#[tokio::test]
+async fn a_same_origin_redirect_keeps_authorization_on_resend() {
+    let (first, _) = auth_resend(false).await;
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first[1].headers.get("authorization").unwrap(),
+        "Bearer secret"
+    );
+    assert_eq!(first[1].headers.get("cookie").unwrap(), "a=b");
+}
+
+#[tokio::test]
+async fn a_streamed_redirect_loop_fails_after_10_redirects() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "/loop"))
+        .mount(&server)
+        .await;
+    let file = TempGuard::new("loop", &pattern(TWO_MIB));
+    let evs = send_and_collect(post_with(
+        format!("{}/loop", server.uri()),
+        PreparedBody::File(file.0.clone()),
+    ))
+    .await;
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => {
+            assert_eq!(error.kind, ErrorKind::Other);
+            assert!(
+                error.message.contains("too many redirects (10)"),
+                "{error:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), 10);
+}
+
+struct TruncateThen307(std::path::PathBuf);
+
+impl wiremock::Respond for TruncateThen307 {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        std::fs::write(&self.0, b"short").unwrap();
+        ResponseTemplate::new(307).insert_header("location", "/second")
+    }
+}
+
+#[tokio::test]
+async fn a_body_file_that_shrinks_before_a_redirect_resend_fails_with_body_file() {
+    let file = TempGuard::new("shrink", &pattern(TWO_MIB));
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/first"))
+        .respond_with(TruncateThen307(file.0.clone()))
+        .mount(&server)
+        .await;
+    let evs = send_and_collect(post_with(
+        format!("{}/first", server.uri()),
+        PreparedBody::File(file.0.clone()),
+    ))
+    .await;
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => {
+            assert_eq!(error.kind, ErrorKind::BodyFile);
+            assert!(
+                error.message.contains("changed before the redirect resend"),
+                "{error:?}"
+            );
+            assert!(error.message.contains(&file.0.display().to_string()));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn follow_redirects_false_surfaces_a_307_for_a_streamed_body() {
+    let server = redirecting_server(307, "/second").await;
+    let file = TempGuard::new("nofollow", &pattern(TWO_MIB));
+    let mut req = post_with(
+        format!("{}/first", server.uri()),
+        PreparedBody::File(file.0.clone()),
+    );
+    req.client.follow_redirects = false;
+    let evs = send_and_collect(req).await;
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, Event::Headers { status: 307, .. })),
+        "{evs:?}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}

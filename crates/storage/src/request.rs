@@ -221,6 +221,12 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
     if name.to_ascii_lowercase().ends_with(".toml") {
         return Err(bad("must not be a .toml file"));
     }
+    if name.ends_with(['.', ' ']) {
+        return Err(bad("must not end with a dot or a space"));
+    }
+    if fs::is_reserved_device_name(name) {
+        return Err(bad("is a reserved device name"));
+    }
     let own = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
     if own.as_deref() == Some(name.to_lowercase().as_str()) {
         return Err(bad("is the request file itself"));
@@ -231,8 +237,11 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
         (Ok(t), Ok(r)) => t == r,
         _ => false,
     };
-    if same {
+    if same || fs::same_file_entry(&target, path) {
         return Err(bad("is the request file itself"));
+    }
+    if fs::same_file_entry_any_toml(dir, &target) {
+        return Err(bad("is the same file as a request file in the folder"));
     }
     if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
         let inside = match (std::fs::canonicalize(&target), std::fs::canonicalize(dir)) {
@@ -242,6 +251,13 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
         if !inside {
             return Err(bad("is a symlink that leaves the request's folder"));
         }
+    }
+    // Any existing target, not only symlinks: on Windows an 8.3 short name
+    // (`B~1.TOM`) canonicalizes to the long `.toml` name.
+    let to_toml = std::fs::canonicalize(&target)
+        .is_ok_and(|t| t.to_string_lossy().to_ascii_lowercase().ends_with(".toml"));
+    if to_toml {
+        return Err(bad("resolves to a .toml file"));
     }
     Ok(target)
 }
@@ -902,6 +918,92 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         );
         assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
         assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), r_mtime);
+    }
+
+    /// Request `a.toml` and sibling `b.toml` in one folder; `setup` makes the
+    /// alias. Load and save must reject `name`, leaving both files untouched.
+    fn alias_rejected(name: &str, setup: impl Fn(&Path)) {
+        alias_rejected_at(name, "b.toml", setup);
+    }
+
+    /// As `alias_rejected`, but `setup` may leave the sibling under
+    /// `sibling_after` (e.g. a renamed file on case-sensitive filesystems).
+    fn alias_rejected_at(name: &str, sibling_after: &str, setup: impl Fn(&Path)) {
+        let d = tempfile::tempdir().unwrap();
+        let folder = d.path();
+        let a = folder.join("a.toml");
+        let b = folder.join("b.toml");
+        let a_text = sidecar_req(name);
+        std::fs::write(&a, &a_text).unwrap();
+        std::fs::write(&b, "B-ORIGINAL").unwrap();
+        setup(folder);
+        bad_key(load_request(&a));
+        let req = Request {
+            name: "n".into(),
+            body: Body::Text(TextBody {
+                content: "EDITED".into(),
+                sidecar: Some(name.into()),
+            }),
+            ..Request::default()
+        };
+        bad_key(save_request(&a, &req));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_text);
+        let b = folder.join(sibling_after);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "B-ORIGINAL");
+    }
+
+    #[test]
+    fn sidecar_rejects_trailing_dot() {
+        rejected_on_load_and_save("b.toml.", "a.toml");
+        rejected_on_load_and_save("body.json.", "a.toml");
+    }
+
+    #[test]
+    fn sidecar_rejects_trailing_space() {
+        rejected_on_load_and_save("b.toml ", "a.toml");
+        rejected_on_load_and_save("body.json ", "a.toml");
+    }
+
+    #[test]
+    fn sidecar_rejects_reserved_stem() {
+        rejected_on_load_and_save("CON.json", "a.toml");
+        rejected_on_load_and_save("com0.txt", "a.toml");
+        rejected_on_load_and_save("LPT\u{b9}.xml", "a.toml");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_rejects_symlink_to_sibling_toml() {
+        alias_rejected("body.txt", |f| {
+            std::os::unix::fs::symlink(f.join("b.toml"), f.join("body.txt")).unwrap();
+        });
+        alias_rejected_at("body.txt", "B.TOML", |f| {
+            std::os::unix::fs::symlink("B.TOML", f.join("body.txt")).unwrap();
+            std::fs::rename(f.join("b.toml"), f.join("B.TOML")).unwrap();
+        });
+    }
+
+    /// Best-effort: needs 8.3 short names enabled on the volume.
+    #[cfg(windows)]
+    #[test]
+    fn sidecar_rejects_8dot3_short_name_of_sibling_toml() {
+        alias_rejected("B~1.TOM", |_| {});
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_rejects_hard_link_to_request() {
+        alias_rejected("body.txt", |f| {
+            std::fs::hard_link(f.join("a.toml"), f.join("body.txt")).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_rejects_hard_link_to_sibling() {
+        alias_rejected("body.txt", |f| {
+            std::fs::hard_link(f.join("b.toml"), f.join("body.txt")).unwrap();
+        });
     }
 
     #[test]
