@@ -86,6 +86,16 @@ pub struct WorkspaceView {
     _appearance: Subscription,
 }
 
+/// Narrowest request or response pane in the horizontal split, in px.
+const MIN_PANE_WIDTH: f32 = 240.;
+/// Shortest request or response pane in the vertical split, in px.
+const MIN_PANE_HEIGHT: f32 = 140.;
+
+/// Widest the sidebar may be: leaves 480 px for the main area, within 120..=480.
+fn sidebar_max(window_width: f32) -> f32 {
+    (window_width - 480.).clamp(120., 480.)
+}
+
 /// The OS appearance is followed only while the setting is `System`.
 fn follows_system(mode: ThemeMode) -> bool {
     mode == ThemeMode::System
@@ -386,14 +396,15 @@ impl Render for WorkspaceView {
                     .min_w_0()
                     .overflow_hidden()
                     .child(v.response.clone());
-                let group = match split {
-                    SplitAxis::Vertical => v_resizable("split-v"),
-                    SplitAxis::Horizontal => h_resizable("split-h"),
+                let (group, min_pane) = match split {
+                    SplitAxis::Vertical => (v_resizable("split-v"), MIN_PANE_HEIGHT),
+                    SplitAxis::Horizontal => (h_resizable("split-h"), MIN_PANE_WIDTH),
                 };
+                let pane = || resizable_panel().size_range(px(min_pane)..px(f32::MAX));
                 div().flex_1().min_h_0().child(
                     group
-                        .child(resizable_panel().child(request))
-                        .child(resizable_panel().child(response)),
+                        .child(pane().child(request))
+                        .child(pane().child(response)),
                 )
             }
             None => div()
@@ -419,7 +430,7 @@ impl Render for WorkspaceView {
             .child(
                 resizable_panel()
                     .size(px(240.))
-                    .size_range(px(120.)..px(480.))
+                    .size_range(px(120.)..px(sidebar_max(f32::from(window.viewport_size().width))))
                     .child(self.sidebar.clone()),
             )
             .child(resizable_panel().child(main));
@@ -514,6 +525,21 @@ impl Render for WorkspaceView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_max_is_240_at_the_minimum_window() {
+        assert_eq!(sidebar_max(720.), 240.);
+    }
+
+    #[test]
+    fn sidebar_max_caps_at_480_on_wide_windows() {
+        assert_eq!(sidebar_max(1600.), 480.);
+    }
+
+    #[test]
+    fn sidebar_max_never_drops_below_120() {
+        assert_eq!(sidebar_max(300.), 120.);
+    }
 
     #[test]
     fn reclaims_when_focus_is_on_nothing() {
