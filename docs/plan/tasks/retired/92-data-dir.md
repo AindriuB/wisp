@@ -74,3 +74,6 @@ Reviewed HEAD: 1b25b15. There were no P1/P2 code findings.
 - [P3] `ensure_private_dir` (data_dir.rs:92-101): a trailing slash (e.g. `WISP_DATA_DIR="/x/link/"`) gets past the symlink refusal on macOS. Normalise before the lstat.
 - [NOTE] Hand-written IDs that differ only in case collide on case-insensitive file systems. Consider requiring lowercase.
 - [NOTE] An existing data dir wider than 0700 is not tightened (task 93 may care).
+
+## Outcome
+Merged via PR "92: per-user data dir and collection id". tester PASS (428 tests, no flakes), reviewer APPROVE (AC1-9). The residuals above moved to PLAN under "Follow-ups from task 92". architecture.md and the v1 spec were amended at record for the collection `id`.
