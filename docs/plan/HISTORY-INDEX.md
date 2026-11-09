@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-09 | 85 | Storage rejects sidecar aliases, Windows reserved device names and Unix hard links; ops.rs rejects reserved names | ## 2026-11-09 — Storage rejects Windows-unsafe and aliasing names |
 | 2026-11-09 | 82 | Windows v0.1.0 hand-tested by the user and passed; README updated | ## 2026-11-09 — Windows v0.1.0 hand-tested; README updated |
 | 2026-11-03 | 81 | v0.1.0 tagged before the Windows hand test; macOS Apple silicon hand-tested, Windows CI-only; README corrected | ## 2026-11-03 — v0.1.0 tagged before the Windows hand test; README corrected |
 | 2026-11-03 | 79 | Quit action (cmd-q/ctrl-q), macOS Wisp app menu, all window closes go through cx.quit() so no windowless app; avoids Touch Bar Dock-Quit abort (upstream accesskit_macos KVO bug); quit-check.sh | ## 2026-11-03 — Quit action, macOS app menu, and no windowless app |

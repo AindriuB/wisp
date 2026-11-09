@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Storage rejects Windows-unsafe and aliasing names
+Sidecar body files are now rejected (`StorageError::Invalid`, key `body.file`) on load and save when the name ends in a dot or space, has a Windows reserved device stem, resolves to a `.toml` file (including Windows 8.3 short names), or is a Unix hard link to the request or any sibling `.toml`. One reserved-name helper in `fs.rs` covers CON, PRN, AUX, NUL, COM0-9 and LPT0-9 (and superscript forms) and is used by environment names and by create, rename and move in `ops.rs`.
+**Cost:** The hard-link rule is Unix-only because std has no stable file-identity API on Windows and we added no dependency. The first acceptance test renamed `b.toml` to `B.TOML` and then read `b.toml`, which failed on case-sensitive Linux; the production check was right. The 8.3 alias test is best-effort and depends on the volume having short names on (see PLAN follow-ups). Do not rely on the symlink-to-`.toml` check alone for Unix; the dev/ino check is what the tests actually exercise.
+
 ## 2026-11-09 — Windows v0.1.0 hand-tested; README updated
 The user hand-tested the released v0.1.0 Windows x64 build and reports it works perfectly. The README's "Platform testing" section now says the maintainer hand-tested Windows after release, and asks for reports only for Linux with a real GPU.
 **Cost:** None; the claim was held back until the test was done, as the 2026-11-03 entry required.
