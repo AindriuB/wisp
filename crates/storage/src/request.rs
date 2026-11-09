@@ -923,6 +923,12 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
     /// Request `a.toml` and sibling `b.toml` in one folder; `setup` makes the
     /// alias. Load and save must reject `name`, leaving both files untouched.
     fn alias_rejected(name: &str, setup: impl Fn(&Path)) {
+        alias_rejected_at(name, "b.toml", setup);
+    }
+
+    /// As `alias_rejected`, but `setup` may leave the sibling under
+    /// `sibling_after` (e.g. a renamed file on case-sensitive filesystems).
+    fn alias_rejected_at(name: &str, sibling_after: &str, setup: impl Fn(&Path)) {
         let d = tempfile::tempdir().unwrap();
         let folder = d.path();
         let a = folder.join("a.toml");
@@ -942,6 +948,7 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         };
         bad_key(save_request(&a, &req));
         assert_eq!(std::fs::read_to_string(&a).unwrap(), a_text);
+        let b = folder.join(sibling_after);
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "B-ORIGINAL");
     }
 
@@ -970,7 +977,7 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         alias_rejected("body.txt", |f| {
             std::os::unix::fs::symlink(f.join("b.toml"), f.join("body.txt")).unwrap();
         });
-        alias_rejected("body.txt", |f| {
+        alias_rejected_at("body.txt", "B.TOML", |f| {
             std::os::unix::fs::symlink("B.TOML", f.join("body.txt")).unwrap();
             std::fs::rename(f.join("b.toml"), f.join("B.TOML")).unwrap();
         });
