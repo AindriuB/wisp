@@ -86,7 +86,6 @@ pub struct WorkspaceView {
     _appearance: Subscription,
 }
 
-/// The OS appearance is followed only while the setting is `System`.
 /// Narrowest request or response pane in the horizontal split, in px.
 const MIN_PANE_WIDTH: f32 = 240.;
 /// Shortest request or response pane in the vertical split, in px.
@@ -97,6 +96,7 @@ fn sidebar_max(window_width: f32) -> f32 {
     (window_width - 480.).clamp(120., 480.)
 }
 
+/// The OS appearance is followed only while the setting is `System`.
 fn follows_system(mode: ThemeMode) -> bool {
     mode == ThemeMode::System
 }
