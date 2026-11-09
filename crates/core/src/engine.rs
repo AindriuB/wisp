@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::oneshot;
 
+use crate::auth::{EngineAuth, digest, sigv4};
 use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
 use crate::model::{
     ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
@@ -542,6 +543,51 @@ async fn reopen(specs: &[SegmentSpec]) -> Result<Vec<Segment>, EngineError> {
     Ok(out)
 }
 
+/// What a Digest retry resends: the body of the first attempt, held so it can be sent again.
+enum Replay {
+    None,
+    Bytes(Vec<u8>),
+    Specs(Vec<SegmentSpec>),
+}
+
+async fn replay_pending(r: &Replay) -> Result<Pending, EngineError> {
+    Ok(match r {
+        Replay::None => Pending::None,
+        Replay::Bytes(b) => Pending::Bytes(b.clone()),
+        Replay::Specs(s) => Pending::Segments(reopen(s).await?),
+    })
+}
+
+/// True when the body reads from a file, so it cannot be held for a Digest resend.
+fn body_has_file(body: &PreparedBody) -> bool {
+    match body {
+        PreparedBody::File(_) => true,
+        PreparedBody::Multipart(parts) => parts
+            .iter()
+            .any(|p| matches!(p.value, PreparedPartValue::File(_))),
+        _ => false,
+    }
+}
+
+/// Payload hash for SigV4: the body's SHA-256 when held in memory, else `UNSIGNED-PAYLOAD`.
+fn payload_hash(pending: &Pending) -> String {
+    match pending {
+        Pending::None => sigv4::sha256_hex(&[]),
+        Pending::Bytes(b) => sigv4::sha256_hex(b),
+        Pending::Segments(segs) => {
+            let total: u64 = segs.iter().map(Segment::len).sum();
+            let mut joined = Vec::new();
+            for seg in segs {
+                match seg {
+                    Segment::Mem(b) if total <= MEMORY_BODY_LIMIT => joined.extend_from_slice(b),
+                    _ => return sigv4::UNSIGNED_PAYLOAD.to_owned(),
+                }
+            }
+            sigv4::sha256_hex(&joined)
+        }
+    }
+}
+
 /// Runs one request, emitting `Headers` and `Progress`; returns the size and body.
 async fn perform(
     id: RequestId,
@@ -560,6 +606,16 @@ async fn perform(
             format!("unsupported scheme `{}`", url.scheme()),
         ));
     }
+    let digest_creds = match &req.auth {
+        Some(EngineAuth::Digest { username, password }) => Some((username, password)),
+        _ => None,
+    };
+    if digest_creds.is_some() && body_has_file(&req.body) {
+        return Err(err(
+            ErrorKind::Body,
+            "Digest auth needs a replayable body; File bodies cannot be resent",
+        ));
+    }
     let client = clients.get(&req.client)?;
     let method = match req.method {
         Method::Get => reqwest::Method::GET,
@@ -575,6 +631,10 @@ async fn perform(
     let engine_length = multipart || matches!(req.body, PreparedBody::File(_));
     let mut header_list: Vec<(String, String)> = Vec::new();
     for h in &req.headers {
+        // Digest and SigV4 own the Authorization header.
+        if req.auth.is_some() && h.name.eq_ignore_ascii_case("authorization") {
+            continue;
+        }
         // The engine owns the multipart content type: it carries the boundary.
         if multipart && h.name.eq_ignore_ascii_case("content-type") {
             continue;
@@ -606,6 +666,13 @@ async fn perform(
             Pending::Segments(segments)
         }
     };
+    let replay = match (&digest_creds, &pending) {
+        (Some(_), Pending::Bytes(b)) => Replay::Bytes(b.clone()),
+        (Some(_), Pending::Segments(s)) => Replay::Specs(s.iter().map(SegmentSpec::of).collect()),
+        _ => Replay::None,
+    };
+    let signing_hash =
+        matches!(req.auth, Some(EngineAuth::AwsSigV4 { .. })).then(|| payload_hash(&pending));
     // reqwest cannot clone a streamed body, so it returns a 307/308 instead of following it.
     // With redirects on, the engine follows those itself, re-reading the files.
     let plan: Option<Vec<SegmentSpec>> = match &pending {
@@ -620,10 +687,48 @@ async fn perform(
     let began = Instant::now();
     let mut url = url;
     let mut hops = 0u32;
+    let mut digest_header: Option<String> = None;
     let mut resp = loop {
         let mut rb = client.request(method.clone(), url.clone());
         for (n, v) in &header_list {
             rb = rb.header(n.as_str(), v.as_str());
+        }
+        if let Some(h) = &digest_header {
+            rb = rb.header("authorization", h.as_str());
+        }
+        if let (
+            Some(EngineAuth::AwsSigV4 {
+                access_key,
+                secret_key,
+                session_token,
+                region,
+                service,
+            }),
+            Some(hash),
+        ) = (&req.auth, &signing_hash)
+        {
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let creds = sigv4::Credentials {
+                access_key,
+                secret_key,
+                session_token,
+                region,
+                service,
+            };
+            let signed = sigv4::sign(
+                method.as_str(),
+                url.as_str(),
+                &header_list,
+                hash,
+                &creds,
+                now,
+            )
+            .map_err(|m| err(ErrorKind::Other, format!("SigV4 signing failed: {m}")))?;
+            for (n, v) in &signed.added {
+                rb = rb.header(n.as_str(), v.as_str());
+            }
         }
         rb = match std::mem::replace(&mut pending, Pending::None) {
             Pending::None => rb,
@@ -638,6 +743,37 @@ async fn perform(
             rb = rb.timeout(left);
         }
         let resp = rb.send().await.map_err(|e| classify(&e, false))?;
+        if let (Some((username, password)), None, 401) =
+            (&digest_creds, &digest_header, resp.status().as_u16())
+        {
+            let values: Vec<&str> = resp
+                .headers()
+                .get_all(reqwest::header::WWW_AUTHENTICATE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect();
+            let selected =
+                digest::select(&values).map_err(|e| err(ErrorKind::Other, e.to_string()))?;
+            if let Some(challenge) = selected {
+                let uri = match url.query() {
+                    Some(q) => format!("{}?{q}", url.path()),
+                    None => url.path().to_owned(),
+                };
+                let cnonce = uuid::Uuid::new_v4().simple().to_string();
+                let header = digest::respond(
+                    &challenge,
+                    method.as_str(),
+                    &uri,
+                    username,
+                    password,
+                    &cnonce,
+                )
+                .map_err(|e| err(ErrorKind::Other, e.to_string()))?;
+                digest_header = Some(header);
+                pending = replay_pending(&replay).await?;
+                continue;
+            }
+        }
         let Some(specs) = &plan else { break resp };
         if !matches!(resp.status().as_u16(), 307 | 308) {
             break resp;
