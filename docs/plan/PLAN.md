@@ -32,7 +32,7 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 **Residuals (53):** at 600 px the "Expires / Max-Age" header and typical dates are cut (accepted); below 584 px the rows' vertical scrollbar starts off-screen until you scroll sideways; the Flags width (256 px, `FLAGS_TEXT_PX` 250) was measured against the macOS system font only.
 **Residuals (55):** closing a dirty tab has no prompt (same as ⌘W, out of scope).
 **Residuals (54):** a `,` or `)` in a variable name can make the autosend `problems=` list ambiguous (nothing parses past the prefix); if autosend ever runs after an environment is selected, an unresolved `{{x}}` inside a secret's value would print `x`.
-**Residuals (57):** on 307/308 a streamed body over 1 MiB is not resent and the 3xx is shown as-is (same for PUT/PATCH on 301/302). Special files (/proc entries reporting size 0, FIFOs, /dev/stdin) are sent empty or refused with "not a regular file"; a read-to-EOF fallback was rejected by the user. Bytes bodies still pass user Content-Length/Transfer-Encoding through. No test checks the 64 KiB chunk limit. `block_in_place` runs on every response chunk. The 20 MiB tests compare bytes but do not measure client memory.
+**Residuals (57):** a streamed body over 1 MiB is now resent on 307/308 (task 86); PUT/PATCH on 301/302 still shows the 3xx as-is. Special files (/proc entries reporting size 0, FIFOs, /dev/stdin) are sent empty or refused with "not a regular file"; a read-to-EOF fallback was rejected by the user. Bytes bodies still pass user Content-Length/Transfer-Encoding through. No test checks the 64 KiB chunk limit. `block_in_place` runs on every response chunk. The 20 MiB tests compare bytes but do not measure client memory.
 **Residuals (56):** the `install_crypto_provider` unit test does not exercise the Err branch.
 **Residuals (59):** a true swap (one var moving each way in the same save) cannot be made safe with two writes and is accepted; `gains_moved_name` treats an unparseable other file as empty (harmless while `render` parses first); the files are re-read after `render`; a dangling non-.toml symlink logs a skip warning.
 **Residuals (58):** rejecting a symlink diamond takes about 7-10 s before the error; a Windows trailing-dot or trailing-space `.toml` alias passes (`request.rs:221`); the name check at `request.rs:224-226` is unreachable.
@@ -51,13 +51,18 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 **Residuals (62):** (P3) `clean()` (`ops.rs:83-87`) rejects a leading dot or `environments` with `to_lowercase`, while the new check in `clean_node` (`ops.rs:172-177`) uses `fold_case`. Paths through `clean()` only (move destinations, create targets) still use plain lowercasing; on Linux `move_node(r, "a.toml", "environment\u{17f}")` gives Io NotFound while `delete_node` of the same name gives Invalid. Fix: switch `clean()` to `fold_case` and drop the duplicate block; candidate for the next polish wave. The comment at `ops.rs:172` reads as if that block were the Linux fix, but the `collection.toml`/`folder.toml` check was. `delete_refuses_wide_case_fold_alias` (`ops.rs:1397-1400`) could now assert Invalid unconditionally. No test covers a non-existent reserved source spelling for rename or move (only delete).
 
 ### v0.1.1 wave
-Patch release. Task 85 is done (storage rejects Windows-unsafe and aliasing names; PR open for review, see HISTORY). Other tasks in the wave (84, 86) are recorded on their own branches.
+Patch release after v0.1.0. Done: task 86 (the engine resends streamed File and Multipart bodies on 307/308), task 84 (secrets redacted from Debug output in wisp-core) and task 85 (storage rejects Windows-unsafe and aliasing names; PR open for review); see HISTORY. Task 83 is on its own branch.
 
 ### Storage-safety follow-ups (from task 85, not v0.1.1)
 - The Windows test `sidecar_rejects_8dot3_short_name_of_sibling_toml` fails rather than skips on a volume with 8.3 names off; it should return early when `B~1.TOM` does not exist.
 - No test fails if the symlink-to-`.toml` check in `sidecar_path` is disabled; Unix is covered by the dev/ino check.
 - The reserved-name rule also rejects display names like "CON.txt" whose file slug would be harmless (decided).
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
+
+### Follow-ups from task 86 (not for 0.1.1)
+- An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
+- The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
+- `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
 ### Pane-scrollbar defects (tasks 46-49, fixed and hand-checked 2026-11-02)
 All four defects found hand-checking 43-45 are fixed (see HISTORY). Combined binary 19,014,912 B (+0 B).
@@ -86,8 +91,7 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 **06 (resolved):** the method and environment selects now show chevrons (task 37, hand-checked 2026-11-02). UI automation needs the window frontmost.
 
 ### Carry-forward: crates/core
-**Secrets in Debug (10):** `Request`, `FolderDefaults` and `CollectionDefaults` (through `Auth`: Basic.password, Bearer.token, ApiKey.value) and `ClientSettings.proxy` (the URL may contain user:pass@) derive Debug in plain text. Never log them with `?` or `{:?}`. Only `Environment` has a redacting Debug. The rule is in `docs/conventions.md#logging`.
-**Secrets in warnings (11):** `ResolveWarning::PatternMismatch.value` can hold a resolved secret, so history and logging must never store warnings.
+**Debug redaction follow-ups (84):** multipart text values (`PreparedPartValue::Text`) still print in Debug; URL path and userinfo secrets are not redacted in `PreparedRequest` Debug (only the query is); `EngineError` messages include the URL; `ResponseCookie` derives Debug and holds cookie values; a proxy password with an unencoded `/`, `?` or `#` still prints in `ClientSettings` Debug (reqwest rejects such proxies anyway). None are in 0.1.1.
 **resolve nits (11):** a verbose-mode regex `(?x)...#c` can be misreported as `InvalidPattern`; problem dedupe keys on the Debug string; a test helper has a leftover `eprintln`; a scheme-less URL's `://` search can land in the query (the engine rejects such URLs anyway).
 **Template helpers (22):** no resolve-level test pins `apply_path_params` to `path_range_plain` (an unclosed `{{` in the authority). `query_start_is_linear` asserts wall-clock < 100 ms and could flake on loaded CI. `expand` allocates all var refs before the budget check (linear, not unbounded). `lookup_var("")` is Unresolved while `resolve` reports Syntax for `{{ }}`. `query_start` can return a `?` inside a fragment.
 **Types test (10, optional P3):** the File/Multipart unsupported test checks only the error kind, not the message.

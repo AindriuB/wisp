@@ -40,7 +40,7 @@ pub struct ResolveError {
 }
 
 /// A non-fatal finding.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResolveWarning {
     PatternMismatch {
         name: String,
@@ -52,6 +52,29 @@ pub enum ResolveWarning {
         pattern: String,
         message: String,
     },
+}
+
+impl std::fmt::Debug for ResolveWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveWarning::PatternMismatch { name, pattern, .. } => f
+                .debug_struct("PatternMismatch")
+                .field("name", name)
+                .field("pattern", pattern)
+                .field("value", &format_args!("\"<redacted>\""))
+                .finish(),
+            ResolveWarning::InvalidPattern {
+                name,
+                pattern,
+                message,
+            } => f
+                .debug_struct("InvalidPattern")
+                .field("name", name)
+                .field("pattern", pattern)
+                .field("message", message)
+                .finish(),
+        }
+    }
 }
 
 mod engine;
