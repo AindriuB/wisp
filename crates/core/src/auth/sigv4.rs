@@ -236,6 +236,7 @@ mod tests {
         (n.to_owned(), v.to_owned())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check(
         method: &str,
         url: &str,

@@ -151,6 +151,9 @@ impl fmt::Debug for ClientSettings {
 }
 
 /// Input to the engine.
+// `Send` outgrew `Cancel` once `PreparedRequest` carried auth; commands are rare and
+// short-lived, so boxing would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     Send(PreparedRequest),
