@@ -30,7 +30,7 @@ Build the portable GPUI HTTP client in three milestones, in this order. Spec: `d
 - **M3 — v1 hardening (complete):** tasks 52-61 landed (request sub-tab scrolling, autosend resolve error, Cookies and failed-status fit, tab close button, engine roots and TLS cleanup, storage hardening, history and environment fixes, streamed File and Multipart bodies, integration and budgets); see HISTORY. Task 61 added a 720×480 minimum window and fitted the URL row and status lines to narrow panes; its hand check also closed the task 53 failed-line check.
 **Budgets (task 60, commit f116a69, macOS 27.0.1 arm64, hardware renderer):** binary 19,181,072 B of 20,971,520; idle RSS 70,496 KiB (68.8 MiB) of 120 MiB; after one request 75,648 KiB (73.9 MiB) of 128 MiB. RSS fell about 28.4 MiB since task 50 although the binary grew; the macOS version changed between the runs, which likely explains it, so do not read it as a broken measurement.
 **Residuals (53):** at 600 px the "Expires / Max-Age" header and typical dates are cut (accepted); below 584 px the rows' vertical scrollbar starts off-screen until you scroll sideways; the Flags width (256 px, `FLAGS_TEXT_PX` 250) was measured against the macOS system font only.
-**Residuals (55):** closing a dirty tab has no prompt (same as ⌘W, out of scope).
+**Residuals (55):** closing a dirty tab had no prompt; fixed by task 83.
 **Residuals (54):** a `,` or `)` in a variable name can make the autosend `problems=` list ambiguous (nothing parses past the prefix); if autosend ever runs after an environment is selected, an unresolved `{{x}}` inside a secret's value would print `x`.
 **Residuals (57):** on 307/308 a streamed body over 1 MiB is not resent and the 3xx is shown as-is (same for PUT/PATCH on 301/302). Special files (/proc entries reporting size 0, FIFOs, /dev/stdin) are sent empty or refused with "not a regular file"; a read-to-EOF fallback was rejected by the user. Bytes bodies still pass user Content-Length/Transfer-Encoding through. No test checks the 64 KiB chunk limit. `block_in_place` runs on every response chunk. The 20 MiB tests compare bytes but do not measure client memory.
 **Residuals (56):** the `install_crypto_provider` unit test does not exercise the Err branch.
@@ -88,7 +88,7 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 
 ### Carry-forward: crates/app
 **Hand check (69):** the macOS arm64 check of the `.id("…-editor")` removal passed on 2026-11-03 (long Path, Auth and Settings sub-tabs scroll, checked with task 66's build); only the Windows and Linux hand checks remain. Possible flake, unconfirmed: wisp-core `a_20_mib_file_body_streams_with_content_length` failed once in a heavily parallel full-workspace run and passed alone; watch for it.
-**Residuals (79):** the Touch Bar Dock-Quit crash root cause is upstream (`accesskit_macos` subclass restore versus KVO) and not reported upstream yet. Quitting by Cmd-Q, window close or Dock discards unsaved drafts without a prompt; candidate follow-up "confirm discard on quit". The `WISP_CLOSE_WINDOW_AFTER_MS` hook calls `quit_app` directly, so `quit-check.sh` does not exercise the close button (hand-tested). No About or Hide menu items (GPUI 0.3.10 `OsAction` lacks them; `App::hide` exists for a later Cmd-H). shellcheck SC2010 (`ls | grep`) in `quit-check.sh`.
+**Residuals (79):** the Touch Bar Dock-Quit crash root cause is upstream (`accesskit_macos` subclass restore versus KVO) and not reported upstream yet. Cmd-Q and window close now ask before discarding drafts (task 83); Dock Quit and system shutdown still do not (documented in `docs/architecture.md#app-lifecycle`). The `WISP_CLOSE_WINDOW_AFTER_MS` hook calls `quit_app` directly, so `quit-check.sh` does not exercise the close button (hand-tested). No About or Hide menu items (GPUI 0.3.10 `OsAction` lacks them; `App::hide` exists for a later Cmd-H). shellcheck SC2010 (`ls | grep`) in `quit-check.sh`.
 **Escape (21):** Escape is bound with context None to `CancelRequest`. Hand-checked in task 41: Escape inside the focused URL input cancels a send (status "Cancelled").
 **measure.sh (21):** the `WISP_EVENT` line was not separately confirmed in the output; status "measured" implies it.
 **KvTable (29):** hand-checked in task 35 (typing in Params updates rows and the URL; Tab goes name, value, next name). Accepted residual: above the 50-row virtualisation threshold Tab cannot reach rows outside the viewport, because unpainted rows have no focus handle; scroll-to-focus is deferred. The table only virtualises if its container gives it a definite height (task 31). Optional: `locate` in `crates/app/src/ui/kv.rs` is O(n) per keystroke.
@@ -142,5 +142,11 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 **Integration test (20, accepted):** the JSON body fixture has no comment because JSON cannot hold one.
 
 ## Next
+
+### v0.1.1 wave
+Task 83 is done (ask before discarding unsaved changes on quit and close; see HISTORY). Tasks 84, 85 and 86 are open as PRs #23-25 and add their own lines here.
+**Follow-ups from 83 (not v0.1.1):**
+- No automated test sends the real `Quit` action with a window active. It needs gpui `test-support` in `crates/app/Cargo.toml`, or `quit-check.sh` sending the action instead of AppleScript `terminate:`. The review P1 (the handler did nothing while a window was active) got past the tests for this reason.
+- The open-collection prompt (`ui/root.rs:193`) and the delete-from-disk prompt (`ui/sidebar.rs:678`) do not set `prompt_up`, so a quit during one of them with a dirty tab queues a second "Discard unsaved changes?" sheet on macOS. No data is lost.
 
 ## Someday

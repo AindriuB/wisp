@@ -17,6 +17,18 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Ask before discarding unsaved changes on quit and close
+Quitting (⌘Q or Ctrl-Q, the macOS Quit Wisp menu item, the window close button) and closing a dirty tab (× button, ⌘W, the palette, the banner) now show "Discard unsaved changes?" with Discard and Cancel when a draft is dirty; clean state quits or closes at once. Two pure helpers (`quit_step`, `close_step`) decide the outcome, a `prompt_up` flag prevents a second prompt, and Discard closes the tab by entity, not by the index captured earlier. On macOS the Wisp menu also gained Hide Wisp (⌘H), Hide Others (⌥⌘H) and Show All. Dock Quit, logout and shutdown cannot be intercepted and are documented in `docs/architecture.md#app-lifecycle` and the README.
+**Cost:** The first version registered the global `Quit` handler to call `handle.update` on the window; global listeners run inside the active window's update, so that nested update fails with "window not found" and the app ignored ⌘Q entirely. It is now run through `cx.defer`. `quit-check.sh` did not catch it because it quits through AppleScript `terminate:` and the `WISP_CLOSE_WINDOW_AFTER_MS` hook, never the `Quit` action; do not trust that script for this path. Intercepting `terminate:` needs an objc swizzle, a dependency or a GPUI patch and was ruled out. The open-collection and delete prompts still do not set `prompt_up` (see PLAN).
+**Release hand-test checklist** (the repo keeps none, so it lives here; macOS, release bundle or `cargo run`):
+1. With no dirty tab, ⌘Q quits at once.
+2. Edit a request so its tab shows the dirty dot. ⌘Q shows the prompt ("Quitting closes all tabs."). Cancel: the app stays and the draft is intact.
+3. ⌘Q again, Discard: the app quits.
+4. Wisp menu → Quit Wisp with a dirty tab shows the same prompt.
+5. With a dirty tab, click the red window button. Same prompt; Cancel keeps the app, Discard quits.
+6. With a dirty tab, ⌘W or its ×: the prompt says `"<title>" has unsaved changes.`; Cancel keeps the tab, Discard closes only it. A clean tab closes with no prompt.
+7. ⌘H hides the app. The Wisp menu shows Hide Wisp, Hide Others (⌥⌘H) and Show All.
+
 ## 2026-11-09 — Windows v0.1.0 hand-tested; README updated
 The user hand-tested the released v0.1.0 Windows x64 build and reports it works perfectly. The README's "Platform testing" section now says the maintainer hand-tested Windows after release, and asks for reports only for Linux with a real GPU.
 **Cost:** None; the claim was held back until the test was done, as the 2026-11-03 entry required.

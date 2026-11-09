@@ -56,6 +56,10 @@ The Vulkan driver depends on your GPU: `mesa-vulkan-drivers` covers AMD, Intel a
 
 The maintainer hand-tested macOS on Apple silicon (open, and quit by ⌘Q, the close button and Dock Quit). The maintainer also hand-tested Windows x64 after release. Linux x64 has not been tested by hand. In CI it is built, its tests are run, and the binary is run under Xvfb with a software Vulkan driver, where its memory is measured and a screenshot of the window is taken and inspected. If something breaks on Linux with a real GPU, please report it.
 
+## Unsaved changes
+
+Wisp asks before it discards unsaved edits when you quit with ⌘Q (Ctrl+Q on Windows and Linux), choose Quit Wisp, close the window, or close a tab. It cannot ask when the system ends the app: Dock Quit, logout and shutdown on macOS, logoff and shutdown on Windows, and SIGTERM or session end on Linux all drop unsaved drafts without a prompt. Save with ⌘S before you do any of those.
+
 ## Where Wisp writes
 
 Wisp writes to the collection folder, to `settings.toml`, and to wherever you choose when you save a response. It also writes in the operating system's temp directory in two cases: a response body larger than the in-memory limit is spilled to a temporary file, and on Unix startup briefly creates and deletes a small `.wisp-probe-*` file. On Windows and Linux, settings live beside the executable when a file named `portable` is next to it, and in the operating system's config directory otherwise. macOS has no portable mode; settings are always in `~/Library/Application Support/wisp`.
