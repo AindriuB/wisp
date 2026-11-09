@@ -45,3 +45,7 @@ percent-encoding = { version = "2", default-features = false, features = ["std"]
 toml_edit = { version = "=0.22.27", default-features = false, features = ["parse", "display"] }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 tempfile = { version = "3", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+hmac = { version = "0.12", default-features = false }
+md-5 = { version = "0.10", default-features = false }
+saphyr = { version = "0.3", default-features = false }

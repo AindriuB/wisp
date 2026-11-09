@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Wave-1 dependencies and storage stubs for 0.2.0
+Task 91 added the crates wave 1 of 0.2.0 needs, in one change so later tasks do not collide on manifests or `Cargo.lock`: `sha2`, `hmac` and `md-5` in `wisp-core` (for Digest and SigV4), and `saphyr` plus `uuid` in `wisp-storage`. It also declared empty `data_dir` and `import` modules in `wisp-storage`. There is no behaviour change.
+**Cost:** `saphyr` 0.3.3 (MIT/Apache-2.0) was chosen for YAML; do not use `serde_yaml` or `serde_yml`. `sha2` 0.10.9, `hmac` 0.12.1, `md-5` 0.10.6 and `uuid` 1.29.0 were already in the lock, so the only new lock entries are `saphyr`, `saphyr-parser` and `hashlink` 0.12.2, and no second `digest` version appeared. The binary-size cost is not measured here; task 98 measures it.
+
 ## 2026-11-09 — Workspace version 0.1.1
 The workspace version is 0.1.1, so the release archives and `cargo metadata` report 0.1.1 and carry the fixes from tasks 83 to 88. Only `[workspace.package] version` and the three wisp-* lines in `Cargo.lock` changed; README, `docs/architecture.md` and `about.toml` now name 0.1.1 where they describe the current version.
 **Cost:** Nothing was tried and abandoned. The README archive names now point at assets that do not exist until 0.1.1 is tagged and published, so the README and the release must land together.
