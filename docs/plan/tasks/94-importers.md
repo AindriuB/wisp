@@ -60,3 +60,27 @@ dropped silently: every unsupported construct becomes a warning.
 
 ## Notes
 - **Size: uncertain.** The YAML crate is the largest unmeasured wave-1 addition (spec estimate +60-120 KB on Windows). Task 98 measures it; if the gate fails, YAML is what gets dropped or replaced.
+
+## Amendment — orchestrator (2026-11-09)
+
+Environment name collisions get "-2", "-3" (not " 2"), because `valid_name` (environment.rs:24-35) rejects spaces. Requests and folders keep " 2". This supersedes the Contract's `write` bullet for environments.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 9da374f. Inputs below were reproduced by the reviewer in a scratch copy.
+
+- [P1] yaml.rs:34-78: the YAML depth pre-check doesn't count `?` (complex-key) or `-` indicators, and `key_string` (yaml.rs:80) never recurses into keys. Deep key nesting reaches saphyr unchecked and the process aborts with a stack overflow, which can't be caught. Input: `openapi::parse(("- ? ".repeat(2000) + "1\n").as_bytes())` → SIGABRT; `"? ".repeat(100_000) + "1"` likewise. Also, an unbalanced `[` in a plain scalar (`x: a [`) leaves `flow` above 0 for the rest of the file, which turns off the indentation check. route: implementer. Count the `?`/`-` indicators and treat keys as nesting (or reject complex keys). If the fix needs a direct saphyr-parser dependency (a Cargo.toml change, outside Owns), stop and report.
+- [P1] yaml.rs:17: the alias budget counts nodes, not bytes. Input: `x-big: &b "<1 MiB>"` plus 300 × `- *b` → 627 MB RSS; scaled up → out of memory. route: implementer. Bound the total expanded bytes, or reject large aliased anchors.
+- [P2] openapi.rs:316-335 (and the params path at :289): every operation that `$ref`s a shared requestBody or example gets a full copy. Input: a 1 MiB example × 1,000 operations → 1 GB. route: implementer. Add a byte budget across all extracted examples.
+- [P2] postman.rs:456-461: unique secret naming is cubic. Input: 5,000 requests named "r" with literal basic auth (about 750 KiB) → about 160 s. route: implementer. Use a HashSet or a per-base counter.
+- [P2] openapi.rs:268-283: the parameter merge is quadratic (`keys.iter().position`) and the parameter count is uncapped. Input: 60,000 params → 3.2 s; about 370,000 fit in 10 MiB → about 2 min. route: implementer. Index with a HashMap.
+- [P2] write.rs:71-74: `env_taken` ignores a leftover `<name>.secrets.toml` with no `<name>.toml` (common after a branch switch, because secrets are gitignored). Importing env "dev" then empties `dev.secrets.toml`'s `[vars]`, losing secrets. route: implementer. Count names that have only a secrets file as taken (gets the "-2" suffix).
+- [P2] curl.rs:16-34, 224-229, 260-263: options missing from the arg-taking lists have their argument parsed as the URL. Inputs: `curl -c jar.txt https://h/x` → url `jar.txt`; `--json '{"a":1}'`; `-D -`; `--oauth2-bearer TOK` → url `TOK`, with the token echoed in a warning. route: implementer. Complete the lists (at least --json, -c/--cookie-jar, -D/--dump-header, -r/--range, -U/--proxy-user, --oauth2-bearer, -z, -C, -t, -Q, -P, -Y).
+- [SPEC] env suffix " 2" vs "-2": settled by the Amendment above.
+
+## Residual (follow-ups, not this round)
+- [P3] Collection- and folder-level Postman auth and variables are warnings only. Mapping them needs new ImportResult fields; most Postman collections put auth there.
+- [P3] Postman folders count toward no cap (about 870k empty folders fit in 10 MiB).
+- [P3] An environment name that is a reserved device name (e.g. server description "con") aborts the import partway through.
+- [P3] curl `-u` passwords, literal Authorization headers and Postman collection-variable values land in committed TOML. This matches the spec, which covers only Postman auth, but it's worth extending.
+- [NOTE] `write` is not atomic; an error partway through leaves a partial import.
