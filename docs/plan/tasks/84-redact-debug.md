@@ -71,3 +71,11 @@ Replace the derived `Debug` with a hand-written one only where a field is secret
 - A `Secret<String>` newtype or other change to the model's field types.
 
 ## Notes
+
+- wisp-storage has no type of its own that holds a secret. `HistoryEntry` stores the URL template (pre-resolution) and an `Outcome` with no message; `CollectionTree`/`Node`/`RequestMeta` hold paths, names and methods. Anything secret reaches them only through core types, now redacted.
+- Core types still printing possibly-secret values, not in the table and not fixed:
+  - `PreparedPartValue::Text(String)` (multipart text field values, resolved).
+  - `EngineError.message` (can embed the resolved URL, as the `Outcome` doc comment in storage notes).
+  - `Event::Headers` response header values, and `Event` generally if it carries response data, are unredacted.
+  - `Request.url`/`KeyValue`/`Var` are authored text, out of scope per the task.
+- `PreparedRequest` redacts everything after `?`, including the fragment.

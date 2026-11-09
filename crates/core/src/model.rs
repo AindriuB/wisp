@@ -1,5 +1,6 @@
 //! Plain-data command, event and error types. No locks, handles or runtime types.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -25,14 +26,23 @@ pub enum Method {
 }
 
 /// One header name/value pair.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Header {
     pub name: String,
     pub value: String,
 }
 
+impl fmt::Debug for Header {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Header")
+            .field("name", &self.name)
+            .field("value", &format_args!("\"<redacted>\""))
+            .finish()
+    }
+}
+
 /// A fully resolved request, ready for I/O.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreparedRequest {
     pub method: Method,
     pub url: String,
@@ -43,13 +53,61 @@ pub struct PreparedRequest {
     pub warnings: Vec<ResolveWarning>,
 }
 
+/// URL with the query replaced by `<redacted>`.
+fn redact_query(url: &str) -> String {
+    match url.split_once('?') {
+        Some((base, _)) => format!("{base}?<redacted>"),
+        None => url.to_string(),
+    }
+}
+
+/// Proxy URL with any userinfo replaced by `<redacted>@`.
+fn redact_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..end].rfind('@') {
+        Some(at) => format!("{scheme}://<redacted>@{}", &rest[at + 1..]),
+        None => url.to_string(),
+    }
+}
+
+impl fmt::Debug for PreparedRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedRequest")
+            .field("method", &self.method)
+            .field("url", &format_args!("{:?}", redact_query(&self.url)))
+            .field("headers", &self.headers)
+            .field("body", &self.body)
+            .field("timeout", &self.timeout)
+            .field("client", &self.client)
+            .field("warnings", &self.warnings)
+            .finish()
+    }
+}
+
 /// Body of a prepared request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum PreparedBody {
     None,
     Bytes(Vec<u8>),
     File(PathBuf),
     Multipart(Vec<PreparedPart>),
+}
+
+impl fmt::Debug for PreparedBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PreparedBody::None => f.write_str("None"),
+            PreparedBody::Bytes(b) => f
+                .debug_tuple("Bytes")
+                .field(&format_args!("{} bytes", b.len()))
+                .finish(),
+            PreparedBody::File(p) => f.debug_tuple("File").field(p).finish(),
+            PreparedBody::Multipart(parts) => f.debug_tuple("Multipart").field(parts).finish(),
+        }
+    }
 }
 
 /// One multipart part.
@@ -67,11 +125,22 @@ pub enum PreparedPartValue {
 }
 
 /// Settings that select a reqwest client.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClientSettings {
     pub verify_tls: bool,
     pub follow_redirects: bool,
     pub proxy: Option<String>,
+}
+
+impl fmt::Debug for ClientSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let proxy = self.proxy.as_deref().map(redact_userinfo);
+        f.debug_struct("ClientSettings")
+            .field("verify_tls", &self.verify_tls)
+            .field("follow_redirects", &self.follow_redirects)
+            .field("proxy", &proxy)
+            .finish()
+    }
 }
 
 /// Input to the engine.
@@ -147,4 +216,98 @@ pub enum Event {
     Cancelled {
         id: RequestId,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prepared(url: &str, headers: Vec<Header>, body: PreparedBody) -> PreparedRequest {
+        PreparedRequest {
+            method: Method::Get,
+            url: url.into(),
+            headers,
+            body,
+            timeout: None,
+            client: ClientSettings {
+                verify_tls: true,
+                follow_redirects: true,
+                proxy: None,
+            },
+            warnings: vec![],
+        }
+    }
+
+    fn both(v: &impl fmt::Debug) -> [String; 2] {
+        [format!("{v:?}"), format!("{v:#?}")]
+    }
+
+    #[test]
+    fn debug_redacts_proxy_userinfo() {
+        for proxy in [
+            "http://user:PROXYMARK@proxy.example:8080",
+            "http://PROXYMARK@proxy.example:8080",
+        ] {
+            let c = ClientSettings {
+                verify_tls: true,
+                follow_redirects: false,
+                proxy: Some(proxy.into()),
+            };
+            for s in both(&c) {
+                assert!(!s.contains("PROXYMARK"));
+                assert!(s.contains("proxy.example:8080") && s.contains("<redacted>@"));
+                assert!(s.contains("verify_tls") && s.contains("follow_redirects"));
+            }
+        }
+        let plain = ClientSettings {
+            verify_tls: true,
+            follow_redirects: true,
+            proxy: Some("http://proxy.example:8080".into()),
+        };
+        assert!(format!("{plain:?}").contains("http://proxy.example:8080"));
+    }
+
+    #[test]
+    fn debug_redacts_header_value() {
+        let h = Header {
+            name: "Authorization".into(),
+            value: "HDRMARK".into(),
+        };
+        for s in both(&h) {
+            assert!(!s.contains("HDRMARK"));
+            assert!(s.contains("Authorization") && s.contains("<redacted>"));
+        }
+    }
+
+    #[test]
+    fn debug_redacts_prepared_request_query_and_body() {
+        let r = prepared(
+            "https://api.example/path?key=QRYMARK",
+            vec![],
+            PreparedBody::Bytes(b"BODYMARK".to_vec()),
+        );
+        for s in both(&r) {
+            assert!(!s.contains("QRYMARK") && !s.contains("BODYMARK"));
+            assert!(s.contains("https://api.example/path?<redacted>"));
+            assert!(s.contains("method") && s.contains("8 bytes"));
+        }
+        let no_query = prepared("https://api.example/p", vec![], PreparedBody::None);
+        assert!(format!("{no_query:?}").contains("https://api.example/p\""));
+    }
+
+    #[test]
+    fn debug_redacts_command_send() {
+        let r = prepared(
+            "https://api.example/p?token=SENDQRY",
+            vec![Header {
+                name: "Authorization".into(),
+                value: "Bearer SENDHDR".into(),
+            }],
+            PreparedBody::None,
+        );
+        for s in both(&Command::Send(r)) {
+            assert!(!s.contains("SENDQRY") && !s.contains("SENDHDR"));
+            assert!(s.contains("Authorization"));
+        }
+    }
 }

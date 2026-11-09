@@ -31,7 +31,7 @@ pub enum ApiKeyLocation {
 }
 
 /// Authentication scheme.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum Auth {
     None,
     #[default]
@@ -48,6 +48,30 @@ pub enum Auth {
         value: String,
         location: ApiKeyLocation,
     },
+}
+
+impl fmt::Debug for Auth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Auth::None => f.write_str("None"),
+            Auth::Inherit => f.write_str("Inherit"),
+            Auth::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &format_args!("\"<redacted>\""))
+                .finish(),
+            Auth::Bearer { .. } => f
+                .debug_struct("Bearer")
+                .field("token", &format_args!("\"<redacted>\""))
+                .finish(),
+            Auth::ApiKey { name, location, .. } => f
+                .debug_struct("ApiKey")
+                .field("name", name)
+                .field("value", &format_args!("\"<redacted>\""))
+                .field("location", location)
+                .finish(),
+        }
+    }
 }
 
 /// A text body, optionally stored in a sidecar file.
@@ -189,6 +213,76 @@ impl fmt::Debug for Environment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn both(v: &impl fmt::Debug) -> [String; 2] {
+        [format!("{v:?}"), format!("{v:#?}")]
+    }
+
+    #[test]
+    fn debug_redacts_basic_password() {
+        let a = Auth::Basic {
+            username: "alice".into(),
+            password: "PWMARK".into(),
+        };
+        for s in both(&a) {
+            assert!(!s.contains("PWMARK"));
+            assert!(s.contains("alice") && s.contains("password") && s.contains("<redacted>"));
+        }
+    }
+
+    #[test]
+    fn debug_redacts_bearer_token() {
+        let a = Auth::Bearer {
+            token: "TOKMARK".into(),
+        };
+        for s in both(&a) {
+            assert!(!s.contains("TOKMARK"));
+            assert!(s.contains("token") && s.contains("<redacted>"));
+        }
+    }
+
+    #[test]
+    fn debug_redacts_api_key_value() {
+        let a = Auth::ApiKey {
+            name: "X-Key".into(),
+            value: "KEYMARK".into(),
+            location: ApiKeyLocation::Query,
+        };
+        for s in both(&a) {
+            assert!(!s.contains("KEYMARK"));
+            assert!(s.contains("X-Key") && s.contains("Query") && s.contains("<redacted>"));
+        }
+    }
+
+    #[test]
+    fn debug_redacts_request_with_bearer_auth() {
+        let r = Request {
+            name: "visible-name".into(),
+            auth: Auth::Bearer {
+                token: "REQMARK".into(),
+            },
+            ..Request::default()
+        };
+        for s in both(&r) {
+            assert!(!s.contains("REQMARK"));
+            assert!(s.contains("visible-name"));
+        }
+    }
+
+    #[test]
+    fn debug_redacts_collection_defaults_with_basic_auth() {
+        let d = CollectionDefaults {
+            auth: Auth::Basic {
+                username: "bob".into(),
+                password: "COLMARK".into(),
+            },
+            ..CollectionDefaults::default()
+        };
+        for s in both(&d) {
+            assert!(!s.contains("COLMARK"));
+            assert!(s.contains("bob"));
+        }
+    }
 
     #[test]
     fn environment_debug_hides_secret_values() {
