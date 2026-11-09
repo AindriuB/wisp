@@ -487,6 +487,61 @@ async fn build_multipart(
     Ok(out)
 }
 
+/// Redirects followed by the engine for a streamed body before it gives up.
+const MAX_REDIRECTS: u32 = 10;
+
+/// The request body still to be attached to the next send.
+enum Pending {
+    None,
+    Bytes(Vec<u8>),
+    Segments(Vec<Segment>),
+}
+
+/// What is needed to rebuild a streamed body: literal bytes, or a file path and its first length.
+enum SegmentSpec {
+    Mem(Vec<u8>),
+    File { path: PathBuf, len: u64 },
+}
+
+impl SegmentSpec {
+    fn of(seg: &Segment) -> Self {
+        match seg {
+            Segment::Mem(b) => SegmentSpec::Mem(b.clone()),
+            Segment::File { path, len, .. } => SegmentSpec::File {
+                path: path.clone(),
+                len: *len,
+            },
+        }
+    }
+}
+
+/// Reopens every file; fails if one is gone or no longer the length of the first send.
+async fn reopen(specs: &[SegmentSpec]) -> Result<Vec<Segment>, EngineError> {
+    let mut out = Vec::with_capacity(specs.len());
+    for spec in specs {
+        match spec {
+            SegmentSpec::Mem(b) => out.push(Segment::Mem(b.clone())),
+            SegmentSpec::File { path, len } => {
+                let changed = |why: String| {
+                    err(
+                        ErrorKind::BodyFile,
+                        format!(
+                            "{} changed before the redirect resend: {why}",
+                            path.display()
+                        ),
+                    )
+                };
+                let seg = open_segment(path).await.map_err(|e| changed(e.message))?;
+                if seg.len() != *len {
+                    return Err(changed(format!("length {} was {len}", seg.len())));
+                }
+                out.push(seg);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Runs one request, emitting `Headers` and `Progress`; returns the size and body.
 async fn perform(
     id: RequestId,
@@ -518,7 +573,7 @@ async fn perform(
     let multipart = matches!(req.body, PreparedBody::Multipart(_));
     // The engine sets the length of these bodies itself; a user value would conflict.
     let engine_length = multipart || matches!(req.body, PreparedBody::File(_));
-    let mut rb = client.request(method, url);
+    let mut header_list: Vec<(String, String)> = Vec::new();
     for h in &req.headers {
         // The engine owns the multipart content type: it carries the boundary.
         if multipart && h.name.eq_ignore_ascii_case("content-type") {
@@ -530,33 +585,85 @@ async fn perform(
         {
             continue;
         }
-        rb = rb.header(h.name.as_str(), h.value.as_str());
+        header_list.push((h.name.clone(), h.value.clone()));
     }
     tracing::debug!(
         id = id.0,
         header_names = ?req.headers.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
         "sending request"
     );
-    match req.body {
-        PreparedBody::None => {}
-        PreparedBody::Bytes(b) => rb = rb.body(b),
-        PreparedBody::File(path) => {
-            rb = attach_segments(rb, vec![open_segment(&path).await?]).await?;
-        }
+    let mut pending = match req.body {
+        PreparedBody::None => Pending::None,
+        PreparedBody::Bytes(b) => Pending::Bytes(b),
+        PreparedBody::File(path) => Pending::Segments(vec![open_segment(&path).await?]),
         PreparedBody::Multipart(parts) => {
             let boundary = format!("wisp-{}", uuid::Uuid::new_v4().simple());
             let segments = build_multipart(&boundary, &parts).await?;
-            rb = rb.header(
-                "content-type",
+            header_list.push((
+                "content-type".to_owned(),
                 format!("multipart/form-data; boundary={boundary}"),
-            );
-            rb = attach_segments(rb, segments).await?;
+            ));
+            Pending::Segments(segments)
         }
-    }
-    if let Some(t) = timeout {
-        rb = rb.timeout(t);
-    }
-    let mut resp = rb.send().await.map_err(|e| classify(&e, false))?;
+    };
+    // reqwest cannot clone a streamed body, so it returns a 307/308 instead of following it.
+    // With redirects on, the engine follows those itself, re-reading the files.
+    let plan: Option<Vec<SegmentSpec>> = match &pending {
+        Pending::Segments(s)
+            if req.client.follow_redirects
+                && s.iter().map(Segment::len).sum::<u64>() > MEMORY_BODY_LIMIT =>
+        {
+            Some(s.iter().map(SegmentSpec::of).collect())
+        }
+        _ => None,
+    };
+    let began = Instant::now();
+    let mut url = url;
+    let mut hops = 0u32;
+    let mut resp = loop {
+        let mut rb = client.request(method.clone(), url.clone());
+        for (n, v) in &header_list {
+            rb = rb.header(n.as_str(), v.as_str());
+        }
+        rb = match std::mem::replace(&mut pending, Pending::None) {
+            Pending::None => rb,
+            Pending::Bytes(b) => rb.body(b),
+            Pending::Segments(s) => attach_segments(rb, s).await?,
+        };
+        if let Some(t) = timeout {
+            let left = t.saturating_sub(began.elapsed());
+            if left.is_zero() {
+                return Err(err(ErrorKind::Timeout, "request timed out".to_owned()));
+            }
+            rb = rb.timeout(left);
+        }
+        let resp = rb.send().await.map_err(|e| classify(&e, false))?;
+        let Some(specs) = &plan else { break resp };
+        if !matches!(resp.status().as_u16(), 307 | 308) {
+            break resp;
+        }
+        let next = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|l| url.join(l).ok())
+            .filter(|u| matches!(u.scheme(), "http" | "https"));
+        let Some(next) = next else { break resp };
+        hops += 1;
+        if hops >= MAX_REDIRECTS {
+            return Err(err(
+                ErrorKind::Other,
+                format!("too many redirects ({MAX_REDIRECTS})"),
+            ));
+        }
+        pending = Pending::Segments(reopen(specs).await?);
+        if next.origin() != url.origin() {
+            header_list.retain(|(n, _)| {
+                !n.eq_ignore_ascii_case("authorization") && !n.eq_ignore_ascii_case("cookie")
+            });
+        }
+        url = next;
+    };
     let status = resp.status();
     let headers: Vec<Header> = resp
         .headers()
