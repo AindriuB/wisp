@@ -119,12 +119,7 @@ impl Render for CookiesPane {
         for (i, h) in HEAD.iter().enumerate() {
             header = header.child(cell(h.to_string(), i).font_weight(gpui::FontWeight::SEMIBOLD));
         }
-        let mut rows = div()
-            .id("cookies-rows")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0();
+        let mut rows = div().flex().flex_col();
         for c in &cookies {
             rows = rows.child(
                 div()
@@ -140,22 +135,29 @@ impl Render for CookiesPane {
                     .child(cell(flags(c), 5)),
             );
         }
+        // The vertical scroller is the outer element, so its scrollbar sits at
+        // the pane's right edge; the header and rows share one inner
+        // horizontal scroller, which keeps their columns aligned.
         let table = div()
             .flex()
             .flex_col()
-            .h_full()
             .w_full()
             .min_w(px(min_table_width()))
             .child(header)
-            .child(rows.overflow_y_scrollbar());
+            .child(rows);
         root.child(
             div()
-                .id("cookies-scroll")
+                .id("cookies-rows")
                 .flex_1()
                 .min_h_0()
-                .overflow_x_scroll()
-                .restrict_scroll_to_axis()
-                .child(table),
+                .overflow_y_scrollbar()
+                .child(
+                    div()
+                        .id("cookies-scroll")
+                        .overflow_x_scroll()
+                        .restrict_scroll_to_axis()
+                        .child(table),
+                ),
         )
     }
 }
@@ -167,6 +169,13 @@ mod tests {
     #[test]
     fn min_table_width_sums_columns_gaps_and_gutter() {
         assert_eq!(min_table_width(), 532. + 40. + 12.);
+    }
+
+    #[test]
+    fn min_table_width_still_covers_columns_and_gutter() {
+        // Pinned at 584 px so a 600 px pane (less the root's 8 px padding each
+        // side) fits without a sideways scroll. The gutter is kept at 12 px.
+        assert_eq!(min_table_width(), 584.);
     }
 
     #[test]
