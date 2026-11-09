@@ -251,11 +251,13 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
         if !inside {
             return Err(bad("is a symlink that leaves the request's folder"));
         }
-        let to_toml = std::fs::canonicalize(&target)
-            .is_ok_and(|t| t.to_string_lossy().to_ascii_lowercase().ends_with(".toml"));
-        if to_toml {
-            return Err(bad("is a symlink to a .toml file"));
-        }
+    }
+    // Any existing target, not only symlinks: on Windows an 8.3 short name
+    // (`B~1.TOM`) canonicalizes to the long `.toml` name.
+    let to_toml = std::fs::canonicalize(&target)
+        .is_ok_and(|t| t.to_string_lossy().to_ascii_lowercase().ends_with(".toml"));
+    if to_toml {
+        return Err(bad("resolves to a .toml file"));
     }
     Ok(target)
 }
@@ -972,6 +974,13 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
             std::os::unix::fs::symlink("B.TOML", f.join("body.txt")).unwrap();
             std::fs::rename(f.join("b.toml"), f.join("B.TOML")).unwrap();
         });
+    }
+
+    /// Best-effort: needs 8.3 short names enabled on the volume.
+    #[cfg(windows)]
+    #[test]
+    fn sidecar_rejects_8dot3_short_name_of_sibling_toml() {
+        alias_rejected("B~1.TOM", |_| {});
     }
 
     #[cfg(unix)]
