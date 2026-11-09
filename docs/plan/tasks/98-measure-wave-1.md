@@ -42,3 +42,7 @@ are recorded and must stay within their budgets in `scripts/measure/budgets.json
 
 ## Notes
 - Measurement uses CI runners only; nothing launches the app locally.
+
+## Amendment — orchestrator (2026-11-09)
+
+Do not merge branches 91-97 into this branch. Every branch goes through a PR, so 98 starts only after 91-97 have merged into main. Rebase onto origin/main, then dispatch measure.yml (or the release dry run) against main and read its numbers. The gate is unchanged: fail if the Windows binary is over 15,500,000 bytes, or if any target is over its budget. Record the numbers in `## Notes`. No code changes.
