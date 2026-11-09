@@ -54,7 +54,7 @@ The Vulkan driver depends on your GPU: `mesa-vulkan-drivers` covers AMD, Intel a
 
 ## Platform testing
 
-The maintainer hand-tested macOS on Apple silicon (open, and quit by ⌘Q, the close button and Dock Quit). The maintainer also hand-tested Windows x64 after release. Linux x64 has not been tested by hand either. In CI it is built, its tests are run, and the binary is run under Xvfb with a software Vulkan driver, where its memory is measured and a screenshot of the window is taken and inspected. If something breaks on Linux with a real GPU, please report it.
+The maintainer hand-tested macOS on Apple silicon (open, and quit by ⌘Q, the close button and Dock Quit). The maintainer also hand-tested Windows x64 after release. Linux x64 has not been tested by hand. In CI it is built, its tests are run, and the binary is run under Xvfb with a software Vulkan driver, where its memory is measured and a screenshot of the window is taken and inspected. If something breaks on Linux with a real GPU, please report it.
 
 ## Where Wisp writes
 
