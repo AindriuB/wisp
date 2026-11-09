@@ -76,3 +76,18 @@ offers both types, and every new secret-bearing type redacts in Debug.
 ## Notes
 - Size: estimated +15-30 KB. Unconfirmed: whether `sha2 0.10`, `hmac` and `md-5` are already linked into the release binary (the lock also has `sha2 0.11`). Measured by task 98.
 - If you launch the app to look at the editor, set `WISP_DATA_DIR` to a temp dir, record the pid you started and stop only that pid. Never `pkill`/`killall`; a bundled build uses bundle id `io.github.aindriub.wisp.t95`.
+
+## Amendment — user decision (2026-11-09): redirects for engine-applied auth
+
+For requests with SigV4 or Digest auth, the engine follows redirects itself (reqwest's redirect following is off for these requests), whatever the body size. On a same-origin hop the engine signs again (SigV4) or re-answers (Digest) for the new URL. Once a hop leaves the original origin (`next.origin() != url.origin()`), it stops applying SigV4 and Digest entirely: no Authorization, no x-amz-* auth headers, no answer to a 401 challenge. The existing cross-origin header filter still applies. Other auth types keep their current redirect path. Record that last point in Notes.
+
+## Review round 1 — findings
+
+Reviewed HEAD: c4cb704.
+
+- [P2] engine.rs:729-731: on a reqwest-followed redirect, `x-amz-security-token` (plus x-amz-date and x-amz-content-sha256) is sent to another origin; reqwest strips only authorization, cookie, cookie2, proxy-authorization and www-authenticate (reqwest-0.13.5 src/redirect.rs:239-251). Input: SigV4 GET with session_token "TOKEN123"; good/a replies 302 to evil/x → evil receives the token. route: settled by the Amendment above → implementer.
+- [P2] engine.rs:696-731 with 796-808 (the engine's own 307/308 path): after a cross-origin hop the engine signs again for the new host (Authorization with access key id plus a valid signature, and the session token) and re-adds `digest_header`; it also answers the new origin's 401 Digest challenge with the user's password against a nonce the attacker chose (offline dictionary attack). The filter at 796-808 only covers `header_list`. Inputs: (a) SigV4 PUT with a 2 MiB File body and a session token; good replies 307 to evil → evil receives Authorization, the token and the body. (b) Digest POST with a 2 MiB multipart body; 307 to evil, evil replies 401 Digest → evil receives a Digest response. route: implementer, per the Amendment.
+- [STYLE] auth/sigv4.rs:24: `Signed` derives Debug, but `added` holds the session token and `authorization` holds the access key id. Hand-write a redacting Debug and add a `debug_redacts_*` test (docs/conventions.md Logging). route: implementer.
+- [P3, fixed by the Amendment] a same-origin redirect followed by reqwest is not signed again (AWS answers SignatureDoesNotMatch).
+- [P3, follow-up, not this round] sigv4.rs:142-146: a user-supplied x-amz-date, x-amz-content-sha256 or x-amz-security-token is sent alongside the added one, so the request carries duplicate values.
+- [NOTE, follow-up] the S3 canonical URI leaves some reserved characters raw; a raw `+` in the query is decoded as a space. Not proven against AWS.
