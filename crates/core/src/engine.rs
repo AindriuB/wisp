@@ -659,7 +659,15 @@ async fn perform(
         pending = Pending::Segments(reopen(specs).await?);
         if next.origin() != url.origin() {
             header_list.retain(|(n, _)| {
-                !n.eq_ignore_ascii_case("authorization") && !n.eq_ignore_ascii_case("cookie")
+                ![
+                    "authorization",
+                    "cookie",
+                    "cookie2",
+                    "proxy-authorization",
+                    "www-authenticate",
+                ]
+                .iter()
+                .any(|s| n.eq_ignore_ascii_case(s))
             });
         }
         url = next;

@@ -820,6 +820,14 @@ async fn auth_resend(cross_origin: bool) -> (Vec<wiremock::Request>, Vec<wiremoc
             value: "a=b".into(),
         },
         Header {
+            name: "Cookie2".into(),
+            value: "c=d".into(),
+        },
+        Header {
+            name: "Proxy-Authorization".into(),
+            value: "Basic eDp5".into(),
+        },
+        Header {
             name: "X-Keep".into(),
             value: "yes".into(),
         },
@@ -841,6 +849,8 @@ async fn a_cross_origin_redirect_drops_authorization_on_resend() {
     assert_eq!(second.len(), 1);
     assert!(!second[0].headers.contains_key("authorization"));
     assert!(!second[0].headers.contains_key("cookie"));
+    assert!(!second[0].headers.contains_key("cookie2"));
+    assert!(!second[0].headers.contains_key("proxy-authorization"));
     assert_eq!(second[0].headers.get("x-keep").unwrap(), "yes");
     assert_streamed(&second[0], TWO_MIB);
 }
