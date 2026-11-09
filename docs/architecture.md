@@ -22,10 +22,10 @@ exists: existing clients are large and memory-heavy.
   set from Milestone 0 measurements (see Budgets).
 - **v1 platforms:** macOS Apple silicon, Windows x64, Linux x64
   (Wayland or X11; GPUI needs a Vulkan-capable driver).
-- **License and version.** Apache-2.0 (`LICENSE`, `NOTICE`), version 0.1.0,
+- **License and version.** Apache-2.0 (`LICENSE`, `NOTICE`), version 0.1.1,
   both set once in `[workspace.package]` and inherited by every crate.
   `THIRD-PARTY-NOTICES` is generated and committed (see
-  `docs/conventions.md#dependencies`). The 0.1.0 release targets are
+  `docs/conventions.md#dependencies`). The 0.1.1 release targets are
   `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`;
   Intel macOS is not released in 0.1.0.
 

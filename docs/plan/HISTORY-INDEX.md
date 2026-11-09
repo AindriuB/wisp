@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-09 | 89 | Workspace version 0.1.0 to 0.1.1 (Cargo.toml and three lock lines only); README, architecture.md and about.toml name 0.1.1 | ## 2026-11-09 — Workspace version 0.1.1 |
 | 2026-11-09 | 87 | Linux X11 window icon and app id; release tar ships .desktop file and hicolor icons for the launcher (Wayland); Linux hand checks added to checklist | ## 2026-11-09 — Linux window icon, app id and desktop launcher |
 | 2026-11-09 | 88 | Sidebar max follows window width (240 at 720 px); panes have 240 px / 140 px minimums; Cookies vertical scrollbar visible in narrow panes | ## 2026-11-09 — Narrow windows: sidebar and pane limits, Cookies scrollbar in view |
 | 2026-11-09 | 83 | Quit, window close and dirty-tab close ask "Discard unsaved changes?"; Hide menu items on macOS; Dock Quit/shutdown gap documented; hand-test checklist | ## 2026-11-09 — Ask before discarding unsaved changes on quit and close |
