@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Secrets redacted from Debug output in wisp-core
+`Auth` (password, token, API key value), `ClientSettings.proxy` userinfo, `Header` values, `PreparedRequest` (query and body bytes, which print as a length) and `ResolveWarning::PatternMismatch.value` now have hand-written Debug impls that print `<redacted>`. `Request`, `FolderDefaults`, `CollectionDefaults`, `Command` and `Event` keep derived Debug and are safe through those fields; `Event::Headers` holds `Vec<Header>`, so its values are now redacted too. Each row has a `debug_redacts_*` test, plus composite tests; the proxy redaction also handles schemeless proxy URLs. wisp-storage has no secret-bearing type of its own. Tester passed 386 tests with no flakes; no dependency changes.
+**Cost:** The task file's Notes said `Event::Headers` values were unredacted; that was wrong, since they are `Header` values. The reviewer found the schemeless proxy leak, fixed in the second commit. Not fixed, listed in PLAN: multipart text values, URL path and userinfo secrets, `EngineError` messages carrying the URL, `ResponseCookie` derived Debug, and proxy passwords with an unencoded `/`, `?` or `#`. `ClientSettings` must keep its `Hash`/`Eq` derives (client-cache key), so only Debug was replaced.
+
 ## 2026-11-09 — Windows v0.1.0 hand-tested; README updated
 The user hand-tested the released v0.1.0 Windows x64 build and reports it works perfectly. The README's "Platform testing" section now says the maintainer hand-tested Windows after release, and asks for reports only for Linux with a real GPU.
 **Cost:** None; the claim was held back until the test was done, as the 2026-11-03 entry required.
