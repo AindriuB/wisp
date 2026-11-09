@@ -78,3 +78,13 @@ Windows hard links: std has no stable file-identity API on Windows, so the hard-
 
 - Windows reserved device names (CON, PRN, AUX, NUL, COM0-9, LPT0-9, any case, with or without an extension, and trailing-dot/space aliases) are also rejected when creating, renaming or moving requests and folders through crates/storage/src/ops.rs. Owns gains crates/storage/src/ops.rs. Add failing-first tests for create/rename/move with such names, returning StorageError::Invalid before any filesystem call.
 - Other user decisions for this wave (recorded for context, not this task's scope): Dock Quit/logout termination gap is documented, not patched; inherited-header list keeps its natural height; Linux tar keeps icons/ alongside the new share/.
+
+## Review round 1 — findings
+
+Reviewed HEAD: c53462b3fcdb67c87cc6d0f25b15706dd345b816
+
+- [P2] crates/storage/src/request.rs:236-259 — On Windows, a sidecar named with a sibling's 8.3 short name still aliases that sibling, and save overwrites it. The `.toml`-suffix and trailing-dot checks look only at the name; the `same` canonicalize check (:236-241) compares only against the request's own file; `same_file_entry` / `same_file_entry_any_toml` always return false on Windows; the canonicalize-to-`.toml` check (:254-258) runs only when the target is a symlink.
+  route: implementer
+  fix: run the existing `canonicalize(target)` ends-with-`.toml` test on every target that exists, not only on symlinks (on Windows, canonicalize returns the long name). AC4 still holds: a symlink to a non-`.toml` file in the folder stays allowed. A test needs `#[cfg(windows)]` on a volume with 8.3 names enabled, so it is best-effort; say so in Notes.
+  input: Windows, folder holds `a.toml` and `b.toml` (`b.toml` short name `B~1.TOM`); `a.toml` has `[body] file = "B~1.TOM"` → load shows b.toml's TOML as body; saving `a` replaces `b.toml`.
+- [P3, optional — follow-up, not this round] crates/storage/src/request.rs:254-258 — no test fails if the symlink-to-`.toml` check is disabled (Unix is covered by `same_file_entry_any_toml`).
