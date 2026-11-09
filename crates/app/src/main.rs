@@ -37,10 +37,42 @@ pub fn trace(stage: &str) {
 const MIN_WINDOW_WIDTH: f32 = 720.;
 const MIN_WINDOW_HEIGHT: f32 = 480.;
 
+/// Linux app id; matches the shipped `.desktop` file so Wayland finds the icon.
+#[cfg(target_os = "linux")]
+const APP_ID: &str = "io.github.aindriub.wisp";
+
+#[cfg(any(target_os = "linux", test))]
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../../assets/icon/png/wisp-256.png");
+
+#[cfg(any(target_os = "linux", test))]
+fn decode_window_icon() -> Result<image::RgbaImage, image::ImageError> {
+    image::load_from_memory_with_format(WINDOW_ICON_PNG, image::ImageFormat::Png)
+        .map(|img| img.to_rgba8())
+}
+
+#[cfg(target_os = "linux")]
+fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
+    match decode_window_icon() {
+        Ok(img) => Some(std::sync::Arc::new(img)),
+        Err(e) => {
+            eprintln!("wisp: window icon not set: {e}");
+            None
+        }
+    }
+}
+
 fn window_options() -> WindowOptions {
+    #[cfg(target_os = "linux")]
+    let platform = WindowOptions {
+        app_id: Some(APP_ID.to_string()),
+        icon: window_icon(),
+        ..WindowOptions::default()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let platform = WindowOptions::default();
     WindowOptions {
         window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-        ..WindowOptions::default()
+        ..platform
     }
 }
 
@@ -222,5 +254,27 @@ mod tests {
     fn window_has_a_720_by_480_minimum() {
         let min = window_options().window_min_size.expect("min size set");
         assert_eq!(min, size(px(720.), px(480.)));
+    }
+
+    #[test]
+    fn window_icon_decodes_to_a_256_square() {
+        let img = decode_window_icon().expect("embedded icon decodes");
+        assert_eq!(img.dimensions(), (256, 256));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_window_options_carry_app_id_and_icon() {
+        let o = window_options();
+        assert_eq!(o.app_id.as_deref(), Some("io.github.aindriub.wisp"));
+        assert!(o.icon.is_some());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn non_linux_window_options_have_no_icon() {
+        let o = window_options();
+        assert!(o.app_id.is_none());
+        assert!(o.icon.is_none());
     }
 }

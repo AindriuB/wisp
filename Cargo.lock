@@ -8202,6 +8202,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
  "toml_edit 0.22.27",
  "tracing",
  "winresource",

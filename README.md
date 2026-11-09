@@ -41,7 +41,14 @@ sha256sum -c --ignore-missing SHA256SUMS
 tar -xzf Wisp-0.1.0-linux-x64.tar.gz
 ```
 
-The archive holds a `Wisp-0.1.0-linux-x64` folder with the `wisp` binary. Put the `wisp` binary anywhere on your path, for example `~/.local/bin`. The command palette opens with Ctrl+K.
+The archive holds a `Wisp-0.1.0-linux-x64` folder. The folder holds the `wisp` binary, an `icons/` folder and a `share/` folder. To install it for your user, from inside that folder run:
+
+```sh
+cp wisp ~/.local/bin/
+cp -r share/* ~/.local/share/
+```
+
+`wisp` must be on your `PATH`, because the launcher entry runs `Exec=wisp`. The window icon shows on X11 only; on Wayland the icon comes from the installed launcher entry. The command palette opens with Ctrl+K.
 
 The Linux binary is built on a pinned Ubuntu 24.04 runner and needs glibc 2.39 or newer (Ubuntu 24.04 or newer, or an equally recent distribution). Wisp opens an X11 or Wayland window and draws it with Vulkan, so it needs a working Vulkan driver. On Debian or Ubuntu, install:
 
