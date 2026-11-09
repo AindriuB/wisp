@@ -89,3 +89,7 @@ Reviewed HEAD: c53462b3fcdb67c87cc6d0f25b15706dd345b816
   fix: run the existing `canonicalize(target)` ends-with-`.toml` test on every target that exists, not only on symlinks (on Windows, canonicalize returns the long name). AC4 still holds: a symlink to a non-`.toml` file in the folder stays allowed. A test needs `#[cfg(windows)]` on a volume with 8.3 names enabled, so it is best-effort; say so in Notes.
   input: Windows, folder holds `a.toml` and `b.toml` (`b.toml` short name `B~1.TOM`); `a.toml` has `[body] file = "B~1.TOM"` → load shows b.toml's TOML as body; saving `a` replaces `b.toml`.
 - [P3, optional — follow-up, not this round] crates/storage/src/request.rs:254-258 — no test fails if the symlink-to-`.toml` check is disabled (Unix is covered by `same_file_entry_any_toml`).
+
+## Attempt 1 — failed
+
+Verify at d43671c: acceptance review REQUEST CHANGES on AC1. `sidecar_rejects_symlink_to_sibling_toml` (crates/storage/src/request.rs:973-976) renames `b.toml` to `B.TOML`, then `alias_rejected` reads `b.toml` (:945). On a case-sensitive filesystem (Linux CI) that read panics with NotFound. Test-only defect; the production check is correct.
