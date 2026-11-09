@@ -69,3 +69,8 @@ Windows hard links: std has no stable file-identity API on Windows, so the hard-
 - ops.rs, collection.rs and any wisp-core file.
 
 ## Notes
+
+## Amendment — user decisions (2026-11-09)
+
+- Windows reserved device names (CON, PRN, AUX, NUL, COM0-9, LPT0-9, any case, with or without an extension, and trailing-dot/space aliases) are also rejected when creating, renaming or moving requests and folders through crates/storage/src/ops.rs. Owns gains crates/storage/src/ops.rs. Add failing-first tests for create/rename/move with such names, returning StorageError::Invalid before any filesystem call.
+- Other user decisions for this wave (recorded for context, not this task's scope): Dock Quit/logout termination gap is documented, not patched; inherited-header list keeps its natural height; Linux tar keeps icons/ alongside the new share/.
