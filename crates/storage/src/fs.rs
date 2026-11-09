@@ -16,6 +16,11 @@ pub fn read_to_string(path: &Path) -> Result<String, StorageError> {
     std::fs::read_to_string(path).map_err(|e| io(path, e))
 }
 
+/// Windows reserved device name check (stub).
+pub fn is_reserved_device_name(_name: &str) -> bool {
+    false
+}
+
 /// Maximum symlink hops followed when resolving a target.
 const MAX_HOPS: usize = 40;
 /// Maximum temp-file name candidates tried before giving up.

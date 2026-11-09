@@ -904,6 +904,78 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), r_mtime);
     }
 
+    /// Request `a.toml` and sibling `b.toml` in one folder; `setup` makes the
+    /// alias. Load and save must reject `name`, leaving both files untouched.
+    fn alias_rejected(name: &str, setup: impl Fn(&Path)) {
+        let d = tempfile::tempdir().unwrap();
+        let folder = d.path();
+        let a = folder.join("a.toml");
+        let b = folder.join("b.toml");
+        let a_text = sidecar_req(name);
+        std::fs::write(&a, &a_text).unwrap();
+        std::fs::write(&b, "B-ORIGINAL").unwrap();
+        setup(folder);
+        bad_key(load_request(&a));
+        let req = Request {
+            name: "n".into(),
+            body: Body::Text(TextBody {
+                content: "EDITED".into(),
+                sidecar: Some(name.into()),
+            }),
+            ..Request::default()
+        };
+        bad_key(save_request(&a, &req));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_text);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "B-ORIGINAL");
+    }
+
+    #[test]
+    fn sidecar_rejects_trailing_dot() {
+        rejected_on_load_and_save("b.toml.", "a.toml");
+        rejected_on_load_and_save("body.json.", "a.toml");
+    }
+
+    #[test]
+    fn sidecar_rejects_trailing_space() {
+        rejected_on_load_and_save("b.toml ", "a.toml");
+        rejected_on_load_and_save("body.json ", "a.toml");
+    }
+
+    #[test]
+    fn sidecar_rejects_reserved_stem() {
+        rejected_on_load_and_save("CON.json", "a.toml");
+        rejected_on_load_and_save("com0.txt", "a.toml");
+        rejected_on_load_and_save("LPT\u{b9}.xml", "a.toml");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_rejects_symlink_to_sibling_toml() {
+        alias_rejected("body.txt", |f| {
+            std::os::unix::fs::symlink(f.join("b.toml"), f.join("body.txt")).unwrap();
+        });
+        alias_rejected("body.txt", |f| {
+            std::os::unix::fs::symlink("B.TOML", f.join("body.txt")).unwrap();
+            std::fs::rename(f.join("b.toml"), f.join("B.TOML")).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_rejects_hard_link_to_request() {
+        alias_rejected("body.txt", |f| {
+            std::fs::hard_link(f.join("a.toml"), f.join("body.txt")).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_rejects_hard_link_to_sibling() {
+        alias_rejected("body.txt", |f| {
+            std::fs::hard_link(f.join("b.toml"), f.join("body.txt")).unwrap();
+        });
+    }
+
     #[test]
     fn sidecar_parent_traversal_rejected() {
         rejected_on_load_and_save("../../victim.txt", "r.toml");
