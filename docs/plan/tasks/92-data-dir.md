@@ -63,3 +63,14 @@ data there. Moving or renaming the collection folder keeps its ID.
 ## Notes
 - Name the collection-ID tests with the prefix `collection_id` in `collection::tests` so the check filter finds them.
 - Size: small (no new crates linked beyond `uuid`, already in the binary through `core`).
+
+## Review round 1 — settled without code
+
+Reviewed HEAD: 1b25b15. There were no P1/P2 code findings.
+- [SPEC] docs/architecture.md:129 says "Identity is the file path. No UUIDs in files", which conflicts with the collection `id`. This is settled by the user's decision of 2026-11-09 (spec 2026-11-09-wisp-0-2-0.md:15, :71: a random ID in collection.toml). The scribe amends architecture.md at record: file paths stay the identity of requests and folders, and from 0.2.0 `collection.toml` carries a random collection `id`.
+
+## Residual (follow-ups)
+- [P3] `ensure_collection_id` (collection.rs:242-257) has a read-modify-write race: two instances adding an ID at once means the last rename wins. `save_collection_defaults` has the same window.
+- [P3] `ensure_private_dir` (data_dir.rs:92-101): a trailing slash (e.g. `WISP_DATA_DIR="/x/link/"`) gets past the symlink refusal on macOS. Normalise before the lstat.
+- [NOTE] Hand-written IDs that differ only in case collide on case-insensitive file systems. Consider requiring lowercase.
+- [NOTE] An existing data dir wider than 0700 is not tightened (task 93 may care).
