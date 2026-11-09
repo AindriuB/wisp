@@ -71,3 +71,11 @@ Leftovers not fixed:
 - "Expires / Max-Age" text is cut at 600 px: accepted, out of scope.
 - The Flags column minimum is measured on macOS only: accepted.
 - The request-header table squeezed by many inherited headers: fixing it would change the spec's "inherited list keeps natural height" rule, so it waits for the user.
+
+## Review round 1 — findings
+
+Reviewed HEAD: ed0fbe9. One STYLE finding (the `MIN_PANE_*`/`sidebar_max` block split `follows_system` from its doc comment), fixed in bbb92a3. The orchestrator read the diff.
+
+## Residual (accepted by the user, 2026-11-09)
+
+The Cookies column header no longer stays pinned; it scrolls up with the rows, because the vertical scroller is now the outer element. The contract allows it, and the user accepted it for 0.1.1. Follow-up: keep the header pinned with a separate header x-scroller that follows the rows' horizontal offset.
