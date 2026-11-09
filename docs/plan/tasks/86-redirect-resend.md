@@ -73,3 +73,9 @@ This applies only when `client.follow_redirects` is true, the body was streamed 
 - Following redirects for in-memory bodies: reqwest already does it.
 
 ## Notes
+
+## Amendment — orchestrator (2026-11-09)
+The Contract row for a cross-origin resend lists `Authorization` and `Cookie`, but its note says to follow reqwest's own cross-origin rule, which is the intent. reqwest 0.13.5 (redirect.rs:241-249) removes `Authorization`, `Cookie`, `Cookie2`, `Proxy-Authorization` and `WWW-Authenticate`; the streamed resend must remove the same set.
+
+## Review round 1 — findings
+- [P2] crates/core/src/engine.rs:661-663 — cross-origin resend removes only Authorization and Cookie; also remove Cookie2, Proxy-Authorization and WWW-Authenticate (same list as reqwest 0.13.5 redirect.rs:241-249). Extend `a_cross_origin_redirect_drops_authorization_on_resend` to set Proxy-Authorization (and Cookie2) and assert the second origin receives neither.
