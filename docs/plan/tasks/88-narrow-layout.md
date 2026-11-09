@@ -59,3 +59,15 @@ for the user.
 - Prompt and close-tab code in root.rs (task 83, already merged).
 
 ## Notes
+
+Not launched or hand-checked by the implementer; the user's checks, at a
+720x480 window on macOS:
+- Drag the sidebar wide: it stops at 240 px.
+- Drag each split to its minimum: 240 px wide (horizontal layout), 140 px high (vertical layout).
+- Open Cookies on a response with many cookies in a pane under 584 px: the vertical scrollbar is visible at the pane's right edge without scrolling sideways.
+- Behaviour change to look at: the vertical scroller is now outside the horizontal one, so the Cookies header scrolls up with the rows instead of staying pinned. It still stays aligned with the columns sideways.
+
+Leftovers not fixed:
+- "Expires / Max-Age" text is cut at 600 px: accepted, out of scope.
+- The Flags column minimum is measured on macOS only: accepted.
+- The request-header table squeezed by many inherited headers: fixing it would change the spec's "inherited list keeps natural height" rule, so it waits for the user.
