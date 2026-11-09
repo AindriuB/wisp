@@ -17,7 +17,7 @@ exists: existing clients are large and memory-heavy.
 
 - **Portable.** One self-contained binary per platform. No installer, no
   registry, no system TLS library. It writes nothing outside the open collection
-  folder and `settings.toml`.
+  folder, `settings.toml` and the per-user data dir (history, cookies).
 - **Lightweight.** Low idle memory and a small binary. The numeric budgets are
   set from Milestone 0 measurements (see Budgets).
 - **v1 platforms:** macOS Apple silicon, Windows x64, Linux x64
@@ -147,8 +147,9 @@ my-api/
 ## Settings location
 
 `settings.toml` sits beside the executable when a file named `portable` is
-there, otherwise in the OS config directory. Nothing else is persisted outside
-the collection folder.
+there, otherwise in the OS config directory. Apart from the per-user data dir
+(history and cookies, from 0.2.0; see `plan/specs/2026-11-09-wisp-0-2-0.md`),
+nothing else is persisted outside the collection folder.
 
 ## Boundaries that must not be crossed
 
@@ -159,10 +160,13 @@ the collection folder.
 - `resolve` performs no I/O.
 - No TLS other than `rustls`; no OpenSSL or native-tls anywhere in the
   dependency tree.
-- Nothing writes outside the collection folder and `settings.toml`
+- Nothing writes outside the collection folder, `settings.toml` and the
+  per-user data dir (history, cookies; `<exe-dir>/data` in portable mode)
   (body-store temp files are the one exception and must be removed on close).
-- Secrets (`*.secrets.toml` values) never appear in logs, history or committed
-  files.
+- Secrets (`*.secrets.toml` and keychain values) never appear in logs or
+  committed files. History stores no auth values (redacted; resend re-resolves
+  against the current environment). Stored request and response bodies and a
+  persisted cookie jar may hold session data, so the data dir is 0700/0600.
 
 ## Budgets
 
