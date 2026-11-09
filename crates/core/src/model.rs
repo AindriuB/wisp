@@ -61,14 +61,16 @@ fn redact_query(url: &str) -> String {
     }
 }
 
-/// Proxy URL with any userinfo replaced by `<redacted>@`.
+/// Proxy URL with any userinfo replaced by `<redacted>@`. A URL without
+/// `://` is treated as a bare authority (reqwest accepts `user:pw@host:port`).
 fn redact_userinfo(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
+    let (prefix, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (format!("{scheme}://"), rest),
+        None => (String::new(), url),
     };
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     match rest[..end].rfind('@') {
-        Some(at) => format!("{scheme}://<redacted>@{}", &rest[at + 1..]),
+        Some(at) => format!("{prefix}<redacted>@{}", &rest[at + 1..]),
         None => url.to_string(),
     }
 }
@@ -247,6 +249,8 @@ mod tests {
         for proxy in [
             "http://user:PROXYMARK@proxy.example:8080",
             "http://PROXYMARK@proxy.example:8080",
+            "user:PROXYMARK@proxy.example:8080",
+            "PROXYMARK@proxy.example:8080",
         ] {
             let c = ClientSettings {
                 verify_tls: true,
