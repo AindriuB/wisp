@@ -1,11 +1,13 @@
 //! Wisp storage: on-disk collections and settings.
 
 pub mod codec;
+pub mod data_dir;
 pub mod collection;
 pub mod environment;
 pub mod error;
 pub mod fs;
 pub mod history;
+pub mod import;
 pub mod ops;
 pub mod request;
 pub mod watcher;
