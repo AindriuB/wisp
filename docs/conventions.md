@@ -63,9 +63,11 @@ tool, and Wisp ships as binaries from GitHub releases, not via crates.io.
 
 Use `tracing`. Never log secrets, auth headers, or values from
 `*.secrets.toml`; log header names, not values, for anything auth-related.
-`Request`, `FolderDefaults`, `CollectionDefaults` (via `Auth`) and
-`ClientSettings.proxy` derive Debug in plain text, so never log them with `?` or
-`{:?}`. Only `Environment` has a redacting Debug.
+A type that holds a secret gets a hand-written Debug that prints `<redacted>`
+for the secret field; never derive Debug on it. Each new secret-bearing type
+needs a `debug_redacts_*` test that checks both `{:?}` and `{:#?}`. Types that
+wrap secret-bearing fields (`Request`, `CollectionDefaults`) may derive Debug.
+Known gaps are listed in PLAN.md under "Debug redaction follow-ups".
 
 ## GPUI
 
