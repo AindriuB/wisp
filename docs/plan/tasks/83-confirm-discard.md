@@ -99,3 +99,17 @@ Hand-check (macOS, release bundle or `cargo run`):
 3. With a dirty tab, click the red window button. Same prompt; Cancel keeps the app, Discard quits.
 4. With a dirty tab, press Cmd-W (or click its ×). Prompt says `"<title>" has unsaved changes.`; Cancel keeps the tab, Discard closes only that tab. A clean tab closes with no prompt.
 5. Press Cmd-H: the app hides. The Wisp menu shows Hide Wisp, Hide Others (Opt-Cmd-H) and Show All.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 2d92b6a98b85ac65b605a640716eb15c043be619
+
+- [P1] crates/app/src/main.rs:164-169 — The global `Quit` handler does nothing in ordinary use. Keystrokes and the menu (`App::dispatch_action`, gpui-pre-0.3.10/src/app.rs:2963-2973) reach global listeners inside the active window's update (window.rs:6619-6635), while that window is taken out of `cx.windows` (app.rs:3281). The nested `handle.update` therefore returns `Err("window not found")` (app.rs:2336-2350), and `let _ =` discards it. Input: window focused, cmd-q / ctrl-q or menu "Quit Wisp", dirty or not → app stays open, no prompt. `quit-check.sh` misses it (it quits via AppleScript `terminate:` and `WISP_CLOSE_WINDOW_AFTER_MS`, never the `Quit` action).
+  route: implementer
+  fix: e.g. `cx.defer(move |cx| handle.update(...))`, or handle `Quit` on `WorkspaceView` via `cx.listener` so the window is passed in. The global handler must still quit when no window is open. Add a test or check that exercises the `Quit` action with a window active.
+- [STYLE] crates/app/src/workspace.rs:774-792 — the new `close_step_*` tests and `use super::{CloseStep, close_step};` sit before the module's `use super::*;`; the import is redundant. Open `mod tests` with `use super::*;` then the tests, as elsewhere in the crate.
+  route: implementer
+
+## Residual (accepted, follow-up)
+
+- [P3] ui/root.rs:193 and ui/sidebar.rs:678 — the open-collection and delete-from-disk prompts don't set `prompt_up`, so on macOS a quit during one of those native sheets (with a dirty tab) queues a second "Discard unsaved changes?" sheet behind it. No data loss. Fixing it touches the out-of-scope open-collection prompt and sidebar.rs (outside Owns), so it is a follow-up, not this task.
