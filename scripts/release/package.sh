@@ -76,6 +76,14 @@ case "$platform" in
     cp "$bin" "$dir/wisp"; chmod 0755 "$dir/wisp"
     mkdir -p "$dir/icons"
     for z in 48 64 128 256 512; do cp "$root/assets/icon/png/wisp-$z.png" "$dir/icons/wisp-$z.png"; done
+    # Copying share/ into ~/.local/share installs the launcher and its icons.
+    id=io.github.aindriub.wisp
+    mkdir -p "$dir/share/applications"
+    cp "$root/assets/linux/$id.desktop" "$dir/share/applications/$id.desktop"
+    for z in 48 64 128 256 512; do
+      mkdir -p "$dir/share/icons/hicolor/${z}x${z}/apps"
+      cp "$root/assets/icon/png/wisp-$z.png" "$dir/share/icons/hicolor/${z}x${z}/apps/$id.png"
+    done
     asset="$name.tar.gz"; rm -f "$out/$asset"
     tar --owner=0 --group=0 --numeric-owner -C "$stage" -czf "$out/$asset" "$name"
     ;;

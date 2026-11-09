@@ -19,6 +19,7 @@ gpui-component.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 toml_edit.workspace = true
+image.workspace = true
 
 [build-dependencies]
 winresource = { version = "0.1", default-features = false }

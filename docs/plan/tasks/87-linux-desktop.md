@@ -66,3 +66,8 @@ both: the X11 icon, and an app id that the shipped `.desktop` file matches.
 - Quit, menu and prompt code in main.rs (task 83).
 
 ## Notes
+
+- Binary size (macOS release, wisp-app): 10,469,856 B at the 83 merge, 10,469,856 B after (+0 B). The icon PNG and `image` decode are compiled in on Linux only.
+- The window icon is X11-only in GPUI 0.3.10. On Wayland the icon appears only once the `.desktop` file is installed.
+- Linux hand-check: (1) on X11, launch `wisp` and confirm the window shows the Wisp icon. (2) Extract the tar, run `cp -r share/* ~/.local/share/`, then on Wayland confirm the launcher entry and window show the Wisp icon (log out/in or run `update-desktop-database ~/.local/share/applications` if it does not appear).
+- The Linux-only code is first compiled by the PR's Linux CI job.

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wisp
+Comment=Lightweight HTTP client
+Exec=wisp %f
+Icon=io.github.aindriub.wisp
+Terminal=false
+Categories=Development;Network;
+StartupWMClass=io.github.aindriub.wisp
