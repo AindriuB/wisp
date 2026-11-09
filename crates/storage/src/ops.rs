@@ -95,6 +95,10 @@ fn check_name(name: &str) -> Result<()> {
     if name.trim_start().starts_with('.') {
         return Err(invalid(Path::new(name), "a name may not start with `.`"));
     }
+    // Windows device names, for the name as typed and for the file it becomes.
+    if fs::is_reserved_device_name(name.trim()) || fs::is_reserved_device_name(&slug(name)) {
+        return Err(invalid(Path::new(name), "is a reserved device name"));
+    }
     Ok(())
 }
 
@@ -598,6 +602,11 @@ pub fn rename_folder(root: &Path, rel: &Path, new_name: &str) -> Result<PathBuf>
 
 /// Move a request (with its sidecar) or a folder into `new_parent`.
 pub fn move_node(root: &Path, rel: &Path, new_parent: &Path) -> Result<PathBuf> {
+    if let Some(n) = rel.file_name()
+        && fs::is_reserved_device_name(&n.to_string_lossy())
+    {
+        return Err(invalid(rel, "is a reserved device name"));
+    }
     let rootc = canon_root(root)?;
     let (rel, kind) = clean_node(&rootc, rel, true)?;
     let dest_rel = clean_dir(&rootc, new_parent)?;
@@ -1535,5 +1544,50 @@ mod tests {
         assert!(reserved_at_root(Path::new(""), "environment\u{17f}"));
         assert!(rename_folder(r, Path::new("x"), "environment\u{17f}").is_err());
         assert!(r.join("x").exists());
+    }
+
+    #[test]
+    fn reserved_device_names_rejected_by_create_rename_move() {
+        let d = col();
+        w(d.path(), "r.toml", &req("r"));
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        let before = snapshot(d.path());
+        let inv = |r: Result<PathBuf>, what: &str| {
+            assert!(
+                matches!(r, Err(StorageError::Invalid { .. })),
+                "{what}: {r:?}"
+            );
+        };
+        for n in [
+            "CON",
+            "com0",
+            "Lpt9",
+            "nul",
+            "AUX.txt",
+            "prn.",
+            "COM1 ",
+            "COM\u{b9}",
+        ] {
+            let root = d.path();
+            inv(create_request(root, Path::new(""), n), n);
+            inv(create_folder(root, Path::new(""), n), n);
+            inv(rename_request(root, Path::new("r.toml"), n), n);
+            inv(rename_folder(root, Path::new("sub"), n), n);
+        }
+        assert_eq!(snapshot(d.path()), before);
+        // Moving an entry that already carries a reserved name (made on Unix).
+        w(d.path(), "con.toml", &req("c"));
+        std::fs::create_dir(d.path().join("NUL")).unwrap();
+        std::fs::create_dir(d.path().join("dest")).unwrap();
+        let before = snapshot(d.path());
+        inv(
+            move_node(d.path(), Path::new("con.toml"), Path::new("dest")),
+            "move con",
+        );
+        inv(
+            move_node(d.path(), Path::new("NUL"), Path::new("dest")),
+            "move NUL",
+        );
+        assert_eq!(snapshot(d.path()), before);
     }
 }

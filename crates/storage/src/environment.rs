@@ -31,13 +31,7 @@ fn valid_name(name: &str) -> bool {
     if name.contains("..") || name.to_ascii_lowercase().ends_with(".secrets") {
         return false;
     }
-    // Windows reserved device names, with or without an extension.
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
-    !reserved
+    !crate::fs::is_reserved_device_name(name)
 }
 
 fn check_name(root: &Path, name: &str) -> Result<(), StorageError> {
@@ -484,5 +478,50 @@ mod tests {
                 .chain(&loaded.secrets)
                 .any(|v| v.name == "token")
         );
+    }
+
+    #[test]
+    fn reserved_device_names_cover_the_full_set() {
+        use crate::fs::is_reserved_device_name as r;
+        let mut names = vec!["CON", "PRN", "AUX", "NUL"];
+        let nums: Vec<String> = (0..=9)
+            .flat_map(|n| [format!("COM{n}"), format!("LPT{n}")])
+            .chain(
+                [
+                    "COM\u{b9}",
+                    "COM\u{b2}",
+                    "COM\u{b3}",
+                    "LPT\u{b9}",
+                    "LPT\u{b2}",
+                    "LPT\u{b3}",
+                ]
+                .map(String::from),
+            )
+            .collect();
+        names.extend(nums.iter().map(String::as_str));
+        for n in names {
+            for v in [
+                n.to_string(),
+                n.to_lowercase(),
+                format!("{n}.txt"),
+                format!("{}.json", n.to_lowercase()),
+                format!("{n} .x"),
+                format!("{n}."),
+            ] {
+                assert!(r(&v), "{v} should be reserved");
+            }
+        }
+        for n in ["COM10", "CONSOLE", "LPT", "COM", "xCON", "CON-1", "NULL"] {
+            assert!(!r(n), "{n} should not be reserved");
+            assert!(!r(&format!("{n}.txt")), "{n}.txt should not be reserved");
+        }
+    }
+
+    #[test]
+    fn environment_rejects_com0_and_lpt0() {
+        for n in ["COM0", "com0", "LPT0", "lpt0.x", "COM1", "CON"] {
+            assert!(!valid_name(n), "{n}");
+        }
+        assert!(valid_name("COM10"));
     }
 }

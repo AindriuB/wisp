@@ -16,6 +16,49 @@ pub fn read_to_string(path: &Path) -> Result<String, StorageError> {
     std::fs::read_to_string(path).map_err(|e| io(path, e))
 }
 
+/// Whether `name` is a Windows reserved device name: `CON PRN AUX NUL`,
+/// `COM0-9`, `LPT0-9` and the superscript forms `COM¹²³` / `LPT¹²³`. The stem
+/// is the name up to the first `.`, trailing spaces removed; case is ignored
+/// (ASCII only). Windows rejects these with or without an extension.
+pub fn is_reserved_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    let (head, last) = match upper.char_indices().last() {
+        Some((i, c)) => (&upper[..i], c),
+        None => return false,
+    };
+    matches!(head, "COM" | "LPT") && matches!(last, '0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')
+}
+
+/// `a` and `b` are the same file-system entry (Unix dev/ino, so hard links and
+/// symlinks count). Always false elsewhere: std has no stable identity API on
+/// Windows.
+pub fn same_file_entry(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return x.dev() == y.dev() && x.ino() == y.ino();
+        }
+    }
+    let _ = (a, b);
+    false
+}
+
+/// `target` is the same entry as any `*.toml` file (ignoring case) in `dir`.
+pub fn same_file_entry_any_toml(dir: &Path, target: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    rd.flatten().any(|e| {
+        let p = e.path();
+        p.to_string_lossy().to_ascii_lowercase().ends_with(".toml") && same_file_entry(&p, target)
+    })
+}
+
 /// Maximum symlink hops followed when resolving a target.
 const MAX_HOPS: usize = 40;
 /// Maximum temp-file name candidates tried before giving up.
