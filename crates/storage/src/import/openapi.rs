@@ -1,0 +1,473 @@
+//! Import an OpenAPI 3.0 or 3.1 document (JSON or YAML).
+
+use std::collections::HashSet;
+
+use serde_json::Value;
+use wisp_core::Method;
+use wisp_core::request::{Body, KeyValue, Request, TextBody, Var};
+
+use super::{
+    ImportError, ImportItem, ImportResult, ImportedEnv, RequestCounter, method_name, parse_json,
+    yaml,
+};
+
+const METHODS: [(&str, Method); 7] = [
+    ("get", Method::Get),
+    ("put", Method::Put),
+    ("post", Method::Post),
+    ("delete", Method::Delete),
+    ("options", Method::Options),
+    ("head", Method::Head),
+    ("patch", Method::Patch),
+];
+
+fn text(v: Option<&Value>) -> String {
+    match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::Bool(b)) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Parse an OpenAPI 3 document.
+pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
+    super::check_size(input.len())?;
+    let input = input.strip_prefix(b"\xef\xbb\xbf").unwrap_or(input);
+    let first = input.iter().copied().find(|b| !b.is_ascii_whitespace());
+    let doc = if first == Some(b'{') {
+        parse_json(input)?
+    } else {
+        yaml::parse(input)?
+    };
+    let version = text(doc.get("openapi"));
+    if !version.starts_with("3.") {
+        if doc.get("swagger").is_some() {
+            return Err(ImportError::Unsupported(
+                "Swagger 2.0 is not supported; convert to OpenAPI 3".into(),
+            ));
+        }
+        return Err(ImportError::Parse(
+            "not an OpenAPI 3 document: no `openapi` version".into(),
+        ));
+    }
+    let title = text(doc.get("info").and_then(|i| i.get("title")));
+    let mut result = ImportResult {
+        name: if title.is_empty() {
+            "OpenAPI import".into()
+        } else {
+            title
+        },
+        ..ImportResult::default()
+    };
+    let root = result.name.clone();
+    environments(&doc, &mut result);
+    if doc
+        .get("components")
+        .and_then(|c| c.get("securitySchemes"))
+        .and_then(Value::as_object)
+        .is_some_and(|m| !m.is_empty())
+    {
+        result.warn(&root, "security schemes are not imported");
+    }
+
+    let mut counter = RequestCounter::default();
+    let mut untagged: Vec<ImportItem> = Vec::new();
+    let mut folders: Vec<(String, Vec<ImportItem>)> = Vec::new();
+    if let Some(paths) = doc.get("paths").and_then(Value::as_object) {
+        for (path, item) in paths {
+            let at = path.clone();
+            let Some(item) = deref(&doc, item, &at, &mut result) else {
+                continue;
+            };
+            for (key, method) in METHODS {
+                let Some(op) = item.get(key).filter(|o| o.is_object()) else {
+                    continue;
+                };
+                counter.add()?;
+                let (tag, request) = operation(&doc, &mut result, path, method, item, op);
+                let name = request.name.clone();
+                let node = ImportItem::Request { name, request };
+                match tag {
+                    Some(t) => match folders.iter_mut().find(|(n, _)| *n == t) {
+                        Some((_, v)) => v.push(node),
+                        None => folders.push((t, vec![node])),
+                    },
+                    None => untagged.push(node),
+                }
+            }
+            if item.get("trace").is_some() {
+                result.warn(&at, "TRACE operations are not supported");
+            }
+        }
+    }
+    result.items = folders
+        .into_iter()
+        .map(|(name, items)| ImportItem::Folder { name, items })
+        .chain(untagged)
+        .collect();
+    Ok(result)
+}
+
+pub(super) fn env_name(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+            out.push(c);
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+fn environments(doc: &Value, result: &mut ImportResult) {
+    let root = result.name.clone();
+    let servers = doc.get("servers").and_then(Value::as_array);
+    let Some(servers) = servers.filter(|s| !s.is_empty()) else {
+        result.warn(
+            &root,
+            "no `servers`; set the `baseUrl` variable before sending",
+        );
+        return;
+    };
+    for (i, s) in servers.iter().enumerate() {
+        let mut url = text(s.get("url"));
+        if let Some(vars) = s.get("variables").and_then(Value::as_object) {
+            for (k, v) in vars {
+                url = url.replace(&format!("{{{k}}}"), &text(v.get("default")));
+            }
+        }
+        let desc = text(s.get("description"));
+        let mut name = env_name(if desc.is_empty() { &url } else { &desc });
+        if name.is_empty() {
+            name = format!("server-{}", i + 1);
+        }
+        let mut unique = name.clone();
+        let mut n = 2;
+        while result.environments.iter().any(|e| e.name == unique) {
+            unique = format!("{name}-{n}");
+            n += 1;
+        }
+        result.environments.push(ImportedEnv {
+            name: unique,
+            vars: vec![Var {
+                name: "baseUrl".into(),
+                value: url,
+            }],
+            secrets: Vec::new(),
+        });
+    }
+}
+
+/// Follow local `$ref`s; warn on external refs and cycles.
+fn deref<'a>(
+    root: &'a Value,
+    v: &'a Value,
+    at: &str,
+    result: &mut ImportResult,
+) -> Option<&'a Value> {
+    let mut cur = v;
+    let mut seen: HashSet<&str> = HashSet::new();
+    while let Some(r) = cur.get("$ref").and_then(Value::as_str) {
+        let Some(pointer) = r.strip_prefix('#') else {
+            result.warn(at, format!("external $ref `{r}` is not imported"));
+            return None;
+        };
+        if !seen.insert(r) {
+            result.warn(at, format!("$ref cycle at `{r}`"));
+            return None;
+        }
+        let mut node = root;
+        if !pointer.is_empty() {
+            let Some(rest) = pointer.strip_prefix('/') else {
+                result.warn(at, format!("unsupported $ref `{r}`"));
+                return None;
+            };
+            for seg in rest.split('/') {
+                let seg = super::percent_decode(seg)
+                    .replace("~1", "/")
+                    .replace("~0", "~");
+                let next = match node {
+                    Value::Object(m) => m.get(&seg),
+                    Value::Array(a) => seg.parse::<usize>().ok().and_then(|i| a.get(i)),
+                    _ => None,
+                };
+                match next {
+                    Some(n) => node = n,
+                    None => {
+                        result.warn(at, format!("$ref `{r}` does not resolve"));
+                        return None;
+                    }
+                }
+            }
+        }
+        cur = node;
+    }
+    Some(cur)
+}
+
+fn scalar_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        Value::Array(a) => a.iter().map(scalar_text).collect::<Vec<_>>().join(","),
+        Value::Object(_) => v.to_string(),
+    }
+}
+
+/// An example value for a parameter or media object, if one is given.
+fn example<'a>(
+    doc: &'a Value,
+    node: &'a Value,
+    at: &str,
+    result: &mut ImportResult,
+) -> Option<&'a Value> {
+    if let Some(e) = node.get("example") {
+        return Some(e);
+    }
+    if let Some(m) = node.get("examples").and_then(Value::as_object)
+        && let Some((_, first)) = m.iter().next()
+        && let Some(ex) = deref(doc, first, at, result)
+        && let Some(v) = ex.get("value")
+    {
+        return Some(v);
+    }
+    let schema = deref(doc, node.get("schema")?, at, result)?;
+    schema.get("example").or_else(|| schema.get("default"))
+}
+
+fn operation(
+    doc: &Value,
+    result: &mut ImportResult,
+    path: &str,
+    method: Method,
+    item: &Value,
+    op: &Value,
+) -> (Option<String>, Request) {
+    let fallback = format!("{} {path}", method_name(method));
+    let mut name = text(op.get("summary"));
+    if name.trim().is_empty() {
+        name = text(op.get("operationId"));
+    }
+    if name.trim().is_empty() {
+        name = fallback.clone();
+    }
+    let at = format!("{path} {}", method_name(method));
+    let mut req = Request {
+        name: name.clone(),
+        method,
+        url: format!("{{{{baseUrl}}}}{path}"),
+        ..Request::default()
+    };
+
+    // Path-level parameters first; an operation parameter replaces one with
+    // the same name and location.
+    let mut params: Vec<&Value> = Vec::new();
+    let mut keys: Vec<(String, String)> = Vec::new();
+    for list in [item.get("parameters"), op.get("parameters")] {
+        for p in list.and_then(Value::as_array).into_iter().flatten() {
+            let Some(p) = deref(doc, p, &at, result) else {
+                continue;
+            };
+            let key = (text(p.get("name")), text(p.get("in")));
+            if let Some(i) = keys.iter().position(|k| *k == key) {
+                params[i] = p;
+            } else {
+                keys.push(key);
+                params.push(p);
+            }
+        }
+    }
+    for p in params {
+        let pname = text(p.get("name"));
+        if pname.is_empty() {
+            continue;
+        }
+        let value = example(doc, p, &at, result).map(scalar_text);
+        let required = p.get("required").and_then(Value::as_bool).unwrap_or(false);
+        let kv = |value: Option<String>| KeyValue {
+            enabled: required || value.is_some(),
+            name: pname.clone(),
+            value: value.unwrap_or_default(),
+        };
+        match text(p.get("in")).as_str() {
+            "path" => req.path.push(Var {
+                name: pname,
+                value: value.unwrap_or_default(),
+            }),
+            "query" => req.params.push(kv(value)),
+            "header" => {
+                if !["accept", "content-type", "authorization"]
+                    .contains(&pname.to_ascii_lowercase().as_str())
+                {
+                    req.headers.push(kv(value));
+                }
+            }
+            other => result.warn(
+                &at,
+                format!("`{other}` parameter `{pname}` is not imported"),
+            ),
+        }
+    }
+
+    if let Some(body) = op.get("requestBody")
+        && let Some(body) = deref(doc, body, &at, result)
+        && let Some(content) = body.get("content").and_then(Value::as_object)
+    {
+        let json = content
+            .iter()
+            .find(|(k, _)| k.as_str() == "application/json")
+            .or_else(|| content.iter().find(|(k, _)| k.contains("json")));
+        match json {
+            Some((_, media)) => {
+                let content = example(doc, media, &at, result)
+                    .map(|v| match v {
+                        Value::String(s) => s.clone(),
+                        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+                    })
+                    .unwrap_or_default();
+                req.body = Body::Json(TextBody {
+                    content,
+                    sidecar: None,
+                });
+            }
+            None => {
+                let kinds: Vec<&str> = content.keys().map(String::as_str).collect();
+                result.warn(
+                    &at,
+                    format!("request body type {} is not imported", kinds.join(", ")),
+                );
+            }
+        }
+    }
+
+    let tag = op
+        .get("tags")
+        .and_then(Value::as_array)
+        .and_then(|t| t.first())
+        .map(|t| text(Some(t)))
+        .filter(|t| !t.trim().is_empty());
+    (tag, req)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const JSON: &[u8] = include_bytes!("../../tests/fixtures/import/openapi.json");
+    const YAML: &[u8] = include_bytes!("../../tests/fixtures/import/openapi.yaml");
+
+    fn requests(items: &[ImportItem]) -> Vec<&Request> {
+        let mut out = Vec::new();
+        for i in items {
+            match i {
+                ImportItem::Request { request, .. } => out.push(request),
+                ImportItem::Folder { items, .. } => out.extend(requests(items)),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn json_and_yaml_are_equal() {
+        assert_eq!(parse(JSON).unwrap(), parse(YAML).unwrap());
+    }
+
+    #[test]
+    fn operations_and_names() {
+        let r = parse(JSON).unwrap();
+        assert_eq!(r.name, "Pets API");
+        let reqs = requests(&r.items);
+        let names: Vec<_> = reqs.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"List pets"));
+        assert!(names.contains(&"getPet"));
+        assert!(names.contains(&"DELETE /pets/{id}"));
+        let list = reqs.iter().find(|r| r.name == "List pets").unwrap();
+        assert_eq!(list.url, "{{baseUrl}}/pets");
+        assert_eq!(list.params[0].name, "limit");
+        assert_eq!(list.params[0].value, "10");
+        let ImportItem::Folder { name, .. } = &r.items[0] else {
+            panic!()
+        };
+        assert_eq!(name, "pets");
+    }
+
+    #[test]
+    fn two_servers_two_environments() {
+        let r = parse(JSON).unwrap();
+        assert_eq!(r.environments.len(), 2);
+        assert_eq!(r.environments[0].name, "Production");
+        assert_eq!(
+            r.environments[0].vars[0].value,
+            "https://api.example.com/v2"
+        );
+        assert_eq!(r.environments[1].vars[0].name, "baseUrl");
+    }
+
+    #[test]
+    fn body_example_and_path_params() {
+        let r = parse(JSON).unwrap();
+        let reqs = requests(&r.items);
+        let create = reqs.iter().find(|r| r.name == "Create pet").unwrap();
+        let Body::Json(t) = &create.body else {
+            panic!()
+        };
+        assert!(t.content.contains("rex"));
+        let get = reqs.iter().find(|r| r.name == "getPet").unwrap();
+        assert_eq!(get.path[0].name, "id");
+        assert_eq!(get.path[0].value, "42");
+    }
+
+    #[test]
+    fn ref_cycle_terminates_and_external_warns() {
+        let r = parse(JSON).unwrap();
+        assert!(r.warnings.iter().any(|w| w.message.contains("cycle")));
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.message.contains("external $ref"))
+        );
+    }
+
+    #[test]
+    fn swagger_2_is_error() {
+        let e = parse(br#"{"swagger":"2.0","paths":{}}"#).unwrap_err();
+        assert!(matches!(e, ImportError::Unsupported(_)));
+        assert!(parse(b"{}").is_err());
+        assert!(parse(b"just: text").is_err());
+    }
+
+    #[test]
+    fn server_variables_use_defaults() {
+        let r = parse(
+            br#"{"openapi":"3.1.0","servers":[{"url":"https://{env}.x.com","variables":{"env":{"default":"dev"}}}],"paths":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.environments[0].vars[0].value, "https://dev.x.com");
+    }
+
+    #[test]
+    fn hostile_inputs() {
+        let t = std::time::Instant::now();
+        let big = vec![b' '; super::super::MAX_INPUT_BYTES + 1];
+        assert!(matches!(parse(&big), Err(ImportError::TooLarge(_))));
+        let deep = format!("{}{}", "[".repeat(65), "]".repeat(65));
+        assert!(matches!(parse(deep.as_bytes()), Err(ImportError::TooDeep)));
+        let mut paths = String::new();
+        for i in 0..5001 {
+            if i > 0 {
+                paths.push(',');
+            }
+            paths.push_str(&format!(r#""/p{i}":{{"get":{{}}}}"#));
+        }
+        let doc = format!(r#"{{"openapi":"3.0.0","paths":{{{paths}}}}}"#);
+        assert!(matches!(
+            parse(doc.as_bytes()),
+            Err(ImportError::TooLarge(_))
+        ));
+        assert!(t.elapsed().as_secs() < 2);
+    }
+}
