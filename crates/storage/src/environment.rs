@@ -31,13 +31,7 @@ fn valid_name(name: &str) -> bool {
     if name.contains("..") || name.to_ascii_lowercase().ends_with(".secrets") {
         return false;
     }
-    // Windows reserved device names, with or without an extension.
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
-    !reserved
+    !crate::fs::is_reserved_device_name(name)
 }
 
 fn check_name(root: &Path, name: &str) -> Result<(), StorageError> {

@@ -95,6 +95,10 @@ fn check_name(name: &str) -> Result<()> {
     if name.trim_start().starts_with('.') {
         return Err(invalid(Path::new(name), "a name may not start with `.`"));
     }
+    // Windows device names, for the name as typed and for the file it becomes.
+    if fs::is_reserved_device_name(name.trim()) || fs::is_reserved_device_name(&slug(name)) {
+        return Err(invalid(Path::new(name), "is a reserved device name"));
+    }
     Ok(())
 }
 
@@ -598,6 +602,11 @@ pub fn rename_folder(root: &Path, rel: &Path, new_name: &str) -> Result<PathBuf>
 
 /// Move a request (with its sidecar) or a folder into `new_parent`.
 pub fn move_node(root: &Path, rel: &Path, new_parent: &Path) -> Result<PathBuf> {
+    if let Some(n) = rel.file_name()
+        && fs::is_reserved_device_name(&n.to_string_lossy())
+    {
+        return Err(invalid(rel, "is a reserved device name"));
+    }
     let rootc = canon_root(root)?;
     let (rel, kind) = clean_node(&rootc, rel, true)?;
     let dest_rel = clean_dir(&rootc, new_parent)?;

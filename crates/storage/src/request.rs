@@ -221,6 +221,12 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
     if name.to_ascii_lowercase().ends_with(".toml") {
         return Err(bad("must not be a .toml file"));
     }
+    if name.ends_with(['.', ' ']) {
+        return Err(bad("must not end with a dot or a space"));
+    }
+    if fs::is_reserved_device_name(name) {
+        return Err(bad("is a reserved device name"));
+    }
     let own = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
     if own.as_deref() == Some(name.to_lowercase().as_str()) {
         return Err(bad("is the request file itself"));
@@ -231,8 +237,11 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
         (Ok(t), Ok(r)) => t == r,
         _ => false,
     };
-    if same {
+    if same || fs::same_file_entry(&target, path) {
         return Err(bad("is the request file itself"));
+    }
+    if fs::same_file_entry_any_toml(dir, &target) {
+        return Err(bad("is the same file as a request file in the folder"));
     }
     if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
         let inside = match (std::fs::canonicalize(&target), std::fs::canonicalize(dir)) {
@@ -241,6 +250,11 @@ fn sidecar_path(dir: &Path, path: &Path, name: &str) -> Result<PathBuf, StorageE
         };
         if !inside {
             return Err(bad("is a symlink that leaves the request's folder"));
+        }
+        let to_toml = std::fs::canonicalize(&target)
+            .is_ok_and(|t| t.to_string_lossy().to_ascii_lowercase().ends_with(".toml"));
+        if to_toml {
+            return Err(bad("is a symlink to a .toml file"));
         }
     }
     Ok(target)

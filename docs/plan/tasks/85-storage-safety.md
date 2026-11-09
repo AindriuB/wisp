@@ -70,6 +70,10 @@ Windows hard links: std has no stable file-identity API on Windows, so the hard-
 
 ## Notes
 
+- Failing-tests commit: bc209c4. With a stub `is_reserved_device_name` returning false, 9 tests failed there: `sidecar_rejects_trailing_dot`, `_trailing_space`, `_reserved_stem`, `_symlink_to_sibling_toml`, `_hard_link_to_request`, `_hard_link_to_sibling`, `reserved_device_names_cover_the_full_set`, `environment_rejects_com0_and_lpt0`, and the ops test `reserved_device_names_rejected_by_create_rename_move`.
+- The hard-link rule (`fs::same_file_entry`) uses Unix dev/ino only; on Windows it is always false (std has no stable identity API there, and no dependency was added).
+- ops.rs: `check_name` rejects reserved names as typed or as slugged (create, rename); `move_node` rejects a reserved file name before any fs call.
+
 ## Amendment — user decisions (2026-11-09)
 
 - Windows reserved device names (CON, PRN, AUX, NUL, COM0-9, LPT0-9, any case, with or without an extension, and trailing-dot/space aliases) are also rejected when creating, renaming or moving requests and folders through crates/storage/src/ops.rs. Owns gains crates/storage/src/ops.rs. Add failing-first tests for create/rename/move with such names, returning StorageError::Invalid before any filesystem call.
