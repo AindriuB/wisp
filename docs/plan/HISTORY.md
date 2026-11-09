@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Windows v0.1.0 hand-tested; README updated
+The user hand-tested the released v0.1.0 Windows x64 build and reports it works perfectly. The README's "Platform testing" section now says the maintainer hand-tested Windows after release, and asks for reports only for Linux with a real GPU.
+**Cost:** None; the claim was held back until the test was done, as the 2026-11-03 entry required.
+
 ## 2026-11-03 — v0.1.0 tagged before the Windows hand test; README corrected
 v0.1.0 was tagged on 2026-11-03 at the user's instruction before Windows had been hand-tested. The signed, notarised macOS Apple-silicon candidate (release.yml run 41732285511) was hand-tested by the user and passed, including open and quit by Cmd-Q, the close button and Dock Quit with no crash. Windows is covered by CI only: measure.yml builds and runs it on windows-latest (within budget, WISP_EVENT completed) and the release dry runs confirmed a GUI-subsystem exe, a static CRT and the icon resource. The README's "Platform testing" section had said Windows was hand-tested; it now says it was not.
 **Cost:** The README claim was written ahead of the test and had to be walked back after the tag. Do not state a platform as hand-tested in docs until the user has done it. The user plans the Windows hand test for 2026-11-04.
