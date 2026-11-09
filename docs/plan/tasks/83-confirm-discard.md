@@ -79,3 +79,23 @@ macOS the app menu also gets Hide Wisp (⌘H), Hide Others (⌥⌘H) and Show Al
 - docs/architecture.md and the README: the scribe records the gap.
 
 ## Notes
+GPUI paths are in `gpui-pre*-0.3.10/src` under the cargo registry.
+
+Paths that ask (all platforms): Cmd-Q / Ctrl-Q, the macOS "Quit Wisp" menu
+item, the window close button (`on_window_should_close`), the × button on a
+tab, Cmd-W / Ctrl-W, the palette's "Close tab" and the banner's close button.
+
+Paths that cannot ask, so a dirty draft is dropped:
+
+| Platform | Path | Why it cannot be intercepted |
+|---|---|---|
+| macOS | Dock "Quit", AppleScript `quit`, logout, restart, shutdown | The app delegate implements only `applicationWillTerminate:` (gpui-pre-macos-0.3.10/src/platform.rs:91, :1380) and no `applicationShouldTerminate:`; `terminate:` cannot be vetoed. The internal `on_quit` (gpui-pre-0.3.10/src/app.rs:1152) is not public. |
+| Windows | `WM_QUERYENDSESSION` (logoff, restart, shutdown) | Answered with 1 unconditionally (gpui-pre-windows-0.3.10/src/platform.rs:1203); `WM_ENDSESSION` then runs `handle_end_session` (:1204). |
+| Linux | SIGTERM, session end | GPUI installs no signal handler (no SIGTERM/signal handling under gpui-pre-linux-0.3.10/src; the only "signal" hits are calloop and frame-callback code), so the default action ends the process. |
+
+Hand-check (macOS, release bundle or `cargo run`):
+1. Edit a request so its tab shows the dirty dot. Press Cmd-Q. Expect the "Discard unsaved changes?" prompt ("Quitting closes all tabs."). Cancel: the app stays and the draft is intact.
+2. Cmd-Q again, Discard: the app quits.
+3. With a dirty tab, click the red window button. Same prompt; Cancel keeps the app, Discard quits.
+4. With a dirty tab, press Cmd-W (or click its ×). Prompt says `"<title>" has unsaved changes.`; Cancel keeps the tab, Discard closes only that tab. A clean tab closes with no prompt.
+5. Press Cmd-H: the app hides. The Wisp menu shows Hide Wisp, Hide Others (Opt-Cmd-H) and Show All.

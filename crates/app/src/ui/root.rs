@@ -25,7 +25,47 @@ use crate::ui::request::RequestPane;
 use crate::ui::response::ResponsePane;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::url_bar::UrlBar;
-use crate::workspace::{Workspace, WorkspaceEvent};
+use crate::workspace::{CloseStep, Workspace, WorkspaceEvent, close_step};
+
+/// Close `tab`, asking first when it holds unsaved changes. After the answer
+/// the tab is looked up by entity: its index may have moved or it may be gone.
+fn request_close_tab(
+    ws: &Entity<Workspace>,
+    tab: &Entity<RequestTab>,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let (dirty, title) = {
+        let t = tab.read(cx);
+        (t.is_dirty(), t.title())
+    };
+    let active = window.has_active_prompt() || ws.read(cx).prompt_up;
+    match close_step(dirty, active) {
+        CloseStep::Nothing => {}
+        CloseStep::Close => ws.update(cx, |w, cx| w.close_tab_entity(tab, cx)),
+        CloseStep::Prompt => {
+            ws.update(cx, |w, _| w.prompt_up = true);
+            let answer = window.prompt(
+                PromptLevel::Warning,
+                "Discard unsaved changes?",
+                Some(&format!("\"{title}\" has unsaved changes.")),
+                &["Discard", "Cancel"],
+                cx,
+            );
+            let (ws, tab) = (ws.clone(), tab.clone());
+            cx.spawn(async move |cx| {
+                let discard = matches!(answer.await, Ok(0));
+                ws.update(cx, |w, cx| {
+                    w.prompt_up = false;
+                    if discard {
+                        w.close_tab_entity(&tab, cx);
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+}
 
 /// Views belonging to one open tab, created lazily on first render.
 struct TabViews {
@@ -297,6 +337,7 @@ impl Render for WorkspaceView {
                 let t = t.read(cx);
                 let dirty = if t.is_dirty() { "● " } else { "" };
                 let ws = self.workspace.clone();
+                let tab_entity = tabs[ix].clone();
                 // Stop mouse-down so pressing × does not activate the tab first.
                 let close = div()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -307,9 +348,9 @@ impl Render for WorkspaceView {
                             .ghost()
                             .xsmall()
                             .tooltip("Close tab")
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
-                                ws.update(cx, |w, cx| w.close_tab(ix, cx));
+                                request_close_tab(&ws, &tab_entity, window, cx);
                             }),
                     );
                 Tab::new()
@@ -417,12 +458,15 @@ impl Render for WorkspaceView {
                 this.workspace
                     .update(cx, |w, cx| drop(w.new_scratch_tab(String::new(), cx)));
             }))
-            .on_action(cx.listener(|this, _: &CloseTab, _, cx| {
-                this.workspace.update(cx, |w, cx| {
-                    if let Some(ix) = w.active {
-                        w.close_tab(ix, cx);
-                    }
-                });
+            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                let active = this
+                    .workspace
+                    .read(cx)
+                    .active
+                    .and_then(|ix| this.workspace.read(cx).tabs.get(ix).cloned());
+                if let Some(tab) = active {
+                    request_close_tab(&this.workspace, &tab, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &NextTab, _, cx| {
                 this.workspace.update(cx, |w, cx| {
