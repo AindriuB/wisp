@@ -18,7 +18,7 @@ accepted = [
     "MPL-2.0",
 ]
 
-# The three 0.1.0 release targets.
+# The three 0.1.1 release targets.
 targets = [
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",

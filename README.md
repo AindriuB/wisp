@@ -2,7 +2,7 @@
 
 Wisp is a portable, lightweight HTTP client for developers working locally, in the spirit of Postman, Bruno and Insomnia. It ships as one self-contained binary per platform, with no installer, and it keeps its collections as TOML files in an ordinary folder, so they diff and review well in git. You open a collection folder, pick an environment, send a request and read the response. Its reason to exist is staying small and light on memory. The interface is built with GPUI, the framework behind the Zed editor.
 
-This is version 0.1.0, the first release. Scripting, importers (Postman, OpenAPI, curl), GraphQL, OAuth2, and a history view are not in it.
+This is version 0.1.1, a patch release after 0.1.0. Scripting, importers (Postman, OpenAPI, curl), GraphQL, OAuth2, and a history view are not in it.
 
 ## Install
 
@@ -10,38 +10,38 @@ Download the archive for your platform and `SHA256SUMS` from the GitHub Release.
 
 ### macOS (Apple silicon)
 
-The asset is `Wisp-0.1.0-macos-arm64.zip`. Apple silicon is required; Intel Macs are not supported.
+The asset is `Wisp-0.1.1-macos-arm64.zip`. Apple silicon is required; Intel Macs are not supported.
 
 ```sh
 shasum -a 256 -c --ignore-missing SHA256SUMS
-unzip Wisp-0.1.0-macos-arm64.zip
+unzip Wisp-0.1.1-macos-arm64.zip
 ```
 
-The zip holds a `Wisp-0.1.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is signed with a Developer ID certificate and notarised by Apple, so it opens without a Gatekeeper warning. A build you make from source is not signed, and macOS may block it.
+The zip holds a `Wisp-0.1.1-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is signed with a Developer ID certificate and notarised by Apple, so it opens without a Gatekeeper warning. A build you make from source is not signed, and macOS may block it.
 
 The command palette opens with ⌘K.
 
 ### Windows (x64)
 
-The asset is `Wisp-0.1.0-windows-x64.zip`.
+The asset is `Wisp-0.1.1-windows-x64.zip`.
 
 ```powershell
-(Get-FileHash Wisp-0.1.0-windows-x64.zip -Algorithm SHA256).Hash
-Select-String Wisp-0.1.0-windows-x64.zip SHA256SUMS
+(Get-FileHash Wisp-0.1.1-windows-x64.zip -Algorithm SHA256).Hash
+Select-String Wisp-0.1.1-windows-x64.zip SHA256SUMS
 ```
 
-The two hashes must match, ignoring case. Unpack the zip (Extract All in Explorer, or `Expand-Archive`). It holds a `Wisp-0.1.0-windows-x64` folder with `wisp.exe`; put the folder wherever you like and run `wisp.exe`. The executable is not signed, so SmartScreen shows "Windows protected your PC" on first launch. Click "More info", then "Run anyway". The command palette opens with Ctrl+K.
+The two hashes must match, ignoring case. Unpack the zip (Extract All in Explorer, or `Expand-Archive`). It holds a `Wisp-0.1.1-windows-x64` folder with `wisp.exe`; put the folder wherever you like and run `wisp.exe`. The executable is not signed, so SmartScreen shows "Windows protected your PC" on first launch. Click "More info", then "Run anyway". The command palette opens with Ctrl+K.
 
 ### Linux (x64)
 
-The asset is `Wisp-0.1.0-linux-x64.tar.gz`.
+The asset is `Wisp-0.1.1-linux-x64.tar.gz`.
 
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS
-tar -xzf Wisp-0.1.0-linux-x64.tar.gz
+tar -xzf Wisp-0.1.1-linux-x64.tar.gz
 ```
 
-The archive holds a `Wisp-0.1.0-linux-x64` folder. The folder holds the `wisp` binary, an `icons/` folder and a `share/` folder. To install it for your user, from inside that folder run:
+The archive holds a `Wisp-0.1.1-linux-x64` folder. The folder holds the `wisp` binary, an `icons/` folder and a `share/` folder. To install it for your user, from inside that folder run:
 
 ```sh
 cp wisp ~/.local/bin/

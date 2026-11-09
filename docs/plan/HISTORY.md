@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Workspace version 0.1.1
+The workspace version is 0.1.1, so the release archives and `cargo metadata` report 0.1.1 and carry the fixes from tasks 83 to 88. Only `[workspace.package] version` and the three wisp-* lines in `Cargo.lock` changed; README, `docs/architecture.md` and `about.toml` now name 0.1.1 where they describe the current version.
+**Cost:** Nothing was tried and abandoned. The README archive names now point at assets that do not exist until 0.1.1 is tagged and published, so the README and the release must land together.
+
 ## 2026-11-09 — Linux window icon, app id and desktop launcher
 On Linux, Wisp now sets its window app id and, on X11, a 256 px window icon (embedded PNG decoded with the `image` crate, added as a workspace dependency). The Linux release tar also ships `share/applications/io.github.aindriub.wisp.desktop` and five `share/icons/hicolor/<size>/apps/io.github.aindriub.wisp.png` files, so Wayland compositors, which take the icon from the `.desktop` entry matching the app id, can show it once the user copies `share/*` to `~/.local/share/`. macOS and Windows window options are unchanged and the macOS binary did not grow.
 **Cost:** GPUI 0.3.10 sets a window icon on X11 only, so there is no in-app way to give Wayland an icon; the launcher entry is the only route and it needs `Exec=wisp`, hence the binary must be on PATH. The Linux-only code could not be compiled on the macOS dev machine and was first compiled by the branch CI on ubuntu-24.04. Nothing has been hand-tested on a real Linux desktop yet; see the checklist below.
