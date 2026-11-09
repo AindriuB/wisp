@@ -286,6 +286,18 @@ macOS: `package.sh` compiles `AppIcon.icon` with `actool` into `Assets.car`, so 
 
 Wisp has one window, and closing it quits the app: every window close is routed through `cx.quit()`, so the process never runs windowless. Quit is the `Quit` action (cmd-q on macOS, ctrl-q elsewhere) and, on macOS, the Quit item in the "Wisp" app menu. This also avoids a Touch Bar Mac abort in Dock Quit, caused upstream by `accesskit_macos` restoring the content view's class on window drop; `scripts/measure/quit-check.sh` checks a clean exit.
 
+Quit and close ask before they discard unsaved drafts. The `Quit` action and the window close button go through one function that prompts "Discard unsaved changes?" when any tab is dirty; closing a dirty tab (the × button, cmd-w, the palette and the banner) prompts the same way. A `prompt_up` flag stops a second prompt opening while one is showing. The `Quit` handler defers its work with `cx.defer`, because global action listeners run inside the active window's update, where a nested `handle.update` on that window fails with "window not found". On macOS the Wisp menu also has Hide Wisp (cmd-h), Hide Others (alt-cmd-h) and Show All.
+
+Some paths cannot ask, because GPUI 0.3.10 gives no way to veto them, so a dirty draft is dropped without a prompt:
+
+| Platform | Path | Why it cannot be intercepted |
+|---|---|---|
+| macOS | Dock Quit, AppleScript `quit`, logout, restart, shutdown | The app delegate implements only `applicationWillTerminate:` (gpui-pre-macos-0.3.10/src/platform.rs:91, :1380), with no `applicationShouldTerminate:`. The internal `on_quit` (gpui-pre-0.3.10/src/app.rs:1152) is not public. |
+| Windows | Logoff, restart, shutdown (`WM_QUERYENDSESSION`) | Answered with 1 unconditionally (gpui-pre-windows-0.3.10/src/platform.rs:1203). |
+| Linux | SIGTERM, session end | GPUI installs no signal handler, so the default action ends the process. |
+
+This is a documented gap. Fixing it would need an objc swizzle of `terminate:`, a new dependency or a GPUI patch, and the task that added the prompts ruled all three out.
+
 ## Decisions worth knowing
 
 All dated 2026-10-29; rationale in the spec's Decisions table.

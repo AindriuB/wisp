@@ -23,10 +23,13 @@ actions!(
     ]
 );
 
+#[cfg(target_os = "macos")]
+actions!(wisp, [HideApp, HideOthers, ShowAll]);
+
 /// Every default binding as (keystroke, action name), with the primary modifier
 /// (`cmd` on macOS, `ctrl` elsewhere) spelled out per platform.
 #[cfg(target_os = "macos")]
-const KEYS: [(&str, &str); 11] = [
+const KEYS: [(&str, &str); 13] = [
     ("cmd-enter", "send"),
     ("cmd-s", "save"),
     ("cmd-k", "palette"),
@@ -38,6 +41,8 @@ const KEYS: [(&str, &str); 11] = [
     ("ctrl-shift-tab", "prev"),
     ("escape", "cancel"),
     ("cmd-q", "quit"),
+    ("cmd-h", "hide"),
+    ("alt-cmd-h", "hide-others"),
 ];
 #[cfg(not(target_os = "macos"))]
 const KEYS: [(&str, &str); 11] = [
@@ -120,6 +125,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new(key(9), CancelRequest, None),
         KeyBinding::new(key(10), Quit, None),
     ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new(key(11), HideApp, None),
+        KeyBinding::new(key(12), HideOthers, None),
+    ]);
 }
 
 #[cfg(test)]
@@ -172,12 +182,33 @@ mod tests {
     #[test]
     fn bind_keys_indices_match_names() {
         let names = [
-            "send", "save", "palette", "env", "new", "close", "open", "next", "prev", "cancel",
+            "send",
+            "save",
+            "palette",
+            "env",
+            "new",
+            "close",
+            "open",
+            "next",
+            "prev",
+            "cancel",
             "quit",
+            #[cfg(target_os = "macos")]
+            "hide",
+            #[cfg(target_os = "macos")]
+            "hide-others",
         ];
         for (i, n) in names.iter().enumerate() {
             assert_eq!(KEYS[i].1, *n);
             assert_eq!(key(i), KEYS[i].0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hide_bindings_parse_on_mac() {
+        for i in [11, 12] {
+            gpui::Keystroke::parse(key(i)).expect("keystroke parses");
         }
     }
 }

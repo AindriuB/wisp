@@ -58,6 +58,8 @@ pub struct Workspace {
     watcher: Option<Watcher>,
     _watch_task: Option<Task<()>>,
     empty_defaults: CollectionDefaults,
+    /// True while a discard prompt is waiting for an answer.
+    pub prompt_up: bool,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -92,7 +94,36 @@ fn open_needs_confirm(dirty: impl IntoIterator<Item = bool>) -> bool {
     dirty.into_iter().any(|d| d)
 }
 
+/// What closing one tab does.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CloseStep {
+    Close,
+    Prompt,
+    Nothing,
+}
+
+/// Decide a tab close from (tab dirty, a prompt already up).
+pub fn close_step(dirty: bool, prompt_active: bool) -> CloseStep {
+    match (dirty, prompt_active) {
+        (false, _) => CloseStep::Close,
+        (true, false) => CloseStep::Prompt,
+        (true, true) => CloseStep::Nothing,
+    }
+}
+
 impl Workspace {
+    /// True when any tab holds unsaved changes.
+    pub fn any_dirty(&self, cx: &gpui::App) -> bool {
+        self.tabs.iter().any(|t| t.read(cx).is_dirty())
+    }
+
+    /// Close the tab `tab` if it is still open; the index may have moved.
+    pub fn close_tab_entity(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tabs.iter().position(|t| t == tab) {
+            self.close_tab(ix, cx);
+        }
+    }
+
     pub fn new(
         settings: Settings,
         settings_path: Option<PathBuf>,
@@ -116,6 +147,7 @@ impl Workspace {
             watcher: None,
             _watch_task: None,
             empty_defaults: CollectionDefaults::default(),
+            prompt_up: false,
         };
         this.spawn_drain(events, cx);
         if let Some(root) = open
@@ -740,6 +772,22 @@ fn describe_problems(e: &ResolveError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_step_clean_closes() {
+        assert_eq!(close_step(false, false), CloseStep::Close);
+        assert_eq!(close_step(false, true), CloseStep::Close);
+    }
+
+    #[test]
+    fn close_step_dirty_prompts() {
+        assert_eq!(close_step(true, false), CloseStep::Prompt);
+    }
+
+    #[test]
+    fn close_step_dirty_with_prompt_up_does_nothing() {
+        assert_eq!(close_step(true, true), CloseStep::Nothing);
+    }
 
     #[test]
     fn describe_problems_names_all_variants_without_values() {

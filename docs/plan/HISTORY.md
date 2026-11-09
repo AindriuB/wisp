@@ -17,6 +17,17 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Ask before discarding unsaved changes on quit and close
+Quitting (⌘Q or Ctrl-Q, the macOS Quit Wisp menu item, the window close button) and closing a dirty tab (× button, ⌘W, the palette, the banner) now show "Discard unsaved changes?" with Discard and Cancel when a draft is dirty; clean state quits or closes at once. Two pure helpers (`quit_step`, `close_step`) decide the outcome, a `prompt_up` flag prevents a second prompt, and Discard closes the tab by entity, not by the index captured earlier. On macOS the Wisp menu also gained Hide Wisp (⌘H), Hide Others (⌥⌘H) and Show All. Dock Quit, logout and shutdown cannot be intercepted and are documented in `docs/architecture.md#app-lifecycle` and the README.
+**Cost:** The first version registered the global `Quit` handler to call `handle.update` on the window; global listeners run inside the active window's update, so that nested update fails with "window not found" and the app ignored ⌘Q entirely. It is now run through `cx.defer`. `quit-check.sh` did not catch it because it quits through AppleScript `terminate:` and the `WISP_CLOSE_WINDOW_AFTER_MS` hook, never the `Quit` action; do not trust that script for this path. Intercepting `terminate:` needs an objc swizzle, a dependency or a GPUI patch and was ruled out. The open-collection and delete prompts still do not set `prompt_up` (see PLAN).
+**Release hand-test checklist** (the repo keeps none, so it lives here; macOS, release bundle or `cargo run`):
+1. With no dirty tab, ⌘Q quits at once.
+2. Edit a request so its tab shows the dirty dot. ⌘Q shows the prompt ("Quitting closes all tabs."). Cancel: the app stays and the draft is intact.
+3. ⌘Q again, Discard: the app quits.
+4. Wisp menu → Quit Wisp with a dirty tab shows the same prompt.
+5. With a dirty tab, click the red window button. Same prompt; Cancel keeps the app, Discard quits.
+6. With a dirty tab, ⌘W or its ×: the prompt says `"<title>" has unsaved changes.`; Cancel keeps the tab, Discard closes only it. A clean tab closes with no prompt.
+7. ⌘H hides the app. The Wisp menu shows Hide Wisp, Hide Others (⌥⌘H) and Show All.
 ## 2026-11-09 — Storage rejects Windows-unsafe and aliasing names
 Sidecar body files are now rejected (`StorageError::Invalid`, key `body.file`) on load and save when the name ends in a dot or space, has a Windows reserved device stem, resolves to a `.toml` file (including Windows 8.3 short names), or is a Unix hard link to the request or any sibling `.toml`. One reserved-name helper in `fs.rs` covers CON, PRN, AUX, NUL, COM0-9 and LPT0-9 (and superscript forms) and is used by environment names and by create, rename and move in `ops.rs`.
 **Cost:** The hard-link rule is Unix-only because std has no stable file-identity API on Windows and we added no dependency. The first acceptance test renamed `b.toml` to `B.TOML` and then read `b.toml`, which failed on case-sensitive Linux; the production check was right. The 8.3 alias test is best-effort and depends on the volume having short names on (see PLAN follow-ups). Do not rely on the symlink-to-`.toml` check alone for Unix; the dev/ino check is what the tests actually exercise.
