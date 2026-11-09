@@ -163,8 +163,17 @@ fn main() {
         if let Ok(handle) = &opened {
             let handle = *handle;
             cx.on_action(move |_: &actions::Quit, cx| {
+                // Actions reach global listeners inside the active window's update, so
+                // the window is not reachable yet: run after that update finishes.
                 let ws = workspace.clone();
-                let _ = handle.update(cx, |_, window, cx| request_quit(&ws, window, cx));
+                cx.defer(move |cx| {
+                    if handle
+                        .update(cx, |_, window, cx| request_quit(&ws, window, cx))
+                        .is_err()
+                    {
+                        quit_app(cx);
+                    }
+                });
             });
         }
         if let Err(err) = opened {

@@ -771,7 +771,7 @@ fn describe_problems(e: &ResolveError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseStep, close_step};
+    use super::*;
 
     #[test]
     fn close_step_clean_closes() {
@@ -788,8 +788,6 @@ mod tests {
     fn close_step_dirty_with_prompt_up_does_nothing() {
         assert_eq!(close_step(true, true), CloseStep::Nothing);
     }
-
-    use super::*;
 
     #[test]
     fn describe_problems_names_all_variants_without_values() {
