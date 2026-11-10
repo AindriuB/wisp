@@ -162,7 +162,91 @@ fn quit_save_needed(saving: bool, dirty: bool) -> bool {
     saving && dirty
 }
 
+/// A queued cookie operation, as far as the quit plan cares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QuitOp {
+    Save,
+    Enable,
+    Disable,
+}
+
+/// What quit does for one collection: the last queued toggle first, then a final save.
+#[derive(PartialEq, Eq, Debug)]
+struct QuitPlan {
+    toggle: Option<QuitOp>,
+    save: bool,
+}
+
+/// Plan the quit work for one collection. `saving_now` is whether saving is on and healthy;
+/// `dirty` is whether the jar has changes not yet saved (or a save was still queued).
+fn plan_quit(queued: &[QuitOp], saving_now: bool, dirty: bool) -> QuitPlan {
+    let toggle = queued
+        .iter()
+        .rev()
+        .copied()
+        .find(|op| matches!(op, QuitOp::Enable | QuitOp::Disable));
+    let saving = match toggle {
+        Some(QuitOp::Enable) => true,
+        Some(_) => false,
+        None => saving_now,
+    };
+    QuitPlan {
+        toggle,
+        save: quit_save_needed(saving, dirty),
+    }
+}
+
+/// Quit work for one collection, ready to run on a worker thread.
+struct QuitWork {
+    id: String,
+    plan: QuitPlan,
+    /// Snapshot for the toggle's enable and the final save.
+    cookies: Vec<StoredCookie>,
+}
+
 impl CookieStatus {
+    /// Saving is on and healthy: loaded, enabled and no error since the toggle.
+    fn saving(&self) -> bool {
+        self.loaded && self.enabled && self.error.is_none()
+    }
+
+    /// Apply a finished job's outcome. Returns the error to tell the user, if any. Merging
+    /// loaded cookies into the jar is the caller's job.
+    fn apply(&mut self, done: &CookieDone) -> Option<String> {
+        match done {
+            CookieDone::Loaded(Ok(None)) => {
+                self.apply_loaded(false);
+                None
+            }
+            CookieDone::Loaded(Ok(Some(_))) => {
+                self.apply_loaded(true);
+                None
+            }
+            CookieDone::Loaded(Err(e)) => {
+                // The file is left alone until the toggle is turned off and on.
+                self.apply_loaded(true);
+                self.error = Some(e.clone());
+                Some(e.clone())
+            }
+            CookieDone::Saved(Err(e)) => {
+                self.error = Some(e.clone());
+                Some(e.clone())
+            }
+            CookieDone::Enabled(Err(e)) => {
+                self.enabled = false;
+                Some(e.clone())
+            }
+            CookieDone::Disabled(Err(e)) => {
+                self.enabled = true;
+                self.error = Some(e.clone());
+                Some(e.clone())
+            }
+            CookieDone::Saved(Ok(()))
+            | CookieDone::Enabled(Ok(()))
+            | CookieDone::Disabled(Ok(())) => None,
+        }
+    }
+
     /// Apply a finished load; `file_on` is whether the file was found enabled. A toggle
     /// pressed since the load was queued wins, so `enabled` is left to it.
     fn apply_loaded(&mut self, file_on: bool) {
@@ -948,14 +1032,32 @@ impl Workspace {
         this.spawn_drain(events, cx);
         // Flush on quit. gpui's shutdown blocks the main thread, so nothing spawned on the
         // foreground runs: take the snapshot here and save it on a worker thread.
-        this._quit_sub = Some(cx.on_app_quit(|this, cx| match this.take_quit_save() {
-            Some((id, cookies, data)) => cx.background_executor().spawn(async move {
-                if let Some(cid) = CollectionId::parse(&id) {
-                    // `save` re-checks the enabled flag under the file lock.
-                    let _ = CookieFile::new(&data, &cid).save(&cookies, SystemTime::now());
+        this._quit_sub = Some(cx.on_app_quit(|this, cx| {
+            let Some((work, data)) = this.take_quit_work() else {
+                return Task::ready(());
+            };
+            cx.background_executor().spawn(async move {
+                let now = SystemTime::now();
+                for w in work {
+                    let Some(cid) = CollectionId::parse(&w.id) else {
+                        continue;
+                    };
+                    let file = CookieFile::new(&data, &cid);
+                    match w.plan.toggle {
+                        Some(QuitOp::Enable) => {
+                            let _ = file.enable();
+                        }
+                        Some(QuitOp::Disable) => {
+                            let _ = file.disable();
+                        }
+                        _ => {}
+                    }
+                    if w.plan.save {
+                        // `save` re-checks the enabled flag under the file lock.
+                        let _ = file.save(&w.cookies, now);
+                    }
                 }
-            }),
-            None => Task::ready(()),
+            })
         }));
         if let Some(root) = open
             && let Err(e) = this.open_collection(&root, cx)
@@ -2130,21 +2232,47 @@ impl Workspace {
         self.pump_cookies(cx);
     }
 
-    /// The final save for quit: the open collection's snapshot when saving is on and the jar
-    /// changed since the last save. Marks the generation saved.
-    fn take_quit_save(&mut self) -> Option<(String, Vec<StoredCookie>, DataDir)> {
+    /// Quit work: drain the queue, and per collection plan the last queued toggle and a
+    /// final save of the snapshot. Marks saved generations.
+    fn take_quit_work(&mut self) -> Option<(Vec<QuitWork>, DataDir)> {
         let data = self.data_dir.clone()?;
-        let id = self.cookie_saving()?;
-        let jar = self.jars.jar(Some(&id));
-        let generation = jar.generation();
-        let st = self.cookie_files.get_mut(&id)?;
-        st.debounce.observe(generation, Instant::now());
-        if !quit_save_needed(true, st.debounce.dirty()) {
-            return None;
+        let queued: Vec<CookieJob> = self.cookie_queue.drain(..).collect();
+        let mut ids: Vec<String> = self.cookie_saving().into_iter().collect();
+        for job in &queued {
+            if !ids.iter().any(|i| i == job.id()) {
+                ids.push(job.id().to_owned());
+            }
         }
-        st.debounce.saved(generation);
-        let cookies = cookie_ui::to_stored(jar.snapshot(SystemTime::now()));
-        Some((id, cookies, data))
+        let mut work = Vec::new();
+        for id in ids {
+            let ops: Vec<QuitOp> = queued
+                .iter()
+                .filter(|j| j.id() == id)
+                .filter_map(|j| match j {
+                    CookieJob::Save { .. } => Some(QuitOp::Save),
+                    CookieJob::Enable { .. } => Some(QuitOp::Enable),
+                    CookieJob::Disable { .. } => Some(QuitOp::Disable),
+                    CookieJob::Load { .. } => None,
+                })
+                .collect();
+            let jar = self.jars.jar(Some(&id));
+            let generation = jar.generation();
+            let Some(st) = self.cookie_files.get_mut(&id) else {
+                continue;
+            };
+            st.debounce.observe(generation, Instant::now());
+            let dirty = st.debounce.dirty() || ops.contains(&QuitOp::Save);
+            let plan = plan_quit(&ops, st.saving(), dirty);
+            if plan.toggle.is_none() && !plan.save {
+                continue;
+            }
+            if plan.save {
+                st.debounce.saved(generation);
+            }
+            let cookies = cookie_ui::to_stored(jar.snapshot(SystemTime::now()));
+            work.push(QuitWork { id, plan, cookies });
+        }
+        (!work.is_empty()).then_some((work, data))
     }
 
     fn pump_cookies(&mut self, cx: &mut Context<Self>) {
@@ -2176,40 +2304,15 @@ impl Workspace {
     }
 
     fn cookie_done(&mut self, id: &str, done: CookieDone, cx: &mut Context<Self>) {
-        let mut failure: Option<String> = None;
         let jar = self.jars.jar(Some(id));
+        let mut failure = None;
         if let Some(st) = self.cookie_files.get_mut(id) {
-            match done {
-                CookieDone::Loaded(Ok(None)) => st.apply_loaded(false),
-                CookieDone::Loaded(Ok(Some(stored))) => {
-                    st.apply_loaded(true);
-                    // Cookies set while the load ran are newer and win.
-                    let mut records = cookie_ui::to_records(stored);
-                    records.extend(jar.snapshot(SystemTime::now()));
-                    jar.load(records);
-                }
-                CookieDone::Loaded(Err(e)) => {
-                    // The file is left alone until the toggle is turned off and on.
-                    st.apply_loaded(true);
-                    st.error = Some(e.clone());
-                    failure = Some(e);
-                }
-                CookieDone::Saved(Err(e)) => {
-                    st.error = Some(e.clone());
-                    failure = Some(e);
-                }
-                CookieDone::Enabled(Err(e)) => {
-                    st.enabled = false;
-                    failure = Some(e);
-                }
-                CookieDone::Disabled(Err(e)) => {
-                    st.enabled = true;
-                    st.error = Some(e.clone());
-                    failure = Some(e);
-                }
-                CookieDone::Saved(Ok(()))
-                | CookieDone::Enabled(Ok(()))
-                | CookieDone::Disabled(Ok(())) => {}
+            failure = st.apply(&done);
+            if let CookieDone::Loaded(Ok(Some(stored))) = done {
+                // Cookies set while the load ran are newer and win.
+                let mut records = cookie_ui::to_records(stored);
+                records.extend(jar.snapshot(SystemTime::now()));
+                jar.load(records);
             }
         }
         if let Some(e) = failure {
@@ -2241,7 +2344,7 @@ impl Workspace {
     fn cookie_saving(&self) -> Option<String> {
         let id = self.known_id()?;
         let st = self.cookie_files.get(&id)?;
-        (st.loaded && st.enabled && st.error.is_none()).then_some(id)
+        st.saving().then_some(id)
     }
 
     /// Save now if the open collection's jar changed since the last save.
@@ -2353,6 +2456,113 @@ mod tests {
         assert!(!quit_save_needed(true, false));
         assert!(!quit_save_needed(false, true));
         assert!(!quit_save_needed(false, false));
+    }
+
+    #[test]
+    fn quit_plan_disable_after_save_drops_the_save() {
+        let p = plan_quit(&[QuitOp::Save, QuitOp::Disable], true, true);
+        assert_eq!(
+            p,
+            QuitPlan {
+                toggle: Some(QuitOp::Disable),
+                save: false
+            }
+        );
+    }
+
+    #[test]
+    fn quit_plan_last_toggle_wins_then_saves() {
+        let p = plan_quit(&[QuitOp::Disable, QuitOp::Enable], false, true);
+        assert_eq!(
+            p,
+            QuitPlan {
+                toggle: Some(QuitOp::Enable),
+                save: true
+            }
+        );
+    }
+
+    #[test]
+    fn quit_plan_empty_saves_when_dirty_and_enabled() {
+        assert!(plan_quit(&[], true, true).save);
+        assert!(!plan_quit(&[], true, false).save);
+        assert!(!plan_quit(&[], false, true).save);
+        assert_eq!(plan_quit(&[], true, true).toggle, None);
+    }
+
+    fn healthy() -> CookieStatus {
+        let mut st = status();
+        st.loaded = true;
+        st.enabled = true;
+        st
+    }
+
+    #[test]
+    fn apply_loaded_outcomes() {
+        let mut st = status();
+        assert_eq!(st.apply(&CookieDone::Loaded(Ok(None))), None);
+        assert!(st.loaded && !st.enabled && !st.saving());
+        let mut st = status();
+        assert_eq!(st.apply(&CookieDone::Loaded(Ok(Some(vec![])))), None);
+        assert!(st.loaded && st.enabled && st.saving());
+        let mut st = status();
+        assert_eq!(
+            st.apply(&CookieDone::Loaded(Err("bad".into()))),
+            Some("bad".into())
+        );
+        assert!(st.loaded && st.enabled && st.error.is_some() && !st.saving());
+    }
+
+    #[test]
+    fn apply_load_does_not_override_a_toggle() {
+        let mut st = status();
+        st.toggled = true;
+        st.enabled = true;
+        st.apply(&CookieDone::Loaded(Ok(None)));
+        assert!(st.enabled);
+        let mut st = status();
+        st.toggled = true;
+        st.apply(&CookieDone::Loaded(Err("bad".into())));
+        assert!(!st.enabled && st.loaded);
+    }
+
+    #[test]
+    fn apply_enable_and_disable_outcomes() {
+        let mut st = healthy();
+        assert_eq!(st.apply(&CookieDone::Enabled(Ok(()))), None);
+        assert!(st.saving());
+        assert_eq!(
+            st.apply(&CookieDone::Enabled(Err("e".into()))),
+            Some("e".into())
+        );
+        assert!(!st.enabled && !st.saving());
+        let mut st = healthy();
+        assert_eq!(st.apply(&CookieDone::Disabled(Ok(()))), None);
+        assert!(st.saving());
+        assert_eq!(
+            st.apply(&CookieDone::Disabled(Err("d".into()))),
+            Some("d".into())
+        );
+        assert!(st.enabled && st.error.is_some() && !st.saving());
+    }
+
+    #[test]
+    fn save_error_pauses_saving_until_toggled() {
+        let mut st = healthy();
+        assert_eq!(st.apply(&CookieDone::Saved(Ok(()))), None);
+        assert!(st.saving());
+        assert_eq!(
+            st.apply(&CookieDone::Saved(Err("s".into()))),
+            Some("s".into())
+        );
+        assert!(!st.saving());
+        // Toggle off then on clears the error (as set_cookie_persistence does).
+        st.error = None;
+        st.toggled = true;
+        st.enabled = false;
+        assert!(!st.saving());
+        st.enabled = true;
+        assert!(st.saving());
     }
 
     fn status() -> CookieStatus {
