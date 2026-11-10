@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 107 | PR #47 review rounds 1-2: queued Disable at quit, quit with queued Enable, state-machine tests; 0 Medium+ in round 2 | ## 2026-11-10 — PR #47 review rounds 1-2 (task 107) |
+| 2026-11-10 | 107 | Cookie jar wired per collection, persisted to cookies/<id>.json (mode 600) behind a per-collection toggle, Cookies manager panel, flush on quit; hand-checked on macOS | ## 2026-11-10 — Cookie manager |
 | 2026-11-10 | 105 | Real DNS and connect+TLS phase timings via custom resolver/connector and claim registry; Windows 14,968,832 B of 15,500,000 (+17,408 B) | ## 2026-11-10 — Phase timings (DNS, connect+TLS) |
 | 2026-11-10 | 104 | In-memory cookie jar per collection with bundled public-suffix list (parsed once, shared); Windows 15,100,928 B of 15,500,000, ~399 KB headroom left | ## 2026-11-10 — In-memory cookie jar and public-suffix list |
 | 2026-11-10 | 106 | OAuth2 editor, Authorize via the system browser with Waiting/Authorized/Failed strip, cancel on tab close; hand-checked against a stub IdP | ## 2026-11-10 — OAuth2 UI |

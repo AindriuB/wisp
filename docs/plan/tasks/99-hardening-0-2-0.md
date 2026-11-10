@@ -92,6 +92,7 @@ Every item that adds a test names it in the PR description.
 
 **I — shared redaction (core)**
 - [ ] AC45 [34-45 + 35-14, security] `wisp_core::redact::SECRET_FRAGMENTS` misses `sig`, `pass`, `pwd`, `jwt`, `bearer`, `dpop` and `assertion`. All seven are added, and a unit test asserts `is_credential_name` is true for a name containing each. The importers (`import/mod.rs`, group H) and history (`history.rs`, group D) both call the shared `is_credential_name`; no local fragment list remains. At b895ed0 the importers already do; `history.rs:324` still matches `SECRET_FRAGMENTS` directly for Text/XML bodies (group D) (`rg -n 'SECRET_FRAGMENTS|fn is_.*secret.*name' crates/storage` shows only uses of the shared one).
+- [ ] AC51 [47-5, security] A corrupt cookie file's serde parse error never reaches the log or the UI notice with file content in it (workspace.rs ~2225); it maps to a fixed message with line and column only.
 
 **K — CI and release gate**
 - [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.

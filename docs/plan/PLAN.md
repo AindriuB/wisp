@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); see HISTORY. Next: 107 (cookie manager UI), with about 531 KB of Windows headroom left (14,968,832 B of 15,500,000, run 42878660363).
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); see HISTORY. Next: wave-2 measure run (task 108), with about 531 KB of Windows headroom left as of task 105 (14,968,832 B of 15,500,000, run 42878660363).
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -69,6 +69,23 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 107 (not 0.2.0 wave 2)
+- [ACCEPTED residual, user 2026-11-10] AC10: copies/clones of a collection (same id) share history, OAuth2 tokens, the in-memory jar and cookies/<id>.json.
+- [Residual -> task 99] AC11: CookieFile::load symlink check-then-open race and a symlinked cookies/ parent (data dir is per-user 0700).
+- [P3] Quit only saves the open collection's snapshot; jobs still queued (Disable/Enable/Save from a just-switched collection) are dropped at quit; window is one file write.
+- [P3] Load-merge reads snapshot then load()s (two jar locks); a Set-Cookie between them is lost; needs an atomic merge in core CookieJar.
+- [P3] A single failed save pauses saving for that collection until toggled off/on; consider auto-retry on the next change.
+- [P3] Cookies set by a request still in flight for the old collection after a switch go to the old jar and are not saved this run unless reopened.
+- [P3] Tests: `cancel_drops_a_send_waiting_for_the_id` does not exercise cancel(); `quit_save_only_when_saving_and_dirty` guards nothing in take_quit_save.
+- [P3] WISP_AUTOSEND_URL with a collection path at launch: send returns Ok(None) while the id is read, so no WISP_EVENT line (measure.sh does not use a collection).
+- [Low] 47-3: cookie panel rebuilds rows only on jar generation change, so expiry labels go stale and expired cookies stay listed (crates/app/src/ui/cookie_jar.rs ~215); rebuild on time too.
+- [Low] 47-4: close_tab doesn't drop the tab's id_waits entry, so a pending Send can still go out (workspace.rs ~1235).
+- [Low -> task 99] 47-5: serde parse errors from a corrupt cookie file can echo file content into the log and notice (workspace.rs ~2225); map to a fixed message with line/column.
+- [Low] 47-6: loading bumps jar generation, so each persisted collection rewrites its cookie file 2 s after opening (workspace.rs ~2311); reset debounce to post-load generation.
+- [Low] 47-7: Enable failure leaves no persistent banner in the panel (AC5) (workspace.rs ~2234).
+- [P3] 47-P3: a cookie save/delete job already running (not queued) at quit isn't ordered against the quit future; relies on gpui's 200 ms shutdown wait.
+- [NOTE] A running Save and the quit save both take WRITE_LOCK; an older snapshot could in theory overwrite a newer one.
 
 ### Follow-ups from task 105 (not 0.2.0 wave 2)
 - [P3] tests/timings.rs AC6 cancel test can't detect a leftover registry entry (second request uses a fresh port/token); add a cfg(test) registry length check.
