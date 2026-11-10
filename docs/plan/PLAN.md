@@ -71,7 +71,7 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
 ### Follow-ups from task 103 (not 0.2.0 wave 2)
-- [ACCEPTED residual, pending user] After a re-authorize, a send that read the old refresh token just before it can still POST that RT to the IdP once; the result is discarded (generation check) and nothing old is used or persisted. Closing it means holding the store lock across the token POST.
+- [ACCEPTED residual, user 2026-11-10] After a re-authorize, a send that read the old refresh token just before it can still POST that RT to the IdP once; the result is discarded (generation check) and nothing old is used or persisted. Closing it means holding the store lock across the token POST.
 - [P2 -> wave 3 keychain] Store calls run synchronously on engine workers (default 1 worker, max 2); a blocking keychain call (access prompt) stalls all engine I/O. Run store calls via spawn_blocking with the tokio store lock held across the await before a keychain store ships.
 - [P3] Failed save during re-authorize -> forget path has no test (needs a store whose save can fail after the first authorize).
 - [P3] The stale marker is in-memory only: a failed forget/save leaves the old RT in the store after restart (wave 3).
