@@ -17,6 +17,14 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-10 — Phase timings (DNS, connect+TLS)
+Completed requests now report real DNS and connect+TLS phase timings, measured by a custom resolver and connector and claimed per request through a small registry, so the response panel can show them. Windows binary is 14,968,832 B of 15,500,000 (measure run 42878660363 at 02557ed, binary-identical to the merged head), up 17,408 B from task 104's 14,951,424.
+**Cost:** Review round 1 found a race in claiming the registry entry; a claim-token test was added and fails 3/3 with the token check removed. The first race test used a 300 ms sleep, replaced by a state-driven wait on pool state (12/12 runs). New dev-dependencies went into [workspace.dependencies]. Owns was widened to crates/core/tests/engine.rs for the timings test rewrite and rename only. With reqwest-followed redirects the timings describe the final connection; with the engine's own redirect loop, the first hop that opened a connection. The optional AC8 hand check was not done.
+
+## 2026-11-10 — PR #47 review rounds 1-2 (task 107)
+Round 1 fixed a queued Disable being dropped at quit and added persistence state-machine tests. Round 2 fixed quit with a queued Enable forcing a save, and found 0 Medium or above.
+**Cost:** Remaining Lows went to PLAN follow-ups (47-3 to 47-7, 47-P3) rather than another round.
+
 ## 2026-11-10 — Cookie manager
 Each open collection now has its own cookie jar, and a Cookies panel lists its cookies with values hidden and lets you delete them. A per-collection toggle persists non-session cookies to cookies/<id>.json at mode 600, saved after a 2 s debounce and flushed on quit; turning it off asks for confirmation and deletes the file while keeping in-memory cookies for the session. Hand-checked on macOS against a local server: cookies carried across Sends, persisted across relaunch, session cookies dropped, quit flush and toggle-off verified.
 **Cost:** Review round 1 found that the quit flush never ran under gpui shutdown (now a worker-thread save from on_app_quit), that toggling on for a collection with no id yet was undone by a queued empty Load (a `toggled` flag), and that Cancel during the id wait did not cancel. Copies of a collection share an id and so share the jar, history and OAuth2 tokens; the user accepted this. The symlink race in CookieFile::load goes to task 99. Remaining follow-ups are under "Follow-ups from task 107" in PLAN.md.

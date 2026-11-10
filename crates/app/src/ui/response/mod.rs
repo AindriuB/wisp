@@ -4,6 +4,8 @@ pub mod body;
 pub mod cookies;
 pub mod headers;
 
+use std::time::Duration;
+
 use gpui::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
     StatefulInteractiveElement as _, Styled, Subscription, Window, div,
@@ -144,7 +146,8 @@ impl ResponsePane {
                 let size = format_size(r.size.unwrap_or(r.received));
                 let status_str = status_text(status, r.reason.as_deref());
                 let timing = timing_text(total, &size);
-                let full = done_tooltip(&status_str, &timing, r.ttfb.map(format_duration));
+                let phases = phase_line(r.dns, r.connect, r.ttfb, r.total);
+                let full = done_tooltip(&status_str, &timing, phases);
                 let line = row()
                     .id("status-line")
                     .min_w_0()
@@ -230,11 +233,32 @@ impl Render for ResponsePane {
     }
 }
 
-/// Full text of the Done status line for its tooltip; TTFB goes on a second line.
-fn done_tooltip(status: &str, timing: &str, ttfb: Option<String>) -> String {
-    match ttfb {
-        Some(t) => format!("{status} {timing}\nTime to first byte: {t}"),
-        None => format!("{status} {timing}"),
+/// `DNS 3 ms · Connect+TLS 41 ms · First byte 88 ms · Total 95 ms`, leaving out every phase
+/// that is `None` (a reused connection has no DNS or connect); empty when none is known.
+fn phase_line(
+    dns: Option<Duration>,
+    connect: Option<Duration>,
+    ttfb: Option<Duration>,
+    total: Option<Duration>,
+) -> String {
+    [
+        ("DNS", dns),
+        ("Connect+TLS", connect),
+        ("First byte", ttfb),
+        ("Total", total),
+    ]
+    .into_iter()
+    .filter_map(|(name, d)| d.map(|d| format!("{name} {}", format_duration(d))))
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
+/// Full text of the Done status line for its tooltip; the phase line goes on a second line.
+fn done_tooltip(status: &str, timing: &str, phases: String) -> String {
+    if phases.is_empty() {
+        format!("{status} {timing}")
+    } else {
+        format!("{status} {timing}\n{phases}")
     }
 }
 
@@ -242,18 +266,44 @@ fn done_tooltip(status: &str, timing: &str, ttfb: Option<String>) -> String {
 mod tests {
     use super::*;
 
+    fn ms(n: u64) -> Option<Duration> {
+        Some(Duration::from_millis(n))
+    }
+
     #[test]
-    fn done_tooltip_with_and_without_ttfb() {
+    fn phase_line_with_every_phase() {
+        assert_eq!(
+            phase_line(ms(3), ms(41), ms(88), ms(95)),
+            "DNS 3 ms · Connect+TLS 41 ms · First byte 88 ms · Total 95 ms"
+        );
+    }
+
+    #[test]
+    fn phase_line_for_a_reused_connection_has_no_dns_or_connect() {
+        assert_eq!(
+            phase_line(None, None, ms(88), ms(95)),
+            "First byte 88 ms · Total 95 ms"
+        );
+    }
+
+    #[test]
+    fn phase_line_total_only_and_none() {
+        assert_eq!(phase_line(None, None, None, ms(95)), "Total 95 ms");
+        assert_eq!(phase_line(None, None, None, None), "");
+    }
+
+    #[test]
+    fn done_tooltip_with_and_without_phases() {
         assert_eq!(
             done_tooltip(
                 "500 Internal Server Error",
                 "· 12 ms · 1.2 KB",
-                Some("5 ms".into())
+                "First byte 5 ms · Total 12 ms".into()
             ),
-            "500 Internal Server Error · 12 ms · 1.2 KB\nTime to first byte: 5 ms"
+            "500 Internal Server Error · 12 ms · 1.2 KB\nFirst byte 5 ms · Total 12 ms"
         );
         assert_eq!(
-            done_tooltip("200 OK", "· 12 ms · 1.2 KB", None),
+            done_tooltip("200 OK", "· 12 ms · 1.2 KB", String::new()),
             "200 OK · 12 ms · 1.2 KB"
         );
     }
