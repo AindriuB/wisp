@@ -1271,7 +1271,10 @@ impl RefreshTokenStore for PausingStore {
             let rx = self.release.lock().unwrap().take();
             if let (Some(tx), Some(rx)) = (tx, rx) {
                 tx.send(()).unwrap();
-                let _ = rx.recv();
+                // Hand the worker's core to another thread so the engine keeps its I/O going.
+                tokio::task::block_in_place(|| {
+                    let _ = rx.recv();
+                });
             }
         }
         self.inner.save(key, rt)
@@ -1322,9 +1325,18 @@ async fn a_refresh_paused_in_the_store_cannot_overwrite_a_reauthorize() {
         reached: Mutex::new(Some(reached_tx)),
         release: Mutex::new(Some(release_rx)),
     });
-    let (engine, rx, clock) = engine_with(store.clone());
+    let clock = TestClock::new();
+    let (engine, rx) = Engine::start_with_clock(
+        EngineConfig {
+            refresh_tokens: store.clone(),
+            ..EngineConfig::default()
+        },
+        clock.clone(),
+    );
     let auth = code_auth(&idp.uri(), 0, true);
     authorize_fully(&engine, &rx, auth.clone()).await;
+    let (_, url) = authorize(&engine, &rx, auth.clone(), None).await;
+    let state = param(&url, "state").unwrap();
     clock.advance(Duration::from_secs(200));
     engine.submit(Command::Send(request(target.uri(), auth.clone())));
     // The refresh is now blocked inside the store's save of RT_X2.
@@ -1337,12 +1349,15 @@ async fn a_refresh_paused_in_the_store_cannot_overwrite_a_reauthorize() {
         std::thread::sleep(Duration::from_millis(700));
         let _ = release_tx.send(());
     });
-    tokio::time::timeout(
-        Duration::from_secs(20),
-        authorize_fully(&engine, &rx, auth.clone()),
+    raw_get(
+        redirect_port(&url),
+        &format!("/callback?code=c&state={state}"),
     )
-    .await
-    .expect("re-authorize completed");
+    .await;
+    let done = tokio::time::timeout(Duration::from_secs(20), next_auth_event(&rx))
+        .await
+        .expect("re-authorize completed");
+    assert!(matches!(done, Event::AuthCompleted { .. }));
     // The paused send's terminal event may already have been consumed above (when the
     // re-authorize waited for the store); otherwise give it a moment to land.
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
@@ -1408,19 +1423,4 @@ async fn reauthorizing_with_persist_off_forgets_the_stored_token_and_it_is_never
     .await;
     let posts = seen(&idp, "/token").await;
     assert!(!posts.iter().any(|(_, b)| b.contains("RT_X")), "{posts:?}");
-}
-async fn futures_dbg(s: &MockServer) -> Vec<String> {
-    s.received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .map(|r| {
-            format!(
-                "{} {} {}",
-                r.method,
-                r.url,
-                String::from_utf8_lossy(&r.body)
-            )
-        })
-        .collect()
 }
