@@ -9,7 +9,7 @@ use gpui_component::IndexPath;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
-use wisp_core::request::{ApiKeyLocation, Auth};
+use wisp_core::request::{ApiKeyLocation, Auth, ClientAuth};
 use wisp_core::resolve::Scope;
 
 use crate::tab::{RequestTab, TabEvent};
@@ -26,6 +26,10 @@ enum AuthKind {
     ApiKey,
     Digest,
     AwsSigV4,
+    /// Read-only until the OAuth2 editor lands; never offered in the type list.
+    OAuth2ClientCredentials,
+    /// Read-only until the OAuth2 editor lands; never offered in the type list.
+    OAuth2AuthCode,
 }
 
 const KINDS: [AuthKind; 7] = [
@@ -48,6 +52,8 @@ impl AuthKind {
             Auth::ApiKey { .. } => Self::ApiKey,
             Auth::Digest { .. } => Self::Digest,
             Auth::AwsSigV4 { .. } => Self::AwsSigV4,
+            Auth::OAuth2ClientCredentials { .. } => Self::OAuth2ClientCredentials,
+            Auth::OAuth2AuthCode { .. } => Self::OAuth2AuthCode,
         }
     }
 
@@ -60,6 +66,8 @@ impl AuthKind {
             Self::ApiKey => "API key",
             Self::Digest => "Digest",
             Self::AwsSigV4 => "AWS Signature",
+            Self::OAuth2ClientCredentials => "OAuth2 client credentials",
+            Self::OAuth2AuthCode => "OAuth2 authorization code",
         }
     }
 
@@ -111,6 +119,8 @@ fn build_auth(kind: AuthKind, location: ApiKeyLocation, text: &dyn Fn(Slot) -> S
             region: text(Slot::Region),
             service: text(Slot::Service),
         },
+        // `current_auth` returns the draft's value for these; they have no fields here.
+        AuthKind::OAuth2ClientCredentials | AuthKind::OAuth2AuthCode => Auth::Inherit,
     }
 }
 
@@ -140,6 +150,55 @@ fn slots_of(auth: &Auth) -> Vec<(Slot, String)> {
             (Slot::Region, region.clone()),
             (Slot::Service, service.clone()),
         ],
+        Auth::OAuth2ClientCredentials { .. } | Auth::OAuth2AuthCode { .. } => Vec::new(),
+    }
+}
+
+/// Read-only rows for an OAuth2 value as (label, text). The secret is never shown.
+fn oauth2_rows(auth: &Auth) -> Vec<(&'static str, String)> {
+    let client_auth = |c: &ClientAuth| match c {
+        ClientAuth::Basic => "Basic".to_string(),
+        ClientAuth::Body => "Request body".to_string(),
+    };
+    let secret = |s: &str| {
+        if s.is_empty() {
+            "(none)".to_string()
+        } else {
+            "(set)".to_string()
+        }
+    };
+    match auth {
+        Auth::OAuth2ClientCredentials {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            client_auth: ca,
+        } => vec![
+            ("Token URL", token_url.clone()),
+            ("Client ID", client_id.clone()),
+            ("Client secret", secret(client_secret)),
+            ("Scope", scope.clone()),
+            ("Client auth", client_auth(ca)),
+        ],
+        Auth::OAuth2AuthCode {
+            auth_url,
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            client_auth: ca,
+            redirect_port,
+        } => vec![
+            ("Auth URL", auth_url.clone()),
+            ("Token URL", token_url.clone()),
+            ("Client ID", client_id.clone()),
+            ("Client secret", secret(client_secret)),
+            ("Scope", scope.clone()),
+            ("Client auth", client_auth(ca)),
+            ("Redirect port", redirect_port.to_string()),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -271,6 +330,13 @@ impl AuthEditor {
 
     /// The draft value for the selected scheme, built from the field memory.
     fn current_auth(&self, cx: &Context<Self>) -> Auth {
+        if matches!(
+            self.kind,
+            AuthKind::OAuth2ClientCredentials | AuthKind::OAuth2AuthCode
+        ) {
+            // Read-only here: keep the draft's value exactly.
+            return self.tab.read(cx).draft.auth.clone();
+        }
         let text = |slot: Slot| {
             let input = match slot {
                 Slot::Username => &self.username,
@@ -478,6 +544,19 @@ impl Render for AuthEditor {
                 ))
                 .child(Self::row("Region", Input::new(&self.region)))
                 .child(Self::row("Service", Input::new(&self.service))),
+            AuthKind::OAuth2ClientCredentials | AuthKind::OAuth2AuthCode => {
+                let auth = self.tab.read(cx).draft.auth.clone();
+                let mut col = col.child(div().text_color(cx.theme().muted_foreground).child(
+                    SharedString::from(format!(
+                        "{} (read-only; editing arrives in a later version)",
+                        self.kind.label()
+                    )),
+                ));
+                for (label, text) in oauth2_rows(&auth) {
+                    col = col.child(Self::row(label, SharedString::from(text)));
+                }
+                col
+            }
         };
         div()
             .size_full()
@@ -508,6 +587,31 @@ mod tests {
 
     fn names(n: &[&str]) -> Vec<String> {
         n.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn oauth2_is_labelled_but_not_offered_and_shows_no_secret() {
+        let a = Auth::OAuth2AuthCode {
+            auth_url: "https://i/a".into(),
+            token_url: "https://i/t".into(),
+            client_id: "cid".into(),
+            client_secret: "SECRETMARK".into(),
+            scope: "r".into(),
+            client_auth: ClientAuth::Body,
+            redirect_port: 8123,
+        };
+        assert_eq!(AuthKind::of(&a), AuthKind::OAuth2AuthCode);
+        assert_eq!(type_name(&a), "OAuth2 authorization code");
+        assert!(!KINDS.contains(&AuthKind::OAuth2AuthCode));
+        assert!(!KINDS.contains(&AuthKind::OAuth2ClientCredentials));
+        let rows = oauth2_rows(&a);
+        assert_eq!(rows.len(), 7);
+        assert!(rows.iter().all(|(_, t)| !t.contains("SECRETMARK")));
+        assert!(
+            rows.iter()
+                .any(|(l, t)| *l == "Redirect port" && t == "8123")
+        );
+        assert!(slots_of(&a).is_empty());
     }
 
     #[test]

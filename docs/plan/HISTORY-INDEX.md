@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 100 | OAuth2 auth types through model, resolve, codec and history redaction; timings and cookie-jar types and seams; engine refuses OAuth2 until 103 | ## 2026-11-10 — Wave-2 surface types and seams |
+| 2026-11-10 | 101 | settings.toml is read and written under an absolute WISP_DATA_DIR, so test launches cannot touch real settings | ## 2026-11-10 — Settings follow WISP_DATA_DIR |
 | 2026-11-10 | 102 | Persisted cookie file store in wisp-storage: off by default, atomic 0600 save, expired dropped, load limits (4 MiB, 3,000 cookies), value redacted in Debug | ## 2026-11-10 — Persisted cookie file store |
 | 2026-11-10 | 98 | Wave 1 size gate: run 42823763145 on main 71f9e1a; Windows 14,514,688 B (gate 15,500,000), macOS 11,049,104 B, Linux 24,799,280 B, all within budget | ## 2026-11-10 — Wave 1 size gate passed |
 | 2026-11-10 | 97 | History panel (newest first, status and relative time), open an entry read-only, Resend with the current environment and folder defaults, Clear history with confirm, `history_bodies` setting | ## 2026-11-10 — History panel, Clear and Resend |

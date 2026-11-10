@@ -17,9 +17,11 @@ fn get(url: String) -> PreparedRequest {
             verify_tls: true,
             follow_redirects: true,
             proxy: None,
+            collection: None,
         },
         warnings: vec![],
         auth: None,
+        environment: None,
     }
 }
 
@@ -203,9 +205,11 @@ async fn a_post_sends_the_given_headers_and_body() {
             verify_tls: true,
             follow_redirects: true,
             proxy: None,
+            collection: None,
         },
         warnings: vec![],
         auth: None,
+        environment: None,
     }));
     let evs = collect_until_terminal(&rx).await;
     assert!(matches!(&evs[1], Event::Headers { status: 201, .. }));
@@ -445,6 +449,7 @@ fn commands_and_events_round_trip_through_serde_json() {
             verify_tls: false,
             follow_redirects: true,
             proxy: Some("http://p".into()),
+            collection: None,
         },
         warnings: vec![ResolveWarning::PatternMismatch {
             name: "n".into(),
@@ -455,6 +460,7 @@ fn commands_and_events_round_trip_through_serde_json() {
             username: "u".into(),
             password: "p".into(),
         }),
+        environment: Some("dev".into()),
     }));
     round_trip(Command::Cancel(RequestId(7)));
     let id = RequestId(3);
@@ -482,6 +488,22 @@ fn commands_and_events_round_trip_through_serde_json() {
             body: wisp_core::body::BodyHandle {
                 id: wisp_core::body::BodyId(9),
                 len: 1,
+            },
+            timings: Timings {
+                dns: Some(Duration::from_millis(1)),
+                connect: None,
+            },
+        },
+        Event::AuthUrl {
+            id,
+            url: "https://idp.test/auth".into(),
+        },
+        Event::AuthCompleted { id },
+        Event::AuthFailed {
+            id,
+            error: EngineError {
+                kind: ErrorKind::Auth,
+                message: "m".into(),
             },
         },
         Event::Failed {
@@ -950,4 +972,94 @@ async fn follow_redirects_false_surfaces_a_307_for_a_streamed_body() {
         "{evs:?}"
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+fn oauth2_engine_auth() -> wisp_core::auth::EngineAuth {
+    wisp_core::auth::EngineAuth::OAuth2ClientCredentials {
+        token_url: "https://idp.test/token".into(),
+        client_id: "cid".into(),
+        client_secret: "SECRET".into(),
+        scope: String::new(),
+        client_auth: wisp_core::request::ClientAuth::Basic,
+    }
+}
+
+#[tokio::test]
+async fn send_with_oauth2_auth_fails_with_the_auth_kind() {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    let mut req = get("http://127.0.0.1:1/".into());
+    req.auth = Some(oauth2_engine_auth());
+    engine.submit(Command::Send(req));
+    let evs = collect_until_terminal(&rx).await;
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => {
+            assert_eq!(error.kind, ErrorKind::Auth);
+            assert_eq!(error.message, "OAuth2 is not available in this build yet");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn authorize_start_is_answered_with_auth_failed() {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    let id = engine.submit(Command::AuthorizeStart {
+        auth: oauth2_engine_auth(),
+        environment: None,
+        client: get(String::new()).client,
+        timeout: None,
+    });
+    match rx.recv().await.unwrap() {
+        Event::AuthFailed { id: got, error } => {
+            assert_eq!(got, id);
+            assert_eq!(error.kind, ErrorKind::Auth);
+            assert_eq!(error.message, "OAuth2 is not available in this build yet");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn completed_carries_empty_timings() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(get(format!("{}/t", server.uri()))));
+    match collect_until_terminal(&rx).await.last().unwrap() {
+        Event::Completed { timings, .. } => assert_eq!(
+            *timings,
+            Timings {
+                dns: None,
+                connect: None
+            }
+        ),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn debug_redacts_engine_config() {
+    use wisp_core::auth::oauth2::{Grant, TokenKey};
+    let config = EngineConfig::default();
+    config.refresh_tokens.save(
+        &TokenKey {
+            grant: Grant::AuthCode,
+            token_url: "https://i/t".into(),
+            client_id: "c".into(),
+            scope: "r".into(),
+            collection: None,
+            environment: None,
+        },
+        "REFRESH-MARKER-123",
+    );
+    let text = format!("{config:?}");
+    assert!(text.contains("EngineConfig"));
+    assert!(text.contains("<redacted>"));
+    assert!(!text.contains("REFRESH-MARKER-123"));
+    let pretty = format!("{config:#?}");
+    assert!(pretty.contains("<redacted>"));
+    assert!(!pretty.contains("REFRESH-MARKER-123"));
 }

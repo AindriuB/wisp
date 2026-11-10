@@ -41,12 +41,17 @@ impl Default for Settings {
     }
 }
 
-/// Where the settings file lives: beside the executable when portable, else in the config dir.
+/// Where the settings file lives: in an absolute data-dir override, else beside the executable
+/// when portable, else in the config dir. A relative or empty override is ignored.
 pub fn location(
     exe_dir: &Path,
     portable_marker: bool,
     config_dir: Option<&Path>,
+    data_dir_override: Option<&Path>,
 ) -> Option<PathBuf> {
+    if let Some(o) = data_dir_override.filter(|o| o.is_absolute()) {
+        return Some(o.join("settings.toml"));
+    }
     if portable_marker {
         return Some(exe_dir.join("settings.toml"));
     }
@@ -74,7 +79,8 @@ pub fn settings_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
     let portable = exe_dir.join("portable").exists();
-    location(exe_dir, portable, config_dir().as_deref())
+    let over = std::env::var_os(wisp_storage::data_dir::OVERRIDE_ENV).map(PathBuf::from);
+    location(exe_dir, portable, config_dir().as_deref(), over.as_deref())
 }
 
 fn theme_str(t: ThemeMode) -> &'static str {
@@ -242,14 +248,41 @@ mod tests {
     fn location_prefers_portable_then_config_dir_then_none() {
         let e = Path::new("/x");
         assert_eq!(
-            location(e, true, None),
+            location(e, true, None, None),
             Some(PathBuf::from("/x/settings.toml"))
         );
         assert_eq!(
-            location(e, false, Some(Path::new("/c"))),
+            location(e, false, Some(Path::new("/c")), None),
             Some(PathBuf::from("/c/wisp/settings.toml"))
         );
-        assert_eq!(location(e, false, None), None);
+        assert_eq!(location(e, false, None, None), None);
+    }
+
+    #[test]
+    fn absolute_override_beats_portable_and_config_dir() {
+        let e = Path::new("/exe");
+        let o = Some(Path::new("/over"));
+        let want = Some(PathBuf::from("/over").join("settings.toml"));
+        assert_eq!(location(e, true, Some(Path::new("/c")), o), want);
+        assert_eq!(location(e, false, Some(Path::new("/c")), o), want);
+        assert_eq!(location(e, false, None, o), want);
+    }
+
+    #[test]
+    fn relative_or_empty_override_is_ignored() {
+        let e = Path::new("/exe");
+        for o in ["rel/dir", ""] {
+            let o = Some(Path::new(o));
+            assert_eq!(
+                location(e, true, None, o),
+                Some(PathBuf::from("/exe").join("settings.toml"))
+            );
+            assert_eq!(
+                location(e, false, Some(Path::new("/c")), o),
+                Some(PathBuf::from("/c").join("wisp").join("settings.toml"))
+            );
+            assert_eq!(location(e, false, None, o), None);
+        }
     }
 
     #[test]

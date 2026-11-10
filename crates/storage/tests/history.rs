@@ -2,7 +2,7 @@ use std::fs;
 use std::time::{Duration, SystemTime};
 
 use wisp_core::request::{
-    ApiKeyLocation, Auth, Body, KeyValue, Part, PartValue, Request, TextBody, Var,
+    ApiKeyLocation, Auth, Body, ClientAuth, KeyValue, Part, PartValue, Request, TextBody, Var,
 };
 use wisp_core::{ErrorKind, Header};
 use wisp_storage::collection::CollectionId;
@@ -37,6 +37,8 @@ fn new_entry(req: Request) -> NewEntry {
         status: Some(200),
         ttfb: Some(Duration::from_millis(5)),
         total: Some(Duration::from_millis(9)),
+        dns: None,
+        connect: None,
         size: Some(3),
         response_headers: vec![Header {
             name: "X".into(),
@@ -648,4 +650,66 @@ fn dollar_builtin_refs_keep_a_json_body() {
     assert!(raw.contains("{{$timestamp}}"), "timestamp ref lost");
     assert!(!raw.contains("\"{{$uuid}}\""), "ref got quoted");
     assert!(!raw.contains("\"{{$timestamp}}\""), "ref got quoted");
+}
+
+#[test]
+fn redacts_oauth2_client_secret_but_keeps_var_refs() {
+    let (_d, data, store) = setup();
+    let req = Request {
+        auth: Auth::OAuth2AuthCode {
+            auth_url: "https://idp.test/auth".into(),
+            token_url: "{{token_url}}".into(),
+            client_id: "{{cid}}".into(),
+            client_secret: "SECRETVAL".into(),
+            scope: "read".into(),
+            client_auth: ClientAuth::Basic,
+            redirect_port: 0,
+        },
+        ..Request::default()
+    };
+    let e = store.append(new_entry(req), None).unwrap();
+    for entry in fs::read_dir(bodies_dir(&data)).unwrap() {
+        let raw = fs::read(entry.unwrap().path()).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("SECRETVAL"));
+    }
+    let index = fs::read_to_string(
+        data.history_dir(&cid("abcdef0123456789"))
+            .join("index.jsonl"),
+    )
+    .unwrap();
+    assert!(!index.contains("SECRETVAL"));
+    assert!(e.redacted.contains(&"auth.client_secret".to_string()));
+    let loaded = store.load(&e.id).unwrap();
+    match loaded.request.auth {
+        Auth::OAuth2AuthCode {
+            client_secret,
+            token_url,
+            ..
+        } => {
+            assert_eq!(client_secret, "");
+            assert_eq!(token_url, "{{token_url}}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn timings_roundtrip_and_old_index_lines_load_as_none() {
+    let (_d, data, store) = setup();
+    let mut n = plain("/t");
+    n.dns = Some(Duration::from_millis(3));
+    n.connect = Some(Duration::from_millis(7));
+    let e = store.append(n, None).unwrap();
+    assert_eq!((e.dns_ms, e.connect_ms), (Some(3), Some(7)));
+    let listed = store.list().unwrap();
+    assert_eq!((listed[0].dns_ms, listed[0].connect_ms), (Some(3), Some(7)));
+
+    let dir = data.history_dir(&cid("abcdef0123456789"));
+    let old = format!(
+        r#"{{"id":"{}","at":1,"method":"Get","url":"/a","outcome":"Completed","total_ms":4}}"#,
+        "c".repeat(32)
+    );
+    fs::write(dir.join("index.jsonl"), format!("{old}\n")).unwrap();
+    let listed = store.list().unwrap();
+    assert_eq!((listed[0].dns_ms, listed[0].connect_ms), (None, None));
 }

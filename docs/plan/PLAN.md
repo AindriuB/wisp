@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 102 (persisted cookie file store in storage; app wiring is 107).
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); see HISTORY. Tasks 103 (OAuth2 engine) and 104 (cookie jar) are now unblocked.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -76,11 +76,32 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] cookies.rs:171 Parse error uses serde_json's message, which can echo a mistyped scalar from a hand-edited file (array-form entry); use a fixed message.
 - [P3] cookies.rs:224 with more than 3,000 input cookies, the first 3,000 in input order are kept before expiry trimming; keep the latest-expiring.
 - [NOTE for task 107] `save` checks `is_enabled` then writes with no lock, so a concurrent `disable` can re-enable persistence; `load` checks the symlink then opens (race) and does not refuse a symlinked `cookies/` parent.
+- [P3 → task 99] 41-3 cookies.rs:207: symlink check then write through a path that follows symlinks; use a non-following write path.
+- [P3 → task 107] 41-4 cookies.rs:183: load accepts any domain scope and control characters from the file; validate here or in the jar.
+- [ACCEPTED, user 2026-11-10] 41-5 / 42-12: copies or clones of a collection (same id) share history, OAuth2 tokens, the in-memory jar and the cookie file.
+- [P3] 41-6 cookies.rs:266: no fsync before rename; a crash can leave a truncated file; sync_all before rename and define recovery on Parse.
+- [P3] 41-7 tests: no test that enable keeps cookies or refuses a symlink; error test only checks is_err.
+- [P3] The in-process WRITE_LOCK mutex is not covered by a deterministic test (the file lock is).
+
+### Follow-ups from task 100 (not 0.2.0 wave 2)
+- [P3] No app test drives `Event::Completed` with non-empty timings through on_event/append_history, or the ignored auth events; add when task 105 makes timings real.
+- [P3] No test that commit/save leave an OAuth2 draft untouched in the auth editor; add before task 106 reworks it.
+- [NOTE] Literal OAuth2 `client_secret` is written to committed request TOML, like Digest password and SigV4 secret_key; values are normally `{{vars}}` (spec :58).
+- [NOTE] Until task 106, the auth type list doesn't offer OAuth2, so switching an OAuth2 request away can't be undone in the UI.
+- [NOTE] Task 100 added no deps; 103/104 bring serde_json/getrandom/tokio net and cookie crates and must recheck the lockfile rule and size.
+- [P3 → task 103] 42-3 core auth/oauth2.rs:26: RefreshTokenStore is sync with no Result; keychain failures would be lost and prompts would block the engine. Return Result; document spawn_blocking use.
+- [P3 → task 103] 42-7 storage history.rs:266: history empties non-secret OAuth2 fields (token/auth URLs, client id, scope), so Resend loses them; redact only client_secret.
+- [P3] 42-4 app ui/request/auth.rs:123: build_auth maps OAuth2 kinds to Inherit, guarded only by an early return elsewhere.
+- [P3] 42-5 storage codec.rs:439: redirect_port read error and stale-key removal are untested.
+- [P3] 42-6 core engine.rs:459: serde round-trip test omits AuthorizeStart and AuthorizeCancel.
+- [P3] 42-8 core cookies.rs:15: CookieJar redacting Debug has no debug_redacts test (do it in 104).
+- [P3] 42-9 (Nit) model.rs:167: AuthorizeStart timeout None has no stated meaning; document as the 120 s default.
+- [P3] 42-10 (Nit) app workspace.rs:1135: inner auth-event arm is unreachable.
+- [NOTE] Round-1 fix for PR #42: TokenKey now carries collection id and environment; each collection has its own client and CookieJar (ClientSettings.collection); EngineConfig.cookies was removed. Task 106 must pass `environment` and `client.collection` on AuthorizeStart.
 
 ### Follow-ups from task 97 (not 0.2.0 wave 1)
 - [P3] workspace.rs:1006-1018: Save on a from-history tab does not clear `from_history`, so later sends of the saved request still show the "Resent..." notice.
 - [P3] core body.rs:206: a borrowed history body deleted by Clear or eviction while its tab is open reads as "unknown body handle: BodyId(n)"; show "history body was removed".
-- [P2] settings.toml location ignores WISP_DATA_DIR: the hand-check's test build wrote `history_bodies = false` into the user's real ~/Library/Application Support/wisp/settings.toml (removed afterwards). Test builds need an isolated settings location (honour WISP_DATA_DIR or add WISP_CONFIG_DIR) so hand-checks cannot touch real settings.
 - [NOTE] Resend tests exercise the scope helper, not `Workspace::send` (no gpui test harness).
 - [P3] 38-5 workspace.rs:647: storing a resend loses the original redacted list, so a later resend gives no warning.
 - [P3] 38-6 history.rs:163: after a collection switch the panel shows old rows until reload finishes; set Loading at reload start.

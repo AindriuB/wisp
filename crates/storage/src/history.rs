@@ -178,6 +178,10 @@ pub struct HistoryEntry {
     #[serde(default)]
     pub total_ms: Option<u64>,
     #[serde(default)]
+    pub dns_ms: Option<u64>,
+    #[serde(default)]
+    pub connect_ms: Option<u64>,
+    #[serde(default)]
     pub size: Option<u64>,
     #[serde(default)]
     pub body_stored: bool,
@@ -199,6 +203,8 @@ pub struct NewEntry {
     pub status: Option<u16>,
     pub ttfb: Option<Duration>,
     pub total: Option<Duration>,
+    pub dns: Option<Duration>,
+    pub connect: Option<Duration>,
     pub size: Option<u64>,
     pub response_headers: Vec<Header>,
 }
@@ -256,6 +262,32 @@ fn auth_fields(a: &Auth) -> Vec<(&'static str, &str)> {
             ("session_token", session_token),
             ("region", region),
             ("service", service),
+        ],
+        Auth::OAuth2ClientCredentials {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            ..
+        } => vec![
+            ("token_url", token_url),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("scope", scope),
+        ],
+        Auth::OAuth2AuthCode {
+            auth_url,
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            ..
+        } => vec![
+            ("auth_url", auth_url),
+            ("token_url", token_url),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("scope", scope),
         ],
     }
 }
@@ -557,6 +589,8 @@ impl HistoryStore {
             status: new.status,
             ttfb_ms: new.ttfb.map(millis),
             total_ms: new.total.map(millis),
+            dns_ms: new.dns.map(millis),
+            connect_ms: new.connect.map(millis),
             size: new.size,
             body_stored: stored.is_some(),
             body_truncated: truncated,

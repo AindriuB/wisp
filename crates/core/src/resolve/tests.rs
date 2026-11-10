@@ -669,3 +669,96 @@ fn auth_other_schemes_leave_prepared_auth_empty() {
     r.auth = Auth::Bearer { token: "t".into() };
     assert_eq!(run(&r).unwrap().auth, None);
 }
+
+#[test]
+fn auth_oauth2_client_credentials_resolves_vars_and_adds_no_header() {
+    use crate::auth::EngineAuth;
+    use crate::request::ClientAuth;
+    let c = scope_with_vars(vec![var("cs", "SECRET"), var("host", "idp.test")]);
+    let mut r = req("http://h");
+    r.auth = Auth::OAuth2ClientCredentials {
+        token_url: "https://{{host}}/token".into(),
+        client_id: "cid".into(),
+        client_secret: "{{cs}}".into(),
+        scope: "read".into(),
+        client_auth: ClientAuth::Body,
+    };
+    let p = run_in(&r, &c).unwrap();
+    assert_eq!(p.headers, vec![]);
+    assert_eq!(
+        p.auth,
+        Some(EngineAuth::OAuth2ClientCredentials {
+            token_url: "https://idp.test/token".into(),
+            client_id: "cid".into(),
+            client_secret: "SECRET".into(),
+            scope: "read".into(),
+            client_auth: ClientAuth::Body,
+        })
+    );
+}
+
+#[test]
+fn auth_oauth2_auth_code_resolves_vars_and_never_persists_refresh() {
+    use crate::auth::EngineAuth;
+    use crate::request::ClientAuth;
+    let c = scope_with_vars(vec![var("cs", "SECRET"), var("host", "idp.test")]);
+    let mut r = req("http://h");
+    r.auth = Auth::OAuth2AuthCode {
+        auth_url: "https://{{host}}/auth".into(),
+        token_url: "https://{{host}}/token".into(),
+        client_id: "cid".into(),
+        client_secret: "{{cs}}".into(),
+        scope: "read".into(),
+        client_auth: ClientAuth::Basic,
+        redirect_port: 8123,
+    };
+    let p = run_in(&r, &c).unwrap();
+    assert_eq!(p.headers, vec![]);
+    assert_eq!(
+        p.auth,
+        Some(EngineAuth::OAuth2AuthCode {
+            auth_url: "https://idp.test/auth".into(),
+            token_url: "https://idp.test/token".into(),
+            client_id: "cid".into(),
+            client_secret: "SECRET".into(),
+            scope: "read".into(),
+            client_auth: ClientAuth::Basic,
+            redirect_port: 8123,
+            persist_refresh: false,
+        })
+    );
+}
+
+#[test]
+fn auth_unresolved_var_in_oauth2_is_a_problem_at_auth() {
+    use crate::request::ClientAuth;
+    let c = CollectionDefaults::default();
+    for auth in [
+        Auth::OAuth2ClientCredentials {
+            token_url: "t".into(),
+            client_id: "c".into(),
+            client_secret: "{{nope}}".into(),
+            scope: String::new(),
+            client_auth: ClientAuth::Basic,
+        },
+        Auth::OAuth2AuthCode {
+            auth_url: "{{nope}}".into(),
+            token_url: "t".into(),
+            client_id: "c".into(),
+            client_secret: String::new(),
+            scope: String::new(),
+            client_auth: ClientAuth::Basic,
+            redirect_port: 0,
+        },
+    ] {
+        let mut r = req("http://h");
+        r.auth = auth;
+        assert_eq!(
+            run_in(&r, &c).unwrap_err().problems,
+            vec![Problem::UnresolvedVar {
+                name: "nope".into(),
+                location: Location::Auth
+            }]
+        );
+    }
+}
