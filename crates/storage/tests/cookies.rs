@@ -344,8 +344,13 @@ fn enable_disable_save_interleavings_end_in_last_state() {
     assert!(!f.is_enabled(), "save after disable must not re-enable");
 }
 
-#[test]
-fn writers_block_on_the_advisory_file_lock() {
+/// Runs `op` on a second handle while another holder owns the advisory file
+/// lock. Asserts the writer neither completes nor touches the file while the
+/// lock is held, then releases the lock and waits for it to finish.
+/// Returns the tempdir, the file handle and the file path for end-state checks.
+fn writer_blocked_then_released(
+    op: impl FnOnce(CookieFile) + Send + 'static,
+) -> (tempfile::TempDir, CookieFile, std::path::PathBuf) {
     use std::sync::mpsc;
 
     let (t, d, f) = setup();
@@ -365,19 +370,13 @@ fn writers_block_on_the_advisory_file_lock() {
 
     let id = CollectionId::parse("abcdef0123456789").unwrap();
     let (tx, rx) = mpsc::channel();
-    let saver = CookieFile::new(&d, &id);
-    let tx_save = tx.clone();
-    let ts = std::thread::spawn(move || {
-        saver.save(&[cookie("new", 100)], now()).unwrap();
-        tx_save.send("save").unwrap();
-    });
-    let disabler = CookieFile::new(&d, &id);
-    let td = std::thread::spawn(move || {
-        disabler.disable().unwrap();
-        tx.send("disable").unwrap();
+    let writer = CookieFile::new(&d, &id);
+    let th = std::thread::spawn(move || {
+        op(writer);
+        tx.send(()).unwrap();
     });
 
-    // Neither may complete or touch the file while the lock is held.
+    // It may neither complete nor touch the file while the lock is held.
     assert!(
         rx.recv_timeout(Duration::from_millis(500)).is_err(),
         "a writer ran while the file lock was held"
@@ -386,17 +385,22 @@ fn writers_block_on_the_advisory_file_lock() {
 
     held.unlock().unwrap();
     drop(held);
-    let deadline = Duration::from_secs(20);
-    let first = rx.recv_timeout(deadline).expect("first writer completes");
-    let second = rx.recv_timeout(deadline).expect("second writer completes");
-    assert_ne!(first, second);
-    ts.join().unwrap();
-    td.join().unwrap();
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("writer completes after release");
+    th.join().unwrap();
+    (t, f, p)
+}
 
-    // Final state matches whichever ran last.
-    if second == "disable" {
-        assert!(!p.exists());
-    } else {
-        assert_eq!(f.load(now()).unwrap(), vec![cookie("new", 100)]);
-    }
+#[test]
+fn save_blocks_on_the_advisory_file_lock() {
+    let (_t, f, _p) =
+        writer_blocked_then_released(|w| w.save(&[cookie("new", 100)], now()).unwrap());
+    assert_eq!(f.load(now()).unwrap(), vec![cookie("new", 100)]);
+}
+
+#[test]
+fn disable_blocks_on_the_advisory_file_lock() {
+    let (_t, f, p) = writer_blocked_then_released(|w| w.disable().unwrap());
+    assert!(!p.exists());
+    assert!(!f.is_enabled());
 }
