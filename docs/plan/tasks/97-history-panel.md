@@ -62,3 +62,31 @@ Clear history empties it. A setting stops response bodies being stored.
 ## Notes
 - Size: small (no new crates).
 - Launching the app: record the pid you started and stop only that pid; never `pkill`/`killall`. A bundled build uses bundle id `io.github.aindriub.wisp.t97`.
+
+## Amendment 1
+
+User decisions 2026-11-10. These add AC8–AC10; earlier ACs keep their IDs.
+
+- **Resend scope.** A tab opened from history carries the entry's original request path (`HistoryEntry.request`) in its history origin. Resend uses it only as the scope path for resolving inherited defaults (folder auth, headers, vars). The tab stays pathless, so Save still creates a new request. If that path no longer exists, Resend falls back to collection defaults plus the environment and says so in the Resend notice.
+- **Body display.** An opened entry's response body is shown read-only through a file-backed `BodyHandle` on the stored body file (spec `docs/plan/specs/2026-11-09-wisp-0-2-0.md:52`), not copied through `BodyStore::writer()`. This supersedes the Context line for `crates/core/src/body.rs:152-280`. Releasing the tab must not delete the history body file.
+- **No id on read-only use.** Opening the panel, listing, opening an entry and Clear history never mint a collection id. With no `id` in `collection.toml` the panel shows "No history yet", Clear has nothing to clear, and nothing is written. The id is still created by the first send's append.
+
+Acceptance:
+- [ ] AC8 With `folder.toml` setting bearer auth `{{token}}` and a request whose auth is inherit, Resend from that request's history tab sends `Authorization: Bearer <token value>`; with the original path removed, Resend uses collection defaults plus env and the notice says the original request was not found. Test `resend_from_history_inherits_folder_auth` (plus `resend_from_history_missing_path_falls_back`).
+- [ ] AC9 Opening an entry with a stored body yields a file-backed `BodyHandle` on the history `.bin` file with no `BodyStore::writer()` call in the open path; after the tab's body is released the `.bin` file still exists. Test `open_history_entry_body_is_file_backed`.
+- [ ] AC10 Opening the panel (list), opening an entry and Clear history on a collection with no `id` in `collection.toml` leave `collection.toml` byte-identical and show "No history yet". Test `history_read_only_use_mints_no_id`.
+
+Checks:
+- `amendment-1-tests` command — AC8, AC9, AC10. cargo test writes no JUnit XML here; asserts at least 4 passing.
+  run: `n=$(cargo test -p wisp-app -- resend_from_history_ open_history_entry_body_is_file_backed history_read_only_use_mints_no_id 2>&1 | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | head -1); test "${n:-0}" -ge 4`
+- `amendment-1-shape` read — AC8, AC9
+  how: Resend passes the origin's request path to `scope_for`, not `None`, and the tab's own path stays `None`; the history open path builds the body handle from the file and has no `writer()` call; `HistoryJob::open` no longer calls `ensure_collection_id`.
+
+## Review round 1 — findings
+
+Reviewed HEAD 0c19362.
+
+- [P2] `crates/app/src/workspace.rs:526` Resend uses `scope_for(None)`, dropping folder defaults — resolved by Amendment 1 (Resend scope).
+- [SPEC] `crates/app/src/workspace.rs:807` body copied via `writer()` — resolved by Amendment 1 (Body display).
+- [P3] `crates/app/src/workspace.rs:79` `HistoryJob::open` calls `ensure_collection_id` on read-only use — resolved by Amendment 1 (No id on read-only use).
+- [P3, optional] `crates/app/src/ui/history.rs:143` the panel reloads only on `HistoryChanged`; `open_collection` doesn't emit it, so an open panel lists the old collection's entries and clicking a row errors "not found". Emit `HistoryChanged` (or reload) on collection open.
