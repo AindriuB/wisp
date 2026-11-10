@@ -9,6 +9,7 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use regex::Regex;
 
 use super::{Location, Problem, ResolveError, ResolveWarning, Scope};
+use crate::auth::EngineAuth;
 use crate::model::{
     ClientSettings, Header, PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest,
 };
@@ -307,7 +308,7 @@ impl Resolver<'_> {
         let url = self.build_url();
         let mut headers = self.merged_headers();
         let mut query_extra = Vec::new();
-        self.apply_auth(&mut headers, &mut query_extra);
+        let auth = self.apply_auth(&mut headers, &mut query_extra);
         let url = append_query(url, &query_extra);
         let body = self.build_body(&mut headers);
         let s = &self.req.settings;
@@ -323,6 +324,7 @@ impl Resolver<'_> {
                 proxy: None,
             },
             warnings: std::mem::take(&mut self.warnings),
+            auth,
         }
     }
 
@@ -455,7 +457,12 @@ impl Resolver<'_> {
 
     // ---- auth ----
 
-    fn apply_auth(&mut self, headers: &mut Vec<Header>, query: &mut Vec<(String, String)>) {
+    /// Applies header and query auth; returns the auth the engine applies at send time.
+    fn apply_auth(
+        &mut self,
+        headers: &mut Vec<Header>,
+        query: &mut Vec<(String, String)>,
+    ) -> Option<EngineAuth> {
         let scope = self.scope;
         let auth = std::iter::once(&self.req.auth)
             .chain(scope.folders.iter().rev().map(|f| &f.auth))
@@ -464,16 +471,18 @@ impl Resolver<'_> {
             .cloned()
             .unwrap_or(Auth::None);
         match auth {
-            Auth::None | Auth::Inherit => {}
+            Auth::None | Auth::Inherit => None,
             Auth::Basic { username, password } => {
                 let u = self.subst(&username, &Location::Auth);
                 let p = self.subst(&password, &Location::Auth);
                 let enc = STANDARD.encode(format!("{u}:{p}"));
                 set_header(headers, "Authorization".into(), format!("Basic {enc}"));
+                None
             }
             Auth::Bearer { token } => {
                 let t = self.subst(&token, &Location::Auth);
                 set_header(headers, "Authorization".into(), format!("Bearer {t}"));
+                None
             }
             Auth::ApiKey {
                 name,
@@ -486,7 +495,25 @@ impl Resolver<'_> {
                     ApiKeyLocation::Header => set_header(headers, n, v),
                     ApiKeyLocation::Query => query.push((n, v)),
                 }
+                None
             }
+            Auth::Digest { username, password } => Some(EngineAuth::Digest {
+                username: self.subst(&username, &Location::Auth),
+                password: self.subst(&password, &Location::Auth),
+            }),
+            Auth::AwsSigV4 {
+                access_key,
+                secret_key,
+                session_token,
+                region,
+                service,
+            } => Some(EngineAuth::AwsSigV4 {
+                access_key: self.subst(&access_key, &Location::Auth),
+                secret_key: self.subst(&secret_key, &Location::Auth),
+                session_token: self.subst(&session_token, &Location::Auth),
+                region: self.subst(&region, &Location::Auth),
+                service: self.subst(&service, &Location::Auth),
+            }),
         }
     }
 
