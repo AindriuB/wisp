@@ -1,15 +1,13 @@
 //! Import one curl command line as a single request.
 
-use std::path::PathBuf;
-
 use wisp_core::Method;
 use wisp_core::request::{
     Auth, Body, KeyValue, Part, PartValue, Request, RequestSettings, TextBody,
 };
 
 use super::{
-    ImportError, ImportItem, ImportResult, check_size, method_name, parse_method, parse_query,
-    percent_encode, request_name, split_query,
+    ImportError, ImportItem, ImportResult, MAX_WARNINGS, SecretSink, check_size, method_name,
+    parse_method, parse_query, percent_encode, request_name, split_query,
 };
 
 /// Short options that take an argument and are not imported.
@@ -234,6 +232,15 @@ struct Flags {
     warnings: Vec<String>,
 }
 
+impl Flags {
+    /// Keep at most one more than [`MAX_WARNINGS`]; the rest are dropped here.
+    fn warn(&mut self, message: String) {
+        if self.warnings.len() <= MAX_WARNINGS {
+            self.warnings.push(message);
+        }
+    }
+}
+
 /// Parse a curl command line into one request.
 pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
     check_size(input.len())?;
@@ -276,10 +283,9 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                 "head" => f.head = true,
                 l if IGNORED_LONG_WITH_ARG.contains(&l) => {
                     need(&mut args, &arg)?;
-                    f.warnings
-                        .push(format!("option `{arg}` and its argument are not imported"));
+                    f.warn(format!("option `{arg}` and its argument are not imported"));
                 }
-                _ => f.warnings.push(format!("option `{arg}` is not imported")),
+                _ => f.warn(format!("option `{arg}` is not imported")),
             }
         } else {
             let chars: Vec<char> = arg[1..].chars().collect();
@@ -310,10 +316,10 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                     ('L', None) => f.location = true,
                     ('G', None) => f.get = true,
                     ('I', None) => f.head = true,
-                    (c, Some(_)) => f
-                        .warnings
-                        .push(format!("option `-{c}` and its argument are not imported")),
-                    (c, None) => f.warnings.push(format!("option `-{c}` is not imported")),
+                    (c, Some(_)) => {
+                        f.warn(format!("option `-{c}` and its argument are not imported"))
+                    }
+                    (c, None) => f.warn(format!("option `-{c}` is not imported")),
                 }
             }
         }
@@ -325,14 +331,13 @@ fn set_url(f: &mut Flags, url: String) {
     if f.url.is_none() {
         f.url = Some(url);
     } else {
-        f.warnings
-            .push(format!("extra URL `{url}` is not imported"));
+        f.warn(format!("extra URL `{url}` is not imported"));
     }
 }
 
 fn add_data(f: &mut Flags, kind: &str, v: String) {
     if kind != "data-raw" && v.starts_with('@') {
-        f.warnings.push(format!(
+        f.warn(format!(
             "`{v}` reads the body from a file; body not imported"
         ));
     } else {
@@ -348,8 +353,7 @@ fn add_urlencoded(f: &mut Flags, v: String) {
             f.data.push(format!("{name}={}", percent_encode(content)));
         }
     } else if v.contains('@') {
-        f.warnings
-            .push(format!("`{v}` reads the value from a file; not imported"));
+        f.warn(format!("`{v}` reads the value from a file; not imported"));
     } else {
         f.data.push(percent_encode(&v));
     }
@@ -370,7 +374,7 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
     if let Some(m) = &f.method {
         match parse_method(m) {
             Some(parsed) => method = parsed,
-            None => f.warnings.push(format!(
+            None => f.warn(format!(
                 "method `{m}` is not supported; using {}",
                 method_name(method)
             )),
@@ -378,14 +382,20 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
     }
     let name = request_name(method_name(method), &url);
 
+    let mut sink = SecretSink::default();
     let mut headers = Vec::new();
-    for h in &f.headers {
+    let header_args = std::mem::take(&mut f.headers);
+    for h in &header_args {
         match h.split_once(':') {
             Some((n, v)) if !n.trim().is_empty() => {
                 if !v.trim().is_empty() {
+                    let mut value = v.trim().to_string();
+                    if super::is_credential_header(n.trim()) {
+                        value = sink.secret_ref(&name, &n.trim().to_ascii_lowercase(), value);
+                    }
                     headers.push(KeyValue {
                         name: n.trim().to_string(),
-                        value: v.trim().to_string(),
+                        value,
                         enabled: true,
                     });
                 }
@@ -396,22 +406,19 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
                     value: String::new(),
                     enabled: true,
                 }),
-                _ => f
-                    .warnings
-                    .push(format!("header `{h}` is malformed and was skipped")),
+                _ => f.warn(format!("header `{h}` is malformed and was skipped")),
             },
         }
     }
-    if let Some(c) = &f.cookie {
+    if let Some(c) = f.cookie.take() {
         if c.contains('=') {
             headers.push(KeyValue {
                 name: "Cookie".into(),
-                value: c.clone(),
+                value: sink.secret_ref(&name, "cookie", c),
                 enabled: true,
             });
         } else {
-            f.warnings
-                .push(format!("cookie file `{c}` is not imported"));
+            f.warn(format!("cookie file `{c}` is not imported"));
         }
     }
     let content_type = headers
@@ -422,29 +429,28 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
     let mut body = Body::None;
     if !f.form.is_empty() {
         if !f.data.is_empty() {
-            f.warnings
-                .push("both -d and -F given; -d data is not imported".into());
+            f.warn("both -d and -F given; -d data is not imported".into());
         }
         let mut parts = Vec::new();
-        for spec in &f.form {
+        let forms = std::mem::take(&mut f.form);
+        for spec in &forms {
             let Some((n, v)) = spec.split_once('=') else {
-                f.warnings
-                    .push(format!("form field `{spec}` has no `=`; skipped"));
+                f.warn(format!("form field `{spec}` has no `=`; skipped"));
                 continue;
             };
             let v = v.split(";type=").next().unwrap_or("");
-            let value = if let Some(path) = v.strip_prefix('@') {
-                match super::safe_file_path(path.split(';').next().unwrap_or(path)) {
-                    Some(p) => PartValue::File(p),
-                    None => {
-                        f.warnings.push(format!(
-                            "file part `{n}` has an unsafe path; imported without a file"
-                        ));
-                        PartValue::File(PathBuf::new())
-                    }
-                }
+            let value = if v.starts_with('@') {
+                f.warn(format!(
+                    "file part `{n}` is imported disabled and empty; pick the file after import"
+                ));
+                parts.push(Part {
+                    name: n.to_string(),
+                    value: PartValue::Text(String::new()),
+                    enabled: false,
+                });
+                continue;
             } else if v.starts_with('<') {
-                f.warnings.push(format!(
+                f.warn(format!(
                     "form field `{n}` reads a file as text; not imported"
                 ));
                 continue;
@@ -486,8 +492,8 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
         Some(u) => {
             let (user, pass) = u.split_once(':').unwrap_or((u.as_str(), ""));
             Auth::Basic {
-                username: user.to_string(),
-                password: pass.to_string(),
+                username: sink.secret_ref(&name, "username", user.to_string()),
+                password: sink.secret_ref(&name, "password", pass.to_string()),
             }
         }
         None => Auth::Inherit,
@@ -519,6 +525,7 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
             name: name.clone(),
             request,
         }],
+        environments: sink.into_env().into_iter().collect(),
         ..ImportResult::default()
     };
     for w in std::mem::take(&mut f.warnings) {
@@ -614,24 +621,24 @@ mod tests {
             panic!()
         };
         assert_eq!(parts[0].value, PartValue::Text("bob".into()));
-        assert_eq!(
-            parts[1].value,
-            PartValue::File(PathBuf::from("assets/a.png"))
-        );
+        assert_eq!(parts[1].value, PartValue::Text(String::new()));
+        assert!(!parts[1].enabled);
         assert_eq!(r.method, Method::Post);
     }
 
     #[test]
     fn basic_auth_cookie_flags() {
-        let (r, _) = req("curl -u me:pw -b 'a=1; b=2' -k -L http://h/x");
+        let (r, res) = req("curl -u me:pw -b 'a=1; b=2' -k -L http://h/x");
         assert_eq!(
             r.auth,
             Auth::Basic {
-                username: "me".into(),
-                password: "pw".into()
+                username: "{{get_x_username}}".into(),
+                password: "{{get_x_password}}".into()
             }
         );
-        assert_eq!(header(&r, "cookie"), Some("a=1; b=2"));
+        assert_eq!(header(&r, "cookie"), Some("{{get_x_cookie}}"));
+        let secrets = &res.environments[0].secrets;
+        assert!(secrets.iter().any(|s| s.value == "a=1; b=2"));
         assert!(!r.settings.verify_tls);
         assert!(r.settings.follow_redirects);
     }
@@ -726,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_file_paths_are_dropped() {
+    fn file_paths_are_never_imported() {
         for bad in [
             "/etc/passwd",
             "~/.ssh/id_rsa",
@@ -739,7 +746,8 @@ mod tests {
             let Body::Multipart(parts) = r.body else {
                 panic!()
             };
-            assert_eq!(parts[0].value, PartValue::File(PathBuf::new()), "{bad}");
+            assert_eq!(parts[0].value, PartValue::Text(String::new()), "{bad}");
+            assert!(!parts[0].enabled);
             let w = res
                 .warnings
                 .iter()
@@ -761,5 +769,29 @@ mod tests {
         let (r, _) = req("curl 'http://h/x?k=a+b&j=a%2Bb'");
         assert_eq!(r.params[0].value, "a b");
         assert_eq!(r.params[1].value, "a+b");
+    }
+
+    #[test]
+    fn credentials_go_to_secrets_env() {
+        let (r, res) = req(
+            "curl -u bob:hunter2 -H 'Authorization: Bearer abc123' -H 'Cookie: s=zzz' http://h/x",
+        );
+        let Auth::Basic { username, password } = &r.auth else {
+            panic!()
+        };
+        assert!(username.starts_with("{{") && password.starts_with("{{"));
+        assert!(header(&r, "authorization").unwrap().starts_with("{{"));
+        assert!(header(&r, "cookie").unwrap().starts_with("{{"));
+        assert!(!format!("{:?}", r).contains("hunter2"));
+        let secrets = &res.environments[0].secrets;
+        for v in ["bob", "hunter2", "Bearer abc123", "s=zzz"] {
+            assert!(secrets.iter().any(|s| s.value == v), "{v}");
+        }
+    }
+
+    #[test]
+    fn huge_flag_cluster_warnings_are_capped() {
+        let (_, res) = req(&format!("curl -{} http://h/x", "v".repeat(2_000_000)));
+        assert_eq!(res.warnings.len(), MAX_WARNINGS + 1);
     }
 }

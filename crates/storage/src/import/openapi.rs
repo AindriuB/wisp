@@ -389,14 +389,19 @@ fn operation(
     // Path-level parameters first; an operation parameter replaces one with
     // the same name and location.
     let mut params: Vec<&Value> = Vec::new();
-    let mut index: HashMap<(String, String), usize> = HashMap::new();
+    let mut index: HashMap<(&str, &str), usize> = HashMap::new();
     for list in [item.get("parameters"), op.get("parameters")] {
         for p in list.and_then(Value::as_array).into_iter().flatten() {
             spend(budget, VISIT_COST)?;
             let Some(p) = deref(doc, p, &at, result, budget)? else {
                 continue;
             };
-            let key = (text(p.get("name")), text(p.get("in")));
+            let key = (
+                p.get("name").and_then(Value::as_str).unwrap_or(""),
+                p.get("in").and_then(Value::as_str).unwrap_or(""),
+            );
+            // Hashing and comparing the key costs its length on every visit.
+            spend(budget, key.0.len() + key.1.len())?;
             if let Some(&i) = index.get(&key) {
                 params[i] = p;
             } else {
@@ -443,6 +448,13 @@ fn operation(
         && let Some(body) = deref(doc, body, &at, result, budget)?
         && let Some(content) = body.get("content").and_then(Value::as_object)
     {
+        spend(
+            budget,
+            content
+                .keys()
+                .map(|k| VISIT_COST + 3 * k.len())
+                .sum::<usize>(),
+        )?;
         let json = content
             .iter()
             .find(|(k, _)| k.as_str() == "application/json")
@@ -621,6 +633,31 @@ mod tests {
             "{:?}",
             r.map(|r| r.warnings)
         );
+    }
+
+    #[test]
+    fn shared_ref_parameter_names_are_charged() {
+        let t = std::time::Instant::now();
+        let big = "n".repeat(3 * 1024 * 1024);
+        let mut paths = String::new();
+        for i in 0..200 {
+            if i > 0 {
+                paths.push(',');
+            }
+            paths.push_str(&format!(
+                r##""/p{i}":{{"get":{{"parameters":[{{"$ref":"#/components/parameters/P"}}]}}}}"##
+            ));
+        }
+        let doc = format!(
+            r##"{{"openapi":"3.0.0","paths":{{{paths}}},"components":{{"parameters":{{"P":{{"name":"{big}","in":"query"}}}}}}}}"##
+        );
+        let r = parse(doc.as_bytes());
+        assert!(
+            matches!(r, Err(ImportError::TooLarge(_))),
+            "{:?}",
+            r.map(|r| r.warnings)
+        );
+        assert!(t.elapsed().as_secs() < 5);
     }
 
     #[test]

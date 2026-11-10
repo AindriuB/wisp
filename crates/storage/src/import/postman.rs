@@ -1,8 +1,5 @@
 //! Import a Postman collection v2.1 (JSON).
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-
 use serde_json::Value;
 use wisp_core::Method;
 use wisp_core::request::{
@@ -10,17 +7,14 @@ use wisp_core::request::{
 };
 
 use super::{
-    ImportError, ImportItem, ImportResult, ImportedEnv, RequestCounter, SECRETS_ENV_PLACEHOLDER,
-    method_name, parse_json, parse_method, parse_query, request_name,
+    ImportError, ImportItem, ImportResult, RequestCounter, SecretSink, method_name, parse_json,
+    parse_method, parse_query, request_name,
 };
 
 struct Ctx {
     result: ImportResult,
     counter: RequestCounter,
-    secrets: Vec<Var>,
-    /// Secret names in use, and the next suffix to try for each base.
-    secret_names: HashSet<String>,
-    secret_next: HashMap<String, usize>,
+    sink: SecretSink,
 }
 
 fn text(v: Option<&Value>) -> String {
@@ -61,17 +55,15 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
             ..ImportResult::default()
         },
         counter: RequestCounter::default(),
-        secrets: Vec::new(),
-        secret_names: HashSet::new(),
-        secret_next: HashMap::new(),
+        sink: SecretSink::default(),
     };
     for var in array(doc.get("variable")) {
         let key = text(var.get("key"));
         if !key.is_empty() {
-            cx.result.collection_vars.push(Var {
-                name: key,
-                value: text(var.get("value")),
-            });
+            let value = cx
+                .sink
+                .secret_ref("collection", &key, text(var.get("value")));
+            cx.result.collection_vars.push(Var { name: key, value });
         }
     }
     if doc
@@ -84,12 +76,8 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
     script_warning(&mut cx, &name, &doc);
     let items = items(&mut cx, array(doc.get("item")), &[])?;
     cx.result.items = items;
-    if !cx.secrets.is_empty() {
-        cx.result.environments.push(ImportedEnv {
-            name: SECRETS_ENV_PLACEHOLDER.into(),
-            vars: Vec::new(),
-            secrets: std::mem::take(&mut cx.secrets),
-        });
+    if let Some(env) = cx.sink.into_env() {
+        cx.result.environments.push(env);
     }
     Ok(cx.result)
 }
@@ -188,9 +176,13 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
         for h in array(r.get("header")) {
             let key = text(h.get("key"));
             if !key.is_empty() {
+                let mut value = text(h.get("value"));
+                if super::is_credential_header(&key) {
+                    value = cx.sink.secret_ref(&name, &key.to_ascii_lowercase(), value);
+                }
                 req.headers.push(KeyValue {
                     name: key,
-                    value: text(h.get("value")),
+                    value,
                     enabled: !h.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                 });
             }
@@ -356,31 +348,19 @@ fn body_of(cx: &mut Ctx, body: Option<&Value>, headers: &[KeyValue], at: &str) -
                     continue;
                 }
                 let enabled = !p.get("disabled").and_then(Value::as_bool).unwrap_or(false);
-                let value = if text(p.get("type")) == "file" {
-                    let src = match p.get("src") {
-                        Some(Value::Array(a)) => text(a.first()),
-                        other => text(other),
-                    };
-                    if src.is_empty() {
-                        cx.result
-                            .warn(at, format!("file part `{name}` has no file; skipped"));
-                        continue;
-                    }
-                    match super::safe_file_path(&src) {
-                        Some(p) => PartValue::File(p),
-                        None => {
-                            cx.result.warn(
-                                at,
-                                format!(
-                                    "file part `{name}` has an unsafe path; imported without a file"
-                                ),
-                            );
-                            PartValue::File(PathBuf::new())
-                        }
-                    }
-                } else {
-                    PartValue::Text(text(p.get("value")))
-                };
+                if text(p.get("type")) == "file" {
+                    cx.result.warn(
+                        at,
+                        format!("file part `{name}` is imported disabled and empty; pick the file after import"),
+                    );
+                    parts.push(Part {
+                        name,
+                        value: PartValue::Text(String::new()),
+                        enabled: false,
+                    });
+                    continue;
+                }
+                let value = { PartValue::Text(text(p.get("value"))) };
                 parts.push(Part {
                     name,
                     value,
@@ -421,15 +401,15 @@ fn auth_of(cx: &mut Ctx, auth: Option<&Value>, request: &str, at: &str) -> Auth 
     match kind.as_str() {
         "noauth" => Auth::None,
         "basic" => Auth::Basic {
-            username: secret_ref(cx, request, "username", field("username")),
-            password: secret_ref(cx, request, "password", field("password")),
+            username: cx.sink.secret_ref(request, "username", field("username")),
+            password: cx.sink.secret_ref(request, "password", field("password")),
         },
         "bearer" => Auth::Bearer {
-            token: secret_ref(cx, request, "token", field("token")),
+            token: cx.sink.secret_ref(request, "token", field("token")),
         },
         "apikey" => Auth::ApiKey {
             name: field("key"),
-            value: secret_ref(cx, request, "value", field("value")),
+            value: cx.sink.secret_ref(request, "value", field("value")),
             location: if field("in") == "query" {
                 ApiKeyLocation::Query
             } else {
@@ -444,49 +424,6 @@ fn auth_of(cx: &mut Ctx, auth: Option<&Value>, request: &str, at: &str) -> Auth 
             Auth::Inherit
         }
     }
-}
-
-/// Keep `{{refs}}` and empty values; move a literal into the secrets
-/// environment and return a reference to it.
-fn secret_ref(cx: &mut Ctx, request: &str, field: &str, value: String) -> String {
-    if value.is_empty() || value.contains("{{") {
-        return value;
-    }
-    let mut base = String::new();
-    for c in request.chars() {
-        if c.is_ascii_alphanumeric() {
-            base.push(c.to_ascii_lowercase());
-        } else if !base.ends_with('_') {
-            base.push('_');
-        }
-    }
-    let base = format!(
-        "{}{field}",
-        if base.is_empty() {
-            "request_".to_string()
-        } else if base.ends_with('_') {
-            base
-        } else {
-            format!("{base}_")
-        }
-    );
-    let mut name = base.clone();
-    if cx.secret_names.contains(&name) {
-        let next = cx.secret_next.entry(base.clone()).or_insert(2);
-        loop {
-            name = format!("{base}_{next}");
-            *next += 1;
-            if !cx.secret_names.contains(&name) {
-                break;
-            }
-        }
-    }
-    cx.secret_names.insert(name.clone());
-    cx.secrets.push(Var {
-        name: name.clone(),
-        value,
-    });
-    format!("{{{{{name}}}}}")
 }
 
 #[cfg(test)]
@@ -556,7 +493,8 @@ mod tests {
             panic!()
         };
         assert_eq!(parts.len(), 2);
-        assert!(matches!(parts[1].value, PartValue::File(_)));
+        assert_eq!(parts[1].value, PartValue::Text(String::new()));
+        assert!(!parts[1].enabled);
     }
 
     #[test]
@@ -575,7 +513,7 @@ mod tests {
         };
         assert_eq!(token, "{{create_pet_token}}");
         let env = &r.environments[0];
-        assert_eq!(env.name, SECRETS_ENV_PLACEHOLDER);
+        assert_eq!(env.name, super::super::SECRETS_ENV_PLACEHOLDER);
         assert!(env.vars.is_empty());
         assert!(env.secrets.iter().any(|v| v.value == "s3cret-pass"));
         let debug = format!("{:?}", r.items);
@@ -671,7 +609,7 @@ mod tests {
         let t = std::time::Instant::now();
         let r = parse(doc.as_bytes()).unwrap();
         let secrets = &r.environments[0].secrets;
-        let names: HashSet<_> = secrets.iter().map(|v| v.name.as_str()).collect();
+        let names: std::collections::HashSet<_> = secrets.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names.len(), secrets.len());
         assert!(secrets.len() >= 8000);
         assert!(t.elapsed().as_secs() < 2);
@@ -703,7 +641,8 @@ mod tests {
             let Body::Multipart(parts) = req.body else {
                 panic!()
             };
-            assert_eq!(parts[0].value, PartValue::File(PathBuf::new()), "{bad}");
+            assert_eq!(parts[0].value, PartValue::Text(String::new()), "{bad}");
+            assert!(!parts[0].enabled);
             let w = r
                 .warnings
                 .iter()
@@ -717,10 +656,8 @@ mod tests {
         let Body::Multipart(parts) = req.body else {
             panic!()
         };
-        assert_eq!(
-            parts[0].value,
-            PartValue::File(PathBuf::from("assets/a.png"))
-        );
+        assert_eq!(parts[0].value, PartValue::Text(String::new()));
+        assert!(!parts[0].enabled);
     }
 
     #[test]

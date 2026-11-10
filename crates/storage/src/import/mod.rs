@@ -259,19 +259,73 @@ pub(crate) fn form_decode(s: &str) -> String {
     percent_decode(&s.replace('+', " "))
 }
 
-/// A file path from foreign input that is safe to keep: relative, with no
-/// `~` and no `..`, on any platform's syntax. `None` means refuse it.
-pub(crate) fn safe_file_path(p: &str) -> Option<std::path::PathBuf> {
-    let b = p.as_bytes();
-    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
-    if p.is_empty()
-        || p.starts_with(['/', '\\', '~'])
-        || drive
-        || p.split(['/', '\\']).any(|c| c == "..")
-    {
-        return None;
+/// Literal credentials gathered by an importer; they go to the secrets
+/// environment and the request keeps `{{name}}` references.
+#[derive(Default)]
+pub(crate) struct SecretSink {
+    secrets: Vec<Var>,
+    /// Secret names in use, and the next suffix to try for each base.
+    names: std::collections::HashSet<String>,
+    next: std::collections::HashMap<String, usize>,
+}
+
+impl SecretSink {
+    /// Keep `{{refs}}` and empty values; move a literal into the secrets
+    /// environment and return a reference to it.
+    pub(crate) fn secret_ref(&mut self, request: &str, field: &str, value: String) -> String {
+        if value.is_empty() || value.contains("{{") {
+            return value;
+        }
+        let mut base = String::new();
+        for c in request.chars() {
+            if c.is_ascii_alphanumeric() {
+                base.push(c.to_ascii_lowercase());
+            } else if !base.ends_with('_') {
+                base.push('_');
+            }
+        }
+        let base = format!(
+            "{}{field}",
+            if base.is_empty() {
+                "request_".to_string()
+            } else if base.ends_with('_') {
+                base
+            } else {
+                format!("{base}_")
+            }
+        );
+        let mut name = base.clone();
+        if self.names.contains(&name) {
+            let next = self.next.entry(base.clone()).or_insert(2);
+            loop {
+                name = format!("{base}_{next}");
+                *next += 1;
+                if !self.names.contains(&name) {
+                    break;
+                }
+            }
+        }
+        self.names.insert(name.clone());
+        self.secrets.push(Var {
+            name: name.clone(),
+            value,
+        });
+        format!("{{{{{name}}}}}")
     }
-    Some(std::path::PathBuf::from(p))
+
+    /// The environment holding what was gathered, if anything.
+    pub(crate) fn into_env(self) -> Option<ImportedEnv> {
+        (!self.secrets.is_empty()).then(|| ImportedEnv {
+            name: SECRETS_ENV_PLACEHOLDER.into(),
+            vars: Vec::new(),
+            secrets: self.secrets,
+        })
+    }
+}
+
+/// Headers whose literal values are credentials.
+pub(crate) fn is_credential_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
 }
 
 /// Percent-encode everything but unreserved characters.
@@ -386,26 +440,5 @@ mod tests {
     fn form_decode_plus_and_percent() {
         assert_eq!(form_decode("a+b"), "a b");
         assert_eq!(form_decode("a%2Bb"), "a+b");
-    }
-
-    #[test]
-    fn safe_paths() {
-        for bad in [
-            "",
-            "/etc/passwd",
-            "~/.ssh/id_rsa",
-            "~",
-            "../x",
-            "a/../b",
-            "a\\..\\b",
-            "C:\\x",
-            "c:/x",
-            "\\\\h\\s\\x",
-        ] {
-            assert!(safe_file_path(bad).is_none(), "{bad}");
-        }
-        for ok in ["a.png", "assets/a.png", "a..b/c", "x\\y"] {
-            assert!(safe_file_path(ok).is_some(), "{ok}");
-        }
     }
 }

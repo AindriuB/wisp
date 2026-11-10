@@ -150,3 +150,85 @@ fn leftover_secrets_file_is_not_overwritten() {
         kept
     );
 }
+
+/// Every file under `dir`, with its text.
+fn all_files(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        for e in std::fs::read_dir(&p).unwrap() {
+            let path = e.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                out.push((path, text));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn file_parts_never_carry_a_path_and_round_trip() {
+    let r = curl::parse("curl -F f=@environments/prod.secrets.toml http://h/up").unwrap();
+    let pm = postman::parse(
+        br#"{"info":{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+        "item":[{"name":"Up","request":{"method":"POST","url":"http://h/up",
+        "body":{"mode":"formdata","formdata":[{"key":"f","type":"file","src":"environments/prod.secrets.toml"}]}}}]}"#,
+    )
+    .unwrap();
+    for r in [r, pm] {
+        let d = collection();
+        write(d.path(), Path::new(""), &r, "imported").unwrap();
+        for (path, text) in all_files(d.path()) {
+            assert!(!text.contains("prod.secrets"), "{}", path.display());
+        }
+        let tree = open_collection(d.path()).unwrap();
+        let mut paths = Vec::new();
+        request_paths(&tree.nodes, &mut paths);
+        let abs = tree.root.join(&paths[0]);
+        let before = std::fs::read_to_string(&abs).unwrap();
+        let req = load_request(&abs).unwrap();
+        wisp_storage::request::save_request(&abs, &req).unwrap();
+        assert_eq!(std::fs::read_to_string(&abs).unwrap(), before);
+    }
+}
+
+#[test]
+fn credentials_never_reach_committed_files() {
+    let curl_r = curl::parse(
+        "curl -u bob:hunter2-pw -H 'Authorization: Bearer cred-aaa' -H 'Cookie: sid=cred-bbb' http://h/x",
+    )
+    .unwrap();
+    let pm = postman::parse(
+        br#"{"info":{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+        "variable":[{"key":"apiKey","value":"cred-ccc"}],
+        "item":[{"name":"A","request":{"method":"GET","url":"http://h/a",
+        "header":[{"key":"Authorization","value":"Bearer cred-ddd"},{"key":"Cookie","value":"sid=cred-eee"}]}}]}"#,
+    )
+    .unwrap();
+    for (r, needles) in [
+        (curl_r, vec!["hunter2-pw", "cred-aaa", "cred-bbb"]),
+        (pm, vec!["cred-ccc", "cred-ddd", "cred-eee"]),
+    ] {
+        let d = collection();
+        write(d.path(), Path::new(""), &r, "imported").unwrap();
+        let files = all_files(d.path());
+        for needle in &needles {
+            for (path, text) in &files {
+                if path.to_string_lossy().ends_with(".secrets.toml") {
+                    continue;
+                }
+                assert!(!text.contains(needle), "{needle} in {}", path.display());
+            }
+            assert!(
+                files
+                    .iter()
+                    .any(|(p, t)| p.to_string_lossy().ends_with(".secrets.toml")
+                        && t.contains(needle)),
+                "{needle}"
+            );
+        }
+    }
+}
