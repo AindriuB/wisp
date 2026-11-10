@@ -105,3 +105,19 @@ Reviewed HEAD: e958e3b. FIXED: the OpenAPI example budget, the Postman secret na
 ## Residual (round 2 additions)
 - [P3] openapi.rs:344-347: the example budget is charged after `to_string_pretty`, so a deep example briefly allocates about 60 times its size (728 MB peak for 9.8 MiB).
 - [P3] curl.rs:18-86: long options still missing from the arg list swallow the URL (`--tlspassword`, `--proxy-pass`, `--connect-to`, `--proto`, `--tlsuser`, `--sasl-authzid`, `--login-options`, `--ftp-account`, `--hostpubsha256`). Build the list from `curl --help all`.
+
+## Amendment 3 — user decision (2026-11-10): fourth round, YAML input cap
+
+The user approved a fourth review round, and a YAML-specific input cap.
+- YAML input is capped at 2 MiB, so OpenAPI YAML over 2 MiB returns TooLarge before parsing. JSON keeps the 10 MiB cap. The YAML library (saphyr-parser 0.3.3) buffers every token of a flow collection before it emits an event (scanner.rs:866-880; `stale_simple_keys` runs only at flow_level 0). The cap bounds that to about 450 MB worst case. This is an accepted residual.
+- The Amendment 2 byte budget (64 MiB expanded) replaces the 100,000-node cap. Amend the Contract wording accordingly; no node count is required.
+- Owns gains one line in the root Cargo.toml: a `saphyr-parser` entry under `[workspace.dependencies]`. crates/storage/Cargo.toml uses `saphyr-parser.workspace = true`.
+
+## Review round 3 — findings
+
+Reviewed HEAD: c3b5e9a. All round-2 items are FIXED.
+- [P1] yaml.rs:154: every anchored node is deep-copied into `anchors`, and the copies are never charged to the budget. Input: `b: &b "<100 KiB>"`, then `x: &n0 [&n1 [ … &n59 [*b ×60] … ]]` (103 KB) → 434 MB RSS, parse OK. A 1 MiB scalar with about 63 aliases under about 62 anchors gives about 3.9 GB from about 1 MB. route: implementer. Charge each stored anchor's size to the total, or share anchor values via Rc/Arc and materialise each once; test both inputs.
+- [P2] openapi.rs:149: `substitute` searches the rest of the URL for `}` at every unmatched `{`, which is quadratic; the cap is checked after each step. Input: `"{"×65000 + "a"×9 MiB` with `variables:{z:{}}` → 31.8 s. route: implementer. Reject a raw URL over MAX_URL_BYTES before scanning, and copy the rest once no `}` follows; test it.
+- [P2, accepted residual per Amendment 3] the saphyr-parser flow-collection buffering.
+- [SPEC] node cap vs byte budget: settled by Amendment 3.
+- [STYLE] crates/storage/Cargo.toml:21 should use `workspace = true`: settled by Amendment 3.
