@@ -249,8 +249,8 @@ fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>) {
                 q.iter()
                     .filter(|p| !text(p.get("key")).is_empty())
                     .map(|p| KeyValue {
-                        name: super::percent_decode(&text(p.get("key"))),
-                        value: super::percent_decode(&text(p.get("value"))),
+                        name: super::form_decode(&text(p.get("key"))),
+                        value: super::form_decode(&text(p.get("value"))),
                         enabled: !p.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                     })
                     .collect()
@@ -727,6 +727,12 @@ mod tests {
     fn query_array_is_percent_decoded() {
         let url = serde_json::json!({"raw": "http://h/x?a%20b=c%20d",
             "query": [{"key": "a%20b", "value": "c%20d"}]});
+        let (req, _) = one_request(serde_json::json!({}), url);
+        assert_eq!(req.params[0].name, "a b");
+        assert_eq!(req.params[0].value, "c d");
+
+        let url = serde_json::json!({"raw": "http://h/x?a+b=c+d",
+            "query": [{"key": "a+b", "value": "c+d"}]});
         let (req, _) = one_request(serde_json::json!({}), url);
         assert_eq!(req.params[0].name, "a b");
         assert_eq!(req.params[0].value, "c d");

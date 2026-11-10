@@ -138,12 +138,12 @@ fn fold(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
-/// A name the collection will accept: no control characters or leading dots,
-/// not empty, not a reserved device name, and not unreasonably long.
 /// Longest file or folder name stem, in bytes; leaves room for a numeric
 /// suffix and an extension under the 255-byte limit.
 const MAX_NAME_BYTES: usize = 80;
 
+/// A name the collection will accept: no control characters or leading dots,
+/// not empty, not a reserved device name, and not unreasonably long.
 fn clean_name(name: &str) -> String {
     let s: String = name.chars().filter(|c| !c.is_control()).collect();
     let s: String = s

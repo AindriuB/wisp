@@ -39,6 +39,31 @@ const METHODS: [(&str, Method); 7] = [
     ("patch", Method::Patch),
 ];
 
+/// Like `text`, but cuts a string to `MAX_NAME_BYTES` on a char boundary
+/// before copying it, and charges the copy to the work budget.
+fn capped_text(v: Option<&Value>, budget: &mut usize) -> Result<String, ImportError> {
+    let out = match v {
+        Some(Value::String(s)) => {
+            let mut end = s.len().min(MAX_NAME_BYTES);
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            s[..end].to_string()
+        }
+        other => {
+            let mut t = text(other);
+            let mut end = t.len().min(MAX_NAME_BYTES);
+            while !t.is_char_boundary(end) {
+                end -= 1;
+            }
+            t.truncate(end);
+            t
+        }
+    };
+    spend(budget, out.len())?;
+    Ok(out)
+}
+
 fn text(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) => s.clone(),
@@ -346,9 +371,9 @@ fn operation(
     op: &Value,
 ) -> Result<(Option<String>, Request), ImportError> {
     let fallback = format!("{} {path}", method_name(method));
-    let mut name = text(op.get("summary"));
+    let mut name = capped_text(op.get("summary"), budget)?;
     if name.trim().is_empty() {
-        name = text(op.get("operationId"));
+        name = capped_text(op.get("operationId"), budget)?;
     }
     if name.trim().is_empty() {
         name = fallback.clone();
@@ -446,12 +471,14 @@ fn operation(
         }
     }
 
-    let tag = op
+    let tag = match op
         .get("tags")
         .and_then(Value::as_array)
         .and_then(|t| t.first())
-        .map(|t| text(Some(t)))
-        .filter(|t| !t.trim().is_empty());
+    {
+        Some(t) => Some(capped_text(Some(t), budget)?).filter(|t| !t.trim().is_empty()),
+        None => None,
+    };
     Ok((tag, req))
 }
 
@@ -594,6 +621,52 @@ mod tests {
             "{:?}",
             r.map(|r| r.warnings)
         );
+    }
+
+    #[test]
+    fn shared_ref_operation_names_are_capped_and_charged() {
+        let t = std::time::Instant::now();
+        let big = "é".repeat(256 * 1024);
+        let ops: Vec<String> = ["get", "put", "post", "delete", "options", "head", "patch"]
+            .iter()
+            .map(|m| format!(r#""{m}":{{"summary":"{big}","tags":["{big}"]}}"#))
+            .collect();
+        let mut paths = String::new();
+        for i in 0..200 {
+            if i > 0 {
+                paths.push(',');
+            }
+            paths.push_str(&format!(
+                r##""/p{i}":{{"$ref":"#/components/pathItems/B"}}"##
+            ));
+        }
+        let doc = format!(
+            r##"{{"openapi":"3.1.0","paths":{{{paths}}},"components":{{"pathItems":{{"B":{{{}}}}}}}}}"##,
+            ops.join(",")
+        );
+        match parse(doc.as_bytes()) {
+            Err(ImportError::TooLarge(_)) => {}
+            Ok(r) => {
+                let mut total = 0;
+                let mut stack: Vec<&ImportItem> = r.items.iter().collect();
+                while let Some(i) = stack.pop() {
+                    match i {
+                        ImportItem::Request { name, .. } => {
+                            assert!(name.len() <= MAX_NAME_BYTES);
+                            total += name.len();
+                        }
+                        ImportItem::Folder { name, items } => {
+                            assert!(name.len() <= MAX_NAME_BYTES);
+                            total += name.len();
+                            stack.extend(items.iter());
+                        }
+                    }
+                }
+                assert!(total < 8 * 1024 * 1024, "{total}");
+            }
+            Err(e) => panic!("{e:?}"),
+        }
+        assert!(t.elapsed().as_millis() < 900);
     }
 
     #[test]
