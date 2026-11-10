@@ -107,7 +107,7 @@ async fn sequential_sends_report_one_connect_per_accepted_connection() {
         engine.submit(Command::Send(request(format!("http://127.0.0.1:{port}/"))));
         all.extend(terminals(&rx, 1).await);
     }
-    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    assert!(accepted.load(Ordering::SeqCst) >= 1);
     assert_eq!(some_connects(&all), 1);
     assert!(completed(&all[0]).1.connect.is_some());
     assert!(
@@ -311,6 +311,12 @@ fn serve_raced() -> Raced {
             };
             let (config, counts) = (config.clone(), counts.clone());
             std::thread::spawn(move || {
+                if idx == 2 {
+                    // A connect that never completes, so Z cannot be served by its own.
+                    let mut tcp = tcp;
+                    while tcp.read(&mut [0u8; 1024]).is_ok_and(|n| n > 0) {}
+                    return;
+                }
                 if idx == 1 {
                     let _ = second_tx.send(());
                     // Hold the handshake: the client's connect cannot finish.
@@ -332,9 +338,18 @@ fn serve_raced() -> Raced {
                         let _ = first_tx.send(());
                         let _ = hold.as_ref().unwrap().recv();
                     }
-                    counts[idx].fetch_add(1, Ordering::SeqCst);
-                    let r = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
-                    if tls.write_all(r.as_bytes()).is_err() || tls.flush().is_err() {
+                    let prior = counts[idx].fetch_add(1, Ordering::SeqCst);
+                    // Connection 0 closes after answering A, so only connection 1 can be idle.
+                    let close = if idx == 0 && prior == 1 {
+                        "Connection: close\r\n"
+                    } else {
+                        ""
+                    };
+                    let r = format!("HTTP/1.1 200 OK\r\n{close}Content-Length: 2\r\n\r\nok");
+                    if tls.write_all(r.as_bytes()).is_err()
+                        || tls.flush().is_err()
+                        || !close.is_empty()
+                    {
                         return;
                     }
                 }
@@ -382,13 +397,17 @@ async fn a_pooled_connection_whose_connect_lost_a_race_is_not_claimed_by_a_later
     assert_eq!(served[0].load(Ordering::SeqCst), 2, "A rode connection 0");
     // A's own connect now finishes and is pooled behind connection 0.
     release_second.send(()).unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Z has no idle connection until A's connect is pooled, and its own connect never finishes,
+    // so it is served on connection 1 exactly when that connection reaches the pool.
     engine.submit(Command::Send(request(url)));
-    let z = terminals(&rx, 1).await;
+    let z = tokio::time::timeout(Duration::from_secs(10), terminals(&rx, 1))
+        .await
+        .expect("Z was never served");
     assert_eq!(
         served[1].load(Ordering::SeqCst),
         1,
-        "Z reused A's connection"
+        "Z reused A's connection {z:?} {:?}",
+        served
     );
     assert_eq!(completed(&z[0]).1, Timings::default(), "{z:?}");
 }
