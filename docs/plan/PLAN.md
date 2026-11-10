@@ -71,11 +71,9 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
 ### Follow-ups from task 94 (not 0.2.0 wave 1)
-- [High per both security reviewers (user's PR #34 review)] 34-D1: curl `-u`, Authorization/Cookie headers, Postman headers and collection vars are written to committed TOML. Already tracked below as a P3; raised.
 - [P3] Collection- and folder-level Postman auth and variables are warnings only. Mapping them needs new `ImportResult` fields; most Postman collections put auth there.
 - [P3] Postman folders count toward no cap (about 870k empty folders fit in 10 MiB).
 - [P3] An environment name that is a reserved device name (for example server description "con") aborts the import partway through.
-- [P3] curl `-u` passwords, literal Authorization headers and Postman collection-variable values land in committed TOML. The spec covers only Postman auth; consider extending it.
 - [P3] openapi.rs:451-458 (34-22, Nit): the example budget is charged after `to_string_pretty`, so a deep example briefly allocates about 60 times its size (728 MB peak for 9.8 MiB).
 - [P3] curl.rs:18-86: long options missing from the arg list still swallow the URL (`--tlspassword`, `--proxy-pass`, `--connect-to`, `--proto`, `--tlsuser`, `--sasl-authzid`, `--login-options`, `--ftp-account`, `--hostpubsha256`). Build the list from `curl --help all`.
 - [P3] `unique` in write.rs is quadratic in the number of colliding names; use a HashSet plus a per-base counter, as postman.rs does.
@@ -93,6 +91,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] 34-19 yaml.rs:221: wall-clock asserts in tests risk flakes.
 - [P3] 34-20 write.rs:207: `unique_stem` is quadratic when names share a slug.
 - [P3] 34-21 write.rs:122: warn on `{{var}}` used but not defined by the import (security).
+- [P3] 34-27 openapi.rs capped-names test accepts both Ok and TooLarge and asserts under 900 ms; pin one outcome, drop or loosen the timing assert.
+- [P3] 34-28 openapi.rs:27 visit work shares the 64 MiB example budget; large legitimate specs may fail with a vague error. Use a separate visit counter scaled to input.
+- [P3] 34-29 (Nit) openapi.rs:44 `capped_text` duplicates `truncate_bytes`; the two MAX_NAME_BYTES constants differ (100 vs 80).
+- [P3] mod.rs `secret_ref`: a value containing `{{` anywhere is kept literally, so a credential mixed with a ref (`Bearer live-tok {{x}}`) stays in TOML.
+- [P3] postman.rs: collection-variable keys go into secret names unsanitised; a key with `}}` or trailing whitespace makes an unresolvable ref.
+- [P3] `split_userinfo`: a password containing raw `/`, `?` or `#` stays in the URL (curl does not treat it as userinfo either).
+- [STYLE] mod.rs:441 test `split_userinfo_ignores_at_after_authority` sits above `use super::*;`.
+- [NOTE] All non-empty Postman collection variables (including e.g. baseUrl) now go to the imported secrets environment and resolve only when it is selected; worth a line in the import summary (task 96).
+- [NOTE] User decision 2026-11-10: imported file parts become disabled empty parts (never a path); URL userinfo becomes Basic auth via secrets, explicit auth wins.
 - [NOTE] Re-review: an unsafe file part is saved as `""` and loads as the request's directory, so Send fails with a read error rather than "no file selected". On Windows, nested 80-byte folder names can exceed MAX_PATH for other tools.
 - [NOTE] `write` is not atomic; an error partway through leaves a partial import.
 - [NOTE] saphyr-parser 0.3.3 buffers whole flow collections (scanner.rs:866-880); bounded by the 2 MiB YAML cap to about 450 MB. Accepted.
