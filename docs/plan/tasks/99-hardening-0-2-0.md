@@ -28,7 +28,9 @@ Every item that adds a test names it in the PR description.
 
 **A — core engine and auth**
 - [ ] AC1 [33-9, P2, security] `engine.rs:844`: a cross-origin hop keeps the user's `x-amz-*` and `Host` headers. A test shows that a redirect from origin A to origin B sends neither header to B, and that a same-origin hop still sends both.
+- [ ] AC40 [86, security] Same fix as AC1: a user-set custom header (for example `X-Api-Key`) still crosses origins on a redirect, because a streamed resend strips only the headers reqwest strips. On a cross-origin hop every user-set header except a fixed allow-list of non-credential headers (`Accept`, `Content-Type`, `User-Agent` and the like, named in the code) is dropped. A test redirects a request carrying `X-Api-Key: SECRETVAL` from origin A to origin B and shows that B receives no `X-Api-Key`, and that a same-origin hop still sends it.
 - [ ] AC2 [95 note] `engine.rs:574` `hash_file`: the file is reopened by path between hashing and sending, and hashing ignores the timeout and cancel. Hash and send must use one open handle, or the send must fail when the hashed bytes differ from the bytes sent. A test shows that a cancel during hashing ends the request with the cancelled outcome.
+- [ ] AC41 [86, security] `EngineError` messages include the request URL, so a secret in the URL reaches the UI. Every `reqwest::Error` is passed through `without_url()` before it becomes an `EngineError`. A test sends a request to `http://127.0.0.1:<closed port>/x?api_key=SECRETVAL` and asserts that the error's `Display` and `Debug` output contain neither `SECRETVAL` nor `api_key`.
 
 **B — app**
 - [ ] AC3 [33-13] `ui/request/auth.rs:219`: the SigV4 access key field is unmasked. It is masked with the same input mode as the secret key field.
@@ -85,7 +87,7 @@ Every item that adds a test names it in the PR description.
 
 ## Checks
 Test counts: the scheduling planner sets `min-passing` per subtask against the base it measures then (`docs/conventions.md#task-file-baselines`). cargo writes no JUnit XML here, so the checks below are commands that count `passed`.
-- `core` command — AC1, AC2
+- `core` command — AC1, AC2, AC40, AC41
   run: `cargo test -p wisp-core --test engine --test auth`
 - `storage` command — AC4-AC37
   run: `cargo test -p wisp-storage`
@@ -99,7 +101,7 @@ Test counts: the scheduling planner sets `min-passing` per subtask against the b
   how: the access key input uses the masked mode; each named loop is single-pass or uses a counter map.
 
 ## Out of scope
-- The task-86 follow-ups (custom-header cross-origin, same-size file resend, URL in `EngineError`). They are not among this task's sources; AC1 must not widen into them unless the scheduler adds them.
+- The task-86 follow-up on same-size file resend (a file edited to the same length between sends is resent with the new bytes). AC2 must not widen into it.
 - Plain P3s, style, NOTEs and test-only nits left in PLAN (the list is in the PR for this file).
 - Making `import::write` transactional (rollback). AC32 and AC33 only validate before the first write.
 - The opt-in setting for unredacted `Set-Cookie` (user IDEA, 2026-11-10).
