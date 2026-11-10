@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-10 — Wave-2 surface types and seams
+OAuth2 client credentials and auth code now exist as `Auth` variants that round-trip through the TOML codec, `resolve` and history redaction, with matching `EngineAuth` variants and redacting Debug. `Event::Completed`, the tab state and history entries carry phase timings (all `None` until task 105), and `EngineConfig` has a cookie-jar handle unused until task 104. `ClientCache` moved to `client.rs`. The engine refuses OAuth2 with a clear error until task 103, and the auth editor shows OAuth2 read-only. No dependencies or lockfile entries were added.
+**Cost:** Code review took one round: `OAuth2AuthCode` `redirect_port` did not round-trip byte for byte through the codec, and the Debug redaction test lacked a marker. No app test covers timings through `on_event`/`append_history` or the ignored auth events; follow-ups are in PLAN under task 100.
+PR #42 review round 1: TokenKey carries collection id and environment, each collection has its own client and CookieJar, EngineConfig.cookies removed; remaining review items are in PLAN under task 100.
+
 ## 2026-11-10 — Settings follow WISP_DATA_DIR
 When `WISP_DATA_DIR` is set to an absolute path, `settings.toml` is read from and written to that directory. The order is now the absolute override, then the portable marker next to the executable, then the per-user config dir; a relative or empty override is ignored, matching the data dir rule. Test launches and hand-checks with a temporary `WISP_DATA_DIR` can no longer change the user's real settings. This closes the task 97 P2 follow-up.
 **Cost:** Small change in `crates/app/src/settings.rs` only; `location()` stays pure and takes the override as an argument, so tests set no environment variables. The override name is reused from `wisp_storage::data_dir::OVERRIDE_ENV`, not redefined. Settings unit tests: 16 pass.

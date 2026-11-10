@@ -115,6 +115,8 @@ pub fn stored_response(
         headers,
         ttfb: ms(entry.ttfb_ms),
         total: ms(entry.total_ms),
+        dns: ms(entry.dns_ms),
+        connect: ms(entry.connect_ms),
         size: entry.size,
         received: entry.size.unwrap_or(0),
         body,
@@ -325,6 +327,8 @@ mod tests {
             status,
             ttfb_ms: Some(5),
             total_ms: Some(12),
+            dns_ms: Some(3),
+            connect_ms: None,
             size: Some(3),
             body_stored: true,
             body_truncated: false,
@@ -439,6 +443,8 @@ mod tests {
         assert_eq!(r.phase, Phase::Done);
         assert_eq!(r.status, Some(200));
         assert_eq!(r.total, Some(Duration::from_millis(12)));
+        assert_eq!(r.dns, Some(Duration::from_millis(3)));
+        assert_eq!(r.connect, None);
         assert!(r.request_id.is_none());
         let f = stored_response(
             &entry(
@@ -480,6 +486,8 @@ mod tests {
             status: Some(200),
             ttfb: None,
             total: None,
+            dns: None,
+            connect: None,
             size: Some(2),
             response_headers: Vec::new(),
         };

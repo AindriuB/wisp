@@ -38,6 +38,7 @@ pub fn error_words(kind: ErrorKind) -> &'static str {
         ErrorKind::Timeout => "Timed out",
         ErrorKind::Body => "Body error",
         ErrorKind::BodyFile => "Body file error",
+        ErrorKind::Auth => "Authorization failed",
         ErrorKind::Other => "Request failed",
     }
 }
@@ -293,5 +294,6 @@ mod tests {
     fn errors_in_words() {
         assert_eq!(error_words(ErrorKind::Dns), "DNS lookup failed");
         assert_eq!(error_words(ErrorKind::Timeout), "Timed out");
+        assert_eq!(error_words(ErrorKind::Auth), "Authorization failed");
     }
 }

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,12 +10,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::oneshot;
 
+use crate::auth::oauth2::{MemoryOnly, RefreshTokenStore};
 use crate::auth::{EngineAuth, digest, sigv4};
 use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
+use crate::client::{ClientCache, HTTP1_MAX_RESPONSE_HEADERS};
 use crate::model::{
     ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
     PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
 };
+use crate::timing::Timings;
 
 /// Receiving end of the engine's event channel; works from any executor or plain threads.
 pub type EventReceiver = async_channel::Receiver<Event>;
@@ -23,13 +27,26 @@ pub type EventReceiver = async_channel::Receiver<Event>;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Engine configuration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct EngineConfig {
     /// Clamped to `1..=2`.
     pub worker_threads: usize,
     pub default_timeout: Option<Duration>,
     /// Response bodies larger than this spill to disk.
     pub body_memory_limit: u64,
+    /// Where OAuth2 refresh tokens persist between runs.
+    pub refresh_tokens: Arc<dyn RefreshTokenStore>,
+}
+
+impl fmt::Debug for EngineConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EngineConfig")
+            .field("worker_threads", &self.worker_threads)
+            .field("default_timeout", &self.default_timeout)
+            .field("body_memory_limit", &self.body_memory_limit)
+            .field("refresh_tokens", &format_args!("<redacted>"))
+            .finish()
+    }
 }
 
 impl Default for EngineConfig {
@@ -38,6 +55,7 @@ impl Default for EngineConfig {
             worker_threads: 1,
             default_timeout: Some(Duration::from_secs(30)),
             body_memory_limit: DEFAULT_MEMORY_LIMIT,
+            refresh_tokens: Arc::new(MemoryOnly::default()),
         }
     }
 }
@@ -69,53 +87,6 @@ impl Throttle {
     }
 }
 
-/// One `reqwest::Client` per distinct `ClientSettings`.
-#[derive(Default)]
-pub(crate) struct ClientCache {
-    clients: Mutex<HashMap<ClientSettings, reqwest::Client>>,
-}
-
-impl ClientCache {
-    pub(crate) fn get(&self, settings: &ClientSettings) -> Result<reqwest::Client, EngineError> {
-        let mut map = self.clients.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(c) = map.get(settings) {
-            return Ok(c.clone());
-        }
-        install_crypto_provider();
-        // Bundled Mozilla roots only: rustls-platform-verifier is linked by reqwest but never used.
-        let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
-            .iter()
-            .map(|c| reqwest::Certificate::from_der(c.as_ref()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| err(ErrorKind::Other, format!("cannot load bundled roots: {e}")))?;
-        let mut builder = reqwest::Client::builder()
-            .tls_backend_rustls()
-            .tls_certs_only(roots)
-            .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS);
-        if !settings.verify_tls {
-            builder = builder.tls_danger_accept_invalid_certs(true);
-        }
-        if !settings.follow_redirects {
-            builder = builder.redirect(reqwest::redirect::Policy::none());
-        }
-        if let Some(proxy) = &settings.proxy {
-            let proxy = reqwest::Proxy::all(proxy.as_str())
-                .map_err(|e| err(ErrorKind::InvalidUrl, format!("invalid proxy: {e}")))?;
-            builder = builder.proxy(proxy);
-        }
-        let client = builder
-            .build()
-            .map_err(|e| err(ErrorKind::Other, format!("cannot build client: {e}")))?;
-        map.insert(settings.clone(), client.clone());
-        Ok(client)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.clients.lock().unwrap_or_else(|e| e.into_inner()).len()
-    }
-}
-
 type Inflight = Arc<Mutex<HashMap<RequestId, oneshot::Sender<()>>>>;
 
 struct Inner {
@@ -126,6 +97,9 @@ struct Inner {
     next_id: AtomicU64,
     inflight: Inflight,
     default_timeout: Option<Duration>,
+    /// Held for the OAuth2 flows; unused until they land.
+    #[allow(dead_code)]
+    refresh_tokens: Arc<dyn RefreshTokenStore>,
 }
 
 impl Drop for Inner {
@@ -175,12 +149,13 @@ impl Engine {
         let (tx, rx) = async_channel::unbounded();
         let inner = Inner {
             runtime: Some(runtime),
-            clients: Arc::default(),
+            clients: Arc::new(ClientCache::default()),
             bodies: BodyStore::new(config.body_memory_limit),
             events: tx,
             next_id: AtomicU64::new(1),
             inflight: Arc::default(),
             default_timeout: config.default_timeout,
+            refresh_tokens: config.refresh_tokens,
         };
         (
             Engine {
@@ -196,6 +171,26 @@ impl Engine {
             Command::Cancel(id) => {
                 if let Some(tx) = lock(&self.inner.inflight).remove(&id) {
                     let _ = tx.send(());
+                }
+                id
+            }
+            Command::AuthorizeCancel(id) => id,
+            Command::AuthorizeStart { .. } => {
+                let id = RequestId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
+                let events = self.inner.events.clone();
+                let fut = async move {
+                    let _ = events
+                        .send(Event::AuthFailed {
+                            id,
+                            error: err(ErrorKind::Auth, OAUTH2_UNAVAILABLE),
+                        })
+                        .await;
+                };
+                match &self.inner.runtime {
+                    Some(rt) => {
+                        rt.spawn(fut);
+                    }
+                    None => tracing::warn!("engine runtime already shut down"),
                 }
                 id
             }
@@ -224,6 +219,7 @@ impl Engine {
                                     total: start.elapsed(),
                                     size,
                                     body,
+                                    timings: Timings::default(),
                                 },
                                 Err(error) => Event::Failed { id, error },
                             })
@@ -247,11 +243,13 @@ impl Engine {
     }
 }
 
+const OAUTH2_UNAVAILABLE: &str = "OAuth2 is not available in this build yet";
+
 fn clamp_threads(n: usize) -> usize {
     n.clamp(1, 2)
 }
 
-fn err(kind: ErrorKind, message: impl Into<String>) -> EngineError {
+pub(crate) fn err(kind: ErrorKind, message: impl Into<String>) -> EngineError {
     EngineError {
         kind,
         message: message.into(),
@@ -653,6 +651,12 @@ async fn perform(
     timeout: Option<Duration>,
     start: Instant,
 ) -> Result<(u64, BodyHandle), EngineError> {
+    if matches!(
+        req.auth,
+        Some(EngineAuth::OAuth2ClientCredentials { .. } | EngineAuth::OAuth2AuthCode { .. })
+    ) {
+        return Err(err(ErrorKind::Auth, OAUTH2_UNAVAILABLE));
+    }
     let url =
         reqwest::Url::parse(&req.url).map_err(|e| err(ErrorKind::InvalidUrl, e.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -955,22 +959,6 @@ async fn perform(
     Ok((received, handle))
 }
 
-/// HTTP/1 response header-count limit, passed to `ClientBuilder::http1_max_headers`.
-const HTTP1_MAX_RESPONSE_HEADERS: usize = 1000;
-
-/// reqwest is built with `rustls-no-provider`; install ring as the process default once.
-fn install_crypto_provider() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        if rustls::crypto::ring::default_provider()
-            .install_default()
-            .is_err()
-        {
-            tracing::debug!("a rustls crypto provider was already installed");
-        }
-    });
-}
-
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
     // Only the causes: the top-level text embeds the URL, whose words must not influence the kind.
     let mut chain = String::new();
@@ -1019,14 +1007,6 @@ fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
 mod tests {
     use super::*;
 
-    fn settings(verify_tls: bool) -> ClientSettings {
-        ClientSettings {
-            verify_tls,
-            follow_redirects: true,
-            proxy: None,
-        }
-    }
-
     #[test]
     fn worker_threads_are_clamped_to_one_through_two() {
         assert_eq!(clamp_threads(0), 1);
@@ -1051,38 +1031,5 @@ mod tests {
         let mut t = Throttle::new(PROGRESS_INTERVAL);
         assert!(t.allow(t0));
         assert!(t.allow(t0 + Duration::from_millis(150)));
-    }
-
-    #[test]
-    fn equal_settings_share_a_client_and_different_settings_do_not() {
-        let cache = ClientCache::default();
-        cache.get(&settings(true)).unwrap();
-        cache.get(&settings(true)).unwrap();
-        assert_eq!(cache.len(), 1);
-        cache.get(&settings(false)).unwrap();
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[test]
-    fn every_bundled_root_is_accepted_by_a_root_store() {
-        let mut store = rustls::RootCertStore::empty();
-        let (added, ignored) = store
-            .add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
-        assert_eq!(ignored, 0);
-        assert_eq!(added, webpki_root_certs::TLS_SERVER_ROOT_CERTS.len());
-    }
-
-    #[test]
-    fn install_crypto_provider_leaves_a_default_provider() {
-        install_crypto_provider();
-        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
-    }
-
-    #[test]
-    fn an_invalid_proxy_is_an_invalid_url_error() {
-        let mut s = settings(true);
-        s.proxy = Some("not a proxy".into());
-        let e = ClientCache::default().get(&s).unwrap_err();
-        assert_eq!(e.kind, ErrorKind::InvalidUrl);
     }
 }
