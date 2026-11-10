@@ -673,21 +673,20 @@ impl HistoryStore {
             }
             atomic_write_private(&self.index(), &text)?;
         }
-        let mut first_err = None;
         let doomed = dropped
             .iter()
             .flat_map(|(id, _)| self.body_files(id))
             .chain(orphans);
         for p in doomed {
-            match fs::remove_file(&p) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    first_err.get_or_insert(io(&p, err));
-                }
+            // A file still open elsewhere (Windows pending delete) is left as an
+            // orphan; the next sweep removes it.
+            if let Err(err) = fs::remove_file(&p)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::debug!(path = %p.display(), error = %err, "history body left for the next sweep");
             }
         }
-        first_err.map_or(Ok(()), Err)
+        Ok(())
     }
 
     /// All entries, newest first.
@@ -699,37 +698,64 @@ impl HistoryStore {
 
     /// The stored request, response headers and body of one entry.
     pub fn load(&self, entry_id: &str) -> Result<StoredEntry, StorageError> {
+        let mut stored = self.load_without_body(entry_id)?;
+        let [bin, _] = self.body_files(entry_id);
+        stored.body = match fs::read(&bin) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(io(&bin, e)),
+        };
+        Ok(stored)
+    }
+
+    /// Like [`HistoryStore::load`] but leaves `body` empty; see [`HistoryStore::body_path`].
+    pub fn load_without_body(&self, entry_id: &str) -> Result<StoredEntry, StorageError> {
         if !valid_id(entry_id) {
             return Err(StorageError::History {
                 message: format!("invalid entry id `{entry_id}`"),
             });
         }
-        let [bin, req] = self.body_files(entry_id);
+        let [_, req] = self.body_files(entry_id);
         let raw = fs::read(&req).map_err(|e| io(&req, e))?;
         let file: ReqFile = serde_json::from_slice(&raw).map_err(|e| StorageError::Parse {
             path: req.clone(),
             message: e.to_string(),
         })?;
-        let body = match fs::read(&bin) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(io(&bin, e)),
-        };
         Ok(StoredEntry {
             request: file.request,
             response_headers: file.response_headers,
-            body,
+            body: Vec::new(),
         })
+    }
+
+    /// Path of an entry's stored body file, if one exists.
+    pub fn body_path(&self, entry_id: &str) -> Option<PathBuf> {
+        if !valid_id(entry_id) {
+            return None;
+        }
+        let [bin, _] = self.body_files(entry_id);
+        bin.is_file().then_some(bin)
     }
 
     /// Remove this collection's history.
     pub fn clear(&self) -> Result<(), StorageError> {
         let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _file_lock = self.lock_file()?;
-        match fs::remove_dir_all(&self.dir) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io(&self.dir, e)),
+        // The index goes first: without it no entry lists, so any body file that
+        // cannot be deleted now (open or pending delete) is an orphan the next
+        // sweep removes, and clearing does not fail because of it.
+        match fs::remove_file(self.index()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io(&self.index(), e)),
         }
+        if let Ok(rd) = fs::read_dir(self.bodies()) {
+            for f in rd.flatten() {
+                let _ = fs::remove_file(f.path());
+            }
+        }
+        // Best effort: the directory may still hold the lock file or a leftover.
+        let _ = fs::remove_dir_all(&self.dir);
+        Ok(())
     }
 }

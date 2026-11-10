@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
-- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog); see HISTORY.
+- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend); see HISTORY.
 - **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
@@ -69,6 +69,33 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 97 (not 0.2.0 wave 1)
+- [P3] workspace.rs:1006-1018: Save on a from-history tab does not clear `from_history`, so later sends of the saved request still show the "Resent..." notice.
+- [P3] core body.rs:206: a borrowed history body deleted by Clear or eviction while its tab is open reads as "unknown body handle: BodyId(n)"; show "history body was removed".
+- [P2] settings.toml location ignores WISP_DATA_DIR: the hand-check's test build wrote `history_bodies = false` into the user's real ~/Library/Application Support/wisp/settings.toml (removed afterwards). Test builds need an isolated settings location (honour WISP_DATA_DIR or add WISP_CONFIG_DIR) so hand-checks cannot touch real settings.
+- [NOTE] Resend tests exercise the scope helper, not `Workspace::send` (no gpui test harness).
+- [P3] 38-5 workspace.rs:647: storing a resend loses the original redacted list, so a later resend gives no warning.
+- [P3] 38-6 history.rs:163: after a collection switch the panel shows old rows until reload finishes; set Loading at reload start.
+- [P3] 38-7 root.rs:181: toggling the panel closed drops it without restoring focus.
+- [P3] 38-8 workspace.rs:812: with history_bodies off the body is still read on the UI thread.
+- [P3] 38-9 ui/history.rs:228: each render deep-clones up to 500 entries for click closures.
+- [P3] 38-10 settings.rs:381: round-trip test doesn't assert the written file text.
+- [P3] 38-11 ui/history.rs:434: storage test lives in the app UI module with a pid temp dir.
+- [P3] any redacted `auth.*` field resets auth to Inherit, including non-secret fields (ApiKey header name, SigV4 region/service) because storage over-redacts them; fix the redaction in storage.
+- [P3] tab.rs:87-89: the Resend notice keeps listing disabled headers after the user re-enables and fills them.
+- [P3] core body.rs:210-214: on Windows a pending-delete history body opens with PermissionDenied, not NotFound, so it shows a generic Io error instead of Removed.
+- [P3] storage history.rs:741-760: no test covers clear's best-effort deletes and later orphan sweep.
+- [P3] workspace.rs empty_json_leaves: keys compared in raw escaped form vs decoded names stored by the redactor (escaped keys never match); the `{{` branch skips to the first `}}` regardless of content.
+- [P3] workspace.rs test `long_key_with_many_empty_leaves_is_fast` asserts < 1 s wall-clock; may flake on slow CI.
+- [IDEA] Export storage's `mask_bare_refs` and use serde_json in the app for the redacted-body check instead of the hand-rolled scanner.
+- [P3] r2 38-1 storage history.rs:752: clear ignores every delete error and reports success; bodies may stay on disk; lock-file comment wrong. Tolerate only in-use/pending-delete errors, report leftovers, fix comment. (→ task 99 when split)
+- [P3] r2 38-2 tab.rs:95: `stored_body` is unused by the refusal and its doc describes a rule no longer implemented; remove or use it and fix the doc.
+- [P3] r2 38-3 url_bar.rs:279: URL bar previews the collection scope while Send uses the original folder scope, so it shows false problems; share scope_path_for with refresh.
+- [P3] r2 38-4 workspace.rs:162: the scope guard compares only the URL template; a request var override can send folder credentials to a new host; also treat changed vars as edited, or compare the resolved host. (→ task 99 when split)
+- [P3] r2 38-5 workspace.rs:452: a non-JSON Text/Xml body is refused for good; Body::None handled inconsistently; refuse a failed scan only for Body::Json.
+- [P3] r2 38-6 workspace.rs:1414: body refusal is a Syntax problem detected by message prefix; use a dedicated SendError variant.
+- [P3] r2 38-7 (Nit) workspace.rs:238: with both userinfo parts redacted, url.password is reported as unhandled.
 
 ### Follow-ups from task 96 (not 0.2.0 wave 1)
 - [P3] 37-5 import.rs:435: warnings are shown verbatim; a malformed curl header can echo its token (fix at source, task 99 AC19).
