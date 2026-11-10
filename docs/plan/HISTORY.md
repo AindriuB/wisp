@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-09 — Per-user data dir and collection ID
+`wisp-storage` now decides where per-user data lives: `WISP_DATA_DIR` if absolute, else `<exe-dir>/data` with the `portable` marker, else `wisp` under the OS data dir; `DataDir` builds `history/<id>` and `cookies/<id>.json` paths and `ensure_private_dir` makes 0700 directories and refuses a symlinked final component. `ensure_collection_id` writes a random UUID `id` once into `collection.toml` through `toml_edit`, keeping comments and other keys, and `read_collection_id` validates it (`[A-Za-z0-9_-]{8,64}`). Nothing uses either yet; task 93 does.
+**Cost:** The `id` key conflicted with architecture.md's "no UUIDs in files"; the user decided on 2026-11-09 that only the collection gets one and requests and folders keep path identity. Known gaps are in PLAN (id write race, trailing-slash symlink bypass, case-colliding IDs, existing wide dirs not tightened). Tests never call `DataDir::resolve()`, so the real data dir is untouched.
+
 ## 2026-11-09 — Wave-1 dependencies and storage stubs for 0.2.0
 Task 91 added the crates wave 1 of 0.2.0 needs, in one change so later tasks do not collide on manifests or `Cargo.lock`: `sha2`, `hmac` and `md-5` in `wisp-core` (for Digest and SigV4), and `saphyr` plus `uuid` in `wisp-storage`. It also declared empty `data_dir` and `import` modules in `wisp-storage`. There is no behaviour change.
 **Cost:** `saphyr` 0.3.3 (MIT/Apache-2.0) was chosen for YAML; do not use `serde_yaml` or `serde_yml`. `sha2` 0.10.9, `hmac` 0.12.1, `md-5` 0.10.6 and `uuid` 1.29.0 were already in the lock, so the only new lock entries are `saphyr`, `saphyr-parser` and `hashlink` 0.12.2, and no second `digest` version appeared. The binary-size cost is not measured here; task 98 measures it.

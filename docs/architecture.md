@@ -126,8 +126,12 @@ my-api/
     create-user.body.json  sidecar body
 ```
 
-- **Identity is the file path.** No UUIDs in files. Order comes from
-  `order = [...]` in `folder.toml`; unlisted items sort alphabetically.
+- **Identity is the file path** for requests and folders: no UUIDs in their
+  files. From 0.2.0 `collection.toml` also carries a random collection `id`
+  (a UUID, written once; user decision 2026-11-09, see
+  `plan/specs/2026-11-09-wisp-0-2-0.md`), which keys the collection's data in
+  the per-user data dir and survives moving or renaming the folder. Order comes
+  from `order = [...]` in `folder.toml`; unlisted items sort alphabetically.
 - **`{{var}}`** is a variable, resolved first. **`{name}`** is a path param,
   resolved second, and only in the path portion of the URL. Syntax follows
   Spring, OpenAPI and RFC 6570: several params per segment, `{id:\d+}` regex
@@ -150,6 +154,15 @@ my-api/
 there, otherwise in the OS config directory. Apart from the per-user data dir
 (history and cookies, from 0.2.0; see `plan/specs/2026-11-09-wisp-0-2-0.md`),
 nothing else is persisted outside the collection folder.
+
+The per-user data dir is chosen in `crates/storage/src/data_dir.rs`, in this
+order: the `WISP_DATA_DIR` environment variable when it is an absolute path (a
+relative value is ignored); `<exe-dir>/data` when the `portable` marker is
+present; otherwise `wisp` under the OS data directory (macOS
+`~/Library/Application Support`, Windows `%LOCALAPPDATA%`, other Unix
+`$XDG_DATA_HOME` if absolute, else `~/.local/share`). Per collection it holds
+`history/<id>` and `cookies/<id>.json`. Nothing is created until first use, and
+directories are made 0700 on Unix.
 
 ## Boundaries that must not be crossed
 
