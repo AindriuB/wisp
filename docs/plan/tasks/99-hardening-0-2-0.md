@@ -11,6 +11,7 @@
 - F: crates/storage/src/import/openapi.rs
 - G: crates/storage/src/import/postman.rs
 - H: crates/storage/src/import/mod.rs, crates/storage/src/import/write.rs, crates/storage/tests/import.rs
+- I: crates/core/src/redact.rs (inline unit tests); D and H depend on I
 - K: .github/workflows/ci.yml
 
 ## Goal
@@ -52,11 +53,16 @@ Every item that adds a test names it in the PR description.
 - [ ] AC15 [93] `history.rs:408`: restoring masked `{{refs}}` does one `replace` per ref, which is O(refs × body). It is a single pass, and a test with 10,000 refs in a 1 MiB body finishes without a wall-clock assert (proved by counting passes or by reading the code).
 - [ ] AC16 [93] `history.rs:283` `redact_request`: path vars (`Request.path`) are not redacted. Secret-looking path vars get the same name heuristic as query params, as a test shows.
 - [ ] AC17 [93 note] `history.rs:497` `lock_file` blocks with no timeout, so a stalled second process stalls every append. The lock is tried with a bounded wait, and on timeout the append returns an error (the entry is dropped and a notice is shown), as a test holding the lock shows.
+- [ ] AC46 [35-13, security] The header-name heuristic is not applied to response headers, so `X-Auth-Token` and `X-Subject-Token` are stored in plaintext. Response headers get the same `is_credential_name` redaction as request headers; a test stores a response carrying `X-Auth-Token: SECRETVAL` and `X-Subject-Token: SECRETVAL` and asserts `SECRETVAL` appears in no stored file.
+- [ ] AC47 [35-15, security] A JSON body with a duplicate secret key whose last value is a `{{ref}}` (`{"token":"SECRETVAL","token":"{{t}}"}`) keeps the earlier literal. Redaction fails closed on duplicate keys (the whole body is redacted); a test asserts `SECRETVAL` appears in no stored file.
+- [ ] AC48 [35-17, security] The lock file is opened with `create` and follows symlinks. A symlinked lock path is refused (unix: `O_NOFOLLOW` or an lstat check before open) and the append returns an error; a unix test with the lock path a symlink to a file outside the dir shows the error and that the target is unchanged.
 
 **E — curl importer**
 - [ ] AC18 [34-10, security] `curl.rs:477`: `--digest`, `--ntlm` and `--negotiate` with `-u` are imported as Basic. `--digest` maps to Digest auth. `--ntlm` and `--negotiate` keep the credential in secrets, add no auth and add a warning. Tested.
 - [ ] AC19 [34-11, security] `curl.rs:401`: warnings echo raw headers, extra URLs and fields. A warning names the construct, never its value; a test feeds a `SECRETVAL` into each warning path and asserts that no warning contains it.
 - [ ] AC20 [34-40] `curl.rs:1025` `expand_options_consume_their_argument_and_route_credentials` asserts only that the secret is absent. It also asserts where each value went (the secrets environment, or the auth or header ref).
+- [ ] AC42 [34-43, security] Unknown curl options fail open, and their argument can become the committed URL (`curl --frobnicate https://u:SECRETVAL@h https://real/x`). The `://` positional is preferred as the URL, or the import fails with a `Parse` error naming the option. A test shows that neither the URL nor any TOML contains `SECRETVAL`.
+- [ ] AC43 [34-46, security] The extra-URL warning cuts at `?`/`#` before stripping userinfo, so a password containing `?` or `#` partly leaks. The warning echoes only the host; a test with an extra URL `https://u:SEC?RET#VAL@h2/x` asserts the warning contains `h2` and none of `SEC`, `RET`, `VAL`.
 
 **F — OpenAPI importer**
 - [ ] AC21 [34-22] `openapi.rs:451-484`: the example budget is charged after `to_string_pretty`, so a 9.8 MiB example peaks near 728 MB. The budget is charged while serialising (a size-limited writer), and the pretty string is never built past the budget. Tested by a deep example rejected with `TooLarge`.
@@ -74,12 +80,16 @@ Every item that adds a test names it in the PR description.
 **H — import shared and writer**
 - [ ] AC30 [94] `mod.rs:301` `secret_ref`: a value containing `{{` anywhere is kept literally (`Bearer live-tok {{x}}`). Only a value that is exactly one `{{name}}` is kept; anything else goes to secrets. Tested.
 - [ ] AC31 [94] `mod.rs:268` `split_userinfo`: a password containing raw `/`, `?` or `#` stays in the URL. The authority ends at the last `@` before the first `/` that follows it, or the URL is refused with a warning. Either way the TOML holds no password, as a test shows.
+- [ ] AC44 [34-44, security] `split_userinfo` misses the lenient forms `https:///u:p@h` and `http:/u:p@h`, which reqwest accepts, so their userinfo is kept. Both forms have userinfo stripped (or are refused with a warning); a test with each asserts no TOML holds the password.
 - [ ] AC32 [34-13] `write.rs:46`: `folder_rel` is validated during the write. It is validated before the first file is created; a test with a bad `folder_rel` leaves the collection dir unchanged.
 - [ ] AC33 [94] An environment name that is a reserved device name (`con`) aborts the import partway. Environment names are validated or suffixed before any write, and a test imports a server description `con` successfully.
 - [ ] AC34 [94] `write.rs:169` `unique` is quadratic in colliding names. It uses a HashSet and a per-base counter.
 - [ ] AC35 [34-20] `write.rs:207` `unique_stem` is quadratic when names share a slug. It uses a per-slug counter.
 - [ ] AC36 [34-21, security] `write.rs:122`: a `{{var}}` that is used but not defined by the import produces no warning. The import adds one warning per undefined name (the name only), as a test shows.
 - [ ] AC37 [34-36] `tests/import.rs:199`: the credential end-to-end test skips URL userinfo and the secrets `.gitignore`. It covers both: no userinfo in any TOML, and `.gitignore` lists the secrets file.
+
+**I — shared redaction (core)**
+- [ ] AC45 [34-45 + 35-14, security] `wisp_core::redact::SECRET_FRAGMENTS` misses `sig`, `pass`, `pwd`, `jwt`, `bearer`, `dpop` and `assertion`. All seven are added, and a unit test asserts `is_credential_name` is true for a name containing each. The importers (`import/mod.rs`, group H) and history (`history.rs`, group D) both call the shared `is_credential_name`; no local fragment list remains (`rg -n 'SECRET_FRAGMENTS|fn is_.*secret.*name' crates/storage` shows only uses of the shared one).
 
 **K — CI and release gate**
 - [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
@@ -89,7 +99,9 @@ Every item that adds a test names it in the PR description.
 Test counts: the scheduling planner sets `min-passing` per subtask against the base it measures then (`docs/conventions.md#task-file-baselines`). cargo writes no JUnit XML here, so the checks below are commands that count `passed`.
 - `core` command — AC1, AC2, AC40, AC41
   run: `cargo test -p wisp-core --test engine --test auth`
-- `storage` command — AC4-AC37
+- `redact` command — AC45
+  run: `cargo test -p wisp-core --lib redact`
+- `storage` command — AC4-AC37, AC42-AC48
   run: `cargo test -p wisp-storage`
 - `suite-and-lint` command — all
   run: `cargo test --workspace --locked && cargo fmt --check && cargo clippy --workspace --all-targets --locked -- -D warnings`
