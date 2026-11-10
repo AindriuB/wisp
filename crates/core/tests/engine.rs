@@ -1035,9 +1035,22 @@ async fn completed_carries_empty_timings() {
 
 #[test]
 fn debug_redacts_engine_config() {
-    let text = format!("{:?}", EngineConfig::default());
+    use wisp_core::auth::oauth2::{Grant, TokenKey};
+    let config = EngineConfig::default();
+    config.refresh_tokens.save(
+        &TokenKey {
+            grant: Grant::AuthCode,
+            token_url: "https://i/t".into(),
+            client_id: "c".into(),
+            scope: "r".into(),
+        },
+        "REFRESH-MARKER-123",
+    );
+    let text = format!("{config:?}");
     assert!(text.contains("EngineConfig"));
     assert!(text.contains("<redacted>"));
-    let pretty = format!("{:#?}", EngineConfig::default());
+    assert!(!text.contains("REFRESH-MARKER-123"));
+    let pretty = format!("{config:#?}");
     assert!(pretty.contains("<redacted>"));
+    assert!(!pretty.contains("REFRESH-MARKER-123"));
 }

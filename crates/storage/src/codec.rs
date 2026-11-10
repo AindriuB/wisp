@@ -568,7 +568,11 @@ pub fn write_auth(table: &mut Table, auth: &Auth) {
             ],
         ),
     };
+    let keeps_port = matches!(auth, Auth::OAuth2AuthCode { .. });
     for f in AUTH_FIELDS {
+        if keeps_port && f == "redirect_port" {
+            continue;
+        }
         if !fields.iter().any(|(k, _)| *k == f) {
             t.remove(f);
         }
@@ -592,7 +596,18 @@ pub fn write_auth(table: &mut Table, auth: &Auth) {
         if t.get("redirect_port").and_then(Item::as_integer) != Some(port)
             && (port != 0 || t.get("redirect_port").is_some())
         {
-            t.insert("redirect_port", Item::Value(Value::from(port)));
+            match t.get_mut("redirect_port") {
+                Some(item) => {
+                    let mut new = Value::from(port);
+                    if let Some(old) = item.as_value() {
+                        *new.decor_mut() = old.decor().clone();
+                    }
+                    *item = Item::Value(new);
+                }
+                None => {
+                    t.insert("redirect_port", Item::Value(Value::from(port)));
+                }
+            }
         }
     }
 }
@@ -641,6 +656,31 @@ token = "abc"
     fn lines_differing(a: &str, b: &str) -> usize {
         assert_eq!(a.lines().count(), b.lines().count());
         a.lines().zip(b.lines()).filter(|(x, y)| x != y).count()
+    }
+
+    fn auth_code_roundtrip(port_lines: &str, head: &str) {
+        let text = format!(
+            "[auth]\ntype = \"oauth2_auth_code\"\n{head}auth_url = \"https://i/a\"\ntoken_url = \"https://i/t\"\nclient_id = \"c\"\n{port_lines}"
+        );
+        let mut doc = parse(p(), &text).unwrap();
+        let auth = read_auth(&doc, Auth::None, p()).unwrap();
+        write_auth(&mut doc, &auth);
+        assert_eq!(doc.to_string(), text);
+    }
+
+    #[test]
+    fn auth_code_redirect_port_comment_kept() {
+        auth_code_roundtrip("redirect_port = 8123 # fixed\n", "");
+    }
+
+    #[test]
+    fn auth_code_redirect_port_position_kept() {
+        auth_code_roundtrip("", "redirect_port = 8123\n");
+    }
+
+    #[test]
+    fn auth_code_redirect_port_zero_kept() {
+        auth_code_roundtrip("redirect_port = 0\n", "");
     }
 
     #[test]
