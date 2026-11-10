@@ -68,6 +68,7 @@ Clear history empties it. A setting stops response bodies being stored.
 User decisions 2026-11-10. These add AC8–AC10; earlier ACs keep their IDs.
 
 - **Resend scope.** A tab opened from history carries the entry's original request path (`HistoryEntry.request`) in its history origin. Resend uses it only as the scope path for resolving inherited defaults (folder auth, headers, vars). The tab stays pathless, so Save still creates a new request. If that path no longer exists, Resend falls back to collection defaults plus the environment and says so in the Resend notice.
+- **Resend chain keeps scope** (orchestrator, following the user's 2026-11-10 decision that resend uses the original folder). When a from-history tab is sent, its new history entry records the scope path used for resolution (the origin's request path, when it still exists) in `HistoryEntry.request`, so resending that new entry keeps the same folder defaults.
 - **Body display.** An opened entry's response body is shown read-only through a file-backed `BodyHandle` on the stored body file (spec `docs/plan/specs/2026-11-09-wisp-0-2-0.md:52`), not copied through `BodyStore::writer()`. This supersedes the Context line for `crates/core/src/body.rs:152-280`. Releasing the tab must not delete the history body file.
 - **No id on read-only use.** Opening the panel, listing, opening an entry and Clear history never mint a collection id. With no `id` in `collection.toml` the panel shows "No history yet", Clear has nothing to clear, and nothing is written. The id is still created by the first send's append.
 - **Owns widened** (orchestrator decision 2026-11-10; no other open task touches these files). Owns now also includes:
@@ -76,7 +77,7 @@ User decisions 2026-11-10. These add AC8–AC10; earlier ACs keep their IDs.
   For the read-only id lookup use the existing `wisp_storage::collection::read_collection_id`; `collection.rs` is not changed.
 
 Acceptance:
-- [ ] AC8 With `folder.toml` setting bearer auth `{{token}}` and a request whose auth is inherit, Resend from that request's history tab sends `Authorization: Bearer <token value>`; with the original path removed, Resend uses collection defaults plus env and the notice says the original request was not found. Test `resend_from_history_inherits_folder_auth` (plus `resend_from_history_missing_path_falls_back`).
+- [ ] AC8 With `folder.toml` setting bearer auth `{{token}}` and a request whose auth is inherit, Resend from that request's history tab sends `Authorization: Bearer <token value>`; with the original path removed, Resend uses collection defaults plus env and the notice says the original request was not found. With the same fixture, Resend twice in a chain (entry → resend → open the new entry → resend) and both sends carry `Authorization: Bearer s3cret`. Test `resend_from_history_inherits_folder_auth` (plus `resend_from_history_missing_path_falls_back`).
 - [ ] AC9 Opening an entry with a stored body yields a file-backed `BodyHandle` on the history `.bin` file with no `BodyStore::writer()` call in the open path; after the tab's body is released the `.bin` file still exists. Test `open_history_entry_body_is_file_backed`.
 - [ ] AC10 Opening the panel (list), opening an entry and Clear history on a collection with no `id` in `collection.toml` leave `collection.toml` byte-identical and show "No history yet". Test `history_read_only_use_mints_no_id`.
 
@@ -94,3 +95,9 @@ Reviewed HEAD 0c19362.
 - [SPEC] `crates/app/src/workspace.rs:807` body copied via `writer()` — resolved by Amendment 1 (Body display).
 - [P3] `crates/app/src/workspace.rs:79` `HistoryJob::open` calls `ensure_collection_id` on read-only use — resolved by Amendment 1 (No id on read-only use).
 - [P3, optional] `crates/app/src/ui/history.rs:143` the panel reloads only on `HistoryChanged`; `open_collection` doesn't emit it, so an open panel lists the old collection's entries and clicking a row errors "not found". Emit `HistoryChanged` (or reload) on collection open.
+
+## Review round 2 — findings
+
+- [P2] `crates/app/src/workspace.rs:1284` `open_history_entry_body_is_file_backed` passes even when the body is copied via `writer()`. After getting the handle, delete or overwrite the `.bin` and assert the read fails or returns the new bytes.
+- [P2] `crates/app/src/workspace.rs:641` a resent pathless tab records `request: None`, so resending that entry drops folder defaults — resolved by Amendment 1 (Resend chain keeps scope).
+- [P3, optional] `crates/core/src/body.rs:206` a borrowed file deleted by Clear or eviction reads as "unknown body handle: BodyId(n)"; a clearer "history body was removed" message would help.
