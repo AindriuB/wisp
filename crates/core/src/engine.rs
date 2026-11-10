@@ -616,8 +616,18 @@ async fn perform(
             "Digest auth needs a replayable body; File bodies cannot be resent",
         ));
     }
-    let client = clients.get(&req.client)?;
-    let method = match req.method {
+    // The engine follows redirects itself for engine-applied auth (reqwest would carry the
+    // x-amz-* headers across origins and could not sign again), so reqwest's following is off.
+    let own_redirects = req.client.follow_redirects && req.auth.is_some();
+    let client = if own_redirects {
+        clients.get(&ClientSettings {
+            follow_redirects: false,
+            ..req.client.clone()
+        })?
+    } else {
+        clients.get(&req.client)?
+    };
+    let mut method = match req.method {
         Method::Get => reqwest::Method::GET,
         Method::Post => reqwest::Method::POST,
         Method::Put => reqwest::Method::PUT,
@@ -666,16 +676,16 @@ async fn perform(
             Pending::Segments(segments)
         }
     };
-    let replay = match (&digest_creds, &pending) {
+    let mut replay = match (&req.auth, &pending) {
         (Some(_), Pending::Bytes(b)) => Replay::Bytes(b.clone()),
         (Some(_), Pending::Segments(s)) => Replay::Specs(s.iter().map(SegmentSpec::of).collect()),
         _ => Replay::None,
     };
-    let signing_hash =
+    let mut signing_hash =
         matches!(req.auth, Some(EngineAuth::AwsSigV4 { .. })).then(|| payload_hash(&pending));
     // reqwest cannot clone a streamed body, so it returns a 307/308 instead of following it.
     // With redirects on, the engine follows those itself, re-reading the files.
-    let plan: Option<Vec<SegmentSpec>> = match &pending {
+    let mut plan: Option<Vec<SegmentSpec>> = match &pending {
         Pending::Segments(s)
             if req.client.follow_redirects
                 && s.iter().map(Segment::len).sum::<u64>() > MEMORY_BODY_LIMIT =>
@@ -688,12 +698,14 @@ async fn perform(
     let mut url = url;
     let mut hops = 0u32;
     let mut digest_header: Option<String> = None;
+    // False once a redirect has left the original origin: no more SigV4 or Digest.
+    let mut auth_live = true;
     let mut resp = loop {
         let mut rb = client.request(method.clone(), url.clone());
         for (n, v) in &header_list {
             rb = rb.header(n.as_str(), v.as_str());
         }
-        if let Some(h) = &digest_header {
+        if let (true, Some(h)) = (auth_live, &digest_header) {
             rb = rb.header("authorization", h.as_str());
         }
         if let (
@@ -706,6 +718,7 @@ async fn perform(
             }),
             Some(hash),
         ) = (&req.auth, &signing_hash)
+            && auth_live
         {
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -743,9 +756,12 @@ async fn perform(
             rb = rb.timeout(left);
         }
         let resp = rb.send().await.map_err(|e| classify(&e, false))?;
-        if let (Some((username, password)), None, 401) =
-            (&digest_creds, &digest_header, resp.status().as_u16())
-        {
+        if let (true, Some((username, password)), None, 401) = (
+            auth_live,
+            &digest_creds,
+            &digest_header,
+            resp.status().as_u16(),
+        ) {
             let values: Vec<&str> = resp
                 .headers()
                 .get_all(reqwest::header::WWW_AUTHENTICATE)
@@ -774,10 +790,20 @@ async fn perform(
                 continue;
             }
         }
-        let Some(specs) = &plan else { break resp };
-        if !matches!(resp.status().as_u16(), 307 | 308) {
+        if !own_redirects && plan.is_none() {
             break resp;
         }
+        let code = resp.status().as_u16();
+        // 307/308 keep method and body. Of the rest, own_redirects follows 301/302/303 like
+        // reqwest (POST, or any non-HEAD for 303, becomes GET without a body).
+        let keeps_body = match code {
+            307 | 308 => true,
+            301..=303 if own_redirects => {
+                !(method == reqwest::Method::POST && code != 303
+                    || code == 303 && method != reqwest::Method::HEAD)
+            }
+            _ => break resp,
+        };
         let next = resp
             .headers()
             .get(reqwest::header::LOCATION)
@@ -792,8 +818,28 @@ async fn perform(
                 format!("too many redirects ({MAX_REDIRECTS})"),
             ));
         }
-        pending = Pending::Segments(reopen(specs).await?);
+        if keeps_body {
+            pending = match &plan {
+                Some(specs) => Pending::Segments(reopen(specs).await?),
+                None => replay_pending(&replay).await?,
+            };
+        } else {
+            method = reqwest::Method::GET;
+            pending = Pending::None;
+            replay = Replay::None;
+            plan = None;
+            if signing_hash.is_some() {
+                signing_hash = Some(sigv4::sha256_hex(&[]));
+            }
+            header_list.retain(|(n, _)| {
+                !["content-type", "content-length", "content-encoding"]
+                    .iter()
+                    .any(|s| n.eq_ignore_ascii_case(s))
+            });
+        }
+        digest_header = None;
         if next.origin() != url.origin() {
+            auth_live = false;
             header_list.retain(|(n, _)| {
                 ![
                     "authorization",

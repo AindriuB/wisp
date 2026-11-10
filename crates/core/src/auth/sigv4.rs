@@ -21,7 +21,7 @@ pub struct Credentials<'a> {
 }
 
 /// The result of signing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Signed {
     pub canonical_request: String,
     pub string_to_sign: String,
@@ -29,6 +29,25 @@ pub struct Signed {
     pub authorization: String,
     /// Headers to add to the request, `Authorization` included.
     pub added: Vec<(String, String)>,
+}
+
+/// `added` and `authorization` carry the access key id and session token, so Debug hides them.
+impl std::fmt::Debug for Signed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Signed")
+            .field("canonical_request", &self.canonical_request)
+            .field("string_to_sign", &self.string_to_sign)
+            .field("authorization", &"<redacted>")
+            .field(
+                "added",
+                &self
+                    .added
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Everything but RFC 3986 unreserved characters is encoded.
@@ -211,6 +230,21 @@ pub fn sign(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn debug_redacts_signed_credentials() {
+        let signed = Signed {
+            canonical_request: String::new(),
+            string_to_sign: String::new(),
+            authorization: "AWS4-HMAC-SHA256 Credential=AKIDSECRET/x".into(),
+            added: vec![("x-amz-security-token".into(), "TOKENSECRET".into())],
+        };
+        let d = format!("{signed:?}");
+        assert!(
+            !d.contains("AKIDSECRET") && !d.contains("TOKENSECRET"),
+            "{d}"
+        );
+    }
+
     use super::*;
 
     // Vectors: the AWS Signature Version 4 test suite

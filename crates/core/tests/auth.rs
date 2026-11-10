@@ -256,3 +256,116 @@ async fn sigv4_signs_a_file_body_as_unsigned_payload() {
     assert_eq!(hdr(&r, "x-amz-content-sha256"), "UNSIGNED-PAYLOAD");
     assert_eq!(r.body, b"file data");
 }
+
+async fn redirecting(status: u16, to: String) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(status).insert_header("location", to.as_str()))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn ok_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn assert_no_auth(reqs: &[wiremock::Request]) {
+    for r in reqs {
+        for h in r.headers.iter() {
+            let n = h.0.as_str();
+            assert!(
+                n != "authorization" && !n.starts_with("x-amz-"),
+                "leaked {n}: {r:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn sigv4_token_is_not_sent_to_another_origin_on_a_302() {
+    let evil = ok_server().await;
+    let good = redirecting(302, format!("{}/x", evil.uri())).await;
+    let evs = run(request(
+        format!("{}/a", good.uri()),
+        sigv4("s3", "TOKEN123"),
+    ))
+    .await;
+    assert!(
+        matches!(evs.last(), Some(Event::Completed { .. })),
+        "{evs:?}"
+    );
+    let got = evil.received_requests().await.unwrap();
+    assert_eq!(got.len(), 1);
+    assert_no_auth(&got);
+    assert!(
+        hdr(
+            &good.received_requests().await.unwrap()[0],
+            "x-amz-security-token"
+        ) == "TOKEN123"
+    );
+}
+
+#[tokio::test]
+async fn sigv4_file_body_307_to_another_origin_sends_no_auth() {
+    let file = std::env::temp_dir().join(format!("wisp-sigv4-307-{}.bin", std::process::id()));
+    std::fs::write(&file, vec![7u8; 2 * 1024 * 1024]).unwrap();
+    let evil = ok_server().await;
+    let good = redirecting(307, format!("{}/x", evil.uri())).await;
+    let mut req = request(format!("{}/a", good.uri()), sigv4("s3", "TOKEN123"));
+    req.method = Method::Put;
+    req.body = PreparedBody::File(file.clone());
+    let evs = run(req).await;
+    let _ = std::fs::remove_file(&file);
+    assert!(
+        matches!(evs.last(), Some(Event::Completed { .. })),
+        "{evs:?}"
+    );
+    assert_no_auth(&evil.received_requests().await.unwrap());
+}
+
+#[tokio::test]
+async fn digest_is_not_answered_after_a_307_to_another_origin() {
+    let evil = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(401).insert_header("www-authenticate", CHALLENGE))
+        .mount(&evil)
+        .await;
+    let good = redirecting(307, format!("{}/x", evil.uri())).await;
+    let mut req = request(format!("{}/a", good.uri()), digest());
+    req.method = Method::Post;
+    req.body = PreparedBody::Bytes(b"body".to_vec());
+    let evs = run(req).await;
+    assert_eq!(statuses(&evs).last(), Some(&401), "{evs:?}");
+    let got = evil.received_requests().await.unwrap();
+    assert_eq!(got.len(), 1);
+    assert_no_auth(&got);
+}
+
+#[tokio::test]
+async fn sigv4_signs_again_on_a_same_origin_redirect() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/a"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/b"))
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::path("/b"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let evs = run(request(format!("{}/a", server.uri()), sigv4("s3", "T"))).await;
+    assert!(
+        matches!(evs.last(), Some(Event::Completed { .. })),
+        "{evs:?}"
+    );
+    let got = server.received_requests().await.unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[1].url.path(), "/b");
+    assert!(hdr(&got[1], "authorization").starts_with("AWS4-HMAC-SHA256"));
+    assert_ne!(hdr(&got[0], "authorization"), hdr(&got[1], "authorization"));
+}
