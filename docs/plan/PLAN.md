@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
-- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 95 (Digest and SigV4 auth); see HISTORY.
+- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth); see HISTORY.
 - **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
@@ -70,6 +70,54 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
+### Follow-ups from task 94 (not 0.2.0 wave 1)
+- [P3] 34-43 curl.rs:355: unknown options fail open; their argument can become the committed URL. Prefer the `://` positional, or fail with a Parse error naming the option.
+- [P3] 34-44 mod.rs:271: `split_userinfo` misses lenient forms `https:///u:p@h` and `http:/u:p@h` that reqwest accepts.
+- [P3] 34-45 mod.rs:358: the heuristic misses jwt, bearer, dpop, assertion and pass header names (to be fixed once in the shared `wisp_core::redact` list).
+- [P3] 34-46 curl.rs:404: the extra-URL warning cuts at `?` or `#` before stripping userinfo, leaking part of a password; echo only the host.
+- [P3] 34-50 curl.rs:1228: the new header-name tests skip terminated and whole-value checks; the "X Api Key" case passes without the fix.
+- [P3] 34-47 (Nit) curl.rs:1047: the every-option test omits preproxy, json and post-7.84 entries; iterate the const.
+- [NOTE] After PR #35 merges, switch import/mod.rs `is_credential_header` to `wisp_core::redact::is_credential_name` so importers and history share one list.
+- [P3] Collection- and folder-level Postman auth and variables are warnings only. Mapping them needs new `ImportResult` fields; most Postman collections put auth there.
+- [P3] Postman folders count toward no cap (about 870k empty folders fit in 10 MiB).
+- [P3] An environment name that is a reserved device name (for example server description "con") aborts the import partway through.
+- [P3] openapi.rs:451-458 (34-22, Nit): the example budget is charged after `to_string_pretty`, so a deep example briefly allocates about 60 times its size (728 MB peak for 9.8 MiB).
+- [P3] 34-34 postman.rs:65: generated secret names can shadow collection variables, which they outrank at resolve time; reserve collection var keys in SecretSink first.
+- [P3] 34-35 postman.rs:195: unsupported auth types fall back to Inherit and get overwritten by URL userinfo, contradicting the warning; apply userinfo only when no auth object exists.
+- [P3] 34-36 tests/import.rs:199: credential end-to-end test skips URL userinfo and the secrets .gitignore.
+- [P3] openapi.rs: an OpenAPI server `description` becomes the environment file name, so credentials typed into a description reach a file name.
+- [P3] `unique` in write.rs is quadratic in the number of colliding names; use a HashSet plus a per-base counter, as postman.rs does.
+- [P3] `key_string` (yaml.rs) silently collapses null, sequence and mapping keys.
+- [P3] 34-9 curl.rs:467: `-d` without Content-Type becomes text/plain; curl sends urlencoded.
+- [P3] 34-10 curl.rs:477: `--digest`/`--ntlm`/`--negotiate` with `-u` imported as Basic (security).
+- [P3] 34-11 curl.rs:401: warnings echo raw headers, extra URLs and fields (security).
+- [P3] 34-12 curl.rs:385: dropped constructs give no warning.
+- [P3] 34-13 write.rs:54: validate `folder_rel` before any write.
+- [P3] 34-14 yaml.rs:185: YAML merge keys stay literal; nameless parameters are dropped silently.
+- [P3] 34-15 openapi.rs:163: `substitute` is still quadratic within the 64 KiB cap.
+- [P3] 34-16 openapi.rs:526: the depth test never reaches `check_json_depth`.
+- [P3] 34-17 Cargo.toml:52: saphyr-parser lacks `default-features = false`.
+- [P3] 34-18 yaml.rs:84: `TooDeep` matches saphyr's error text; pin `=0.3.3`.
+- [P3] 34-19 yaml.rs:221: wall-clock asserts in tests risk flakes.
+- [P3] 34-20 write.rs:207: `unique_stem` is quadratic when names share a slug.
+- [P3] 34-21 write.rs:122: warn on `{{var}}` used but not defined by the import (security).
+- [P3] 34-27 openapi.rs capped-names test accepts both Ok and TooLarge and asserts under 900 ms; pin one outcome, drop or loosen the timing assert.
+- [P3] 34-28 openapi.rs:27 visit work shares the 64 MiB example budget; large legitimate specs may fail with a vague error. Use a separate visit counter scaled to input.
+- [P3] 34-29 (Nit) openapi.rs:44 `capped_text` duplicates `truncate_bytes`; the two MAX_NAME_BYTES constants differ (100 vs 80).
+- [P3] mod.rs `secret_ref`: a value containing `{{` anywhere is kept literally, so a credential mixed with a ref (`Bearer live-tok {{x}}`) stays in TOML.
+- [P3] postman.rs: collection-variable keys go into secret names unsanitised; a key with `}}` or trailing whitespace makes an unresolvable ref.
+- [P3] `split_userinfo`: a password containing raw `/`, `?` or `#` stays in the URL (curl does not treat it as userinfo either).
+- [STYLE] mod.rs:441 test `split_userinfo_ignores_at_after_authority` sits above `use super::*;`.
+- [NOTE] All non-empty Postman collection variables (including e.g. baseUrl) now go to the imported secrets environment and resolve only when it is selected; worth a line in the import summary (task 96).
+- [NOTE] User decision 2026-11-10: imported file parts become disabled empty parts (never a path); URL userinfo becomes Basic auth via secrets, explicit auth wins.
+- [NOTE] Re-review: an unsafe file part is saved as `""` and loads as the request's directory, so Send fails with a read error rather than "no file selected". On Windows, nested 80-byte folder names can exceed MAX_PATH for other tools.
+- [NOTE] `write` is not atomic; an error partway through leaves a partial import.
+- [NOTE] saphyr-parser 0.3.3 buffers whole flow collections (scanner.rs:866-880); bounded by the 2 MiB YAML cap to about 450 MB. Accepted.
+- [P3] 34-40 curl.rs:969: the expand-options test asserts only that credentials are absent, not that they were routed to secrets/auth.
+- [P3] 34-41 (Nit) openapi.rs:251: the userinfo warning re-parses the host with `split_once` and can name the wrong host; return the authority from `split_userinfo`.
+- [P3] curl.rs:21: arg-taking options newer than curl 7.84 are still missing (`ipfs-gateway`, `keepalive-cnt`, possibly `sigalgs`, `knownhosts`, `parallel-max-host`); the list was built from local curl 7.84 `--help all`. Regenerate from a current curl.
+- [P3] curl.rs:381: `-h <category>` does not consume its argument (`curl -h all http://h/x` imports `all` as the URL); harmless.
+- [NOTE] `is_credential_header` uses a broad substring heuristic (auth, token, secret, key, session, cookie, password, passwd, credential, signature), so headers like X-Monkey move to secrets; accepted, fail-safe.
 ### Follow-ups from task 95 (not 0.2.0 wave 1)
 - [P3] `engine.rs:814-815`: the engine follows 9 redirects; reqwest follows 10.
 - [P3] `engine.rs:834-838`: `transfer-encoding` is not stripped when the body is dropped on a rewrite.

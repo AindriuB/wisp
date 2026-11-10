@@ -1,0 +1,53 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Pets API", "version": "1.0" },
+  "servers": [
+    { "url": "https://api.example.com/v2", "description": "Production" },
+    { "url": "https://{host}/v2", "description": "Staging", "variables": { "host": { "default": "staging.example.com" } } }
+  ],
+  "paths": {
+    "/pets": {
+      "get": {
+        "summary": "List pets",
+        "tags": ["pets"],
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "example": 10 } }
+        ]
+      },
+      "post": {
+        "summary": "Create pet",
+        "tags": ["pets"],
+        "requestBody": {
+          "content": {
+            "application/json": { "example": { "name": "rex" } }
+          }
+        }
+      }
+    },
+    "/pets/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "example": 42 }
+      ],
+      "get": { "operationId": "getPet", "tags": ["pets"] },
+      "delete": { "tags": ["pets"] }
+    },
+    "/loop": {
+      "post": {
+        "summary": "Loop",
+        "requestBody": { "$ref": "#/components/requestBodies/A" }
+      }
+    },
+    "/external": {
+      "post": {
+        "summary": "External",
+        "requestBody": { "$ref": "other.yaml#/components/requestBodies/X" }
+      }
+    }
+  },
+  "components": {
+    "requestBodies": {
+      "A": { "$ref": "#/components/requestBodies/B" },
+      "B": { "$ref": "#/components/requestBodies/A" }
+    }
+  }
+}
