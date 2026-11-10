@@ -932,6 +932,40 @@ mod tests {
         }
     }
 
+    /// The editor's commit computation (`current_auth`) over slots built from the draft, then save/load.
+    #[test]
+    fn oauth2_commit_then_save_load_leaves_the_auth_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        for (n, auth) in oauth_samples().into_iter().enumerate() {
+            let slots = slots_of(&auth);
+            let text = |slot: Slot| {
+                slots
+                    .iter()
+                    .find(|(s, _)| *s == slot)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            let client_auth = match &auth {
+                Auth::OAuth2ClientCredentials { client_auth, .. }
+                | Auth::OAuth2AuthCode { client_auth, .. } => *client_auth,
+                _ => unreachable!(),
+            };
+            let committed = build_auth(
+                AuthKind::of(&auth),
+                ApiKeyLocation::Header,
+                client_auth,
+                &text,
+            );
+            assert_eq!(committed, auth);
+            let mut req = crate::draft::blank_request();
+            req.auth = committed;
+            let path = dir.path().join(format!("c{n}.toml"));
+            wisp_storage::request::save_request(&path, &req).unwrap();
+            let back = wisp_storage::request::load_request(&path).unwrap();
+            assert_eq!(back.auth, auth);
+        }
+    }
+
     #[test]
     fn nearest_non_inherit_folder_wins() {
         let c = collection(Auth::None);

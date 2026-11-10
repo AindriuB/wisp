@@ -530,6 +530,40 @@ pub(crate) fn may_open_in_browser(url: &str) -> bool {
     }
 }
 
+/// What to do with an auth event once its route and tab are looked up.
+#[derive(Debug, PartialEq, Eq)]
+struct AuthRouting {
+    /// Apply the event to the routed tab.
+    apply: bool,
+    /// Forget the route for the event's id.
+    remove_route: bool,
+}
+
+/// Route an auth event: apply it only to a live tab still waiting on this very id; drop
+/// events of a closed tab or of a superseded authorization; terminal events end the route.
+fn route_auth_event(
+    has_route: bool,
+    tab_alive: bool,
+    tab_waiting: Option<RequestId>,
+    id: RequestId,
+    terminal: bool,
+) -> AuthRouting {
+    AuthRouting {
+        apply: has_route && tab_alive && tab_waiting == Some(id),
+        remove_route: has_route && (terminal || !tab_alive),
+    }
+}
+
+/// Closing a tab: drop its auth routes and return the cancel for a flow it is waiting on.
+fn close_auth<T: PartialEq>(
+    routes: &mut HashMap<RequestId, T>,
+    closed: &T,
+    waiting: Option<RequestId>,
+) -> Option<Command> {
+    routes.retain(|_, w| w != closed);
+    waiting.map(Command::AuthorizeCancel)
+}
+
 /// The tab state an `AuthFailed` error shows.
 fn failure_state(error: &EngineError) -> AuthorizeState {
     if error.message == "cancelled" {
@@ -1009,10 +1043,9 @@ impl Workspace {
         self.routes.retain(|_, w| *w != closed);
         // A tab closed while waiting for the browser stops the flow and frees the loopback port.
         let waiting = tab.read(cx).authorize.waiting_id();
-        if let Some(id) = waiting {
-            self.engine.submit(Command::AuthorizeCancel(id));
+        if let Some(cmd) = close_auth(&mut self.auth_routes, &closed, waiting) {
+            self.engine.submit(cmd);
         }
-        self.auth_routes.retain(|_, w| *w != closed);
         self.active = match self.active {
             _ if self.tabs.is_empty() => None,
             Some(a) if a > ix => Some(a - 1),
@@ -1165,18 +1198,16 @@ impl Workspace {
             Event::AuthCompleted { id } | Event::AuthFailed { id, .. } => (*id, true),
             _ => return,
         };
-        let tab = if terminal {
-            self.auth_routes.remove(&id)
-        } else {
-            self.auth_routes.get(&id).cloned()
-        };
-        // Events of a closed tab are dropped.
-        let Some(tab) = tab.and_then(|w| w.upgrade()) else {
-            return;
-        };
-        if tab.read(cx).authorize.waiting_id() != Some(id) {
-            return;
+        let route = self.auth_routes.get(&id).cloned();
+        let tab = route.as_ref().and_then(|w| w.upgrade());
+        let waiting = tab.as_ref().and_then(|t| t.read(cx).authorize.waiting_id());
+        let routing = route_auth_event(route.is_some(), tab.is_some(), waiting, id, terminal);
+        if routing.remove_route {
+            self.auth_routes.remove(&id);
         }
+        let Some(tab) = tab.filter(|_| routing.apply) else {
+            return;
+        };
         match event {
             Event::AuthUrl { url, .. } => {
                 if may_open_in_browser(&url) {
@@ -1653,6 +1684,76 @@ mod tests {
     use super::*;
     use wisp_core::Method;
     use wisp_core::request::{KeyValue, TextBody, Var};
+
+    #[test]
+    fn auth_event_for_the_starting_tab_is_routed() {
+        let r = route_auth_event(true, true, Some(RequestId(5)), RequestId(5), false);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: true,
+                remove_route: false
+            }
+        );
+    }
+
+    #[test]
+    fn auth_event_with_a_stale_id_is_dropped() {
+        // The tab started a second authorization (id 6); the first one's event (5) is stale.
+        let r = route_auth_event(true, true, Some(RequestId(6)), RequestId(5), false);
+        assert!(!r.apply);
+        let r = route_auth_event(true, true, Some(RequestId(6)), RequestId(5), true);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: false,
+                remove_route: true
+            }
+        );
+    }
+
+    #[test]
+    fn auth_event_for_a_closed_tab_is_dropped_and_its_route_removed() {
+        let r = route_auth_event(true, false, None, RequestId(5), false);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: false,
+                remove_route: true
+            }
+        );
+        let r = route_auth_event(false, false, None, RequestId(5), false);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: false,
+                remove_route: false
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_auth_events_remove_the_route() {
+        let r = route_auth_event(true, true, Some(RequestId(5)), RequestId(5), true);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: true,
+                remove_route: true
+            }
+        );
+    }
+
+    #[test]
+    fn closing_a_waiting_tab_cancels_its_flow_and_removes_the_route() {
+        let mut routes = HashMap::from([(RequestId(5), 1u32), (RequestId(9), 2u32)]);
+        let cmd = close_auth(&mut routes, &1, Some(RequestId(5)));
+        assert!(matches!(cmd, Some(Command::AuthorizeCancel(RequestId(5)))));
+        assert!(!routes.contains_key(&RequestId(5)));
+        assert!(routes.contains_key(&RequestId(9)));
+        assert!(close_auth(&mut routes, &2, None).is_none());
+        assert!(routes.is_empty());
+    }
 
     #[test]
     fn close_step_clean_closes() {
