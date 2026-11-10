@@ -71,10 +71,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
 ### Follow-ups from task 96 (not 0.2.0 wave 1)
-- [P3] import.rs:150-156: the report's folder count omits the target folder the dialog creates (pet-store import reports 2 folders, 3 exist).
-- [P3] import.rs:153-156: if create_folder succeeds and write fails, an empty folder is left behind.
-- [P3] import.rs:131: the whole chosen file is read before the 10 MiB check; files over the cap show "Unrecognised file" instead of "too large". Check metadata size or read with take().
-- [P3] import.rs:427: the "Postman collection variables" secrets note also shows for curl and OpenAPI imports.
+- [P3] 37-5 import.rs:435: warnings are shown verbatim; a malformed curl header can echo its token (fix at source, task 99 AC19).
+- [P3] 37-6 import.rs:448: the secrets note mentions Postman collection variables for curl imports; pick the text by format.
+- [P3] 37-7 import.rs:156: the folder count omits the created target; a failed write leaves it behind and the error does not say the import is partial.
+- [P3] 37-8 import.rs:431: each render re-walks the result and rebuilds warnings; Import deep-clones the result on the UI thread.
+- [P3] 37-9 root.rs:464: the overlay does not block clicks behind it; switching collection behind it retargets the import.
+- [P3] import.rs:141-148: read_capped checks metadata then opens by path (TOCTOU to a FIFO); open first, then call file.metadata().
+- [P3] import.rs:194-205: the probe ignores remove_dir's result; a stray empty probe folder can remain.
+- [P3] import.rs:704-710: `write_failure_returns_an_error` only reaches the not-a-folder refusal, not a failure inside import::write.
+- [IDEA] storage ops should expose a public path validator (e.g. ops::check_dir) so the dialog stops probing with create_folder/remove_dir.
 - [P3] Escape only closes the dialog while focus is inside it; clicking the workspace behind the overlay sends Escape to CancelRequest.
 - [NOTE] import::write writes collection defaults and environments before requests, so a mid-import failure leaves a partial import (already tracked under task 94).
 
