@@ -322,9 +322,11 @@ impl Resolver<'_> {
                 verify_tls: s.verify_tls,
                 follow_redirects: s.follow_redirects,
                 proxy: None,
+                collection: None,
             },
             warnings: std::mem::take(&mut self.warnings),
             auth,
+            environment: self.scope.environment.map(|e| e.name.clone()),
         }
     }
 

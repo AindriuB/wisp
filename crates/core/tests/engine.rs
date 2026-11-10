@@ -17,9 +17,11 @@ fn get(url: String) -> PreparedRequest {
             verify_tls: true,
             follow_redirects: true,
             proxy: None,
+            collection: None,
         },
         warnings: vec![],
         auth: None,
+        environment: None,
     }
 }
 
@@ -203,9 +205,11 @@ async fn a_post_sends_the_given_headers_and_body() {
             verify_tls: true,
             follow_redirects: true,
             proxy: None,
+            collection: None,
         },
         warnings: vec![],
         auth: None,
+        environment: None,
     }));
     let evs = collect_until_terminal(&rx).await;
     assert!(matches!(&evs[1], Event::Headers { status: 201, .. }));
@@ -445,6 +449,7 @@ fn commands_and_events_round_trip_through_serde_json() {
             verify_tls: false,
             follow_redirects: true,
             proxy: Some("http://p".into()),
+            collection: None,
         },
         warnings: vec![ResolveWarning::PatternMismatch {
             name: "n".into(),
@@ -455,6 +460,7 @@ fn commands_and_events_round_trip_through_serde_json() {
             username: "u".into(),
             password: "p".into(),
         }),
+        environment: Some("dev".into()),
     }));
     round_trip(Command::Cancel(RequestId(7)));
     let id = RequestId(3);
@@ -999,6 +1005,7 @@ async fn authorize_start_is_answered_with_auth_failed() {
     let (engine, rx) = Engine::start(EngineConfig::default());
     let id = engine.submit(Command::AuthorizeStart {
         auth: oauth2_engine_auth(),
+        environment: None,
         client: get(String::new()).client,
         timeout: None,
     });
@@ -1043,6 +1050,8 @@ fn debug_redacts_engine_config() {
             token_url: "https://i/t".into(),
             client_id: "c".into(),
             scope: "r".into(),
+            collection: None,
+            environment: None,
         },
         "REFRESH-MARKER-123",
     );

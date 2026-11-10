@@ -8,22 +8,25 @@ use crate::engine::err;
 use crate::model::{ClientSettings, EngineError, ErrorKind};
 
 /// One `reqwest::Client` per distinct `ClientSettings`.
+///
+/// `ClientSettings` carries the collection id, so each collection has its own client and its own
+/// `CookieJar`; a request with no collection has a jar of its own too.
+#[derive(Default)]
 pub(crate) struct ClientCache {
     clients: Mutex<HashMap<ClientSettings, reqwest::Client>>,
-    /// Shared cookie jar; unused until the cookie provider lands.
-    #[allow(dead_code)]
-    cookies: CookieJar,
+    /// One jar per collection id; unused by clients until the cookie provider lands.
+    jars: Mutex<HashMap<Option<String>, CookieJar>>,
 }
 
 impl ClientCache {
-    pub(crate) fn new(cookies: CookieJar) -> Self {
-        Self {
-            clients: Mutex::default(),
-            cookies,
-        }
+    /// The jar for a collection, created on first use.
+    pub(crate) fn jar(&self, collection: &Option<String>) -> CookieJar {
+        let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
+        jars.entry(collection.clone()).or_default().clone()
     }
 
     pub(crate) fn get(&self, settings: &ClientSettings) -> Result<reqwest::Client, EngineError> {
+        self.jar(&settings.collection);
         let mut map = self.clients.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = map.get(settings) {
             return Ok(c.clone());
@@ -88,17 +91,39 @@ mod tests {
             verify_tls,
             follow_redirects: true,
             proxy: None,
+            collection: None,
         }
     }
 
     #[test]
     fn equal_settings_share_a_client_and_different_settings_do_not() {
-        let cache = ClientCache::new(CookieJar::default());
+        let cache = ClientCache::default();
         cache.get(&settings(true)).unwrap();
         cache.get(&settings(true)).unwrap();
         assert_eq!(cache.len(), 1);
         cache.get(&settings(false)).unwrap();
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn each_collection_id_gets_its_own_client_and_jar() {
+        let cache = ClientCache::default();
+        let mut a = settings(true);
+        a.collection = Some("a".into());
+        let mut b = settings(true);
+        b.collection = Some("b".into());
+        cache.get(&a).unwrap();
+        cache.get(&b).unwrap();
+        cache.get(&settings(true)).unwrap();
+        assert_eq!(cache.len(), 3);
+        assert!(!cache.jar(&a.collection).same_jar(&cache.jar(&b.collection)));
+        assert!(!cache.jar(&a.collection).same_jar(&cache.jar(&None)));
+        assert!(
+            cache
+                .jar(&a.collection)
+                .same_jar(&cache.jar(&Some("a".into())))
+        );
+        assert!(cache.jar(&None).same_jar(&cache.jar(&None)));
     }
 
     #[test]
@@ -120,7 +145,7 @@ mod tests {
     fn an_invalid_proxy_is_an_invalid_url_error() {
         let mut s = settings(true);
         s.proxy = Some("not a proxy".into());
-        let e = ClientCache::new(CookieJar::default()).get(&s).unwrap_err();
+        let e = ClientCache::default().get(&s).unwrap_err();
         assert_eq!(e.kind, ErrorKind::InvalidUrl);
     }
 }

@@ -472,6 +472,13 @@ struct SendPlan {
     notice: Option<String>,
 }
 
+/// The cookie-jar and OAuth2-token partition for a collection: its id, or its root path when
+/// the id cannot be read or created.
+fn collection_partition(root: &Path) -> String {
+    ensure_collection_id(root)
+        .map_or_else(|_| root.to_string_lossy().into_owned(), |id| id.to_string())
+}
+
 /// Resolve a draft for sending. Pure: everything it reads is passed in.
 fn prepare_send(
     draft: &Request,
@@ -966,7 +973,7 @@ impl Workspace {
                 t.from_history.clone(),
             )
         };
-        let plan = prepare_send(
+        let mut plan = prepare_send(
             &draft,
             path.as_deref(),
             origin.as_ref(),
@@ -980,6 +987,10 @@ impl Workspace {
                 cx.emit(WorkspaceEvent::Notice(message.to_string().into()));
             }
         })?;
+        plan.prepared.client.collection = self
+            .collection
+            .as_ref()
+            .map(|c| collection_partition(&c.tree.root));
         let scope_path = plan.scope_path;
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
