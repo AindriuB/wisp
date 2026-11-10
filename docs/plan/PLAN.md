@@ -78,6 +78,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [NOTE] cookie_store logs non-Secure cookie values via `log::debug!`; no log backend exists today, so it would leak if a log/tracing-log bridge is ever added at debug level.
 - [NOTE] Loopback hosts count as a secure context (Secure cookies are sent over http://localhost), matching browsers.
 - [P2 -> task 108 / release] The public-suffix list snapshot (crates/core/data/public_suffix_list.dat, 2026-11-09) ages; refresh it before each release.
+- [P3 -> task 99] 45-9 cookies.rs `load()` accepts ';', CR/LF and userinfo hosts in records; reject invalid cookie-octets and host mismatch.
+- [P3 -> task 99] 45-10 plain-http responses can set or overwrite Secure cookies; `__Host-`/`__Secure-` prefixes are not enforced.
+- [P3 -> task 99] 45-11 unlisted single-label suffixes (test, local) are accepted as Domain from responses (load rejects them); apply `is_registrable` to responses too.
+- [P3] 45-6 `publicsuffix` is declared outside workspace deps; IDN suffix rejection relies on punycode enabled only via reqwest; add an IDN suffix test.
+- [P3] 45-8 the PSL parse `expect()` has no invariant comment; a bad refresh aborts on first send; add a dedicated parse test.
+- [P3] 45-12 Cookie header order is arbitrary, not longest path first.
+- [P3] 45-13 generate.sh notice URL serves the latest list, not this snapshot; version is hard-coded twice; read VERSION/COMMIT from the file and add a permalink.
+- [P3] 45-16 every Set-Cookie response scans the whole jar under the mutex (`needs_eviction`); keep running counts; the "no allocation" doc comment is wrong; the 3100-domain test takes about 5-7 s in debug.
+- [P3] 45-14 (Nit) `PARSE_COUNT` ships in release (`cfg(test)` it); sync tests are marked async. Item 42-8 (jar `debug_redacts` test) was done in task 104 and is retired.
 
 ### Follow-ups from task 106 (not 0.2.0 wave 2)
 - [P3] auth.rs:156 `parse_port` silently turns an invalid redirect port (81234, 8l23) into 0 ("any free port"); reject or show a notice.
@@ -148,7 +157,6 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] 42-4 app ui/request/auth.rs:123: build_auth maps OAuth2 kinds to Inherit, guarded only by an early return elsewhere.
 - [P3] 42-5 storage codec.rs:439: redirect_port read error and stale-key removal are untested.
 - [P3] 42-6 core engine.rs:459: serde round-trip test omits AuthorizeStart and AuthorizeCancel.
-- [P3] 42-8 core cookies.rs:15: CookieJar redacting Debug has no debug_redacts test (do it in 104).
 - [P3] 42-9 (Nit) model.rs:167: AuthorizeStart timeout None has no stated meaning; document as the 120 s default.
 - [P3] 42-10 (Nit) app workspace.rs:1135: inner auth-event arm is unreachable.
 - [NOTE] Round-1 fix for PR #42: TokenKey now carries collection id and environment; each collection has its own client and CookieJar (ClientSettings.collection); EngineConfig.cookies was removed. Task 106 must pass `environment` and `client.collection` on AuthorizeStart.
