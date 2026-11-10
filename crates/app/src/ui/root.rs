@@ -241,8 +241,11 @@ impl WorkspaceView {
 
     fn on_send(&mut self, _: &SendRequest, _: &mut Window, cx: &mut Context<Self>) {
         self.with_active(cx, |w, tab, cx| {
-            if let Err(e) = w.send(tab, cx) {
-                cx.emit(WorkspaceEvent::Notice(format!("Cannot send: {e:?}").into()));
+            if let Err(e) = w.send(tab, cx)
+                && crate::workspace::refused_body_message(&e).is_none()
+            {
+                let text = format!("Cannot send: {}", crate::workspace::describe_problems(&e));
+                cx.emit(WorkspaceEvent::Notice(text.into()));
             }
         });
     }

@@ -843,16 +843,9 @@ impl Workspace {
             self.collection.as_ref().and_then(|c| c.active_env.as_ref()),
         )
         .inspect_err(|e| {
-            // A refused body is explained here; the callers only see a failure.
-            if let [
-                Problem::Syntax {
-                    location: Location::Body,
-                    message,
-                },
-            ] = e.problems.as_slice()
-                && message.starts_with("Edit the request body")
-            {
-                cx.emit(WorkspaceEvent::Notice(message.clone().into()));
+            // A refused body is explained here; callers skip their own notice.
+            if let Some(message) = refused_body_message(e) {
+                cx.emit(WorkspaceEvent::Notice(message.to_string().into()));
             }
         })?;
         let scope_path = plan.scope_path;
@@ -1277,8 +1270,22 @@ impl Workspace {
     }
 }
 
-/// Names only, never values or syntax messages (conventions: logging).
-fn describe_problems(e: &ResolveError) -> String {
+/// The notice `Workspace::send` already showed for a refused redacted body, if
+/// this error is that refusal. Callers must not replace it with their own.
+pub(crate) fn refused_body_message(e: &ResolveError) -> Option<&str> {
+    match e.problems.as_slice() {
+        [
+            Problem::Syntax {
+                location: Location::Body,
+                message,
+            },
+        ] if message.starts_with("Edit the request body") => Some(message),
+        _ => None,
+    }
+}
+
+/// Names and our own syntax messages, never request values.
+pub(crate) fn describe_problems(e: &ResolveError) -> String {
     fn loc(l: &Location) -> String {
         match l {
             Location::Url => "Url".into(),
@@ -1299,7 +1306,9 @@ fn describe_problems(e: &ResolveError) -> String {
             Problem::MissingPathParam { name } => {
                 format!("MissingPathParam({})", name.escape_debug())
             }
-            Problem::Syntax { location, .. } => format!("Syntax({})", loc(location)),
+            Problem::Syntax { location, message } => {
+                format!("Syntax({}: {})", loc(location), message.escape_debug())
+            }
             Problem::VarCycle { name } => format!("VarCycle({})", name.escape_debug()),
         })
         .collect::<Vec<_>>()
@@ -1347,9 +1356,29 @@ mod tests {
         let out = describe_problems(&e);
         assert_eq!(
             out,
-            "UnresolvedVar(token),MissingPathParam(id),Syntax(Url),VarCycle(a)"
+            "UnresolvedVar(token),MissingPathParam(id),Syntax(Url: SECRETMARK),VarCycle(a)"
         );
-        assert!(!out.contains("SECRETMARK"));
+    }
+
+    #[test]
+    fn refused_body_message_matches_only_the_refusal() {
+        let refusal = ResolveError {
+            problems: vec![Problem::Syntax {
+                location: Location::Body,
+                message: "Edit the request body before resending: x".into(),
+            }],
+        };
+        assert_eq!(
+            refused_body_message(&refusal),
+            Some("Edit the request body before resending: x")
+        );
+        let other = ResolveError {
+            problems: vec![Problem::Syntax {
+                location: Location::Body,
+                message: "bad".into(),
+            }],
+        };
+        assert_eq!(refused_body_message(&other), None);
     }
 
     #[test]
