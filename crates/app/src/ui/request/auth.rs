@@ -24,14 +24,18 @@ enum AuthKind {
     Basic,
     Bearer,
     ApiKey,
+    Digest,
+    AwsSigV4,
 }
 
-const KINDS: [AuthKind; 5] = [
+const KINDS: [AuthKind; 7] = [
     AuthKind::None,
     AuthKind::Inherit,
     AuthKind::Basic,
     AuthKind::Bearer,
     AuthKind::ApiKey,
+    AuthKind::Digest,
+    AuthKind::AwsSigV4,
 ];
 
 impl AuthKind {
@@ -42,6 +46,8 @@ impl AuthKind {
             Auth::Basic { .. } => Self::Basic,
             Auth::Bearer { .. } => Self::Bearer,
             Auth::ApiKey { .. } => Self::ApiKey,
+            Auth::Digest { .. } => Self::Digest,
+            Auth::AwsSigV4 { .. } => Self::AwsSigV4,
         }
     }
 
@@ -52,11 +58,88 @@ impl AuthKind {
             Self::Basic => "Basic",
             Self::Bearer => "Bearer",
             Self::ApiKey => "API key",
+            Self::Digest => "Digest",
+            Self::AwsSigV4 => "AWS Signature",
         }
     }
 
     fn from_label(label: &str) -> Option<Self> {
         KINDS.into_iter().find(|k| k.label() == label)
+    }
+}
+
+/// One text field of the editor. Schemes that share a meaning share a slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Username,
+    Password,
+    Token,
+    KeyName,
+    KeyValue,
+    AccessKey,
+    SecretKey,
+    SessionToken,
+    Region,
+    Service,
+}
+
+/// The auth value for `kind`, reading each field through `text`.
+fn build_auth(kind: AuthKind, location: ApiKeyLocation, text: &dyn Fn(Slot) -> String) -> Auth {
+    match kind {
+        AuthKind::None => Auth::None,
+        AuthKind::Inherit => Auth::Inherit,
+        AuthKind::Basic => Auth::Basic {
+            username: text(Slot::Username),
+            password: text(Slot::Password),
+        },
+        AuthKind::Bearer => Auth::Bearer {
+            token: text(Slot::Token),
+        },
+        AuthKind::ApiKey => Auth::ApiKey {
+            name: text(Slot::KeyName),
+            value: text(Slot::KeyValue),
+            location,
+        },
+        AuthKind::Digest => Auth::Digest {
+            username: text(Slot::Username),
+            password: text(Slot::Password),
+        },
+        AuthKind::AwsSigV4 => Auth::AwsSigV4 {
+            access_key: text(Slot::AccessKey),
+            secret_key: text(Slot::SecretKey),
+            session_token: text(Slot::SessionToken),
+            region: text(Slot::Region),
+            service: text(Slot::Service),
+        },
+    }
+}
+
+/// The field values an auth value carries.
+fn slots_of(auth: &Auth) -> Vec<(Slot, String)> {
+    match auth {
+        Auth::None | Auth::Inherit => Vec::new(),
+        Auth::Basic { username, password } | Auth::Digest { username, password } => vec![
+            (Slot::Username, username.clone()),
+            (Slot::Password, password.clone()),
+        ],
+        Auth::Bearer { token } => vec![(Slot::Token, token.clone())],
+        Auth::ApiKey { name, value, .. } => vec![
+            (Slot::KeyName, name.clone()),
+            (Slot::KeyValue, value.clone()),
+        ],
+        Auth::AwsSigV4 {
+            access_key,
+            secret_key,
+            session_token,
+            region,
+            service,
+        } => vec![
+            (Slot::AccessKey, access_key.clone()),
+            (Slot::SecretKey, secret_key.clone()),
+            (Slot::SessionToken, session_token.clone()),
+            (Slot::Region, region.clone()),
+            (Slot::Service, service.clone()),
+        ],
     }
 }
 
@@ -99,6 +182,11 @@ pub struct AuthEditor {
     token: Entity<InputState>,
     key_name: Entity<InputState>,
     key_value: Entity<InputState>,
+    access_key: Entity<InputState>,
+    secret_key: Entity<InputState>,
+    session_token: Entity<InputState>,
+    region: Entity<InputState>,
+    service: Entity<InputState>,
     _subs: Vec<Subscription>,
 }
 
@@ -128,9 +216,25 @@ impl AuthEditor {
         let token = secret("Token", window, cx);
         let key_name = plain("Name", window, cx);
         let key_value = secret("Value", window, cx);
+        let access_key = plain("Access key", window, cx);
+        let secret_key = secret("Secret key", window, cx);
+        let session_token = secret("Session token (optional)", window, cx);
+        let region = plain("us-east-1", window, cx);
+        let service = plain("s3", window, cx);
 
         let mut subs = Vec::new();
-        for input in [&username, &password, &token, &key_name, &key_value] {
+        for input in [
+            &username,
+            &password,
+            &token,
+            &key_name,
+            &key_value,
+            &access_key,
+            &secret_key,
+            &session_token,
+            &region,
+            &service,
+        ] {
             subs.push(cx.subscribe_in(input, window, Self::on_input));
         }
         subs.push(cx.subscribe_in(&kind_select, window, Self::on_kind));
@@ -150,6 +254,11 @@ impl AuthEditor {
             token,
             key_name,
             key_value,
+            access_key,
+            secret_key,
+            session_token,
+            region,
+            service,
             _subs: subs,
         };
         this.resync(window, cx);
@@ -162,22 +271,22 @@ impl AuthEditor {
 
     /// The draft value for the selected scheme, built from the field memory.
     fn current_auth(&self, cx: &Context<Self>) -> Auth {
-        match self.kind {
-            AuthKind::None => Auth::None,
-            AuthKind::Inherit => Auth::Inherit,
-            AuthKind::Basic => Auth::Basic {
-                username: Self::text(&self.username, cx),
-                password: Self::text(&self.password, cx),
-            },
-            AuthKind::Bearer => Auth::Bearer {
-                token: Self::text(&self.token, cx),
-            },
-            AuthKind::ApiKey => Auth::ApiKey {
-                name: Self::text(&self.key_name, cx),
-                value: Self::text(&self.key_value, cx),
-                location: self.location,
-            },
-        }
+        let text = |slot: Slot| {
+            let input = match slot {
+                Slot::Username => &self.username,
+                Slot::Password => &self.password,
+                Slot::Token => &self.token,
+                Slot::KeyName => &self.key_name,
+                Slot::KeyValue => &self.key_value,
+                Slot::AccessKey => &self.access_key,
+                Slot::SecretKey => &self.secret_key,
+                Slot::SessionToken => &self.session_token,
+                Slot::Region => &self.region,
+                Slot::Service => &self.service,
+            };
+            Self::text(input, cx)
+        };
+        build_auth(self.kind, self.location, &text)
     }
 
     /// One `tab.edit` per real change; echoes of a resync compare equal.
@@ -261,25 +370,26 @@ impl AuthEditor {
                 input.update(cx, |s, cx| s.set_value(text, window, cx));
             }
         };
-        match auth {
-            Auth::None | Auth::Inherit => {}
-            Auth::Basic { username, password } => {
-                set(&self.username, username, window, cx);
-                set(&self.password, password, window, cx);
-            }
-            Auth::Bearer { token } => set(&self.token, token, window, cx),
-            Auth::ApiKey {
-                name,
-                value,
-                location,
-            } => {
-                set(&self.key_name, name, window, cx);
-                set(&self.key_value, value, window, cx);
-                self.location = location;
-                self.loc_select.update(cx, |s, cx| {
-                    s.set_selected_value(&location_label(location), window, cx)
-                });
-            }
+        for (slot, text) in slots_of(&auth) {
+            let input = match slot {
+                Slot::Username => &self.username,
+                Slot::Password => &self.password,
+                Slot::Token => &self.token,
+                Slot::KeyName => &self.key_name,
+                Slot::KeyValue => &self.key_value,
+                Slot::AccessKey => &self.access_key,
+                Slot::SecretKey => &self.secret_key,
+                Slot::SessionToken => &self.session_token,
+                Slot::Region => &self.region,
+                Slot::Service => &self.service,
+            };
+            set(input, text, window, cx);
+        }
+        if let Auth::ApiKey { location, .. } = auth {
+            self.location = location;
+            self.loc_select.update(cx, |s, cx| {
+                s.set_selected_value(&location_label(location), window, cx)
+            });
         }
         let label = self.kind.label();
         self.kind_select
@@ -350,6 +460,24 @@ impl Render for AuthEditor {
                     "Add to",
                     Select::new(&self.loc_select).id("auth-location"),
                 )),
+            AuthKind::Digest => col
+                .child(Self::row("Username", Input::new(&self.username)))
+                .child(Self::row(
+                    "Password",
+                    Input::new(&self.password).mask_toggle(),
+                )),
+            AuthKind::AwsSigV4 => col
+                .child(Self::row("Access key", Input::new(&self.access_key)))
+                .child(Self::row(
+                    "Secret key",
+                    Input::new(&self.secret_key).mask_toggle(),
+                ))
+                .child(Self::row(
+                    "Session token",
+                    Input::new(&self.session_token).mask_toggle(),
+                ))
+                .child(Self::row("Region", Input::new(&self.region)))
+                .child(Self::row("Service", Input::new(&self.service))),
         };
         div()
             .size_full()
@@ -380,6 +508,84 @@ mod tests {
 
     fn names(n: &[&str]) -> Vec<String> {
         n.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn kind_list_offers_digest_and_aws_signature() {
+        let labels: Vec<&str> = KINDS.iter().map(|k| k.label()).collect();
+        assert!(labels.contains(&"Digest"));
+        assert!(labels.contains(&"AWS Signature"));
+        for k in KINDS {
+            assert_eq!(AuthKind::from_label(k.label()), Some(k));
+        }
+    }
+
+    #[test]
+    fn every_kind_round_trips_through_the_field_helpers() {
+        let samples = [
+            Auth::None,
+            Auth::Inherit,
+            Auth::Basic {
+                username: "u".into(),
+                password: "p".into(),
+            },
+            Auth::Bearer { token: "t".into() },
+            Auth::ApiKey {
+                name: "n".into(),
+                value: "v".into(),
+                location: ApiKeyLocation::Query,
+            },
+            Auth::Digest {
+                username: "u".into(),
+                password: "p".into(),
+            },
+            Auth::AwsSigV4 {
+                access_key: "ak".into(),
+                secret_key: "sk".into(),
+                session_token: "st".into(),
+                region: "r".into(),
+                service: "s".into(),
+            },
+        ];
+        for a in &samples {
+            let slots = slots_of(a);
+            let text = |slot: Slot| {
+                slots
+                    .iter()
+                    .find(|(s, _)| *s == slot)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            };
+            let location = match a {
+                Auth::ApiKey { location, .. } => *location,
+                _ => ApiKeyLocation::Header,
+            };
+            assert_eq!(&build_auth(AuthKind::of(a), location, &text), a);
+        }
+    }
+
+    #[test]
+    fn switching_kind_keeps_remembered_fields() {
+        // Digest and Basic share the username and password slots.
+        let basic = Auth::Basic {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let slots = slots_of(&basic);
+        let text = |slot: Slot| {
+            slots
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            build_auth(AuthKind::Digest, ApiKeyLocation::Header, &text),
+            Auth::Digest {
+                username: "u".into(),
+                password: "p".into()
+            }
+        );
     }
 
     #[test]

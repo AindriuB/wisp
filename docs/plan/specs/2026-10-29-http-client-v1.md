@@ -106,6 +106,9 @@ Rules:
   Headers merge down the chain; nearer wins.
 - **Identity = file path.** No UUIDs in files. Order via `order = [...]` in
   `folder.toml`; unlisted items sort alphabetically.
+  *Note 2026-11-09: from 0.2.0 `collection.toml` carries a random collection
+  `id` (user decision; see `2026-11-09-wisp-0-2-0.md`). Requests and folders
+  keep the file path as identity.*
 - **Query params:** `[[params]]` is the single source of truth; the URL bar
   displays and edits them live.
 - **Versioning:** `collection.toml` carries `format = 1`.
@@ -204,6 +207,8 @@ Scripting; global vars; dynamic vars beyond `$uuid`/`$timestamp`; OS keychain
 secrets; multiple open collections; history UI; image/HTML preview; Digest,
 OAuth2, AWS SigV4 auth; GraphQL; importers (Postman, OpenAPI, curl); CLI
 runner; persisted cookie jar; phase timings; code signing/notarization (Windows and Linux; see the note below for macOS).
+
+*Wisp 0.2.0 takes up importers, history, OAuth2/Digest/SigV4, keychain secrets, multiple collections, phase timings and the persisted cookie jar: see `2026-11-09-wisp-0-2-0.md`.*
 
 *Note, 2026-11-03: macOS code signing and notarisation moved into v1 by user decision. The 0.1.0 macOS release is signed with Developer ID (team UB89GDN343) and notarised; see task 78 in `docs/plan/HISTORY.md`. Windows signing is still out.*
 

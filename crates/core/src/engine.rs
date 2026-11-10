@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::oneshot;
 
+use crate::auth::{EngineAuth, digest, sigv4};
 use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
 use crate::model::{
     ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
@@ -542,6 +543,106 @@ async fn reopen(specs: &[SegmentSpec]) -> Result<Vec<Segment>, EngineError> {
     Ok(out)
 }
 
+/// What a Digest retry resends: the body of the first attempt, held so it can be sent again.
+enum Replay {
+    None,
+    Bytes(Vec<u8>),
+    Specs(Vec<SegmentSpec>),
+}
+
+async fn replay_pending(r: &Replay) -> Result<Pending, EngineError> {
+    Ok(match r {
+        Replay::None => Pending::None,
+        Replay::Bytes(b) => Pending::Bytes(b.clone()),
+        Replay::Specs(s) => Pending::Segments(reopen(s).await?),
+    })
+}
+
+/// True when the body reads from a file, so it cannot be held for a Digest resend.
+fn body_has_file(body: &PreparedBody) -> bool {
+    match body {
+        PreparedBody::File(_) => true,
+        PreparedBody::Multipart(parts) => parts
+            .iter()
+            .any(|p| matches!(p.value, PreparedPartValue::File(_))),
+        _ => false,
+    }
+}
+
+/// Feeds a file's first `len` bytes into `hasher`, read in bounded chunks from a fresh open.
+/// Fails if the file is gone, no longer `len` long, or shrinks while read.
+async fn hash_file(
+    mut hasher: sha2::Sha256,
+    path: &Path,
+    len: u64,
+) -> Result<sha2::Sha256, EngineError> {
+    let owned = path.to_owned();
+    let hashed = tokio::task::spawn_blocking(move || {
+        use sha2::Digest as _;
+        use std::io::Read;
+        let mut file = std::fs::File::open(&owned)?;
+        if file.metadata()?.len() != len {
+            return Err(std::io::Error::other("length changed before signing"));
+        }
+        let mut buf = vec![0u8; STREAM_CHUNK];
+        let mut left = len;
+        while left > 0 {
+            let want = STREAM_CHUNK.min(usize::try_from(left).unwrap_or(STREAM_CHUNK));
+            match file.read(&mut buf[..want]) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "file shrank while signing",
+                    ));
+                }
+                Ok(got) => {
+                    hasher.update(&buf[..got]);
+                    left -= got as u64;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(hasher)
+    })
+    .await;
+    match hashed {
+        Ok(Ok(h)) => Ok(h),
+        Ok(Err(e)) => Err(body_file_error(path, &e)),
+        Err(e) => Err(err(
+            ErrorKind::BodyFile,
+            format!("cannot read {}: {e}", path.display()),
+        )),
+    }
+}
+
+/// Payload hash for SigV4. S3 signs `UNSIGNED-PAYLOAD` for files and bodies over the memory
+/// limit; other services need the real SHA-256, stream-hashed so a file is never held whole.
+async fn payload_hash(pending: &Pending, service: &str) -> Result<String, EngineError> {
+    match pending {
+        Pending::None => Ok(sigv4::sha256_hex(&[])),
+        Pending::Bytes(b) => Ok(sigv4::sha256_hex(b)),
+        Pending::Segments(segs) => {
+            use sha2::Digest as _;
+            let total: u64 = segs.iter().map(Segment::len).sum();
+            let has_file = segs.iter().any(|s| matches!(s, Segment::File { .. }));
+            if service == "s3" && (has_file || total > MEMORY_BODY_LIMIT) {
+                return Ok(sigv4::UNSIGNED_PAYLOAD.to_owned());
+            }
+            let mut hasher = sha2::Sha256::new();
+            for seg in segs {
+                match seg {
+                    Segment::Mem(b) => hasher.update(b),
+                    Segment::File { path, len, .. } => {
+                        hasher = hash_file(hasher, path, *len).await?;
+                    }
+                }
+            }
+            Ok(crate::auth::hex(&hasher.finalize()))
+        }
+    }
+}
+
 /// Runs one request, emitting `Headers` and `Progress`; returns the size and body.
 async fn perform(
     id: RequestId,
@@ -560,8 +661,28 @@ async fn perform(
             format!("unsupported scheme `{}`", url.scheme()),
         ));
     }
-    let client = clients.get(&req.client)?;
-    let method = match req.method {
+    let digest_creds = match &req.auth {
+        Some(EngineAuth::Digest { username, password }) => Some((username, password)),
+        _ => None,
+    };
+    if digest_creds.is_some() && body_has_file(&req.body) {
+        return Err(err(
+            ErrorKind::Body,
+            "Digest auth needs a replayable body; File bodies cannot be resent",
+        ));
+    }
+    // The engine follows redirects itself for engine-applied auth (reqwest would carry the
+    // x-amz-* headers across origins and could not sign again), so reqwest's following is off.
+    let own_redirects = req.client.follow_redirects && req.auth.is_some();
+    let client = if own_redirects {
+        clients.get(&ClientSettings {
+            follow_redirects: false,
+            ..req.client.clone()
+        })?
+    } else {
+        clients.get(&req.client)?
+    };
+    let mut method = match req.method {
         Method::Get => reqwest::Method::GET,
         Method::Post => reqwest::Method::POST,
         Method::Put => reqwest::Method::PUT,
@@ -575,6 +696,10 @@ async fn perform(
     let engine_length = multipart || matches!(req.body, PreparedBody::File(_));
     let mut header_list: Vec<(String, String)> = Vec::new();
     for h in &req.headers {
+        // Digest and SigV4 own the Authorization header.
+        if req.auth.is_some() && h.name.eq_ignore_ascii_case("authorization") {
+            continue;
+        }
         // The engine owns the multipart content type: it carries the boundary.
         if multipart && h.name.eq_ignore_ascii_case("content-type") {
             continue;
@@ -606,9 +731,18 @@ async fn perform(
             Pending::Segments(segments)
         }
     };
+    let mut replay = match (&req.auth, &pending) {
+        (Some(_), Pending::Bytes(b)) => Replay::Bytes(b.clone()),
+        (Some(_), Pending::Segments(s)) => Replay::Specs(s.iter().map(SegmentSpec::of).collect()),
+        _ => Replay::None,
+    };
+    let mut signing_hash = match &req.auth {
+        Some(EngineAuth::AwsSigV4 { service, .. }) => Some(payload_hash(&pending, service).await?),
+        _ => None,
+    };
     // reqwest cannot clone a streamed body, so it returns a 307/308 instead of following it.
     // With redirects on, the engine follows those itself, re-reading the files.
-    let plan: Option<Vec<SegmentSpec>> = match &pending {
+    let mut plan: Option<Vec<SegmentSpec>> = match &pending {
         Pending::Segments(s)
             if req.client.follow_redirects
                 && s.iter().map(Segment::len).sum::<u64>() > MEMORY_BODY_LIMIT =>
@@ -620,10 +754,51 @@ async fn perform(
     let began = Instant::now();
     let mut url = url;
     let mut hops = 0u32;
+    let mut digest_header: Option<String> = None;
+    // False once a redirect has left the original origin: no more SigV4 or Digest.
+    let mut auth_live = true;
     let mut resp = loop {
         let mut rb = client.request(method.clone(), url.clone());
         for (n, v) in &header_list {
             rb = rb.header(n.as_str(), v.as_str());
+        }
+        if let (true, Some(h)) = (auth_live, &digest_header) {
+            rb = rb.header("authorization", h.as_str());
+        }
+        if let (
+            Some(EngineAuth::AwsSigV4 {
+                access_key,
+                secret_key,
+                session_token,
+                region,
+                service,
+            }),
+            Some(hash),
+        ) = (&req.auth, &signing_hash)
+            && auth_live
+        {
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let creds = sigv4::Credentials {
+                access_key,
+                secret_key,
+                session_token,
+                region,
+                service,
+            };
+            let signed = sigv4::sign(
+                method.as_str(),
+                url.as_str(),
+                &header_list,
+                hash,
+                &creds,
+                now,
+            )
+            .map_err(|m| err(ErrorKind::Other, format!("SigV4 signing failed: {m}")))?;
+            for (n, v) in &signed.added {
+                rb = rb.header(n.as_str(), v.as_str());
+            }
         }
         rb = match std::mem::replace(&mut pending, Pending::None) {
             Pending::None => rb,
@@ -638,10 +813,55 @@ async fn perform(
             rb = rb.timeout(left);
         }
         let resp = rb.send().await.map_err(|e| classify(&e, false))?;
-        let Some(specs) = &plan else { break resp };
-        if !matches!(resp.status().as_u16(), 307 | 308) {
+        if let (true, Some((username, password)), None, 401) = (
+            auth_live,
+            &digest_creds,
+            &digest_header,
+            resp.status().as_u16(),
+        ) {
+            let values: Vec<&str> = resp
+                .headers()
+                .get_all(reqwest::header::WWW_AUTHENTICATE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect();
+            let selected =
+                digest::select(&values).map_err(|e| err(ErrorKind::Other, e.to_string()))?;
+            if let Some(challenge) = selected {
+                let uri = match url.query() {
+                    Some(q) => format!("{}?{q}", url.path()),
+                    None => url.path().to_owned(),
+                };
+                let cnonce = uuid::Uuid::new_v4().simple().to_string();
+                let header = digest::respond(
+                    &challenge,
+                    method.as_str(),
+                    &uri,
+                    username,
+                    password,
+                    &cnonce,
+                )
+                .map_err(|e| err(ErrorKind::Other, e.to_string()))?;
+                digest_header = Some(header);
+                pending = replay_pending(&replay).await?;
+                continue;
+            }
+        }
+        if !own_redirects && plan.is_none() {
             break resp;
         }
+        let code = resp.status().as_u16();
+        // 307/308 keep method and body. With own_redirects, 303 turns any non-HEAD method into
+        // GET and 301/302 turn POST into GET, both without a body. Other methods keep their
+        // method and body on 301/302, which RFC 9110 allows (reqwest rewrites more of them).
+        let keeps_body = match code {
+            307 | 308 => true,
+            301..=303 if own_redirects => {
+                !(method == reqwest::Method::POST && code != 303
+                    || code == 303 && method != reqwest::Method::HEAD)
+            }
+            _ => break resp,
+        };
         let next = resp
             .headers()
             .get(reqwest::header::LOCATION)
@@ -656,8 +876,28 @@ async fn perform(
                 format!("too many redirects ({MAX_REDIRECTS})"),
             ));
         }
-        pending = Pending::Segments(reopen(specs).await?);
+        if keeps_body {
+            pending = match &plan {
+                Some(specs) => Pending::Segments(reopen(specs).await?),
+                None => replay_pending(&replay).await?,
+            };
+        } else {
+            method = reqwest::Method::GET;
+            pending = Pending::None;
+            replay = Replay::None;
+            plan = None;
+            if signing_hash.is_some() {
+                signing_hash = Some(sigv4::sha256_hex(&[]));
+            }
+            header_list.retain(|(n, _)| {
+                !["content-type", "content-length", "content-encoding"]
+                    .iter()
+                    .any(|s| n.eq_ignore_ascii_case(s))
+            });
+        }
+        digest_header = None;
         if next.origin() != url.origin() {
+            auth_live = false;
             header_list.retain(|(n, _)| {
                 ![
                     "authorization",
