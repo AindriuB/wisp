@@ -98,6 +98,17 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] `history.rs:342-362`: body files are deleted before the index rewrite; a failed rewrite leaves entries whose load fails.
 - [P3] `tests/history.rs` `evicts_oldest_over_the_byte_cap` does not assert bytes <= cap or that the survivors are the newest run.
 - [IDEA, user 2026-11-10] Opt-in setting to keep `Set-Cookie` values unredacted in history (developer tool); off by default.
+- [P3] 35-5 `workspace.rs:612`: up to 1 MiB response body copied on the UI thread even when history is off; check history state first, read spilled bodies in the background.
+- [P3] 35-6 `history.rs:293`: request body in `.req.json` is uncapped; one large body evicts all other history. Cap at BODY_CAP with a truncated flag.
+- [P3] 35-7 `history.rs:357`: every append re-reads the index and stats every body file; store byte count in `HistoryEntry`.
+- [P3] 35-8 `tests/history.rs:58`: redaction tests cover only Bearer and two headers; add a table test over every Auth variant, Cookie, mixed case, `Bearer {{t}}`.
+- [P3] 35-9 (Nit) `history.rs:123`: `keep_var_ref` round-trips through `Auth::Bearer` to reach a private core helper; make core `keep_var_ref` pub; dedup names with `eq_ignore_ascii_case`.
+- [P3] `history.rs` `redact_json_body`: once anything is redacted the JSON body is re-serialised compactly (keys re-sorted, formatting lost, integers beyond i64/u64 become lossy f64).
+- [P3] `history.rs` `redact_json_body`: restoring masked `{{refs}}` uses one `text.replace` per ref, O(refs x body); do a single pass.
+- [P3] `history.rs`: path vars (`Request.path`) are not redacted.
+- [NOTE] `history.rs`: `lock()` blocks without timeout while `APPEND_LOCK` is held, so a stalled second Wisp process stalls appends for every collection in this one.
+- [NOTE] Name heuristic over-redacts (e.g. `monkey`, `auth_url`, `token_url`); accepted.
+- [P2] CI builds only ubuntu and macos; the Windows `File::lock` bug in PR #35 would have shipped. Add at least a Windows `cargo check`/test job (or a cross `cargo check --target x86_64-pc-windows-msvc`).
 
 ### Follow-ups from task 92 (not for 0.2.0 wave 1)
 - [P3] `ensure_collection_id` (`collection.rs:242-257`) has a read-modify-write race: two instances adding an ID at once means the last rename wins. `save_collection_defaults` has the same window.
