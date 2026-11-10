@@ -567,3 +567,105 @@ fn debug_redacts_pattern_mismatch_value() {
         assert!(s.contains("token") && s.contains("pattern") && s.contains("<redacted>"));
     }
 }
+
+fn scope_with_vars(vars: Vec<Var>) -> CollectionDefaults {
+    CollectionDefaults {
+        vars,
+        ..Default::default()
+    }
+}
+
+fn run_in(
+    r: &Request,
+    c: &CollectionDefaults,
+) -> Result<crate::model::PreparedRequest, ResolveError> {
+    resolve(
+        r,
+        &Scope {
+            collection: c,
+            folders: vec![],
+            environment: None,
+        },
+    )
+}
+
+#[test]
+fn auth_digest_resolves_vars_and_adds_no_header() {
+    use crate::auth::EngineAuth;
+    let c = scope_with_vars(vec![var("pw", "secret")]);
+    let mut r = req("http://h");
+    r.auth = Auth::Digest {
+        username: "u".into(),
+        password: "{{pw}}".into(),
+    };
+    let p = run_in(&r, &c).unwrap();
+    assert_eq!(p.headers, vec![]);
+    assert_eq!(
+        p.auth,
+        Some(EngineAuth::Digest {
+            username: "u".into(),
+            password: "secret".into()
+        })
+    );
+}
+
+#[test]
+fn auth_sigv4_resolves_vars_and_adds_no_header() {
+    use crate::auth::EngineAuth;
+    let c = scope_with_vars(vec![var("region", "eu-west-1"), var("sk", "SK")]);
+    let mut r = req("http://h");
+    r.auth = Auth::AwsSigV4 {
+        access_key: "AK".into(),
+        secret_key: "{{sk}}".into(),
+        session_token: String::new(),
+        region: "{{region}}".into(),
+        service: "s3".into(),
+    };
+    let p = run_in(&r, &c).unwrap();
+    assert_eq!(p.headers, vec![]);
+    assert_eq!(
+        p.auth,
+        Some(EngineAuth::AwsSigV4 {
+            access_key: "AK".into(),
+            secret_key: "SK".into(),
+            session_token: String::new(),
+            region: "eu-west-1".into(),
+            service: "s3".into()
+        })
+    );
+}
+
+#[test]
+fn auth_unresolved_var_in_new_schemes_is_a_problem_at_auth() {
+    let c = CollectionDefaults::default();
+    for auth in [
+        Auth::Digest {
+            username: "u".into(),
+            password: "{{nope}}".into(),
+        },
+        Auth::AwsSigV4 {
+            access_key: "a".into(),
+            secret_key: "b".into(),
+            session_token: "{{nope}}".into(),
+            region: "r".into(),
+            service: "s".into(),
+        },
+    ] {
+        let mut r = req("http://h");
+        r.auth = auth;
+        assert_eq!(
+            run_in(&r, &c).unwrap_err().problems,
+            vec![Problem::UnresolvedVar {
+                name: "nope".into(),
+                location: Location::Auth
+            }]
+        );
+    }
+}
+
+#[test]
+fn auth_other_schemes_leave_prepared_auth_empty() {
+    let mut r = req("http://h");
+    r.auth = Auth::Bearer { token: "t".into() };
+    assert_eq!(run(&r).unwrap().auth, None);
+}

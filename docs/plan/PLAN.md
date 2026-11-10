@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
-- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID); see HISTORY.
+- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 95 (Digest and SigV4 auth); see HISTORY.
 - **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
@@ -69,6 +69,28 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 95 (not 0.2.0 wave 1)
+- [P3] `engine.rs:814-815`: the engine follows 9 redirects; reqwest follows 10.
+- [P3] `engine.rs:834-838`: `transfer-encoding` is not stripped when the body is dropped on a rewrite.
+- [P3] The 301/302 method-rewrite behaviour differs from reqwest's for SigV4/Digest requests (allowed by RFC 9110).
+- [P3] `sigv4.rs:142-146`: a user-supplied `x-amz-*` header is sent alongside the added one, so values are duplicated.
+- [NOTE] `replay` copies the body for every SigV4 request; it could be limited to `own_redirects || digest`.
+- [NOTE] No test covers A→B→A; the code is correct.
+- [NOTE] The S3 canonical URI and the `+` handling in queries are unproven against AWS.
+- [NOTE] No test covers a 303 or a POST→GET rewrite on the own-redirect path (reviewer's suggestion).
+- [P3] 33-6 `digest.rs:95`: the challenge locator matches `digest` inside a quoted value and gives up; params with bad whitespace are dropped.
+- [P3] 33-7 `engine.rs:613`: Digest refuses File bodies, though the engine can reopen and resend them; the message is wrong.
+- [P3] 33-8 `engine.rs:772`: an unsupported Digest algorithm or qop turns the 401 into an engine error that hides the response. Return the 401 with a warning, and truncate the echoed algorithm.
+- [P2, security] 33-9 `engine.rs:844`: a cross-origin hop keeps user-set `x-amz-*` and `Host` headers. Same family as the task-86 custom-header follow-up.
+- [NOTE] 33-10 `request.rs:80`: `Auth::redacted` has no caller yet (task 93 will use it).
+- [P3] 33-11 `sigv4.rs:148`: `sign` returns `Result<_, String>` and `DigestError` hand-implements `Error`; derive thiserror errors per the conventions.
+- [P3] 33-12 `tests/auth.rs:146`: hand-made temp files leak on panic; use `tempfile::NamedTempFile`.
+- [P3] 33-13 `ui/request/auth.rs:219`: the access key field is unmasked while Debug redacts it.
+- [NOTE] 33-15 `tests/auth.rs:306`: use `assert_eq!`.
+- [P3] `sigv4.rs:114` `canonical_query` decodes lossily, so `%FF` is signed as `%EF%BF%BD`. Fix: percent-encode the decoded bytes directly.
+- [P3] No test signs a multipart body for a non-S3 service, so the boundary bytes are covered by no test.
+- [NOTE] `hash_file` reopens the file by path, leaving a gap between hash and send for a same-length replacement. Hashing is not covered by the request timeout and continues after a cancel.
 
 ### Follow-ups from task 92 (not for 0.2.0 wave 1)
 - [P3] `ensure_collection_id` (`collection.rs:242-257`) has a read-modify-write race: two instances adding an ID at once means the last rename wins. `save_collection_defaults` has the same window.

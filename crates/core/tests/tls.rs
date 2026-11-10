@@ -17,6 +17,7 @@ fn request(url: String, verify_tls: bool) -> PreparedRequest {
             proxy: None,
         },
         warnings: vec![],
+        auth: None,
     }
 }
 

@@ -19,6 +19,7 @@ fn get(url: String) -> PreparedRequest {
             proxy: None,
         },
         warnings: vec![],
+        auth: None,
     }
 }
 
@@ -204,6 +205,7 @@ async fn a_post_sends_the_given_headers_and_body() {
             proxy: None,
         },
         warnings: vec![],
+        auth: None,
     }));
     let evs = collect_until_terminal(&rx).await;
     assert!(matches!(&evs[1], Event::Headers { status: 201, .. }));
@@ -449,6 +451,10 @@ fn commands_and_events_round_trip_through_serde_json() {
             pattern: "p".into(),
             value: "v".into(),
         }],
+        auth: Some(wisp_core::auth::EngineAuth::Digest {
+            username: "u".into(),
+            password: "p".into(),
+        }),
     }));
     round_trip(Command::Cancel(RequestId(7)));
     let id = RequestId(3);

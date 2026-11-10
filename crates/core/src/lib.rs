@@ -3,6 +3,7 @@
 mod engine;
 mod model;
 
+pub mod auth;
 pub mod body;
 pub mod request;
 pub mod resolve;
