@@ -59,7 +59,7 @@ App (`workspace.rs`): on terminal events, read at most 1 MiB + 1 B of the body f
 - [ ] AC12 `fmt`, `clippy -D warnings` and the workspace test suite pass.
 
 ## Checks
-- `history-store` command — AC1-AC9. cargo test writes no JUnit XML here; asserts at least 12 passing.
+- `history-store` command — AC1-AC9, AC13. cargo test writes no JUnit XML here; asserts at least 12 passing.
   run: `n=$(cargo test -p wisp-storage --test history 2>&1 | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | head -1); test "${n:-0}" -ge 12`
 - `no-old-log` command — AC10
   run: `! rg -n 'HistoryLog|PREVIEW_LIMIT|preview_from|history\.jsonl' crates/app/src crates/storage/src/history.rs`
@@ -77,3 +77,26 @@ App (`workspace.rs`): on terminal events, read at most 1 MiB + 1 B of the body f
 ## Notes
 - Size: small; `serde_json` and `uuid` are already linked.
 - Tests use `DataDir::at(tempdir)`; never the real data dir. If you launch the app, set `WISP_DATA_DIR` to a temp dir, stop only the pid you started (no `pkill`/`killall`), bundle id `io.github.aindriub.wisp.t93` if bundled.
+
+## Amendment 1
+User decision 2026-11-10: history redacts `Set-Cookie` response-header values.
+Reason: session tokens must not sit in plaintext history; the spec
+(`docs/plan/specs/2026-11-09-wisp-0-2-0.md:14`, `:49`, `:99`) says history stores
+no auth values.
+
+| Item | Rule |
+|---|---|
+| Stored response headers | every `Set-Cookie` header (case-insensitive) is kept, with its cookie name; the value between the first `=` and the first `;` is replaced with the same marker the stored request uses for auth (`""`, so `sid=abc; Path=/` becomes `sid=; Path=/`). Attributes after the first `;` may stay. `Set-Cookie` is listed in `redacted` when any value was replaced. |
+| Live response view | unchanged: it still shows full values. Only what is written to `bodies/<id>.req.json` is redacted. |
+
+Redaction happens inside the store's append path, as for the request, so no caller can skip it.
+
+- [ ] AC13 Appending a response with headers `Set-Cookie: sid=abc123; Path=/; HttpOnly` and `set-cookie: theme=dark` stores a `.req.json` that contains neither `abc123` nor `dark`, keeps both headers with names `sid` and `theme` (`sid=; Path=/; HttpOnly`, `theme=`), and lists `Set-Cookie` in `redacted`. Covered by a new test in `crates/storage/tests/history.rs` under the `history-store` check (minimum stays 12; the new test raises the actual count).
+
+Follow-up for the scribe (not this task): an opt-in "keep cookie values in history" setting.
+
+## Review round 1 — findings
+- [P2] crates/storage/src/history.rs:327-362 (with workspace.rs:690): concurrent `append` calls on one store race; `evict` reads index.jsonl then rewrites it, so at the 500 cap a concurrent append's entry is lost and its bodies/<id>.bin and .req.json are orphaned forever (outside the 100 MiB cap). Fix: serialise appends per store (e.g. Arc<Mutex<()>> in HistoryStore held for all of append). Add a concurrent-append test (threads × appends with small caps; assert body files == 2 × index entries).
+- [P2] crates/app/src/workspace.rs:690-715: while HistoryState::Unresolved, every terminal event calls ensure_collection_id concurrently; for a collection without an id each mints its own uuid, last write to collection.toml wins, while state is set from the first finisher, so the session's history goes to an id that is not on disk. Fix: resolve the collection id once (e.g. a Resolving state, queuing or deferring appends until it resolves).
+- [P3, optional] history.rs:246: data-dir creation failure shows "History entry dropped" instead of "History is off: <reason>" and never disables history.
+- [P3, optional] history.rs:342-362: body files deleted before index rewrite; a failed rewrite leaves index entries whose load fails.
