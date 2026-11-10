@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task, WeakEntity};
+use wisp_core::auth::EngineAuth;
 use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::request::{Auth, Body, CollectionDefaults, Environment, PartValue, Request};
 use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
-use wisp_core::{Command, Engine, EngineConfig, Event, EventReceiver, PreparedRequest, RequestId};
+use wisp_core::{
+    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, PreparedRequest, RequestId,
+};
 use wisp_storage::collection::{CollectionId, ensure_collection_id, read_collection_id};
 use wisp_storage::collection::{CollectionTree, Node, open_collection};
 use wisp_storage::data_dir::DataDir;
@@ -19,7 +22,9 @@ use wisp_storage::watcher::Watcher;
 
 use crate::draft::{self, ReloadAction};
 use crate::settings::{self, Settings};
-use crate::tab::{DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent};
+use crate::tab::{
+    AuthorizeState, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent,
+};
 use crate::ui::history as history_ui;
 
 /// Quiet period after the first watcher event before the batch is handled.
@@ -479,6 +484,110 @@ fn collection_partition(root: &Path) -> String {
         .map_or_else(|_| root.to_string_lossy().into_owned(), |id| id.to_string())
 }
 
+/// The `AuthorizeStart` for a resolved request, or `None` when its auth is not authorization
+/// code. `client` is what Send would use, with `collection` set to the same partition; the
+/// environment partitions the cached token.
+fn authorize_command(prepared: PreparedRequest, collection: Option<String>) -> Option<Command> {
+    let auth = prepared.auth?;
+    if !matches!(auth, EngineAuth::OAuth2AuthCode { .. }) {
+        return None;
+    }
+    let mut client = prepared.client;
+    client.collection = collection;
+    Some(Command::AuthorizeStart {
+        auth,
+        client,
+        environment: prepared.environment,
+        timeout: prepared.timeout,
+    })
+}
+
+/// True when the app may hand `url` to the system browser: `https`, or `http` to a loopback host.
+pub(crate) fn may_open_in_browser(url: &str) -> bool {
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((h, tail)) if tail.is_empty() || tail.starts_with(':') => h,
+            _ => return false,
+        },
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    if scheme.eq_ignore_ascii_case("https") {
+        !host.is_empty()
+    } else if scheme.eq_ignore_ascii_case("http") {
+        host == "127.0.0.1" || host == "::1" || host.eq_ignore_ascii_case("localhost")
+    } else {
+        false
+    }
+}
+
+/// What to do with an auth event once its route and tab are looked up.
+#[derive(Debug, PartialEq, Eq)]
+struct AuthRouting {
+    /// Apply the event to the routed tab.
+    apply: bool,
+    /// Forget the route for the event's id.
+    remove_route: bool,
+}
+
+/// Route an auth event: apply it only to a live tab still waiting on this very id; drop
+/// events of a closed tab or of a superseded authorization; terminal events end the route.
+fn route_auth_event(
+    has_route: bool,
+    tab_alive: bool,
+    tab_waiting: Option<RequestId>,
+    id: RequestId,
+    terminal: bool,
+) -> AuthRouting {
+    AuthRouting {
+        apply: has_route && tab_alive && tab_waiting == Some(id),
+        remove_route: has_route && (terminal || !tab_alive),
+    }
+}
+
+/// Closing a tab: drop its auth routes and return the cancel for a flow it is waiting on.
+fn close_auth<T: PartialEq>(
+    routes: &mut HashMap<RequestId, T>,
+    closed: &T,
+    waiting: Option<RequestId>,
+) -> Option<Command> {
+    routes.retain(|_, w| w != closed);
+    waiting.map(Command::AuthorizeCancel)
+}
+
+/// The tab state an `AuthFailed` error shows.
+fn failure_state(error: &EngineError) -> AuthorizeState {
+    if error.message == "cancelled" {
+        AuthorizeState::Cancelled
+    } else {
+        AuthorizeState::Failed(error.message.clone())
+    }
+}
+
+/// Resolve a draft for an authorize command, through the same path as Send. `Ok(None)` when the
+/// resolved auth is not authorization code. Pure: everything it reads is passed in.
+fn prepare_authorize(
+    draft: &Request,
+    tab_path: Option<&Path>,
+    origin: Option<&HistoryOrigin>,
+    tree: Option<&CollectionTree>,
+    empty_defaults: &CollectionDefaults,
+    env: Option<&Environment>,
+    collection: Option<String>,
+) -> Result<Option<Command>, ResolveError> {
+    let plan = prepare_send(draft, tab_path, origin, tree, empty_defaults, env)?;
+    Ok(authorize_command(plan.prepared, collection))
+}
+
 /// Resolve a draft for sending. Pure: everything it reads is passed in.
 fn prepare_send(
     draft: &Request,
@@ -539,6 +648,8 @@ pub struct Workspace {
     pub tabs: Vec<Entity<RequestTab>>,
     pub active: Option<usize>,
     routes: HashMap<RequestId, WeakEntity<RequestTab>>,
+    /// Interactive authorizations in flight, by engine id.
+    auth_routes: HashMap<RequestId, WeakEntity<RequestTab>>,
     sent: HashMap<RequestId, Sent>,
     data_dir: Option<DataDir>,
     history: HistoryState,
@@ -632,6 +743,7 @@ impl Workspace {
             tabs: Vec::new(),
             active: None,
             routes: HashMap::new(),
+            auth_routes: HashMap::new(),
             sent: HashMap::new(),
             data_dir: DataDir::resolve(),
             history: HistoryState::Unresolved,
@@ -929,6 +1041,11 @@ impl Workspace {
         }
         let closed = tab.downgrade();
         self.routes.retain(|_, w| *w != closed);
+        // A tab closed while waiting for the browser stops the flow and frees the loopback port.
+        let waiting = tab.read(cx).authorize.waiting_id();
+        if let Some(cmd) = close_auth(&mut self.auth_routes, &closed, waiting) {
+            self.engine.submit(cmd);
+        }
         self.active = match self.active {
             _ if self.tabs.is_empty() => None,
             Some(a) if a > ix => Some(a - 1),
@@ -1026,6 +1143,97 @@ impl Workspace {
         Ok(id)
     }
 
+    /// Start the interactive authorization for `tab`. Resolves like Send; an unresolved variable
+    /// returns the error and submits nothing.
+    pub fn authorize(
+        &mut self,
+        tab: &Entity<RequestTab>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), ResolveError> {
+        let (draft, path, origin, waiting) = {
+            let t = tab.read(cx);
+            (
+                t.draft.clone(),
+                t.path.clone(),
+                t.from_history.clone(),
+                t.authorize.waiting_id(),
+            )
+        };
+        let command = prepare_authorize(
+            &draft,
+            path.as_deref(),
+            origin.as_ref(),
+            self.collection.as_ref().map(|c| &c.tree),
+            &self.empty_defaults,
+            self.collection.as_ref().and_then(|c| c.active_env.as_ref()),
+            self.collection
+                .as_ref()
+                .map(|c| collection_partition(&c.tree.root)),
+        )?;
+        let Some(command) = command else {
+            return Ok(());
+        };
+        if let Some(old) = waiting {
+            self.engine.submit(Command::AuthorizeCancel(old));
+            self.auth_routes.remove(&old);
+        }
+        let id = self.engine.submit(command);
+        self.auth_routes.insert(id, tab.downgrade());
+        tab.update(cx, |t, cx| {
+            t.set_authorize(AuthorizeState::Waiting { id, url: None }, cx)
+        });
+        Ok(())
+    }
+
+    /// Cancel the tab's waiting authorization; the engine answers with `AuthFailed`.
+    pub fn authorize_cancel(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
+        if let Some(id) = tab.read(cx).authorize.waiting_id() {
+            self.engine.submit(Command::AuthorizeCancel(id));
+        }
+    }
+
+    fn on_auth_event(&mut self, event: Event, cx: &mut Context<Self>) {
+        let (id, terminal) = match &event {
+            Event::AuthUrl { id, .. } => (*id, false),
+            Event::AuthCompleted { id } | Event::AuthFailed { id, .. } => (*id, true),
+            _ => return,
+        };
+        let route = self.auth_routes.get(&id).cloned();
+        let tab = route.as_ref().and_then(|w| w.upgrade());
+        let waiting = tab.as_ref().and_then(|t| t.read(cx).authorize.waiting_id());
+        let routing = route_auth_event(route.is_some(), tab.is_some(), waiting, id, terminal);
+        if routing.remove_route {
+            self.auth_routes.remove(&id);
+        }
+        let Some(tab) = tab.filter(|_| routing.apply) else {
+            return;
+        };
+        match event {
+            Event::AuthUrl { url, .. } => {
+                if may_open_in_browser(&url) {
+                    cx.open_url(&url);
+                } else {
+                    cx.emit(WorkspaceEvent::Notice(
+                        "Not opening the authorization URL in the browser: only https, or http \
+                         on this machine, is allowed. Copy it to open it yourself."
+                            .into(),
+                    ));
+                }
+                tab.update(cx, |t, cx| {
+                    t.set_authorize(AuthorizeState::Waiting { id, url: Some(url) }, cx)
+                });
+            }
+            Event::AuthCompleted { .. } => {
+                tab.update(cx, |t, cx| t.set_authorize(AuthorizeState::Authorized, cx));
+            }
+            Event::AuthFailed { error, .. } => {
+                let state = failure_state(&error);
+                tab.update(cx, |t, cx| t.set_authorize(state, cx));
+            }
+            _ => {}
+        }
+    }
+
     pub fn cancel(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
         let t = tab.read(cx);
         if t.response.phase == Phase::Sending
@@ -1053,8 +1261,8 @@ impl Workspace {
             | Event::Completed { id, .. }
             | Event::Failed { id, .. }
             | Event::Cancelled { id } => *id,
-            // Interactive authorization is not driven from the app yet.
             Event::AuthUrl { .. } | Event::AuthCompleted { .. } | Event::AuthFailed { .. } => {
+                self.on_auth_event(event, cx);
                 return;
             }
         };
@@ -1476,6 +1684,76 @@ mod tests {
     use super::*;
     use wisp_core::Method;
     use wisp_core::request::{KeyValue, TextBody, Var};
+
+    #[test]
+    fn auth_event_for_the_starting_tab_is_routed() {
+        let r = route_auth_event(true, true, Some(RequestId(5)), RequestId(5), false);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: true,
+                remove_route: false
+            }
+        );
+    }
+
+    #[test]
+    fn auth_event_with_a_stale_id_is_dropped() {
+        // The tab started a second authorization (id 6); the first one's event (5) is stale.
+        let r = route_auth_event(true, true, Some(RequestId(6)), RequestId(5), false);
+        assert!(!r.apply);
+        let r = route_auth_event(true, true, Some(RequestId(6)), RequestId(5), true);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: false,
+                remove_route: true
+            }
+        );
+    }
+
+    #[test]
+    fn auth_event_for_a_closed_tab_is_dropped_and_its_route_removed() {
+        let r = route_auth_event(true, false, None, RequestId(5), false);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: false,
+                remove_route: true
+            }
+        );
+        let r = route_auth_event(false, false, None, RequestId(5), false);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: false,
+                remove_route: false
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_auth_events_remove_the_route() {
+        let r = route_auth_event(true, true, Some(RequestId(5)), RequestId(5), true);
+        assert_eq!(
+            r,
+            AuthRouting {
+                apply: true,
+                remove_route: true
+            }
+        );
+    }
+
+    #[test]
+    fn closing_a_waiting_tab_cancels_its_flow_and_removes_the_route() {
+        let mut routes = HashMap::from([(RequestId(5), 1u32), (RequestId(9), 2u32)]);
+        let cmd = close_auth(&mut routes, &1, Some(RequestId(5)));
+        assert!(matches!(cmd, Some(Command::AuthorizeCancel(RequestId(5)))));
+        assert!(!routes.contains_key(&RequestId(5)));
+        assert!(routes.contains_key(&RequestId(9)));
+        assert!(close_auth(&mut routes, &2, None).is_none());
+        assert!(routes.is_empty());
+    }
 
     #[test]
     fn close_step_clean_closes() {
@@ -2040,6 +2318,140 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(root.join("collection.toml")).unwrap(),
             text
+        );
+    }
+
+    fn oauth_code_draft(secret: &str) -> Request {
+        let mut r = crate::draft::blank_request();
+        r.url = "https://api.example/x".into();
+        r.auth = Auth::OAuth2AuthCode {
+            auth_url: "https://idp/a".into(),
+            token_url: "https://idp/t".into(),
+            client_id: "cid".into(),
+            client_secret: secret.into(),
+            scope: "r".into(),
+            client_auth: wisp_core::request::ClientAuth::Basic,
+            redirect_port: 0,
+        };
+        r
+    }
+
+    fn oauth_prepare(
+        draft: &Request,
+        tree: Option<&CollectionTree>,
+        env: Option<&Environment>,
+        collection: Option<&str>,
+    ) -> Result<Option<Command>, ResolveError> {
+        prepare_authorize(
+            draft,
+            None,
+            None,
+            tree,
+            &CollectionDefaults::default(),
+            env,
+            collection.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn oauth_authorize_command_carries_environment_and_client() {
+        let draft = oauth_code_draft("s");
+        let (_dir, tree) = auth_collection();
+        let without = oauth_prepare(&draft, Some(&tree), None, Some("col-1"))
+            .unwrap()
+            .unwrap();
+        let e = env("prod", "t");
+        let with = oauth_prepare(&draft, Some(&tree), Some(&e), Some("col-1"))
+            .unwrap()
+            .unwrap();
+        let send = prepare_send(
+            &draft,
+            None,
+            None,
+            None,
+            &CollectionDefaults::default(),
+            None,
+        )
+        .unwrap()
+        .prepared;
+        for (cmd, expect_env) in [(without, None), (with, Some("prod".to_string()))] {
+            let Command::AuthorizeStart {
+                client,
+                environment,
+                auth,
+                ..
+            } = cmd
+            else {
+                panic!("not an AuthorizeStart")
+            };
+            assert_eq!(environment, expect_env);
+            let mut want = send.client.clone();
+            want.collection = Some("col-1".into());
+            assert!(client == want);
+            assert!(matches!(auth, EngineAuth::OAuth2AuthCode { .. }));
+        }
+        // A scratch tab has no collection.
+        let Command::AuthorizeStart { client, .. } =
+            oauth_prepare(&draft, None, None, None).unwrap().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(client.collection, None);
+    }
+
+    #[test]
+    fn oauth_authorize_blocks_on_unresolved_variables_and_other_kinds() {
+        let draft = oauth_code_draft("{{missing}}");
+        let err = oauth_prepare(&draft, None, None, None).unwrap_err();
+        assert!(describe_problems(&err).contains("UnresolvedVar(missing)"));
+        // Client credentials has no interactive step.
+        let mut cc = crate::draft::blank_request();
+        cc.auth = Auth::OAuth2ClientCredentials {
+            token_url: "https://idp/t".into(),
+            client_id: "c".into(),
+            client_secret: String::new(),
+            scope: String::new(),
+            client_auth: wisp_core::request::ClientAuth::Basic,
+        };
+        cc.url = "https://api.example/x".into();
+        assert!(oauth_prepare(&cc, None, None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn oauth_browser_open_allows_only_https_and_loopback_http() {
+        for ok in [
+            "https://idp.example/authorize?x=1",
+            "http://127.0.0.1:8123/authorize",
+            "http://localhost/authorize",
+            "http://[::1]:9/a",
+        ] {
+            assert!(may_open_in_browser(ok), "{ok}");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "http://idp.example/a",
+            "http://127.0.0.1@evil.example/a",
+            "http://localhost.evil.example/a",
+            "ftp://127.0.0.1/a",
+            "https://",
+            "https://a b/",
+            "",
+        ] {
+            assert!(!may_open_in_browser(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn oauth_failure_state_shows_cancelled_for_cancel() {
+        let e = |m: &str| EngineError {
+            kind: wisp_core::ErrorKind::Auth,
+            message: m.into(),
+        };
+        assert_eq!(failure_state(&e("cancelled")), AuthorizeState::Cancelled);
+        assert_eq!(
+            failure_state(&e("state mismatch")),
+            AuthorizeState::Failed("state mismatch".into())
         );
     }
 }

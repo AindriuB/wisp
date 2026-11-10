@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 106 | OAuth2 editor, Authorize via the system browser with Waiting/Authorized/Failed strip, cancel on tab close; hand-checked against a stub IdP | ## 2026-11-10 — OAuth2 UI |
 | 2026-11-10 | 100 | OAuth2 auth types through model, resolve, codec and history redaction; timings and cookie-jar types and seams; engine refuses OAuth2 until 103 | ## 2026-11-10 — Wave-2 surface types and seams |
 | 2026-11-10 | 101 | settings.toml is read and written under an absolute WISP_DATA_DIR, so test launches cannot touch real settings | ## 2026-11-10 — Settings follow WISP_DATA_DIR |
 | 2026-11-10 | 103 | OAuth2 engine: client credentials, auth code + PKCE, refresh, per-key generation and store lock so re-authorize replaces old tokens | ## 2026-11-10 — OAuth2 engine |
