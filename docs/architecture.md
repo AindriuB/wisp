@@ -17,7 +17,7 @@ exists: existing clients are large and memory-heavy.
 
 - **Portable.** One self-contained binary per platform. No installer, no
   registry, no system TLS library. It writes nothing outside the open collection
-  folder and `settings.toml`.
+  folder, `settings.toml` and the per-user data dir (history, cookies).
 - **Lightweight.** Low idle memory and a small binary. The numeric budgets are
   set from Milestone 0 measurements (see Budgets).
 - **v1 platforms:** macOS Apple silicon, Windows x64, Linux x64
@@ -81,6 +81,12 @@ engine.submit(Command::Cancel(id));
 - One `reqwest::Client` is kept per settings combination (TLS verify, proxy,
   redirect policy) for connection pooling. The cookie jar is per collection and
   in memory only.
+- Redirects: Basic, Bearer and ApiKey requests use reqwest's redirect path,
+  except that a streamed body on a 307/308 is followed by the engine too.
+  For Digest and AWS SigV4 the engine follows redirects itself (up to 9),
+  re-signs each same-origin hop, and drops all engine-added auth after the
+  first cross-origin hop, so credentials and signatures never leave the origin
+  they were made for.
 
 ### resolve() is pure
 
@@ -126,8 +132,12 @@ my-api/
     create-user.body.json  sidecar body
 ```
 
-- **Identity is the file path.** No UUIDs in files. Order comes from
-  `order = [...]` in `folder.toml`; unlisted items sort alphabetically.
+- **Identity is the file path** for requests and folders: no UUIDs in their
+  files. From 0.2.0 `collection.toml` also carries a random collection `id`
+  (a UUID, written once; user decision 2026-11-09, see
+  `plan/specs/2026-11-09-wisp-0-2-0.md`), which keys the collection's data in
+  the per-user data dir and survives moving or renaming the folder. Order comes
+  from `order = [...]` in `folder.toml`; unlisted items sort alphabetically.
 - **`{{var}}`** is a variable, resolved first. **`{name}`** is a path param,
   resolved second, and only in the path portion of the URL. Syntax follows
   Spring, OpenAPI and RFC 6570: several params per segment, `{id:\d+}` regex
@@ -147,8 +157,18 @@ my-api/
 ## Settings location
 
 `settings.toml` sits beside the executable when a file named `portable` is
-there, otherwise in the OS config directory. Nothing else is persisted outside
-the collection folder.
+there, otherwise in the OS config directory. Apart from the per-user data dir
+(history and cookies, from 0.2.0; see `plan/specs/2026-11-09-wisp-0-2-0.md`),
+nothing else is persisted outside the collection folder.
+
+The per-user data dir is chosen in `crates/storage/src/data_dir.rs`, in this
+order: the `WISP_DATA_DIR` environment variable when it is an absolute path (a
+relative value is ignored); `<exe-dir>/data` when the `portable` marker is
+present; otherwise `wisp` under the OS data directory (macOS
+`~/Library/Application Support`, Windows `%LOCALAPPDATA%`, other Unix
+`$XDG_DATA_HOME` if absolute, else `~/.local/share`). Per collection it holds
+`history/<id>` and `cookies/<id>.json`. Nothing is created until first use, and
+directories are made 0700 on Unix.
 
 ## Boundaries that must not be crossed
 
@@ -159,10 +179,13 @@ the collection folder.
 - `resolve` performs no I/O.
 - No TLS other than `rustls`; no OpenSSL or native-tls anywhere in the
   dependency tree.
-- Nothing writes outside the collection folder and `settings.toml`
+- Nothing writes outside the collection folder, `settings.toml` and the
+  per-user data dir (history, cookies; `<exe-dir>/data` in portable mode)
   (body-store temp files are the one exception and must be removed on close).
-- Secrets (`*.secrets.toml` values) never appear in logs, history or committed
-  files.
+- Secrets (`*.secrets.toml` and keychain values) never appear in logs or
+  committed files. History stores no auth values (redacted; resend re-resolves
+  against the current environment). Stored request and response bodies and a
+  persisted cookie jar may hold session data, so the data dir is 0700/0600.
 
 ## Budgets
 

@@ -48,6 +48,73 @@ pub enum Auth {
         value: String,
         location: ApiKeyLocation,
     },
+    /// HTTP Digest (RFC 7616); applied by the engine after a 401 challenge.
+    Digest {
+        username: String,
+        password: String,
+    },
+    /// AWS Signature Version 4; applied by the engine just before sending.
+    AwsSigV4 {
+        access_key: String,
+        secret_key: String,
+        /// Empty means none.
+        session_token: String,
+        region: String,
+        service: String,
+    },
+}
+
+/// `s` unchanged when it is exactly one `{{var}}` reference (whitespace allowed around it
+/// and inside the braces); otherwise empty.
+fn keep_var_ref(s: &str) -> String {
+    let t = s.trim();
+    match crate::template::var_refs(t).as_slice() {
+        [r] if r.terminated && r.range == (0..t.len()) && !r.name.is_empty() => s.to_owned(),
+        _ => String::new(),
+    }
+}
+
+impl Auth {
+    /// A copy that keeps only variable references, for storing in history. A field whose
+    /// value is exactly one `{{var}}` reference is kept; any other value becomes empty.
+    pub fn redacted(&self) -> Auth {
+        let k = keep_var_ref;
+        match self {
+            Auth::None => Auth::None,
+            Auth::Inherit => Auth::Inherit,
+            Auth::Basic { username, password } => Auth::Basic {
+                username: k(username),
+                password: k(password),
+            },
+            Auth::Bearer { token } => Auth::Bearer { token: k(token) },
+            Auth::ApiKey {
+                name,
+                value,
+                location,
+            } => Auth::ApiKey {
+                name: k(name),
+                value: k(value),
+                location: *location,
+            },
+            Auth::Digest { username, password } => Auth::Digest {
+                username: k(username),
+                password: k(password),
+            },
+            Auth::AwsSigV4 {
+                access_key,
+                secret_key,
+                session_token,
+                region,
+                service,
+            } => Auth::AwsSigV4 {
+                access_key: k(access_key),
+                secret_key: k(secret_key),
+                session_token: k(session_token),
+                region: k(region),
+                service: k(service),
+            },
+        }
+    }
 }
 
 impl fmt::Debug for Auth {
@@ -69,6 +136,21 @@ impl fmt::Debug for Auth {
                 .field("name", name)
                 .field("value", &format_args!("\"<redacted>\""))
                 .field("location", location)
+                .finish(),
+            Auth::Digest { username, .. } => f
+                .debug_struct("Digest")
+                .field("username", username)
+                .field("password", &format_args!("\"<redacted>\""))
+                .finish(),
+            Auth::AwsSigV4 {
+                region, service, ..
+            } => f
+                .debug_struct("AwsSigV4")
+                .field("access_key", &format_args!("\"<redacted>\""))
+                .field("secret_key", &format_args!("\"<redacted>\""))
+                .field("session_token", &format_args!("\"<redacted>\""))
+                .field("region", region)
+                .field("service", service)
                 .finish(),
         }
     }
@@ -216,6 +298,84 @@ mod tests {
 
     fn both(v: &impl fmt::Debug) -> [String; 2] {
         [format!("{v:?}"), format!("{v:#?}")]
+    }
+
+    #[test]
+    fn debug_redacts_digest_auth() {
+        let a = Auth::Digest {
+            username: "alice".into(),
+            password: "DIGPWMARK".into(),
+        };
+        for text in both(&a) {
+            assert!(text.contains("alice"));
+            assert!(text.contains("<redacted>"));
+            assert!(!text.contains("DIGPWMARK"), "{text}");
+        }
+    }
+
+    #[test]
+    fn debug_redacts_aws_sigv4_auth() {
+        let a = Auth::AwsSigV4 {
+            access_key: "AKMARK".into(),
+            secret_key: "SKMARK".into(),
+            session_token: "STMARK".into(),
+            region: "us-east-1".into(),
+            service: "s3".into(),
+        };
+        for text in both(&a) {
+            assert!(text.contains("us-east-1"));
+            for s in ["AKMARK", "SKMARK", "STMARK"] {
+                assert!(!text.contains(s), "{text}");
+            }
+        }
+    }
+
+    /// Every secret-bearing variant built with the same value in each string field.
+    fn with_value(v: &str) -> Vec<Auth> {
+        let s = || v.to_owned();
+        vec![
+            Auth::Basic {
+                username: s(),
+                password: s(),
+            },
+            Auth::Bearer { token: s() },
+            Auth::ApiKey {
+                name: s(),
+                value: s(),
+                location: ApiKeyLocation::Query,
+            },
+            Auth::Digest {
+                username: s(),
+                password: s(),
+            },
+            Auth::AwsSigV4 {
+                access_key: s(),
+                secret_key: s(),
+                session_token: s(),
+                region: s(),
+                service: s(),
+            },
+        ]
+    }
+
+    #[test]
+    fn redacted_keeps_a_single_var_reference() {
+        for v in ["{{pw}}", " {{ pw }} "] {
+            for a in with_value(v) {
+                assert_eq!(a.redacted(), a, "{v:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn redacted_empties_anything_else() {
+        for v in ["abc", "{{a}}x", "{{a}}{{b}}", "{{a", "{{}}", ""] {
+            for (a, empty) in with_value(v).iter().zip(with_value("")) {
+                assert_eq!(a.redacted(), empty, "{v:?}");
+            }
+        }
+        assert_eq!(Auth::Inherit.redacted(), Auth::Inherit);
+        assert_eq!(Auth::None.redacted(), Auth::None);
     }
 
     #[test]

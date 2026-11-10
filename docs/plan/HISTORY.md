@@ -17,6 +17,19 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-10 — Digest and AWS SigV4 auth
+Requests can now use Digest (RFC 7616: MD5, SHA-256, SHA-512-256, `userhash`, qop auth) and AWS SigV4 (optional session token) auth, with editor kinds for both. For these two types the engine follows redirects itself: it re-signs same-origin hops and drops all engine-added auth after the first cross-origin hop, so credentials and signatures never reach another origin. Basic, Bearer and ApiKey keep reqwest's redirect path.
+**Cost:** The RFC 7616 §3.9.2 example values were computed with the first 256 bits of SHA-512, not real SHA-512/256 (different initial values), so they cannot be reproduced with the real algorithm. The test runs the RFC inputs through the same code with the truncated hash, and real SHA-512/256 is checked separately against the NIST "abc" vector; do not try to make the RFC value match the real algorithm. SigV4 vectors come from the awslabs aws-c-auth v4 test suite. Review round 1 found SigV4/Digest credentials crossing origins on redirects; letting reqwest redirect was abandoned for these types (the user decided the engine follows redirects itself). Round 2 hid the session token in `Signed`'s Debug. Residuals are in PLAN.
+PR review round 1 (user) fixed `+` in queries, Digest challenge selection, the real payload hash for non-S3 file and large bodies, and added redirect and signature re-verification tests.
+
+## 2026-11-09 — Per-user data dir and collection ID
+`wisp-storage` now decides where per-user data lives: `WISP_DATA_DIR` if absolute, else `<exe-dir>/data` with the `portable` marker, else `wisp` under the OS data dir; `DataDir` builds `history/<id>` and `cookies/<id>.json` paths and `ensure_private_dir` makes 0700 directories and refuses a symlinked final component. `ensure_collection_id` writes a random UUID `id` once into `collection.toml` through `toml_edit`, keeping comments and other keys, and `read_collection_id` validates it (`[A-Za-z0-9_-]{8,64}`). Nothing uses either yet; task 93 does.
+**Cost:** The `id` key conflicted with architecture.md's "no UUIDs in files"; the user decided on 2026-11-09 that only the collection gets one and requests and folders keep path identity. Known gaps are in PLAN (id write race, trailing-slash symlink bypass, case-colliding IDs, existing wide dirs not tightened). Tests never call `DataDir::resolve()`, so the real data dir is untouched.
+
+## 2026-11-09 — Wave-1 dependencies and storage stubs for 0.2.0
+Task 91 added the crates wave 1 of 0.2.0 needs, in one change so later tasks do not collide on manifests or `Cargo.lock`: `sha2`, `hmac` and `md-5` in `wisp-core` (for Digest and SigV4), and `saphyr` plus `uuid` in `wisp-storage`. It also declared empty `data_dir` and `import` modules in `wisp-storage`. There is no behaviour change.
+**Cost:** `saphyr` 0.3.3 (MIT/Apache-2.0) was chosen for YAML; do not use `serde_yaml` or `serde_yml`. `sha2` 0.10.9, `hmac` 0.12.1, `md-5` 0.10.6 and `uuid` 1.29.0 were already in the lock, so the only new lock entries are `saphyr`, `saphyr-parser` and `hashlink` 0.12.2, and no second `digest` version appeared. The binary-size cost is not measured here; task 98 measures it.
+
 ## 2026-11-09 — Workspace version 0.1.1
 The workspace version is 0.1.1, so the release archives and `cargo metadata` report 0.1.1 and carry the fixes from tasks 83 to 88. Only `[workspace.package] version` and the three wisp-* lines in `Cargo.lock` changed; README, `docs/architecture.md` and `about.toml` now name 0.1.1 where they describe the current version.
 **Cost:** Nothing was tried and abandoned. The README archive names now point at assets that do not exist until 0.1.1 is tagged and published, so the README and the release must land together.

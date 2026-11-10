@@ -9,7 +9,19 @@ use wisp_core::request::{ApiKeyLocation, Auth, KeyValue, Var};
 
 use crate::StorageError;
 
-const AUTH_FIELDS: [&str; 6] = ["username", "password", "token", "name", "value", "in"];
+const AUTH_FIELDS: [&str; 11] = [
+    "username",
+    "password",
+    "token",
+    "name",
+    "value",
+    "in",
+    "access_key",
+    "secret_key",
+    "session_token",
+    "region",
+    "service",
+];
 
 fn invalid(path: &Path, key: impl Into<String>, message: impl Into<String>) -> StorageError {
     StorageError::Invalid {
@@ -392,6 +404,17 @@ pub fn read_auth(table: &Table, default: Auth, path: &Path) -> Result<Auth, Stor
                 }
             },
         },
+        "digest" => Auth::Digest {
+            username: req("username")?,
+            password: field("password")?.unwrap_or_default(),
+        },
+        "awssigv4" => Auth::AwsSigV4 {
+            access_key: req("access_key")?,
+            secret_key: req("secret_key")?,
+            session_token: field("session_token")?.unwrap_or_default(),
+            region: req("region")?,
+            service: req("service")?,
+        },
         other => {
             return Err(invalid(
                 path,
@@ -421,6 +444,26 @@ pub fn write_auth(table: &mut Table, auth: &Auth) {
             vec![("username", username), ("password", password)],
         ),
         Auth::Bearer { token } => ("bearer", vec![("token", token)]),
+        Auth::Digest { username, password } => (
+            "digest",
+            vec![("username", username), ("password", password)],
+        ),
+        Auth::AwsSigV4 {
+            access_key,
+            secret_key,
+            session_token,
+            region,
+            service,
+        } => (
+            "awssigv4",
+            vec![
+                ("access_key", access_key),
+                ("secret_key", secret_key),
+                ("session_token", session_token),
+                ("region", region),
+                ("service", service),
+            ],
+        ),
         Auth::ApiKey {
             name,
             value,
@@ -448,7 +491,9 @@ pub fn write_auth(table: &mut Table, auth: &Auth) {
     set_str(t, "type", ty);
     for (k, v) in fields {
         // Skip an absent key whose value is the read default.
-        let default = (k == "in" && v == "header") || (k == "password" && v.is_empty());
+        let default = (k == "in" && v == "header")
+            || (k == "password" && v.is_empty())
+            || (k == "session_token" && v.is_empty());
         if default && t.get(k).is_none() {
             continue;
         }
@@ -603,6 +648,24 @@ token = "abc"
                 value: "v".into(),
                 location: ApiKeyLocation::Query,
             },
+            Auth::Digest {
+                username: "u".into(),
+                password: "p".into(),
+            },
+            Auth::AwsSigV4 {
+                access_key: "ak".into(),
+                secret_key: "sk".into(),
+                session_token: "st".into(),
+                region: "us-east-1".into(),
+                service: "s3".into(),
+            },
+            Auth::AwsSigV4 {
+                access_key: "ak".into(),
+                secret_key: "sk".into(),
+                session_token: String::new(),
+                region: "eu-west-1".into(),
+                service: "execute-api".into(),
+            },
         ];
         for a in &all {
             // Write over every other variant to check stale fields are removed.
@@ -623,8 +686,8 @@ token = "abc"
     }
 
     #[test]
-    fn digest_is_invalid() {
-        let doc = parse(p(), "[auth]\ntype = \"digest\"\n").unwrap();
+    fn unknown_auth_type_is_invalid() {
+        let doc = parse(p(), "[auth]\ntype = \"ntlm\"\n").unwrap();
         match read_auth(&doc, Auth::None, p()) {
             Err(StorageError::Invalid { key, .. }) => assert_eq!(key, "auth.type"),
             other => panic!("unexpected {other:?}"),
