@@ -630,3 +630,22 @@ fn sweep_keeps_entries_with_unparseable_index_lines() {
     }
     assert!(fs::read_to_string(&index).unwrap().contains(&line));
 }
+
+#[test]
+fn dollar_builtin_refs_keep_a_json_body() {
+    let (_d, data, store) = setup();
+    let req = Request {
+        body: Body::Json(TextBody {
+            content: r#"{"id":{{$uuid}},"at":{{$timestamp}},"password":"HUNTER2"}"#.into(),
+            sidecar: None,
+        }),
+        ..Request::default()
+    };
+    store.append(new_entry(req), None).unwrap();
+    let raw = raw_files(&data);
+    assert!(!raw.contains("HUNTER2"), "secret leaked");
+    assert!(raw.contains("{{$uuid}}"), "uuid ref lost");
+    assert!(raw.contains("{{$timestamp}}"), "timestamp ref lost");
+    assert!(!raw.contains("\"{{$uuid}}\""), "ref got quoted");
+    assert!(!raw.contains("\"{{$timestamp}}\""), "ref got quoted");
+}

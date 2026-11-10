@@ -343,8 +343,10 @@ fn is_var_grammar(inner: &str) -> bool {
     refs.len() == 1
         && refs[0].terminated
         && refs[0].name == name
-        && !name.is_empty()
+        && !name.strip_prefix('$').unwrap_or(name).is_empty()
         && name
+            .strip_prefix('$')
+            .unwrap_or(name)
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
