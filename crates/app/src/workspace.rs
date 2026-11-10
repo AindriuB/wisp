@@ -306,12 +306,116 @@ fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigi
     }
 }
 
-/// Why a from-history tab may not be sent: its body was redacted and has not
-/// been edited since. `None` once the body differs or when none was redacted.
-fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option<String> {
-    if draft.body != origin.stored_body {
-        return None;
+/// Dotted paths of the JSON string leaves that are `""`, or `None` when the
+/// text does not scan as JSON. Bare `{{ref}}` values are skipped, as history
+/// masks them; arrays do not add to the path.
+fn empty_json_leaves(text: &str) -> Option<Vec<String>> {
+    struct Scan<'a> {
+        b: &'a [u8],
+        i: usize,
     }
+    impl Scan<'_> {
+        fn ws(&mut self) {
+            while self.b.get(self.i).is_some_and(u8::is_ascii_whitespace) {
+                self.i += 1;
+            }
+        }
+        fn eat(&mut self, c: u8) -> Option<()> {
+            self.ws();
+            (self.b.get(self.i) == Some(&c)).then(|| self.i += 1)
+        }
+        fn string(&mut self) -> Option<String> {
+            self.eat(b'"')?;
+            let start = self.i;
+            while let Some(&c) = self.b.get(self.i) {
+                match c {
+                    b'\\' => self.i += 2,
+                    b'"' => {
+                        let s = String::from_utf8_lossy(&self.b[start..self.i]).into_owned();
+                        self.i += 1;
+                        return Some(s);
+                    }
+                    _ => self.i += 1,
+                }
+            }
+            None
+        }
+        fn value(&mut self, path: &str, out: &mut Vec<String>) -> Option<()> {
+            self.ws();
+            match *self.b.get(self.i)? {
+                b'{' if self.b[self.i..].starts_with(b"{{") => {
+                    let end = self.b[self.i..].windows(2).position(|w| w == b"}}")?;
+                    self.i += end + 2;
+                }
+                b'{' => {
+                    self.i += 1;
+                    if self.eat(b'}').is_some() {
+                        return Some(());
+                    }
+                    loop {
+                        let key = self.string()?;
+                        self.eat(b':')?;
+                        let p = if path.is_empty() {
+                            key
+                        } else {
+                            format!("{path}.{key}")
+                        };
+                        self.value(&p, out)?;
+                        if self.eat(b',').is_none() {
+                            return self.eat(b'}');
+                        }
+                    }
+                }
+                b'[' => {
+                    self.i += 1;
+                    if self.eat(b']').is_some() {
+                        return Some(());
+                    }
+                    loop {
+                        self.value(path, out)?;
+                        if self.eat(b',').is_none() {
+                            return self.eat(b']');
+                        }
+                    }
+                }
+                b'"' => {
+                    if self.string()?.is_empty() {
+                        out.push(path.to_string());
+                    }
+                }
+                _ => {
+                    let start = self.i;
+                    while self
+                        .b
+                        .get(self.i)
+                        .is_some_and(|c| !c.is_ascii_whitespace() && !b",]}".contains(c))
+                    {
+                        self.i += 1;
+                    }
+                    if self.i == start {
+                        return None;
+                    }
+                }
+            }
+            Some(())
+        }
+    }
+    let mut s = Scan {
+        b: text.as_bytes(),
+        i: 0,
+    };
+    let mut out = Vec::new();
+    s.value("", &mut out)?;
+    s.ws();
+    (s.i == s.b.len()).then_some(out)
+}
+
+/// Why a from-history tab may not be sent: a redacted body value has not been
+/// filled in since. A redacted JSON leaf is unedited while it is still `""`
+/// (a removed or non-empty leaf counts as edited); a dropped body is unedited
+/// while it is empty. A body that does not scan is refused. `None` when no
+/// body was redacted.
+fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option<String> {
     let mut whole = false;
     let mut fields: Vec<&str> = Vec::new();
     for n in &origin.redacted {
@@ -322,6 +426,26 @@ fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option<Str
         }
     }
     if !whole && fields.is_empty() {
+        return None;
+    }
+    let text = match &draft.body {
+        Body::Json(t) | Body::Text(t) | Body::Xml(t) => Some(t.content.as_str()),
+        _ => None,
+    };
+    let unedited = if whole {
+        text.is_none_or(|t| t.trim().is_empty())
+            && matches!(
+                &draft.body,
+                Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
+            )
+    } else {
+        match text.map(empty_json_leaves) {
+            Some(Some(empty)) => fields.iter().any(|f| empty.iter().any(|e| e == f)),
+            Some(None) => true,
+            None => false,
+        }
+    };
+    if !unedited {
         return None;
     }
     let what = if whole {
@@ -1589,6 +1713,41 @@ mod tests {
             ..TextBody::default()
         });
         assert!(try_send(&d, &o).is_ok());
+    }
+
+    #[test]
+    fn redaction_refusal_follows_the_leaf_not_the_text() {
+        let o = body_origin(json("{}"), &["body.webhook_secret"]);
+        let mut d = draft();
+        let cases = [
+            ("{\n  \"name\": \"x\",\n  \"webhook_secret\": \"\"\n}", true),
+            (" {\"name\":\"x\",\"webhook_secret\":\"\"}\n", true),
+            ("{\"a\":{{id}},\"webhook_secret\":\"\"}", true),
+            ("{\"webhook_secret\":", true),
+            ("{\"webhook_secret\":\"s\"}", false),
+            ("{\"webhook_secret\":\"{{secret}}\"}", false),
+            ("{\"webhook_secret\":{{secret}}}", false),
+            ("{\"name\":\"x\"}", false),
+        ];
+        for (body, refused) in cases {
+            d.body = json(body);
+            let got = try_send(&d, &o).err().is_some_and(|e| {
+                matches!(e.problems.as_slice(),
+                    [Problem::Syntax { message, .. }] if message.starts_with("Edit the request body"))
+            });
+            assert_eq!(got, refused, "{body}");
+        }
+    }
+
+    #[test]
+    fn dropped_body_whitespace_is_still_refused() {
+        let o = body_origin(Body::Xml(TextBody::default()), &["body"]);
+        let mut d = draft();
+        d.body = Body::Xml(TextBody {
+            content: " \n".into(),
+            ..TextBody::default()
+        });
+        assert!(try_send(&d, &o).is_err());
     }
 
     #[test]
