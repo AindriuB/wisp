@@ -986,7 +986,7 @@ async fn completed_carries_empty_timings() {
     for _ in 0..2 {
         engine.submit(Command::Send(get(format!("{}/t", server.uri()))));
         match collect_until_terminal(&rx).await.last().unwrap() {
-            Event::Completed { timings, .. } => seen.push(timings.clone()),
+            Event::Completed { timings, .. } => seen.push(*timings),
             other => panic!("unexpected {other:?}"),
         }
     }
