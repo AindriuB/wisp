@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 101 | settings.toml is read and written under an absolute WISP_DATA_DIR, so test launches cannot touch real settings | ## 2026-11-10 — Settings follow WISP_DATA_DIR |
 | 2026-11-10 | 97 | History panel (newest first, status and relative time), open an entry read-only, Resend with the current environment and folder defaults, Clear history with confirm, `history_bodies` setting | ## 2026-11-10 — History panel, Clear and Resend |
 | 2026-11-10 | 96 | Import dialog: paste curl or choose Postman/OpenAPI file, preview with warnings, write to collection root or a new folder; secrets note | ## 2026-11-10 — Import dialog |
 | 2026-11-10 | 93 | History moved to a per-user store (index plus capped bodies, auth and Set-Cookie redacted, count and byte eviction), written off the UI thread | ## 2026-11-10 — Per-user history store |
