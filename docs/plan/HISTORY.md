@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-10 — OAuth2 UI
+The auth editor now edits OAuth2 client credentials and authorization code (with PKCE), and the auth-code editor has an Authorize button that opens the system browser at the IdP, shows "Waiting…" with the authorization URL, Copy URL and Cancel, and then "Authorized" or "Failed". Closing a tab cancels a pending authorization. Hand-checked on macOS against a local stub IdP: client credentials sent `Bearer tok-client_credentials`; auth code ignored a wrong-state callback, exchanged the matching one and sent `Bearer tok-authorization_code`; Cancel closed the loopback port.
+**Cost:** Reviewer first scored 7/10 for two test gaps (auth event routing and cancel-on-close, and an OAuth2 commit-then-save round trip); closed by pure helpers `route_auth_event` and `close_auth` with five tests, which is the pattern to use for GPUI-bound logic. Follow-ups are in PLAN under task 106.
+
 ## 2026-11-10 — OAuth2 engine
 The engine now performs OAuth2 client credentials and authorization code with PKCE (loopback listener with a cap and timeout), caches access tokens per key, refreshes with the stored refresh token, drops the cached token after a 401 so the next send fetches a new one (no retry), and returns a clear error otherwise. Refresh tokens go through a `RefreshTokenStore` that returns `Result`. Re-authorizing always replaces the old token: it forgets the stored refresh token and bumps a per-key generation so in-flight work with old tokens is discarded. History keeps non-secret OAuth2 fields and redacts only `client_secret`. A huge `expires_in` is clamped to 10 years.
 PR #43 review round 1: loopback callbacks are ignored unless the state matches, a refresh survives a cancelled send, and the race test is gated rather than timed.

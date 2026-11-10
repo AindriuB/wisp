@@ -73,8 +73,36 @@ pub enum TabEvent {
     DraftEdited,
     DraftReplaced,
     ResponseChanged,
+    /// The OAuth2 authorize state changed.
+    AuthorizeChanged,
     DiskStateChanged,
     Saved,
+}
+
+/// Where an interactive OAuth2 authorization stands for one tab. Holds no token, code or secret.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AuthorizeState {
+    #[default]
+    Idle,
+    /// Started; `url` is the authorization URL once the engine reports it.
+    Waiting {
+        id: RequestId,
+        url: Option<String>,
+    },
+    Authorized,
+    Cancelled,
+    /// The engine's message.
+    Failed(String),
+}
+
+impl AuthorizeState {
+    /// The in-flight authorization's id, if any.
+    pub fn waiting_id(&self) -> Option<RequestId> {
+        match self {
+            Self::Waiting { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
 }
 
 /// What a tab opened from history remembers about its entry.
@@ -114,6 +142,7 @@ pub struct RequestTab {
     pub body_view: BodyView,
     /// Set for a tab opened from history.
     pub from_history: Option<HistoryOrigin>,
+    pub authorize: AuthorizeState,
 }
 
 impl EventEmitter<TabEvent> for RequestTab {}
@@ -131,6 +160,7 @@ impl RequestTab {
             response_tab: ResponseSubTab::Body,
             body_view: BodyView::Pretty,
             from_history: None,
+            authorize: AuthorizeState::Idle,
         }
     }
 
@@ -180,6 +210,12 @@ impl RequestTab {
         self.path = Some(path);
         self.saved = Some(self.draft.clone());
         cx.emit(TabEvent::Saved);
+    }
+
+    pub fn set_authorize(&mut self, state: AuthorizeState, cx: &mut Context<Self>) {
+        self.authorize = state;
+        cx.emit(TabEvent::AuthorizeChanged);
+        cx.notify();
     }
 
     pub fn set_disk_state(&mut self, state: DiskState, cx: &mut Context<Self>) {
