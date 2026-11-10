@@ -92,10 +92,8 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [NOTE] `hash_file` reopens the file by path, leaving a gap between hash and send for a same-length replacement. Hashing is not covered by the request timeout and continues after a cancel.
 
 ### Follow-ups from task 93 (not 0.2.0 wave 1)
-- [P2, before task 97 wires Clear] `history.rs` `clear` does not take `APPEND_LOCK`; a clear during an append can leave that append's files behind.
 - [P3] A `Set-Cookie` with no `name=` before the first `;` (e.g. `Set-Cookie: abc123token`) is stored in plaintext; Amendment 1 only redacts after the first `=`.
 - [P3] `history.rs:246`: data-dir creation failure shows "History entry dropped" instead of "History is off: <reason>" and never disables history.
-- [P3] `history.rs:342-362`: body files are deleted before the index rewrite; a failed rewrite leaves entries whose load fails.
 - [P3] `tests/history.rs` `evicts_oldest_over_the_byte_cap` does not assert bytes <= cap or that the survivors are the newest run.
 - [IDEA, user 2026-11-10] Opt-in setting to keep `Set-Cookie` values unredacted in history (developer tool); off by default.
 - [P3] 35-5 `workspace.rs:612`: up to 1 MiB response body copied on the UI thread even when history is off; check history state first, read spilled bodies in the background.
@@ -109,6 +107,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [NOTE] `history.rs`: `lock()` blocks without timeout while `APPEND_LOCK` is held, so a stalled second Wisp process stalls appends for every collection in this one.
 - [NOTE] Name heuristic over-redacts (e.g. `monkey`, `auth_url`, `token_url`); accepted.
 - [P2] CI builds only ubuntu and macos; the Windows `File::lock` bug in PR #35 would have shipped. Add at least a Windows `cargo check`/test job (or a cross `cargo check --target x86_64-pc-windows-msvc`).
+- [P3] 35-13 `history.rs:524`: name heuristic not applied to response headers (`X-Auth-Token`, `X-Subject-Token` stored).
+- [P3] 35-14 core `redact.rs`: `SECRET_FRAGMENTS` misses sig, pass, pwd, jwt, bearer, dpop, assertion (Azure SAS `sig=` stored). One shared list now serves history and (after #34) importers.
+- [P3] 35-15 `history.rs:399`: duplicate JSON key with a ref last keeps the earlier literal secret; detect duplicates and fail closed.
+- [P3] 35-16 `history.rs:159`: unquoted `{{ref}}` under a secret key is emptied instead of kept.
+- [P3] 35-17 `history.rs:511`: lock file opened with create and follows symlinks; use O_NOFOLLOW or a `symlink_metadata` check.
+- [P3] 35-19 (Nit) `tests/history.rs:355`: "1234" leak check can match the random hex entry id.
+- [P3] `history.rs:617-622`: index lines with no valid id are dropped silently on rewrite; add a comment or test.
+- [P3] `tests/history.rs` `sweep_keeps_entries_with_unparseable_index_lines`: set a low entry cap so eviction runs and the verbatim-rewrite path is covered.
+- [NOTE] Text/XML bodies containing any credential fragment are not stored (fail closed); a bare `{{ref}}` with characters outside letters, digits, `_`, `-`, `.` makes a JSON body drop. Accepted, safe side.
 
 ### Follow-ups from task 92 (not for 0.2.0 wave 1)
 - [P3] `ensure_collection_id` (`collection.rs:242-257`) has a read-modify-write race: two instances adding an ID at once means the last rename wins. `save_collection_defaults` has the same window.
