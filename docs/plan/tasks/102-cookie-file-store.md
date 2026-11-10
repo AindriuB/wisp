@@ -49,3 +49,15 @@ cargo writes no JUnit XML here, so tests are `command` checks.
 - The in-memory jar and reqwest's cookie provider (task 104); debounce, exit flush and UI (task 107).
 - Importing curl `-b` cookies into the jar.
 - History-store hardening (task 99).
+
+## Amendment 1
+User decision 2026-11-10: `save` never writes a file `load` would refuse.
+- `save` caps `domain` at 253 bytes and `path` at 1024 bytes; a cookie over either cap is skipped.
+- If the serialized file would exceed the 4 MiB load cap, `save` drops the cookies that expire soonest first until it fits, and keeps the rest.
+- [ ] AC9 Saving 1,200 cookies with 4,000-byte values, then `load`, returns Ok with the latest-expiring cookies, and the file is at most 4 MiB. Tested.
+
+## Review round 1 — findings
+Reviewed HEAD 4954ed2.
+- [P2] `cookies.rs:186` `load` panics on a large `expires`: `UNIX_EPOCH + Duration::from_secs(u64::MAX)` overflows `SystemTime` (on Windows about 1e13 also panics). Use `UNIX_EPOCH.checked_add` and skip the entry when it returns `None`. Test with `expires = u64::MAX` and `10^13`.
+- [P2] `cookies.rs:205-228` `save` can write a file `load` refuses. Resolved by Amendment 1.
+- [P3, optional] `tests/cookies.rs:136-158` test the exact 4,096 / 4,097 name+value boundary.
