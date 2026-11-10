@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
-mod json;
 mod loopback;
 mod manager;
 mod pkce;

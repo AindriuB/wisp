@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
-use super::json;
 use crate::engine::err;
 use crate::model::{EngineError, ErrorKind};
 use crate::request::ClientAuth;
@@ -191,11 +190,19 @@ pub(crate) fn parse(status: u16, body: &[u8]) -> Result<TokenResponse, EngineErr
     if !(200..300).contains(&status) {
         return Err(fail("the token endpoint refused the request"));
     }
-    let obj = json::object(body).ok_or_else(|| fail("the token response is not a JSON object"))?;
-    let text = |k: &str| match obj.get(k) {
-        Some(json::Value::Str(s)) => Some(s.as_str()),
-        _ => None,
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| {
+        err(
+            ErrorKind::Auth,
+            format!("the token response is not valid JSON (status {status})"),
+        )
+    })?;
+    let Some(obj) = value.as_object() else {
+        return Err(err(
+            ErrorKind::Auth,
+            format!("the token response is not a JSON object (status {status})"),
+        ));
     };
+    let text = |k: &str| obj.get(k).and_then(serde_json::Value::as_str);
     let access = match text("access_token") {
         Some(a) if !a.is_empty() => a,
         _ => return Err(fail("the token response has no access_token")),
@@ -211,8 +218,8 @@ pub(crate) fn parse(status: u16, body: &[u8]) -> Result<TokenResponse, EngineErr
         None => return Err(fail("the token response has no token_type")),
     }
     let expires_in = match obj.get("expires_in") {
-        Some(json::Value::Num(n)) => Some(*n),
-        Some(json::Value::Str(s)) => s.trim().parse::<f64>().ok(),
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.trim().parse::<f64>().ok(),
         _ => None,
     };
     let expires_in = expires_in
@@ -300,6 +307,7 @@ fn redact_tokens(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ClientSettings;
 
     #[test]
     fn redaction_covers_json_form_and_truncated_values() {
@@ -364,6 +372,50 @@ mod tests {
         assert_eq!(r.expires_in, Some(Duration::from_secs(60)));
         let e = parse(200, br#"{"access_token":"a","token_type":"mac"}"#).unwrap_err();
         assert_eq!(e.kind, ErrorKind::Auth);
+    }
+
+    #[test]
+    fn malformed_body_is_an_auth_error_that_does_not_echo_it() {
+        for body in [
+            &br#"{"access_token":"SECRETVAL""#[..],
+            b"SECRETVAL",
+            br#"["SECRETVAL"]"#,
+        ] {
+            let e = parse(200, body).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::Auth);
+            assert!(!e.message.contains("SECRETVAL"), "{}", e.message);
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_body_is_an_auth_error_that_does_not_echo_it() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = format!("SECRETVAL{}", "x".repeat(MAX_RESPONSE + 1));
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let url = reqwest::Url::parse(&format!("{}/token", server.uri())).unwrap();
+        let http = crate::client::ClientCache::default()
+            .get(&ClientSettings {
+                verify_tls: true,
+                follow_redirects: false,
+                proxy: None,
+                collection: None,
+            })
+            .unwrap();
+        let creds = ClientCreds {
+            id: "cid",
+            secret: "s",
+            mode: ClientAuth::Basic,
+        };
+        let e = post(&http, &url, &creds, &[], Duration::from_secs(10))
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Auth);
+        assert!(!e.message.contains("SECRETVAL"), "{}", e.message);
     }
 
     #[test]

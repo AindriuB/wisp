@@ -362,7 +362,10 @@ async fn failing_responses_hold_the_status_and_a_redacted_capped_body() {
         let e = auth_error(&evs);
         assert!(e.message.contains(&status.to_string()), "{e:?}");
         assert!(!e.message.contains("SECRETVAL"), "{e:?}");
-        assert!(e.message.contains("<redacted>"), "{e:?}");
+        // A malformed 2xx body is not quoted at all; a refusal quotes it, redacted.
+        if status >= 300 {
+            assert!(e.message.contains("<redacted>"), "{e:?}");
+        }
         assert!(e.message.len() < 2048 + 200, "{}", e.message.len());
     }
 }

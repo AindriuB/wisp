@@ -12,9 +12,10 @@ name = "wisp_core"
 reqwest.workspace = true
 rustls.workspace = true
 webpki-root-certs.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 async-channel.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 regex.workspace = true
@@ -28,5 +29,4 @@ md-5.workspace = true
 [dev-dependencies]
 wiremock.workspace = true
 tokio.workspace = true
-serde_json.workspace = true
 rcgen.workspace = true
