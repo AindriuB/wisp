@@ -272,7 +272,8 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
         } else if arg == "--" {
             rest_positional = true;
         } else if let Some(long) = arg.strip_prefix("--") {
-            let long = long.to_string();
+            // `--expand-X` (curl 8.3+) takes the same arguments as `--X`.
+            let long = long.strip_prefix("expand-").unwrap_or(long).to_string();
             match long.as_str() {
                 "request" => f.method = Some(need(&mut args, &arg)?),
                 "header" => f.headers.push(need(&mut args, &arg)?),
@@ -962,5 +963,26 @@ mod tests {
         }
         let (_, res) = req("curl --pass=SECRETVAL http://h/x");
         assert!(!format!("{:?}", res.warnings).contains("SECRETVAL"));
+    }
+
+    #[test]
+    fn expand_options_consume_their_argument_and_route_credentials() {
+        for (opt, val) in [
+            ("expand-user", "bob:SECRETVAL"),
+            ("expand-oauth2-bearer", "SECRETVAL"),
+            ("expand-proxy-user", "bob:SECRETVAL"),
+            ("expand-pass", "SECRETVAL"),
+            ("expand-header", "Authorization: Bearer SECRETVAL"),
+        ] {
+            for cmd in [
+                format!("curl --{opt} '{val}' http://h/x"),
+                format!("curl http://h/x --{opt} '{val}'"),
+            ] {
+                let (r, res) = req(&cmd);
+                assert_eq!(r.url, "http://h/x", "{opt}");
+                let all = format!("{r:?}{:?}{:?}", res.name, res.warnings);
+                assert!(!all.contains("SECRETVAL"), "{opt}: {all}");
+            }
+        }
     }
 }

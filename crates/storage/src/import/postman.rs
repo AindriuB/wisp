@@ -179,7 +179,9 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
             if !key.is_empty() {
                 let mut value = text(h.get("value"));
                 if super::is_credential_header(&key) {
-                    value = cx.sink.secret_ref(&name, &key.to_ascii_lowercase(), value);
+                    value = cx
+                        .sink
+                        .secret_ref(&name, &key.trim().to_ascii_lowercase(), value);
                 }
                 req.headers.push(KeyValue {
                     name: key,
@@ -760,6 +762,15 @@ mod tests {
         let secrets = &r.environments[0].secrets;
         assert!(secrets.iter().any(|v| v.value == "SECRETAU"));
         assert!(secrets.iter().any(|v| v.value == "SECRETPA"));
+        for h in &req.headers {
+            let refs = wisp_core::template::var_refs(&h.value);
+            assert_eq!(refs.len(), 1, "{h:?}");
+            assert!(
+                secrets.iter().any(|v| v.name == refs[0].name),
+                "unresolvable ref {:?}",
+                refs[0].name
+            );
+        }
     }
 
     #[test]
