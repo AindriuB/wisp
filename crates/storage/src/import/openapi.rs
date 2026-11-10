@@ -1,6 +1,6 @@
 //! Import an OpenAPI 3.0 or 3.1 document (JSON or YAML).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use wisp_core::Method;
@@ -10,6 +10,17 @@ use super::{
     ImportError, ImportItem, ImportResult, ImportedEnv, RequestCounter, method_name, parse_json,
     yaml,
 };
+
+/// Bytes of example text all operations together may copy out of the
+/// document; shared `$ref`s are copied once per use.
+const MAX_EXAMPLE_BYTES: usize = 64 * 1024 * 1024;
+
+fn spend(budget: &mut usize, n: usize) -> Result<(), ImportError> {
+    *budget = budget.checked_sub(n).ok_or_else(|| {
+        ImportError::TooLarge("example data over 64 MiB after resolving $refs".into())
+    })?;
+    Ok(())
+}
 
 const METHODS: [(&str, Method); 7] = [
     ("get", Method::Get),
@@ -72,6 +83,7 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
     }
 
     let mut counter = RequestCounter::default();
+    let mut budget = MAX_EXAMPLE_BYTES;
     let mut untagged: Vec<ImportItem> = Vec::new();
     let mut folders: Vec<(String, Vec<ImportItem>)> = Vec::new();
     if let Some(paths) = doc.get("paths").and_then(Value::as_object) {
@@ -85,7 +97,8 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
                     continue;
                 };
                 counter.add()?;
-                let (tag, request) = operation(&doc, &mut result, path, method, item, op);
+                let (tag, request) =
+                    operation(&doc, &mut result, &mut budget, path, method, item, op)?;
                 let name = request.name.clone();
                 let node = ImportItem::Request { name, request };
                 match tag {
@@ -242,11 +255,12 @@ fn example<'a>(
 fn operation(
     doc: &Value,
     result: &mut ImportResult,
+    budget: &mut usize,
     path: &str,
     method: Method,
     item: &Value,
     op: &Value,
-) -> (Option<String>, Request) {
+) -> Result<(Option<String>, Request), ImportError> {
     let fallback = format!("{} {path}", method_name(method));
     let mut name = text(op.get("summary"));
     if name.trim().is_empty() {
@@ -266,17 +280,17 @@ fn operation(
     // Path-level parameters first; an operation parameter replaces one with
     // the same name and location.
     let mut params: Vec<&Value> = Vec::new();
-    let mut keys: Vec<(String, String)> = Vec::new();
+    let mut index: HashMap<(String, String), usize> = HashMap::new();
     for list in [item.get("parameters"), op.get("parameters")] {
         for p in list.and_then(Value::as_array).into_iter().flatten() {
             let Some(p) = deref(doc, p, &at, result) else {
                 continue;
             };
             let key = (text(p.get("name")), text(p.get("in")));
-            if let Some(i) = keys.iter().position(|k| *k == key) {
+            if let Some(&i) = index.get(&key) {
                 params[i] = p;
             } else {
-                keys.push(key);
+                index.insert(key, params.len());
                 params.push(p);
             }
         }
@@ -287,6 +301,7 @@ fn operation(
             continue;
         }
         let value = example(doc, p, &at, result).map(scalar_text);
+        spend(budget, pname.len() + value.as_ref().map_or(0, String::len))?;
         let required = p.get("required").and_then(Value::as_bool).unwrap_or(false);
         let kv = |value: Option<String>| KeyValue {
             enabled: required || value.is_some(),
@@ -329,6 +344,7 @@ fn operation(
                         other => serde_json::to_string_pretty(other).unwrap_or_default(),
                     })
                     .unwrap_or_default();
+                spend(budget, content.len())?;
                 req.body = Body::Json(TextBody {
                     content,
                     sidecar: None,
@@ -350,7 +366,7 @@ fn operation(
         .and_then(|t| t.first())
         .map(|t| text(Some(t)))
         .filter(|t| !t.trim().is_empty());
-    (tag, req)
+    Ok((tag, req))
 }
 
 #[cfg(test)]
@@ -468,6 +484,47 @@ mod tests {
             parse(doc.as_bytes()),
             Err(ImportError::TooLarge(_))
         ));
+        assert!(t.elapsed().as_secs() < 2);
+    }
+
+    #[test]
+    fn shared_ref_examples_hit_the_byte_budget() {
+        let big = "x".repeat(1024 * 1024);
+        let mut paths = String::new();
+        for i in 0..70 {
+            if i > 0 {
+                paths.push(',');
+            }
+            paths.push_str(&format!(
+                r##""/p{i}":{{"post":{{"requestBody":{{"$ref":"#/components/requestBodies/B"}}}}}}"##
+            ));
+        }
+        let doc = format!(
+            r##"{{"openapi":"3.0.0","paths":{{{paths}}},"components":{{"requestBodies":{{"B":{{"content":{{"application/json":{{"example":"{big}"}}}}}}}}}}}}"##
+        );
+        let r = parse(doc.as_bytes());
+        assert!(
+            matches!(r, Err(ImportError::TooLarge(_))),
+            "{:?}",
+            r.map(|r| r.warnings)
+        );
+    }
+
+    #[test]
+    fn many_parameters_merge_in_linear_time() {
+        let mut params = String::new();
+        for i in 0..60_000 {
+            if i > 0 {
+                params.push(',');
+            }
+            params.push_str(&format!(r#"{{"name":"p{i}","in":"query"}}"#));
+        }
+        let doc = format!(
+            r#"{{"openapi":"3.0.0","paths":{{"/a":{{"parameters":[{params}],"get":{{"parameters":[{params}]}}}}}}}}"#
+        );
+        let t = std::time::Instant::now();
+        let r = parse(doc.as_bytes()).unwrap();
+        assert_eq!(requests(&r.items)[0].params.len(), 60_000);
         assert!(t.elapsed().as_secs() < 2);
     }
 }

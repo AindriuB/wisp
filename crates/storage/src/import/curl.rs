@@ -13,7 +13,7 @@ use super::{
 };
 
 /// Short options that take an argument and are not imported.
-const IGNORED_SHORT_WITH_ARG: &str = "oAemxwETKy";
+const IGNORED_SHORT_WITH_ARG: &str = "oAemxwETKycDrUzCtQPY";
 /// Long options that take an argument and are not imported.
 const IGNORED_LONG_WITH_ARG: &[&str] = &[
     "output",
@@ -31,6 +31,58 @@ const IGNORED_LONG_WITH_ARG: &[&str] = &[
     "config",
     "resolve",
     "limit-rate",
+    "cookie-jar",
+    "dump-header",
+    "range",
+    "proxy-user",
+    "oauth2-bearer",
+    "time-cond",
+    "continue-at",
+    "telnet-option",
+    "quote",
+    "ftp-port",
+    "speed-limit",
+    "speed-time",
+    "proxy-header",
+    "proxy-cacert",
+    "proxy-cert",
+    "proxy-key",
+    "cert-type",
+    "key-type",
+    "pass",
+    "capath",
+    "ciphers",
+    "interface",
+    "local-port",
+    "max-redirs",
+    "max-filesize",
+    "retry-delay",
+    "retry-max-time",
+    "trace",
+    "trace-ascii",
+    "stderr",
+    "url-query",
+    "form-string",
+    "variable",
+    "expect100-timeout",
+    "dns-servers",
+    "doh-url",
+    "unix-socket",
+    "aws-sigv4",
+    "output-dir",
+    "noproxy",
+    "preproxy",
+    "netrc-file",
+    "pinnedpubkey",
+    "request-target",
+    "etag-save",
+    "etag-compare",
+    "mail-from",
+    "mail-rcpt",
+    "socks5",
+    "socks5-hostname",
+    "keepalive-time",
+    "tls-max",
 ];
 
 /// Split a shell-like command line into words.
@@ -213,6 +265,17 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                     let v = need(&mut args, &arg)?;
                     add_urlencoded(&mut f, v);
                 }
+                "json" => {
+                    let v = need(&mut args, &arg)?;
+                    add_data(&mut f, "json", v);
+                    if !f
+                        .headers
+                        .iter()
+                        .any(|h| h.to_ascii_lowercase().starts_with("content-type:"))
+                    {
+                        f.headers.push("Content-Type: application/json".into());
+                    }
+                }
                 "form" => f.form.push(need(&mut args, &arg)?),
                 "user" => f.user = Some(need(&mut args, &arg)?),
                 "cookie" => f.cookie = Some(need(&mut args, &arg)?),
@@ -222,9 +285,9 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                 "get" => f.get = true,
                 "head" => f.head = true,
                 l if IGNORED_LONG_WITH_ARG.contains(&l) => {
-                    let v = need(&mut args, &arg)?;
+                    need(&mut args, &arg)?;
                     f.warnings
-                        .push(format!("option `{arg} {v}` is not imported"));
+                        .push(format!("option `{arg}` and its argument are not imported"));
                 }
                 _ => f.warnings.push(format!("option `{arg}` is not imported")),
             }
@@ -257,9 +320,9 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                     ('L', None) => f.location = true,
                     ('G', None) => f.get = true,
                     ('I', None) => f.head = true,
-                    (c, Some(v)) => f
+                    (c, Some(_)) => f
                         .warnings
-                        .push(format!("option `-{c} {v}` is not imported")),
+                        .push(format!("option `-{c}` and its argument are not imported")),
                     (c, None) => f.warnings.push(format!("option `-{c}` is not imported")),
                 }
             }
@@ -623,5 +686,44 @@ mod tests {
             "a".repeat(super::super::MAX_INPUT_BYTES)
         );
         assert!(matches!(parse(&big), Err(ImportError::TooLarge(_))));
+    }
+
+    #[test]
+    fn arg_taking_options_do_not_swallow_the_url() {
+        for cmd in [
+            "curl -c jar.txt https://h/x",
+            "curl -D - https://h/x",
+            "curl -r 0-99 https://h/x",
+            "curl -U u:p https://h/x",
+            "curl -z yesterday https://h/x",
+            "curl -C - https://h/x",
+            "curl -t opt https://h/x",
+            "curl -Q cmd https://h/x",
+            "curl -P - https://h/x",
+            "curl -Y 10 https://h/x",
+            "curl --oauth2-bearer SECRETTOKEN https://h/x",
+            "curl --cookie-jar jar.txt https://h/x",
+            "curl --dump-header - https://h/x",
+            "curl --range 0-9 https://h/x",
+            "curl --proxy-user u:p https://h/x",
+        ] {
+            let (r, res) = req(cmd);
+            assert_eq!(r.url, "https://h/x", "{cmd}");
+            assert!(
+                res.warnings.iter().all(|w| !w.message.contains("SECRET")),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_option_sets_body_and_content_type() {
+        let (r, _) = req(r#"curl --json '{"a":1}' https://h/x"#);
+        assert_eq!(r.url, "https://h/x");
+        assert_eq!(header(&r, "content-type"), Some("application/json"));
+        let Body::Json(t) = &r.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(t.content, r#"{"a":1}"#);
     }
 }

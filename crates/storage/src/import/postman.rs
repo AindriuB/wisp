@@ -1,5 +1,6 @@
 //! Import a Postman collection v2.1 (JSON).
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -17,6 +18,9 @@ struct Ctx {
     result: ImportResult,
     counter: RequestCounter,
     secrets: Vec<Var>,
+    /// Secret names in use, and the next suffix to try for each base.
+    secret_names: HashSet<String>,
+    secret_next: HashMap<String, usize>,
 }
 
 fn text(v: Option<&Value>) -> String {
@@ -58,6 +62,8 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
         },
         counter: RequestCounter::default(),
         secrets: Vec::new(),
+        secret_names: HashSet::new(),
+        secret_next: HashMap::new(),
     };
     for var in array(doc.get("variable")) {
         let key = text(var.get("key"));
@@ -454,11 +460,17 @@ fn secret_ref(cx: &mut Ctx, request: &str, field: &str, value: String) -> String
         }
     );
     let mut name = base.clone();
-    let mut n = 2;
-    while cx.secrets.iter().any(|v| v.name == name) {
-        name = format!("{base}_{n}");
-        n += 1;
+    if cx.secret_names.contains(&name) {
+        let next = cx.secret_next.entry(base.clone()).or_insert(2);
+        loop {
+            name = format!("{base}_{next}");
+            *next += 1;
+            if !cx.secret_names.contains(&name) {
+                break;
+            }
+        }
     }
+    cx.secret_names.insert(name.clone());
     cx.secrets.push(Var {
         name: name.clone(),
         value,
@@ -636,5 +648,21 @@ mod tests {
             parse(doc.as_bytes()),
             Err(ImportError::TooLarge(_))
         ));
+    }
+
+    #[test]
+    fn many_same_named_secrets_are_linear() {
+        let item = r#"{"name":"r","request":{"method":"GET","url":"http://h/x","auth":{"type":"basic","basic":[{"key":"username","value":"u"},{"key":"password","value":"p"}]}}}"#;
+        let items = vec![item; 4000].join(",");
+        let doc = format!(
+            r#"{{"info":{{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}},"item":[{items}]}}"#
+        );
+        let t = std::time::Instant::now();
+        let r = parse(doc.as_bytes()).unwrap();
+        let secrets = &r.environments[0].secrets;
+        let names: HashSet<_> = secrets.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names.len(), secrets.len());
+        assert!(secrets.len() >= 8000);
+        assert!(t.elapsed().as_secs() < 2);
     }
 }

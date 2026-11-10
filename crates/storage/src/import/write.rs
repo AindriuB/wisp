@@ -72,6 +72,16 @@ pub fn write(
         .iter()
         .map(|n| n.to_ascii_lowercase())
         .collect();
+    // A leftover `<name>.secrets.toml` (secrets files are gitignored, so they
+    // survive branch switches) with no `<name>.toml` still holds secrets.
+    if let Ok(entries) = std::fs::read_dir(root.join("environments")) {
+        for entry in entries.flatten() {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            if let Some(stem) = file.strip_suffix(".secrets.toml") {
+                env_taken.insert(stem.to_ascii_lowercase());
+            }
+        }
+    }
     for env in &result.environments {
         let wanted = if env.name == SECRETS_ENV_PLACEHOLDER {
             secrets_env

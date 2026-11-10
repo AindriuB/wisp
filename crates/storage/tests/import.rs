@@ -128,3 +128,25 @@ fn request_count(nodes: &[Node]) -> usize {
     request_paths(nodes, &mut v);
     v.len()
 }
+
+#[test]
+fn leftover_secrets_file_is_not_overwritten() {
+    let d = collection();
+    let envs = d.path().join("environments");
+    std::fs::create_dir_all(&envs).unwrap();
+    let kept = "[vars]\ntoken = \"keep-me\"\n";
+    std::fs::write(envs.join("dev.secrets.toml"), kept).unwrap();
+    let r = openapi::parse(
+        br#"{"openapi":"3.0.0","servers":[{"url":"https://x","description":"dev"}],"paths":{}}"#,
+    )
+    .unwrap();
+    let report = write(d.path(), Path::new(""), &r, "imported").unwrap();
+    assert_eq!(
+        report.renamed,
+        vec![("dev".to_string(), "dev-2".to_string())]
+    );
+    assert_eq!(
+        std::fs::read_to_string(envs.join("dev.secrets.toml")).unwrap(),
+        kept
+    );
+}
