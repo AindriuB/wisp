@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); see HISTORY. Task 104 (cookie jar) is unblocked.
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); see HISTORY. Next: 105 (phase timings) and 107 (cookie manager UI), with about 399 KB of Windows headroom left (15,100,928 B of 15,500,000, run 42867914368).
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -69,6 +69,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 104 (not 0.2.0 wave 2)
+- [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.
+- [P3] The generation bumps on unchanged load/clear and on a rejected Set-Cookie; task 107 may save more often than needed.
+- [P3] `load` truncates remaining lifetime to whole seconds; a record expiring less than 1 s after now is stored expired.
+- [P3] Each jar clones the parsed public-suffix list (a hash-map clone per jar/load).
+- [NOTE] cookie_store logs non-Secure cookie values via `log::debug!`; no log backend exists today, so it would leak if a log/tracing-log bridge is ever added at debug level.
+- [NOTE] Loopback hosts count as a secure context (Secure cookies are sent over http://localhost), matching browsers.
+- [P2 -> task 108 / release] The public-suffix list snapshot (crates/core/data/public_suffix_list.dat, 2026-11-09) ages; refresh it before each release.
 
 ### Follow-ups from task 106 (not 0.2.0 wave 2)
 - [P3] auth.rs:156 `parse_port` silently turns an invalid redirect port (81234, 8l23) into 0 ("any free port"); reject or show a notice.
