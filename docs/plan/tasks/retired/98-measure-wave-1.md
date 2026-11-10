@@ -56,3 +56,7 @@ Run: https://github.com/AindriuB/wisp/actions/runs/42823763145 (conclusion succe
 | aarch64-apple-darwin | 11,049,104 | -8,131,952 vs 19,181,056 (task 63 CI) | 92,112 / 96,768 | true |
 | x86_64-pc-windows-msvc | 14,514,688 | +884,224 vs 13,630,464 (task 77) | 41,748 / 50,888 (private 36,004 / 40,732) | true |
 | x86_64-unknown-linux-gnu | 24,799,280 | -13,193,720 vs 37,993,000 (task 63 CI) | 180,372 / 175,728 (RssAnon 63,180 / 51,508) | true |
+
+## Outcome
+
+PASS. Run 42823763145 on main 71f9e1a: Windows 14,514,688 B (gate 15,500,000), macOS 11,049,104 B, Linux 24,799,280 B, all within budget. Recorded in HISTORY.
