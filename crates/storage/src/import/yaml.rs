@@ -12,6 +12,10 @@ use serde_json::{Map, Number, Value};
 
 use super::{ImportError, MAX_DEPTH, check_size};
 
+/// YAML input cap; the parser buffers flow collections, so it is lower than
+/// the JSON cap.
+const MAX_YAML_BYTES: usize = 2 * 1024 * 1024;
+
 /// Total expanded bytes a document may produce, aliases included.
 const MAX_EXPANDED_BYTES: u64 = 64 * 1024 * 1024;
 /// Fixed cost charged per node, so empty nodes still count.
@@ -59,6 +63,12 @@ fn key_string(v: &Value) -> String {
 /// so a hostile document fails before it is built.
 pub fn parse(bytes: &[u8]) -> Result<Value, ImportError> {
     check_size(bytes.len())?;
+    if bytes.len() > MAX_YAML_BYTES {
+        return Err(ImportError::TooLarge(format!(
+            "{} bytes of YAML (limit {MAX_YAML_BYTES})",
+            bytes.len()
+        )));
+    }
     let text = std::str::from_utf8(bytes)
         .map_err(|_| ImportError::Parse("input is not valid UTF-8".into()))?;
     let mut parser = Parser::new_from_str(text);
@@ -151,6 +161,11 @@ pub fn parse(bytes: &[u8]) -> Result<Value, ImportError> {
         };
         let (value, anchor, size, height) = done;
         if anchor != 0 {
+            // The stored copy is memory too: charge it.
+            total = total.saturating_add(size);
+            if total > MAX_EXPANDED_BYTES {
+                return Err(too_large());
+            }
             anchors.insert(
                 anchor,
                 Anchored {
@@ -303,6 +318,44 @@ mod tests {
         let start = std::time::Instant::now();
         assert!(matches!(parse(s.as_bytes()), Err(ImportError::TooLarge(_))));
         assert!(start.elapsed().as_secs() < 2);
+    }
+
+    #[test]
+    fn nested_anchors_are_charged() {
+        let big = "a".repeat(100 * 1024);
+        let mut inner = "*b".to_string();
+        inner = vec![inner; 60].join(", ");
+        let mut x = format!("[{inner}]");
+        for i in (0..60).rev() {
+            x = format!("[&n{i} {x}]");
+        }
+        let nested = format!("b: &b \"{big}\"\nx: {x}\n");
+        let mut anchors = String::from("b: &b \"");
+        anchors.push_str(&"a".repeat(1024 * 1024));
+        anchors.push_str("\"\nx: ");
+        let mut y = vec!["*b"; 63].join(", ");
+        y = format!("[{y}]");
+        for i in (0..62).rev() {
+            y = format!("[&m{i} {y}]");
+        }
+        anchors.push_str(&y);
+        anchors.push('\n');
+        on_small_stack(move || {
+            for s in [nested, anchors] {
+                let start = std::time::Instant::now();
+                let r = parse(s.as_bytes());
+                assert!(matches!(r, Err(ImportError::TooLarge(_))), "{r:?}");
+                assert!(start.elapsed().as_secs() < 5);
+            }
+        });
+    }
+
+    #[test]
+    fn yaml_over_2_mib_is_too_large() {
+        let s = format!("a: 1\n#{}\n", "x".repeat(2 * 1024 * 1024));
+        assert!(matches!(parse(s.as_bytes()), Err(ImportError::TooLarge(_))));
+        let ok = format!("a: 1\n#{}\n", "x".repeat(1024 * 1024));
+        assert!(parse(ok.as_bytes()).is_ok());
     }
 
     #[test]

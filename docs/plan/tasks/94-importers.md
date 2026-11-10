@@ -25,7 +25,7 @@ dropped silently: every unsupported construct becomes a warning.
 - `ImportResult { name, items: Vec<ImportItem>, collection_vars: Vec<Var>, environments: Vec<ImportedEnv>, warnings: Vec<ImportWarning> }`; `ImportItem::{Folder { name, items }, Request { name, request: Request }}`; `ImportedEnv { name, vars, secrets }`; `ImportWarning { at: String /* item path */, message }`.
 - `curl::parse(&str)`, `postman::parse(&[u8])`, `openapi::parse(&[u8])` return `Result<ImportResult, ImportError>`; `detect(&[u8]) -> Option<Format>`. `ImportError` is a `thiserror` type local to `import` (do not edit `error.rs`).
 - `write(root, folder_rel, &ImportResult, secrets_env: &str) -> Result<WriteReport, ImportError>`; `WriteReport { requests, folders, environments, renamed: Vec<(String, String)> }`. Name collisions with existing nodes or environments get " 2", " 3", ... suffixes and are listed in `renamed`.
-- Hostile-input caps: input at most 10 MiB, nesting depth at most 64, at most 5,000 requests, YAML alias expansion bounded (at most 100,000 nodes after expansion). Exceeding any is `ImportError::TooLarge`/`TooDeep`, never a panic or unbounded allocation.
+- Hostile-input caps: input at most 10 MiB, nesting depth at most 64, at most 5,000 requests, YAML alias expansion bounded (at most 64 MiB expanded, counting every node, alias and stored anchor). Exceeding any is `ImportError::TooLarge`/`TooDeep`, never a panic or unbounded allocation.
 
 | Source | Mapping |
 |---|---|

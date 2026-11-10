@@ -18,7 +18,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 saphyr.workspace = true
-saphyr-parser = "0.3"
+saphyr-parser.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

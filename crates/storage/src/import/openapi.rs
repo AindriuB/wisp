@@ -141,6 +141,9 @@ const MAX_URL_BYTES: usize = 64 * 1024;
 /// substituted in is never rescanned.
 fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String, ImportError> {
     let too_long = || ImportError::TooLarge(format!("server URL over {MAX_URL_BYTES} bytes"));
+    if url.len() > MAX_URL_BYTES {
+        return Err(too_long());
+    }
     let mut out = String::new();
     let mut rest = url;
     while let Some(open) = rest.find('{') {
@@ -150,6 +153,12 @@ fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String
             Some(close) if vars.contains_key(&after[..close]) => {
                 out.push_str(&text(vars[&after[..close]].get("default")));
                 rest = &after[close + 1..];
+            }
+            None => {
+                // No `}` anywhere ahead: nothing left can match.
+                out.push('{');
+                rest = after;
+                break;
             }
             _ => {
                 out.push('{');
@@ -605,6 +614,23 @@ mod tests {
         });
         let r = parse(doc.to_string().as_bytes()).unwrap();
         assert_eq!(r.environments[0].vars[0].value, "https://{v}/api");
+    }
+
+    #[test]
+    fn brace_heavy_url_is_linear() {
+        let vars = serde_json::json!({"z": {}});
+        let vars = vars.as_object().unwrap();
+        let start = std::time::Instant::now();
+        let big = format!("{}{}", "{".repeat(30_000), "a".repeat(30_000));
+        assert_eq!(substitute(&big, vars).unwrap(), big);
+        let closed = format!("{}}}", "{".repeat(60_000));
+        assert_eq!(substitute(&closed, vars).unwrap(), closed);
+        let over = format!("{}{}", "{".repeat(65_000), "a".repeat(1024 * 1024));
+        assert!(matches!(
+            substitute(&over, vars),
+            Err(ImportError::TooLarge(_))
+        ));
+        assert!(start.elapsed().as_millis() < 500);
     }
 
     #[test]
