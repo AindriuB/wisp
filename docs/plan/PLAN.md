@@ -81,6 +81,21 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] tests/oauth2.rs:1348 orders the paused-save test with a 700 ms sleep, not a state wait.
 - [NOTE] TokenKey excludes client_secret: after editing the secret, a cached client-credentials token is reused until expiry.
 - [NOTE] Public `Clock` trait and `Engine::start_with_clock` were added for expiry tests.
+- [P3 -> task 99] 43-4 manager.rs:291 token endpoint inherits the request's verify_tls=false, so secrets go to the IdP unverified; always verify TLS for token/auth endpoints, or show it.
+- [P3 -> task 99] 43-5 loopback.rs:51 listener spawns unbounded connection tasks (now also kept listening after ignored callbacks); cap in-flight connections (~16).
+- [P3 -> task 99] 43-6 token.rs:258 error-body redaction covers only three token keys; add client_secret, code, code_verifier, camelCase; scrub sent secrets.
+- [P3] 43-7 token.rs:225 negative expires_in means never expires; 0-30 s tokens never reused; treat negative as zero; margin min(30 s, lifetime/2).
+- [P3] 43-8 manager.rs:305 memory path reads epoch and refresh token under separate locks; can burn a fresh RT.
+- [P3] 43-9 manager.rs:333 a rejected refresh token (invalid_grant) is kept and re-posted every send; forget it under the generation check.
+- [P3] 43-10 engine.rs:186 Cancel and AuthorizeCancel share one map and can cancel each other's operations.
+- [P3] 43-12 tests: Basic client auth never tested with reserved characters (a:b c&d+e).
+- [P3] 43-13 tests/oauth2.rs:740 oversized-head test uses a 1 s wall-clock timeout; widen to ~3 s.
+- [P3] 43-14 tests/oauth2.rs:845 port-closed assert can race parallel tests reusing the port.
+- [P3] 43-15 (Nit) pkce.rs:10 random bytes from UUIDv4; use getrandom directly; rename the state test.
+- [P3] 43-16 (Nit) token.rs:155 clone_without_url doesn't clone; rename.
+- [P3] 43-17 (Nit) storage tests/history.rs:656 test name says var refs but uses literals.
+- [P3] 43-18 (Nit) manager.rs:134 per-key generation and store_locks maps never pruned.
+- [P3] loopback.rs:71 a callback with a non-matching state (e.g. a stale browser tab) gets the "You can close this tab" success page while Wisp keeps waiting and later times out; show a neutral "this sign-in link has expired, try Authorize again" page instead.
 
 ### Follow-ups from task 102 (not 0.2.0 wave 2)
 - [P3] cookies.rs:202-203 `save` doc doesn't mention the domain/path caps or soonest-expiring trimming.
