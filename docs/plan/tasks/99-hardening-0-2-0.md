@@ -18,11 +18,11 @@
 Close every security-relevant review follow-up from 0.2.0 wave 1 in one pass rather than in PR fix rounds (user request 2026-11-10). That covers credential leakage, redaction gaps, path and file safety, unbounded work or memory, races and locking, and data loss, plus every P2 and a Windows CI job. **This file is a collection and will be split by the planner when scheduled.** Each lettered group has disjoint files, so each can become one subtask. H is one group because `write.rs` calls into `mod.rs` and both are exercised by `tests/import.rs`.
 
 ## Context
-- Sources: the "Follow-ups from task 92/95" sections of `docs/plan/PLAN.md` at origin/main 2fa37e6, "task 94" at origin/task/94-importers 38467e2, and "task 93" at origin/task/93-history-store 23ea3a8. Items 34-40 and 34-41 come from the user's round-4 review of PR #34. Task 91 recorded no follow-ups.
-- Line numbers are as recorded at those commits. Re-anchor them on the merged base before splitting.
+- Sources: the "Follow-ups from task 86/92/93/94/95" sections of `docs/plan/PLAN.md` at main b895ed0 (PRs #34 and #35 merged). Task 91 recorded no follow-ups.
+- Group D line numbers are re-anchored on b895ed0. Other groups' line numbers are as recorded in the follow-ups; re-anchor them before splitting.
 - `docs/plan/specs/2026-11-09-wisp-0-2-0.md#size-gate`: the Windows release binary must stay at or under 15.5 MB.
 - `docs/conventions.md#tests`: test names read as sentences, no sleeps, storage tests use temp dirs.
-- At 23ea3a8, `history.rs:704` `clear` already takes `APPEND_LOCK` and the file lock, and `evict` (`history.rs:641-652`) rewrites the index before it deletes anything. AC8 and AC9 therefore only add regression tests, unless re-anchoring shows a gap.
+- At b895ed0, `history.rs:726` `clear` already takes `APPEND_LOCK` and the file lock, and `evict` (`history.rs:639-692`) rewrites the index before it deletes anything. AC8 and AC9 therefore only add regression tests. Every other AC was checked against b895ed0 and is still open.
 
 ## Acceptance
 Every item that adds a test names it in the PR description.
@@ -47,15 +47,17 @@ Every item that adds a test names it in the PR description.
 - [ ] AC9 [93] If the index rewrite fails, entries remain whose body files are gone. A test (unix: read-only dir) shows that `load` succeeds for every entry `list` returns.
 - [ ] AC10 [93] A `Set-Cookie` with no `name=` before the first `;` (`abc123token`) is stored in plaintext. The whole value is redacted when no `=` precedes the first `;`, as a test shows.
 - [ ] AC11 [93] `tests/history.rs` `evicts_oldest_over_the_byte_cap` does not check the cap. It asserts that total stored bytes are at most the cap and that the survivors are the newest contiguous run.
-- [ ] AC12 [35-6] `history.rs:537`: the request body in `.req.json` is uncapped. It is cut to `BODY_CAP` with a `truncated` flag, and a test with a 2 × `BODY_CAP` request body shows the cut and the flag.
+- [ ] AC12 [35-6] `history.rs:548`: the request body in `.req.json` is uncapped. It is cut to `BODY_CAP` with a `truncated` flag, and a test with a 2 × `BODY_CAP` request body shows the cut and the flag.
 - [ ] AC13 [35-8] Redaction tests cover only Bearer and two headers. A table test covers every `Auth` variant, `Cookie`, mixed-case header names and `Bearer {{t}}`, and asserts that no secret value appears in `.req.json` or the index.
-- [ ] AC14 [93] `history.rs:387` `redact_json_body` re-serialises compactly, so integers beyond i64/u64 become f64. A redacted body keeps such integers exactly (test with `12345678901234567890123`).
-- [ ] AC15 [93] `history.rs:408`: restoring masked `{{refs}}` does one `replace` per ref, which is O(refs × body). It is a single pass, and a test with 10,000 refs in a 1 MiB body finishes without a wall-clock assert (proved by counting passes or by reading the code).
-- [ ] AC16 [93] `history.rs:283` `redact_request`: path vars (`Request.path`) are not redacted. Secret-looking path vars get the same name heuristic as query params, as a test shows.
-- [ ] AC17 [93 note] `history.rs:497` `lock_file` blocks with no timeout, so a stalled second process stalls every append. The lock is tried with a bounded wait, and on timeout the append returns an error (the entry is dropped and a notice is shown), as a test holding the lock shows.
+- [ ] AC14 [93] `history.rs:391` `redact_json_body` re-serialises compactly, so integers beyond i64/u64 become f64. A redacted body keeps such integers exactly (test with `12345678901234567890123`).
+- [ ] AC15 [93] `history.rs:412`: restoring masked `{{refs}}` does one `replace` per ref, which is O(refs × body). It is a single pass, and a test with 10,000 refs in a 1 MiB body finishes without a wall-clock assert (proved by counting passes or by reading the code).
+- [ ] AC16 [93] `history.rs:264` `redact_request`: path vars (`Request.path`) are not redacted. Secret-looking path vars get the same name heuristic as query params, as a test shows.
+- [ ] AC17 [93 note] `history.rs:516` `lock_file` blocks with no timeout, so a stalled second process stalls every append. The lock is tried with a bounded wait, and on timeout the append returns an error (the entry is dropped and a notice is shown), as a test holding the lock shows.
 - [ ] AC46 [35-13, security] The header-name heuristic is not applied to response headers, so `X-Auth-Token` and `X-Subject-Token` are stored in plaintext. Response headers get the same `is_credential_name` redaction as request headers; a test stores a response carrying `X-Auth-Token: SECRETVAL` and `X-Subject-Token: SECRETVAL` and asserts `SECRETVAL` appears in no stored file.
 - [ ] AC47 [35-15, security] A JSON body with a duplicate secret key whose last value is a `{{ref}}` (`{"token":"SECRETVAL","token":"{{t}}"}`) keeps the earlier literal. Redaction fails closed on duplicate keys (the whole body is redacted); a test asserts `SECRETVAL` appears in no stored file.
 - [ ] AC48 [35-17, security] The lock file is opened with `create` and follows symlinks. A symlinked lock path is refused (unix: `O_NOFOLLOW` or an lstat check before open) and the append returns an error; a unix test with the lock path a symlink to a file outside the dir shows the error and that the target is unchanged.
+- [ ] AC49 [35-21, security] `history.rs:356` `mask_bare_refs`: at every `{{` it searches the rest of the body for `}}` and calls `is_var_grammar`, which allocates, so a body full of `{{` is quadratic with allocation while `APPEND_LOCK` and the file lock are held. It scans forward over variable-grammar characters only and then requires `}}`, so the whole mask is one linear pass. A test with a 1 MiB JSON body of repeated `{{` stores the entry (no wall-clock assert; linearity is proved by reading the code).
+- [ ] AC50 [35-22, data loss] `history.rs:679` `evict`: when the index holds two lines with the same id and the older is evicted, its body files are deleted although the surviving line still uses them. Deletion skips any id still present in the kept entries. A test writes an index whose oldest and newest lines share an id, forces eviction of the oldest, and shows that `load` succeeds for the surviving entry and its body file still exists.
 
 **E — curl importer**
 - [ ] AC18 [34-10, security] `curl.rs:477`: `--digest`, `--ntlm` and `--negotiate` with `-u` are imported as Basic. `--digest` maps to Digest auth. `--ntlm` and `--negotiate` keep the credential in secrets, add no auth and add a warning. Tested.
@@ -89,7 +91,7 @@ Every item that adds a test names it in the PR description.
 - [ ] AC37 [34-36] `tests/import.rs:199`: the credential end-to-end test skips URL userinfo and the secrets `.gitignore`. It covers both: no userinfo in any TOML, and `.gitignore` lists the secrets file.
 
 **I — shared redaction (core)**
-- [ ] AC45 [34-45 + 35-14, security] `wisp_core::redact::SECRET_FRAGMENTS` misses `sig`, `pass`, `pwd`, `jwt`, `bearer`, `dpop` and `assertion`. All seven are added, and a unit test asserts `is_credential_name` is true for a name containing each. The importers (`import/mod.rs`, group H) and history (`history.rs`, group D) both call the shared `is_credential_name`; no local fragment list remains (`rg -n 'SECRET_FRAGMENTS|fn is_.*secret.*name' crates/storage` shows only uses of the shared one).
+- [ ] AC45 [34-45 + 35-14, security] `wisp_core::redact::SECRET_FRAGMENTS` misses `sig`, `pass`, `pwd`, `jwt`, `bearer`, `dpop` and `assertion`. All seven are added, and a unit test asserts `is_credential_name` is true for a name containing each. The importers (`import/mod.rs`, group H) and history (`history.rs`, group D) both call the shared `is_credential_name`; no local fragment list remains. At b895ed0 the importers already do; `history.rs:324` still matches `SECRET_FRAGMENTS` directly for Text/XML bodies (group D) (`rg -n 'SECRET_FRAGMENTS|fn is_.*secret.*name' crates/storage` shows only uses of the shared one).
 
 **K — CI and release gate**
 - [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
@@ -101,7 +103,7 @@ Test counts: the scheduling planner sets `min-passing` per subtask against the b
   run: `cargo test -p wisp-core --test engine --test auth`
 - `redact` command — AC45
   run: `cargo test -p wisp-core --lib redact`
-- `storage` command — AC4-AC37, AC42-AC48
+- `storage` command — AC4-AC37, AC42-AC50
   run: `cargo test -p wisp-storage`
 - `suite-and-lint` command — all
   run: `cargo test --workspace --locked && cargo fmt --check && cargo clippy --workspace --all-targets --locked -- -D warnings`
@@ -109,7 +111,7 @@ Test counts: the scheduling planner sets `min-passing` per subtask against the b
   run: `gh pr checks <pr> | rg -i 'windows.*pass'`
 - `size-gate` read — AC39
   how: the measure run's Windows `binary_bytes` is at most 15,500,000.
-- `masking` read — AC3, AC15, AC23, AC34, AC35
+- `masking` read — AC3, AC15, AC23, AC34, AC35, AC49
   how: the access key input uses the masked mode; each named loop is single-pass or uses a counter map.
 
 ## Out of scope
