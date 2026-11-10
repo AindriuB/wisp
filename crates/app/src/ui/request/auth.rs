@@ -692,6 +692,42 @@ mod tests {
         );
     }
 
+    fn oauth_samples() -> Vec<Auth> {
+        let mut v = Vec::new();
+        for secret in ["literal-secret", "{{client_secret}}"] {
+            v.push(Auth::OAuth2ClientCredentials {
+                token_url: "https://i/t".into(),
+                client_id: "cid".into(),
+                client_secret: secret.into(),
+                scope: "r w".into(),
+                client_auth: ClientAuth::Body,
+            });
+            v.push(Auth::OAuth2AuthCode {
+                auth_url: "https://i/a".into(),
+                token_url: "https://i/t".into(),
+                client_id: "cid".into(),
+                client_secret: secret.into(),
+                scope: "r".into(),
+                client_auth: ClientAuth::Basic,
+                redirect_port: 8123,
+            });
+        }
+        v
+    }
+
+    #[test]
+    fn oauth2_save_leaves_the_auth_value_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        for (n, auth) in oauth_samples().into_iter().enumerate() {
+            let mut req = crate::draft::blank_request();
+            req.auth = auth.clone();
+            let path = dir.path().join(format!("r{n}.toml"));
+            wisp_storage::request::save_request(&path, &req).unwrap();
+            let back = wisp_storage::request::load_request(&path).unwrap();
+            assert_eq!(back.auth, auth);
+        }
+    }
+
     #[test]
     fn nearest_non_inherit_folder_wins() {
         let c = collection(Auth::None);
