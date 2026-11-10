@@ -9,11 +9,11 @@ use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::request::{CollectionDefaults, Environment, Request};
 use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
 use wisp_core::{Command, Engine, EngineConfig, Event, EventReceiver, RequestId};
-use wisp_storage::collection::{CollectionId, ensure_collection_id};
-use wisp_storage::collection::{CollectionTree, open_collection};
+use wisp_storage::collection::{CollectionId, ensure_collection_id, read_collection_id};
+use wisp_storage::collection::{CollectionTree, Node, open_collection};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{list_environments, load_environment};
-use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome};
+use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
 
@@ -67,6 +67,55 @@ pub struct HistoryJob {
 }
 
 impl HistoryJob {
+    /// The store if the collection already has an id; never writes. Blocking.
+    pub fn open_existing(self) -> Result<Option<HistoryStore>, String> {
+        match self.store {
+            Some(s) => Ok(Some(s)),
+            None => Ok(read_collection_id(&self.root)
+                .map_err(|e| e.to_string())?
+                .map(|id| HistoryStore::open(&self.data, &id))),
+        }
+    }
+
+    /// All entries, newest first; empty when the collection has no id. Blocking.
+    pub fn list(self) -> Result<Vec<HistoryEntry>, String> {
+        match self.open_existing()? {
+            Some(s) => s.list().map_err(|e| e.to_string()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Remove the history; a no-op when the collection has no id. Blocking.
+    pub fn clear(self) -> Result<(), String> {
+        match self.open_existing()? {
+            Some(s) => s.clear().map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
+    }
+
+    /// Load an entry's request and headers and register its stored body file as a
+    /// read-only, file-backed body. The body bytes are not read. Blocking.
+    pub fn load_entry(
+        self,
+        entry: &HistoryEntry,
+        bodies: &BodyStore,
+    ) -> Result<(StoredEntry, Option<BodyHandle>), String> {
+        let store = self
+            .open_existing()?
+            .ok_or_else(|| "history entry not found".to_string())?;
+        let stored = store
+            .load_without_body(&entry.id)
+            .map_err(|e| e.to_string())?;
+        let handle = match store.body_path(&entry.id) {
+            Some(path) if entry.body_stored => {
+                let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+                (len > 0).then(|| bodies.open_file(path, len))
+            }
+            _ => None,
+        };
+        Ok((stored, handle))
+    }
+
     /// Resolve the collection id when needed and open the store. Blocking.
     pub fn open(self) -> Result<HistoryStore, String> {
         match self.store {
@@ -80,6 +129,36 @@ impl HistoryJob {
                 Ok(HistoryStore::open(&self.data, &id))
             }
         }
+    }
+}
+
+fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
+    nodes.iter().any(|n| match n {
+        Node::Request(m) => m.path == rel,
+        Node::Folder { children, .. } => tree_has_request(children, rel),
+        Node::Invalid { path, .. } => path == rel,
+    })
+}
+
+/// A tab's own path wins. A from-history tab has none, so its entry's original
+/// request path scopes the resolve; the flag is true when that path is gone, in
+/// which case only the collection defaults apply.
+fn scope_path_for(
+    tree: &CollectionTree,
+    tab_path: Option<&Path>,
+    origin: Option<&HistoryOrigin>,
+) -> (Option<PathBuf>, bool) {
+    if let Some(p) = tab_path {
+        return (Some(p.to_path_buf()), false);
+    }
+    let Some(orig) = origin.and_then(|o| o.request.as_deref()) else {
+        return (None, false);
+    };
+    let rel = PathBuf::from(orig);
+    if tree_has_request(&tree.nodes, &rel) {
+        (Some(rel), false)
+    } else {
+        (None, true)
     }
 }
 
@@ -281,6 +360,8 @@ impl Workspace {
             })
         });
         cx.emit(WorkspaceEvent::CollectionChanged);
+        // An open history panel reloads for the new collection.
+        cx.emit(WorkspaceEvent::HistoryChanged);
         cx.notify();
         Ok(())
     }
@@ -507,6 +588,19 @@ impl Workspace {
         }
     }
 
+    /// The path whose inherited defaults apply when sending a tab, and whether a
+    /// from-history tab's original request no longer exists.
+    fn resend_scope_path(
+        &self,
+        tab_path: Option<&Path>,
+        origin: Option<&HistoryOrigin>,
+    ) -> (Option<PathBuf>, bool) {
+        match &self.collection {
+            Some(c) => scope_path_for(&c.tree, tab_path, origin),
+            None => (tab_path.map(Path::to_path_buf), false),
+        }
+    }
+
     pub fn send(
         &mut self,
         tab: &Entity<RequestTab>,
@@ -523,7 +617,9 @@ impl Workspace {
                 t.from_history.clone(),
             )
         };
-        let prepared = resolve(&draft, &self.scope_for(path.as_deref()))?;
+        let (scope_path, original_missing) =
+            self.resend_scope_path(path.as_deref(), origin.as_ref());
+        let prepared = resolve(&draft, &self.scope_for(scope_path.as_deref()))?;
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
         }
@@ -535,7 +631,7 @@ impl Workspace {
                 .and_then(|c| c.active_env.as_ref())
                 .map(|e| e.name.as_str());
             cx.emit(WorkspaceEvent::Notice(
-                history_ui::resend_notice(env, &origin.redacted).into(),
+                history_ui::resend_notice(env, &origin.redacted, original_missing).into(),
             ));
         }
         self.routes.insert(id, tab.downgrade());
@@ -783,8 +879,8 @@ impl Workspace {
         })
     }
 
-    /// Open a history entry in a new tab. The stored files are read, and the
-    /// stored body copied into the body store, on the background executor.
+    /// Open a history entry in a new tab. The stored request is read on the
+    /// background executor; the body is shown from its stored file, not copied.
     pub fn open_history_entry(&mut self, entry: HistoryEntry, cx: &mut Context<Self>) {
         let job = match self.history_job() {
             Ok(j) => j,
@@ -797,19 +893,11 @@ impl Workspace {
             return;
         };
         let bodies = self.engine.bodies();
-        let id = entry.id.clone();
+        let entry_for_job = entry.clone();
         cx.spawn(async move |this, cx| {
-            let work = cx.background_executor().spawn(async move {
-                let stored = job.open()?.load(&id).map_err(|e| e.to_string())?;
-                let handle = if stored.body.is_empty() {
-                    None
-                } else {
-                    let mut w = bodies.writer();
-                    w.write(&stored.body).map_err(|e| e.to_string())?;
-                    Some(w.finish().map_err(|e| e.to_string())?)
-                };
-                Ok::<_, String>((stored, handle))
-            });
+            let work = cx
+                .background_executor()
+                .spawn(async move { job.load_entry(&entry_for_job, &bodies) });
             let result = work.await;
             this.update(cx, |this, cx| {
                 let still_open = this.collection.as_ref().map(|c| &c.tree.root) == Some(&root);
@@ -827,6 +915,7 @@ impl Workspace {
                             body_stored: entry.body_stored,
                             body_truncated: entry.body_truncated,
                             redacted: entry.redacted.clone(),
+                            request: entry.request.clone(),
                         };
                         let tab =
                             cx.new(|_| RequestTab::from_history(stored.request, response, origin));
@@ -860,9 +949,7 @@ impl Workspace {
             return;
         };
         cx.spawn(async move |this, cx| {
-            let work = cx
-                .background_executor()
-                .spawn(async move { job.open()?.clear().map_err(|e| e.to_string()) });
+            let work = cx.background_executor().spawn(async move { job.clear() });
             let result = work.await;
             this.update(cx, |this, cx| {
                 if this.collection.as_ref().map(|c| &c.tree.root) != Some(&root) {
@@ -1087,5 +1174,156 @@ mod tests {
         assert!(!affects_tree(Path::new("environments/dev.toml")));
         assert!(affects_tree(Path::new("folder.toml")));
         assert!(affects_tree(Path::new("users")));
+    }
+
+    fn write(root: &Path, rel: &str, text: &str) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn origin(request: Option<&str>) -> HistoryOrigin {
+        HistoryOrigin {
+            at_ms: 0,
+            body_stored: false,
+            body_truncated: false,
+            redacted: Vec::new(),
+            request: request.map(String::from),
+        }
+    }
+
+    fn auth_collection() -> (tempfile::TempDir, CollectionTree) {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        write(
+            r,
+            "collection.toml",
+            "format = 1\n\n[vars]\ntoken = \"s3cret\"\n",
+        );
+        write(
+            r,
+            "users/folder.toml",
+            "[auth]\ntype = \"bearer\"\ntoken = \"{{token}}\"\n",
+        );
+        write(
+            r,
+            "users/get.toml",
+            "name = \"Get\"\nmethod = \"GET\"\nurl = \"http://example.test/\"\n",
+        );
+        let tree = open_collection(r).unwrap();
+        (d, tree)
+    }
+
+    fn resend_headers(tree: &CollectionTree, o: &HistoryOrigin) -> (Vec<(String, String)>, bool) {
+        let (path, missing) = scope_path_for(tree, None, Some(o));
+        let req = Request {
+            url: "http://example.test/".into(),
+            ..Request::default()
+        };
+        let scope = tree.scope_for(path.as_deref().unwrap_or(Path::new("")), None);
+        let p = resolve(&req, &scope).unwrap();
+        let h = p
+            .headers
+            .iter()
+            .map(|h| (h.name.clone(), h.value.clone()))
+            .collect();
+        (h, missing)
+    }
+
+    #[test]
+    fn resend_from_history_inherits_folder_auth() {
+        let (_d, tree) = auth_collection();
+        let (headers, missing) = resend_headers(&tree, &origin(Some("users/get.toml")));
+        assert!(!missing);
+        assert!(
+            headers
+                .iter()
+                .any(|(n, v)| n.eq_ignore_ascii_case("authorization") && v == "Bearer s3cret"),
+            "{headers:?}"
+        );
+    }
+
+    #[test]
+    fn resend_from_history_missing_path_falls_back() {
+        let (d, _) = auth_collection();
+        std::fs::remove_file(d.path().join("users/get.toml")).unwrap();
+        let tree = open_collection(d.path()).unwrap();
+        let (headers, missing) = resend_headers(&tree, &origin(Some("users/get.toml")));
+        assert!(missing);
+        assert!(
+            !headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("authorization"))
+        );
+        // A tab with its own path is unaffected.
+        let own = scope_path_for(&tree, Some(Path::new("a.toml")), Some(&origin(None)));
+        assert_eq!(own, (Some(PathBuf::from("a.toml")), false));
+    }
+
+    fn history_fixture(body: &[u8]) -> (tempfile::TempDir, DataDir, CollectionId, HistoryEntry) {
+        let d = tempfile::tempdir().unwrap();
+        let data = DataDir::at(d.path().join("data"));
+        let id = CollectionId::parse("abcdef0123456789").unwrap();
+        let store = HistoryStore::open(&data, &id);
+        let new = NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            size: Some(body.len() as u64),
+            response_headers: Vec::new(),
+        };
+        let entry = store.append(new, Some(body)).unwrap();
+        (d, data, id, entry)
+    }
+
+    #[test]
+    fn open_history_entry_body_is_file_backed() {
+        let (d, data, id, entry) = history_fixture(b"hello history");
+        let root = d.path().join("coll");
+        write(
+            &root,
+            "collection.toml",
+            &format!("format = 1\nid = \"{}\"\n", id.as_str()),
+        );
+        let job = HistoryJob {
+            store: None,
+            root,
+            data: data.clone(),
+        };
+        let bodies = BodyStore::new(1024);
+        let (_, handle) = job.load_entry(&entry, &bodies).unwrap();
+        let handle = handle.expect("stored body");
+        assert_eq!(handle.len, 13);
+        assert!(!bodies.is_spilled(&handle));
+        assert_eq!(bodies.read(&handle, 0, 100).unwrap(), b"hello history");
+        let path = HistoryStore::open(&data, &id).body_path(&entry.id).unwrap();
+        bodies.release(&handle);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn history_read_only_use_mints_no_id() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("coll");
+        let text = "# mine\nformat = 1\n";
+        write(&root, "collection.toml", text);
+        let job = || HistoryJob {
+            store: None,
+            root: root.clone(),
+            data: DataDir::at(d.path().join("data")),
+        };
+        assert!(job().list().unwrap().is_empty());
+        job().clear().unwrap();
+        let entry = history_fixture(b"x").3;
+        let bodies = BodyStore::new(1024);
+        assert!(job().load_entry(&entry, &bodies).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("collection.toml")).unwrap(),
+            text
+        );
     }
 }

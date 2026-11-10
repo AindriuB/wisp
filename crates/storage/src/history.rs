@@ -699,27 +699,43 @@ impl HistoryStore {
 
     /// The stored request, response headers and body of one entry.
     pub fn load(&self, entry_id: &str) -> Result<StoredEntry, StorageError> {
+        let mut stored = self.load_without_body(entry_id)?;
+        let [bin, _] = self.body_files(entry_id);
+        stored.body = match fs::read(&bin) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(io(&bin, e)),
+        };
+        Ok(stored)
+    }
+
+    /// Like [`HistoryStore::load`] but leaves `body` empty; see [`HistoryStore::body_path`].
+    pub fn load_without_body(&self, entry_id: &str) -> Result<StoredEntry, StorageError> {
         if !valid_id(entry_id) {
             return Err(StorageError::History {
                 message: format!("invalid entry id `{entry_id}`"),
             });
         }
-        let [bin, req] = self.body_files(entry_id);
+        let [_, req] = self.body_files(entry_id);
         let raw = fs::read(&req).map_err(|e| io(&req, e))?;
         let file: ReqFile = serde_json::from_slice(&raw).map_err(|e| StorageError::Parse {
             path: req.clone(),
             message: e.to_string(),
         })?;
-        let body = match fs::read(&bin) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(io(&bin, e)),
-        };
         Ok(StoredEntry {
             request: file.request,
             response_headers: file.response_headers,
-            body,
+            body: Vec::new(),
         })
+    }
+
+    /// Path of an entry's stored body file, if one exists.
+    pub fn body_path(&self, entry_id: &str) -> Option<PathBuf> {
+        if !valid_id(entry_id) {
+            return None;
+        }
+        let [bin, _] = self.body_files(entry_id);
+        bin.is_file().then_some(bin)
     }
 
     /// Remove this collection's history.

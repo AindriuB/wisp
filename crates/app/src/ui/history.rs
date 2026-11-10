@@ -62,7 +62,7 @@ pub fn now_ms() -> u64 {
 }
 
 /// The Notice shown when a from-history tab is sent again.
-pub fn resend_notice(env: Option<&str>, redacted: &[String]) -> String {
+pub fn resend_notice(env: Option<&str>, redacted: &[String], original_missing: bool) -> String {
     let mut text = format!(
         "Resent with the current environment ({})",
         env.unwrap_or("no environment")
@@ -70,6 +70,9 @@ pub fn resend_notice(env: Option<&str>, redacted: &[String]) -> String {
     if !redacted.is_empty() {
         text.push_str("; redacted values were not stored: ");
         text.push_str(&redacted.join(", "));
+    }
+    if original_missing {
+        text.push_str("; the original request was not found, so only collection defaults applied");
     }
     text
 }
@@ -172,7 +175,7 @@ impl HistoryView {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { job.open()?.list().map_err(|e| e.to_string()) })
+                .spawn(async move { job.list() })
                 .await;
             this.update(cx, |this, cx| {
                 if this.generation != generation {
@@ -345,16 +348,28 @@ mod tests {
     #[test]
     fn resend_notice_with_and_without_names_and_environment() {
         assert_eq!(
-            resend_notice(Some("dev"), &[]),
+            resend_notice(Some("dev"), &[], false),
             "Resent with the current environment (dev)"
         );
         assert_eq!(
-            resend_notice(None, &[]),
+            resend_notice(None, &[], false),
             "Resent with the current environment (no environment)"
         );
         assert_eq!(
-            resend_notice(Some("dev"), &["Authorization".into(), "token".into()]),
+            resend_notice(
+                Some("dev"),
+                &["Authorization".into(), "token".into()],
+                false
+            ),
             "Resent with the current environment (dev); redacted values were not stored: Authorization, token"
+        );
+    }
+
+    #[test]
+    fn resend_notice_says_when_the_original_request_is_gone() {
+        assert_eq!(
+            resend_notice(None, &[], true),
+            "Resent with the current environment (no environment); the original request was not found, so only collection defaults applied"
         );
     }
 
@@ -365,6 +380,7 @@ mod tests {
             body_stored: true,
             body_truncated: false,
             redacted: Vec::new(),
+            request: None,
         };
         assert_eq!(origin_line(&o, 5 * 60_000), "From history, 5 min ago");
         o.body_truncated = true;

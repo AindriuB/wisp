@@ -43,6 +43,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 enum Entry {
     Memory(Vec<u8>),
     File(PathBuf),
+    /// A file owned by someone else; never deleted by this store.
+    Borrowed(PathBuf),
 }
 
 struct Inner {
@@ -195,7 +197,7 @@ impl BodyStore {
                     let end = start.saturating_add(len).min(data.len());
                     return Ok(data[start..end].to_vec());
                 }
-                Some(Entry::File(path)) => path.clone(),
+                Some(Entry::File(path) | Entry::Borrowed(path)) => path.clone(),
             }
         };
         if offset >= handle.len {
@@ -215,6 +217,14 @@ impl BodyStore {
 
     pub fn is_spilled(&self, handle: &BodyHandle) -> bool {
         matches!(self.inner.lock().get(&handle.id), Some(Entry::File(_)))
+    }
+
+    /// Registers an existing file of `len` bytes as a read-only body. The store
+    /// never deletes it: not on `release`, not when the store is dropped.
+    pub fn open_file(&self, path: PathBuf, len: u64) -> BodyHandle {
+        let id = BodyId(NEXT_ID.fetch_add(1, Ordering::Relaxed));
+        self.inner.lock().insert(id, Entry::Borrowed(path));
+        BodyHandle { id, len }
     }
 
     /// Frees the body, deleting its temp file if any. Unknown handles are ignored.
@@ -316,6 +326,24 @@ mod tests {
             w.write(c).unwrap();
         }
         w.finish().unwrap()
+    }
+
+    #[test]
+    fn borrowed_file_is_readable_and_survives_release_and_drop() {
+        let base = TempBase::new();
+        let path = base.0.join("owned.bin");
+        let data = bytes(1000);
+        std::fs::write(&path, &data).unwrap();
+        let store = BodyStore::with_spill_base(10, base.0.clone());
+        let h = store.open_file(path.clone(), data.len() as u64);
+        assert_eq!(store.read(&h, 990, 100).unwrap(), data[990..]);
+        assert!(!store.is_spilled(&h));
+        store.release(&h);
+        assert!(path.exists());
+        let h2 = store.open_file(path.clone(), data.len() as u64);
+        drop(store);
+        assert!(path.exists());
+        let _ = h2;
     }
 
     /// Test-owned base directory, removed on drop.

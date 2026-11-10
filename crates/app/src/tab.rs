@@ -84,6 +84,8 @@ pub struct HistoryOrigin {
     pub body_truncated: bool,
     /// Names whose values were not stored; never shown with a value.
     pub redacted: Vec<String>,
+    /// The entry's original request path, used only to scope Resend's resolve.
+    pub request: Option<String>,
 }
 
 pub struct RequestTab {
