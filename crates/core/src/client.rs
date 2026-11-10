@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::cookies::CookieJars;
 use crate::engine::err;
 use crate::model::{ClientSettings, EngineError, ErrorKind};
+use crate::timing::{Registry, TimedResolver, TimingLayer};
 
 /// One `reqwest::Client` per distinct `ClientSettings`.
 ///
@@ -15,6 +16,7 @@ use crate::model::{ClientSettings, EngineError, ErrorKind};
 pub(crate) struct ClientCache {
     clients: Mutex<HashMap<ClientSettings, reqwest::Client>>,
     jars: CookieJars,
+    timings: Arc<Registry>,
 }
 
 impl ClientCache {
@@ -22,7 +24,13 @@ impl ClientCache {
         Self {
             clients: Mutex::default(),
             jars,
+            timings: Arc::default(),
         }
+    }
+
+    /// The connect-timing registry shared by every client of this cache.
+    pub(crate) fn timings(&self) -> &Arc<Registry> {
+        &self.timings
     }
 
     /// The cookie jar of a collection.
@@ -46,6 +54,8 @@ impl ClientCache {
             .tls_backend_rustls()
             .tls_certs_only(roots)
             .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS)
+            .dns_resolver(Arc::new(TimedResolver))
+            .connector_layer(TimingLayer(self.timings.clone()))
             .cookie_provider(Arc::new(self.jars.jar(settings.collection.as_deref())));
         if !settings.verify_tls {
             builder = builder.tls_danger_accept_invalid_certs(true);

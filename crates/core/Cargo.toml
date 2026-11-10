@@ -27,8 +27,15 @@ percent-encoding.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 md-5.workspace = true
+hyper-util.workspace = true
+tower-layer.workspace = true
+tower-service.workspace = true
+http.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
 tokio.workspace = true
 rcgen.workspace = true
+h2 = "0.4"
+tokio-rustls = { version = "0.26", default-features = false }
+bytes = "1"

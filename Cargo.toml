@@ -49,5 +49,9 @@ tempfile = { version = "3", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 md-5 = { version = "0.10", default-features = false }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy"] }
+tower-layer = "0.3"
+tower-service = "0.3"
+http = "1"
 saphyr = { version = "0.3", default-features = false }
 saphyr-parser = "0.3"
