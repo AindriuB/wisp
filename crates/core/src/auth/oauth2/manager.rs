@@ -128,6 +128,8 @@ fn params<'a>(
 /// The token cache. One per engine.
 pub(crate) struct OAuth2 {
     cache: Mutex<HashMap<TokenKey, Entry>>,
+    /// Keys whose stored refresh token is stale: a forget failed, so `bearer` must not load it.
+    stale: Mutex<std::collections::HashSet<TokenKey>>,
     store: Arc<dyn RefreshTokenStore>,
     clock: Arc<dyn Clock>,
 }
@@ -153,9 +155,14 @@ impl OAuth2 {
     pub(crate) fn new(store: Arc<dyn RefreshTokenStore>, clock: Arc<dyn Clock>) -> Self {
         Self {
             cache: Mutex::default(),
+            stale: Mutex::default(),
             store,
             clock,
         }
+    }
+
+    fn stale(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<TokenKey>> {
+        self.stale.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<TokenKey, Entry>> {
@@ -203,11 +210,24 @@ impl OAuth2 {
             return;
         }
         if let Some(rt) = &resp.refresh_token {
-            if let Err(e) = self.store.save(&p.key, rt.expose()) {
-                tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+            match self.store.save(&p.key, rt.expose()) {
+                Ok(()) => {
+                    self.stale().remove(&p.key);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+                }
             }
-        } else if !keep_refresh && let Err(e) = self.store.forget(&p.key) {
-            tracing::warn!(error = %e, "cannot forget the stored refresh token");
+        } else if !keep_refresh {
+            match self.store.forget(&p.key) {
+                Ok(()) => {
+                    self.stale().remove(&p.key);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot forget the stored refresh token");
+                    self.stale().insert(p.key.clone());
+                }
+            }
         }
     }
 
@@ -243,16 +263,18 @@ impl OAuth2 {
                 let held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
                 let refresh = match held {
                     Some(r) => r,
-                    None if p.persist_refresh => match self.store.load(&p.key) {
-                        Ok(Some(r)) => Secret::new(r),
-                        Ok(None) => return Err(not_authorized()),
-                        Err(e) => {
-                            return Err(err(
-                                ErrorKind::Auth,
-                                format!("cannot read stored refresh token: {e}"),
-                            ));
+                    None if p.persist_refresh && !self.stale().contains(&p.key) => {
+                        match self.store.load(&p.key) {
+                            Ok(Some(r)) => Secret::new(r),
+                            Ok(None) => return Err(not_authorized()),
+                            Err(e) => {
+                                return Err(err(
+                                    ErrorKind::Auth,
+                                    format!("cannot read stored refresh token: {e}"),
+                                ));
+                            }
                         }
-                    },
+                    }
                     None => return Err(not_authorized()),
                 };
                 let fields = [

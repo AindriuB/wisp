@@ -1093,7 +1093,7 @@ async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
         assert_eq!(store.forgets.lock().unwrap().len(), 1);
         if fail_forget {
             // The failed forget leaves RT_X in the store; AuthCompleted was still emitted.
-            continue;
+            // The stale marker keeps the send from refreshing with RT_X (the mock expects 0).
         }
         clock.advance(Duration::from_secs(200));
         let evs = send(&engine, &rx, request(target.uri(), auth)).await;
