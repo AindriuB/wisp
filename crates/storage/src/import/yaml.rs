@@ -1,278 +1,183 @@
 //! YAML input for the OpenAPI importer, read into `serde_json::Value`.
 //!
-//! The parser expands aliases itself with a budget of 100,000 nodes; this
-//! module adds the depth and expanded-bytes checks the parser lacks.
+//! Events from `saphyr_parser` are folded into a value iteratively, enforcing
+//! the depth cap and an expanded-bytes budget (aliases included) as they
+//! arrive.
 
-use saphyr::{LoadableYamlNode, Scalar, Yaml};
+use std::collections::HashMap;
+
+use saphyr::Scalar;
+use saphyr_parser::{Event, Parser};
 use serde_json::{Map, Number, Value};
 
 use super::{ImportError, MAX_DEPTH, check_size};
 
-/// Parse one YAML document into a JSON value.
-pub fn parse(bytes: &[u8]) -> Result<Value, ImportError> {
-    check_size(bytes.len())?;
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| ImportError::Parse("input is not valid UTF-8".into()))?;
-    check_depth(text)?;
-    check_alias_bytes(text)?;
-    let docs = Yaml::load_from_str(text).map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("alias expansion exceeded") {
-            ImportError::TooLarge("YAML alias expansion over 100,000 nodes".into())
-        } else {
-            ImportError::Parse(msg)
-        }
-    })?;
-    let doc = docs
-        .into_iter()
-        .next()
-        .ok_or_else(|| ImportError::Parse("empty YAML document".into()))?;
-    to_value(&doc, 0)
+/// Total expanded bytes a document may produce, aliases included.
+const MAX_EXPANDED_BYTES: u64 = 64 * 1024 * 1024;
+/// Fixed cost charged per node, so empty nodes still count.
+const NODE_COST: u64 = 32;
+
+fn too_large() -> ImportError {
+    ImportError::TooLarge("YAML expanded over 64 MiB".into())
 }
 
-/// Total bytes alias expansion may produce, estimated before parsing.
-const MAX_ALIAS_BYTES: u64 = 64 * 1024 * 1024;
-
-enum Tok<'a> {
-    Open,
-    Close,
-    /// A `? ` complex-key indicator.
-    Complex,
-    Anchor(&'a str),
-    Alias(&'a str),
+/// An open container. `size` and `height` accumulate over its children.
+enum Frame {
+    Seq(Vec<Value>),
+    Map {
+        map: Map<String, Value>,
+        key: Option<String>,
+    },
 }
 
-/// Walk one trimmed line, reporting flow brackets, complex-key indicators,
-/// anchors and aliases. Quoted spans and comments are skipped, and brackets
-/// or quotes only count at the start of a token, so `x: a [` is a plain
-/// scalar. `flow` carries the open flow depth across lines; the callback gets
-/// it as it stands after the token.
-fn scan_line<'a>(line: &'a str, flow: &mut usize, f: &mut impl FnMut(Tok<'a>, usize)) {
-    let mut chars = line.char_indices().peekable();
-    let mut boundary = true;
-    while let Some((i, c)) = chars.next() {
-        let mut next_boundary = c.is_whitespace();
-        if boundary {
-            match c {
-                '#' => break,
-                '"' | '\'' => {
-                    while let Some((_, d)) = chars.next() {
-                        if c == '"' && d == '\\' {
-                            chars.next();
-                        } else if d == c {
-                            break;
-                        }
-                    }
-                    next_boundary = false;
-                }
-                '[' | '{' => {
-                    *flow += 1;
-                    f(Tok::Open, *flow);
-                }
-                '?' if chars.peek().is_none_or(|&(_, d)| d.is_whitespace()) => {
-                    f(Tok::Complex, *flow);
-                }
-                '&' | '*' => {
-                    let start = i + 1;
-                    let mut end = start;
-                    while let Some(&(j, d)) = chars.peek() {
-                        if d.is_whitespace() || matches!(d, ',' | '[' | ']' | '{' | '}') {
-                            break;
-                        }
-                        end = j + d.len_utf8();
-                        chars.next();
-                    }
-                    if end > start {
-                        let name = &line[start..end];
-                        f(
-                            if c == '&' {
-                                Tok::Anchor(name)
-                            } else {
-                                Tok::Alias(name)
-                            },
-                            *flow,
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-        if matches!(c, ']' | '}') && *flow > 0 {
-            *flow -= 1;
-            f(Tok::Close, *flow);
-        }
-        boundary = next_boundary || (*flow > 0 && matches!(c, '[' | '{' | ',' | ':'));
-    }
+struct Open {
+    frame: Frame,
+    anchor: usize,
+    size: u64,
+    height: usize,
 }
 
-/// Reject text whose block indentation, `-`/`?`/`:` indicator runs, flow
-/// brackets or complex keys nest too deeply.
-fn check_depth(text: &str) -> Result<(), ImportError> {
-    let mut indents: Vec<usize> = Vec::new();
-    let mut flow = 0usize;
-    let mut extra = 0usize;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if flow == 0 {
-            let indent = line.len() - trimmed.len();
-            while indents.last().is_some_and(|&i| i > indent) {
-                indents.pop();
-            }
-            if indents.last().is_none_or(|&i| i < indent) {
-                indents.push(indent);
-            }
-            // `- - ? x` nests without indentation.
-            let run = trimmed
-                .split_whitespace()
-                .take_while(|t| matches!(*t, "-" | "?" | ":"))
-                .count();
-            if indents.len() + run > MAX_DEPTH + 1 {
-                return Err(ImportError::TooDeep);
-            }
-        }
-        let base = indents.len();
-        let mut too_deep = false;
-        scan_line(trimmed, &mut flow, &mut |tok, fl| match tok {
-            Tok::Open => too_deep |= fl + extra + base > MAX_DEPTH + 1,
-            Tok::Complex => {
-                extra += 1;
-                too_deep |= fl + extra + base > MAX_DEPTH + 1;
-            }
-            _ => {}
-        });
-        if too_deep {
-            return Err(ImportError::TooDeep);
-        }
-        if flow == 0 {
-            extra = 0;
-        }
-    }
-    Ok(())
+struct Anchored {
+    value: Value,
+    size: u64,
+    height: usize,
 }
 
-struct OpenAnchor<'a> {
-    name: &'a str,
-    start: usize,
-    indent: usize,
-    dash: bool,
-    acc: u64,
-}
-
-/// Estimate the bytes alias expansion will produce and reject a document
-/// over the budget. An anchor's size is the text it spans (until a later line
-/// at the same or lower indent) plus the sizes of the aliases inside it, so
-/// nested aliases of a large anchor are counted at their expanded size.
-fn check_alias_bytes(text: &str) -> Result<(), ImportError> {
-    use std::collections::HashMap;
-    let too_large = || ImportError::TooLarge("YAML alias expansion over 64 MiB".into());
-    let mut stack: Vec<OpenAnchor<'_>> = Vec::new();
-    let mut sizes: HashMap<&str, u64> = HashMap::new();
-    let mut total = 0u64;
-    let mut flow = 0usize;
-    let mut offset = 0usize;
-    fn close<'a>(stack: &mut Vec<OpenAnchor<'a>>, sizes: &mut HashMap<&'a str, u64>, end: usize) {
-        if let Some(top) = stack.pop() {
-            sizes.insert(top.name, (end - top.start) as u64 + top.acc);
-            if let Some(parent) = stack.last_mut() {
-                parent.acc = parent.acc.saturating_add(top.acc);
-            }
-        }
-    }
-    for raw in text.split_inclusive('\n') {
-        let line_start = offset;
-        offset += raw.len();
-        let line = raw.trim_end_matches(['\n', '\r']);
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len() - trimmed.len();
-        let dash = trimmed == "-" || trimmed.starts_with("- ");
-        if flow == 0 {
-            while stack
-                .last()
-                .is_some_and(|t| t.indent > indent || (t.indent == indent && (t.dash || !dash)))
-            {
-                close(&mut stack, &mut sizes, line_start);
-            }
-        }
-        let mut over = false;
-        scan_line(trimmed, &mut flow, &mut |tok, _| match tok {
-            Tok::Anchor(name) => stack.push(OpenAnchor {
-                name,
-                start: line_start,
-                indent,
-                dash,
-                acc: 0,
-            }),
-            Tok::Alias(name) => {
-                let size = stack
-                    .iter()
-                    .rev()
-                    .find(|t| t.name == name)
-                    .map(|t| (line_start - t.start) as u64 + t.acc)
-                    .or_else(|| sizes.get(name).copied())
-                    .unwrap_or(0);
-                total = total.saturating_add(size);
-                if let Some(top) = stack.last_mut() {
-                    top.acc = top.acc.saturating_add(size);
-                }
-                over |= total > MAX_ALIAS_BYTES;
-            }
-            _ => {}
-        });
-        if over {
-            return Err(too_large());
-        }
-    }
-    while !stack.is_empty() {
-        close(&mut stack, &mut sizes, text.len());
-    }
-    Ok(())
-}
-
-fn key_string(y: &Yaml<'_>) -> String {
-    match y {
-        Yaml::Value(Scalar::String(s)) => s.to_string(),
-        Yaml::Value(Scalar::Integer(i)) => i.to_string(),
-        Yaml::Value(Scalar::Boolean(b)) => b.to_string(),
-        Yaml::Value(Scalar::FloatingPoint(f)) => f.0.to_string(),
-        Yaml::Representation(s, _, _) => s.to_string(),
+fn key_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
         _ => String::new(),
     }
 }
 
-fn to_value(y: &Yaml<'_>, depth: usize) -> Result<Value, ImportError> {
-    if depth > MAX_DEPTH + 1 {
-        return Err(ImportError::TooDeep);
-    }
-    Ok(match y {
-        Yaml::Value(Scalar::Null) => Value::Null,
-        Yaml::Value(Scalar::Boolean(b)) => Value::Bool(*b),
-        Yaml::Value(Scalar::Integer(i)) => Value::Number((*i).into()),
-        Yaml::Value(Scalar::FloatingPoint(f)) => {
-            Number::from_f64(f.0).map_or(Value::Null, Value::Number)
-        }
-        Yaml::Value(Scalar::String(s)) => Value::String(s.to_string()),
-        Yaml::Representation(s, _, _) => Value::String(s.to_string()),
-        Yaml::Sequence(seq) => Value::Array(
-            seq.iter()
-                .map(|v| to_value(v, depth + 1))
-                .collect::<Result<_, _>>()?,
-        ),
-        Yaml::Mapping(map) => {
-            let mut out = Map::new();
-            for (k, v) in map {
-                out.insert(key_string(k), to_value(v, depth + 1)?);
+/// Parse one YAML document into a JSON value.
+///
+/// The document is read as a stream of parser events, iteratively. Container
+/// depth and the expanded size of every anchor are tracked as events arrive,
+/// so a hostile document fails before it is built.
+pub fn parse(bytes: &[u8]) -> Result<Value, ImportError> {
+    check_size(bytes.len())?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| ImportError::Parse("input is not valid UTF-8".into()))?;
+    let mut parser = Parser::new_from_str(text);
+    let mut stack: Vec<Open> = Vec::new();
+    let mut anchors: HashMap<usize, Anchored> = HashMap::new();
+    let mut total: u64 = 0;
+    let mut root: Option<Value> = None;
+
+    while let Some(ev) = parser.next_event() {
+        let (ev, _) = ev.map_err(|e| {
+            let msg = e.to_string();
+            // The scanner's own nesting limit for flow collections.
+            if msg.contains("recursion limit exceeded") {
+                ImportError::TooDeep
+            } else {
+                ImportError::Parse(msg)
             }
-            Value::Object(out)
+        })?;
+        // A finished node: (value, anchor id, size, height).
+        let done: (Value, usize, u64, usize) = match ev {
+            Event::DocumentEnd if root.is_some() => break,
+            Event::StreamEnd => break,
+            Event::Scalar(v, style, aid, tag) => {
+                let size = (v.len() as u64).saturating_add(NODE_COST);
+                total = total.saturating_add(size);
+                if total > MAX_EXPANDED_BYTES {
+                    return Err(too_large());
+                }
+                let scalar = Scalar::parse_from_cow_and_metadata(v.clone(), style, tag.as_ref())
+                    .unwrap_or(Scalar::String(v));
+                let value = match scalar {
+                    Scalar::Null => Value::Null,
+                    Scalar::Boolean(b) => Value::Bool(b),
+                    Scalar::Integer(i) => Value::Number(i.into()),
+                    Scalar::FloatingPoint(f) => {
+                        Number::from_f64(f.0).map_or(Value::Null, Value::Number)
+                    }
+                    Scalar::String(s) => Value::String(s.into_owned()),
+                };
+                (value, aid, size, 0)
+            }
+            Event::Alias(id) => {
+                let a = anchors
+                    .get(&id)
+                    .ok_or_else(|| ImportError::Parse("unknown YAML alias".into()))?;
+                if stack.len().saturating_add(a.height) > MAX_DEPTH {
+                    return Err(ImportError::TooDeep);
+                }
+                total = total.saturating_add(a.size);
+                if total > MAX_EXPANDED_BYTES {
+                    return Err(too_large());
+                }
+                (a.value.clone(), 0, a.size, a.height)
+            }
+            Event::SequenceStart(aid, _) | Event::MappingStart(aid, _) => {
+                if stack.len() >= MAX_DEPTH {
+                    return Err(ImportError::TooDeep);
+                }
+                total = total.saturating_add(NODE_COST);
+                if total > MAX_EXPANDED_BYTES {
+                    return Err(too_large());
+                }
+                let frame = if matches!(ev, Event::SequenceStart(..)) {
+                    Frame::Seq(Vec::new())
+                } else {
+                    Frame::Map {
+                        map: Map::new(),
+                        key: None,
+                    }
+                };
+                stack.push(Open {
+                    frame,
+                    anchor: aid,
+                    size: NODE_COST,
+                    height: 1,
+                });
+                continue;
+            }
+            Event::SequenceEnd | Event::MappingEnd => {
+                let open = stack
+                    .pop()
+                    .ok_or_else(|| ImportError::Parse("unbalanced YAML".into()))?;
+                let value = match open.frame {
+                    Frame::Seq(items) => Value::Array(items),
+                    Frame::Map { map, .. } => Value::Object(map),
+                };
+                (value, open.anchor, open.size, open.height)
+            }
+            _ => continue,
+        };
+        let (value, anchor, size, height) = done;
+        if anchor != 0 {
+            anchors.insert(
+                anchor,
+                Anchored {
+                    value: value.clone(),
+                    size,
+                    height,
+                },
+            );
         }
-        Yaml::Tagged(_, inner) => to_value(inner, depth)?,
-        Yaml::Alias(_) | Yaml::BadValue => Value::Null,
-    })
+        match stack.last_mut() {
+            None => root = Some(value),
+            Some(top) => {
+                top.size = top.size.saturating_add(size);
+                top.height = top.height.max(height + 1);
+                match &mut top.frame {
+                    Frame::Seq(items) => items.push(value),
+                    Frame::Map { map, key } => match key.take() {
+                        None => *key = Some(key_string(&value)),
+                        Some(k) => {
+                            map.insert(k, value);
+                        }
+                    },
+                }
+            }
+        }
+    }
+    root.ok_or_else(|| ImportError::Parse("empty YAML document".into()))
 }
 
 #[cfg(test)]
@@ -334,17 +239,55 @@ mod tests {
                 "? ".repeat(100_000) + "1",
                 format!("{}1{}", "{? ".repeat(2000), "}".repeat(2000)),
             ] {
+                let r = parse(s.as_bytes());
+                assert!(
+                    matches!(r, Err(ImportError::TooDeep)),
+                    "{r:?} for {}",
+                    &s[..20]
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn stray_brackets_do_not_bypass_depth() {
+        let deep = "- ".repeat(100_000) + "1";
+        let cases = [
+            format!("x: a [\ny:\n{deep}"),
+            format!("description: Ranges like [0, 10)\ny:\n{deep}"),
+            format!("x: |\n  [\ny:\n{deep}"),
+            format!("x: \"a\n  [ b\"\ny:\n{deep}"),
+        ];
+        on_small_stack(move || {
+            for s in cases {
                 assert!(matches!(parse(s.as_bytes()), Err(ImportError::TooDeep)));
             }
         });
     }
 
     #[test]
-    fn unbalanced_bracket_in_scalar_keeps_depth_check() {
-        let mut s = String::from("x: a [\n");
-        for i in 0..100 {
-            s.push_str(&" ".repeat(i));
-            s.push_str("k:\n");
+    fn aliases_hidden_in_flow_are_too_large() {
+        let big = "a".repeat(1024 * 1024);
+        let one_line = format!("x: [&b \"{big}\"{}]\n", ", *b".repeat(700));
+        let multi = format!(
+            "b: &b \"{big}\"\nlist: [\"s\n  \"{}, \"s\n  \"]\n",
+            ", *b".repeat(100)
+        );
+        on_small_stack(move || {
+            for s in [one_line, multi] {
+                let start = std::time::Instant::now();
+                let r = parse(s.as_bytes());
+                assert!(matches!(r, Err(ImportError::TooLarge(_))), "{r:?}");
+                assert!(start.elapsed().as_secs() < 5);
+            }
+        });
+    }
+
+    #[test]
+    fn nested_alias_depth_is_too_deep() {
+        let mut s = String::from("a0: &a0 [x]\n");
+        for i in 1..70 {
+            s.push_str(&format!("a{i}: &a{i} [*a{}]\n", i - 1));
         }
         on_small_stack(move || {
             assert!(matches!(parse(s.as_bytes()), Err(ImportError::TooDeep)));

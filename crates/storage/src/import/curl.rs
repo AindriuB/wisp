@@ -17,6 +17,7 @@ const IGNORED_SHORT_WITH_ARG: &str = "oAemxwETKycDrUzCtQPY";
 /// Long options that take an argument and are not imported.
 const IGNORED_LONG_WITH_ARG: &[&str] = &[
     "output",
+    "json",
     "user-agent",
     "referer",
     "max-time",
@@ -264,17 +265,6 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                 "data-urlencode" => {
                     let v = need(&mut args, &arg)?;
                     add_urlencoded(&mut f, v);
-                }
-                "json" => {
-                    let v = need(&mut args, &arg)?;
-                    add_data(&mut f, "json", v);
-                    if !f
-                        .headers
-                        .iter()
-                        .any(|h| h.to_ascii_lowercase().starts_with("content-type:"))
-                    {
-                        f.headers.push("Content-Type: application/json".into());
-                    }
                 }
                 "form" => f.form.push(need(&mut args, &arg)?),
                 "user" => f.user = Some(need(&mut args, &arg)?),
@@ -717,13 +707,10 @@ mod tests {
     }
 
     #[test]
-    fn json_option_sets_body_and_content_type() {
-        let (r, _) = req(r#"curl --json '{"a":1}' https://h/x"#);
+    fn json_option_takes_its_argument_and_warns() {
+        let (r, w) = req(r#"curl --json '{"a":1}' https://h/x"#);
         assert_eq!(r.url, "https://h/x");
-        assert_eq!(header(&r, "content-type"), Some("application/json"));
-        let Body::Json(t) = &r.body else {
-            panic!("expected JSON body")
-        };
-        assert_eq!(t.content, r#"{"a":1}"#);
+        assert!(matches!(r.body, Body::None));
+        assert!(w.warnings.iter().any(|m| m.message.contains("--json")));
     }
 }

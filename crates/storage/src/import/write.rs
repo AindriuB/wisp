@@ -82,6 +82,7 @@ pub fn write(
             }
         }
     }
+    let mut env_next: std::collections::HashMap<String, usize> = Default::default();
     for env in &result.environments {
         let wanted = if env.name == SECRETS_ENV_PLACEHOLDER {
             secrets_env
@@ -93,10 +94,15 @@ pub fn write(
             base = "imported".into();
         }
         let mut name = base.clone();
-        let mut n = 2;
-        while env_taken.contains(&name.to_ascii_lowercase()) {
-            name = format!("{base}-{n}");
-            n += 1;
+        if env_taken.contains(&name.to_ascii_lowercase()) {
+            let n = env_next.entry(base.to_ascii_lowercase()).or_insert(2);
+            loop {
+                name = format!("{base}-{n}");
+                *n += 1;
+                if !env_taken.contains(&name.to_ascii_lowercase()) {
+                    break;
+                }
+            }
         }
         env_taken.insert(name.to_ascii_lowercase());
         save_environment(
@@ -236,5 +242,24 @@ mod tests {
         assert_eq!(unique("A", &mut t), "A");
         assert_eq!(unique("a", &mut t), "a 2");
         assert_eq!(unique("A", &mut t), "A 3");
+    }
+
+    #[test]
+    fn many_same_named_environments_are_numbered_quickly() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("collection.toml"), "format = 1\n").unwrap();
+        let mut r = ImportResult::default();
+        for _ in 0..1500 {
+            r.environments.push(super::super::ImportedEnv {
+                name: "a".into(),
+                vars: Vec::new(),
+                secrets: Vec::new(),
+            });
+        }
+        let start = std::time::Instant::now();
+        let report = write(d.path(), Path::new(""), &r, "imported").unwrap();
+        assert_eq!(report.environments, 1500);
+        assert_eq!(report.renamed.last().unwrap().1, "a-1500");
+        assert!(start.elapsed().as_secs() < 20);
     }
 }

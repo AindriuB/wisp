@@ -72,7 +72,7 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
         ..ImportResult::default()
     };
     let root = result.name.clone();
-    environments(&doc, &mut result);
+    environments(&doc, &mut result)?;
     if doc
         .get("components")
         .and_then(|c| c.get("securitySchemes"))
@@ -134,7 +134,40 @@ pub(super) fn env_name(s: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
-fn environments(doc: &Value, result: &mut ImportResult) {
+/// Longest server URL accepted after variable substitution.
+const MAX_URL_BYTES: usize = 64 * 1024;
+
+/// Replace `{name}` placeholders in one pass over the original URL; text
+/// substituted in is never rescanned.
+fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String, ImportError> {
+    let too_long = || ImportError::TooLarge(format!("server URL over {MAX_URL_BYTES} bytes"));
+    let mut out = String::new();
+    let mut rest = url;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('}') {
+            Some(close) if vars.contains_key(&after[..close]) => {
+                out.push_str(&text(vars[&after[..close]].get("default")));
+                rest = &after[close + 1..];
+            }
+            _ => {
+                out.push('{');
+                rest = after;
+            }
+        }
+        if out.len() > MAX_URL_BYTES {
+            return Err(too_long());
+        }
+    }
+    out.push_str(rest);
+    if out.len() > MAX_URL_BYTES {
+        return Err(too_long());
+    }
+    Ok(out)
+}
+
+fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportError> {
     let root = result.name.clone();
     let servers = doc.get("servers").and_then(Value::as_array);
     let Some(servers) = servers.filter(|s| !s.is_empty()) else {
@@ -142,14 +175,18 @@ fn environments(doc: &Value, result: &mut ImportResult) {
             &root,
             "no `servers`; set the `baseUrl` variable before sending",
         );
-        return;
+        return Ok(());
     };
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut next: HashMap<String, usize> = HashMap::new();
     for (i, s) in servers.iter().enumerate() {
         let mut url = text(s.get("url"));
         if let Some(vars) = s.get("variables").and_then(Value::as_object) {
-            for (k, v) in vars {
-                url = url.replace(&format!("{{{k}}}"), &text(v.get("default")));
-            }
+            url = substitute(&url, vars)?;
+        } else if url.len() > MAX_URL_BYTES {
+            return Err(ImportError::TooLarge(format!(
+                "server URL over {MAX_URL_BYTES} bytes"
+            )));
         }
         let desc = text(s.get("description"));
         let mut name = env_name(if desc.is_empty() { &url } else { &desc });
@@ -157,11 +194,17 @@ fn environments(doc: &Value, result: &mut ImportResult) {
             name = format!("server-{}", i + 1);
         }
         let mut unique = name.clone();
-        let mut n = 2;
-        while result.environments.iter().any(|e| e.name == unique) {
-            unique = format!("{name}-{n}");
-            n += 1;
+        if taken.contains(&unique) {
+            let n = next.entry(name.clone()).or_insert(2);
+            loop {
+                unique = format!("{name}-{n}");
+                *n += 1;
+                if !taken.contains(&unique) {
+                    break;
+                }
+            }
         }
+        taken.insert(unique.clone());
         result.environments.push(ImportedEnv {
             name: unique,
             vars: vec![Var {
@@ -171,6 +214,7 @@ fn environments(doc: &Value, result: &mut ImportResult) {
             secrets: Vec::new(),
         });
     }
+    Ok(())
 }
 
 /// Follow local `$ref`s; warn on external refs and cycles.
@@ -526,5 +570,56 @@ mod tests {
         let r = parse(doc.as_bytes()).unwrap();
         assert_eq!(requests(&r.items)[0].params.len(), 60_000);
         assert!(t.elapsed().as_secs() < 2);
+    }
+
+    #[test]
+    fn server_variable_bomb_is_too_large() {
+        let doc = serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "paths": {},
+            "servers": [{
+                "url": "{a}".repeat(1000),
+                "variables": {
+                    "a": {"default": "{b}".repeat(1000)},
+                    "b": {"default": "x".repeat(200)}
+                }
+            }]
+        });
+        let start = std::time::Instant::now();
+        let r = parse(doc.to_string().as_bytes());
+        assert!(matches!(r, Err(ImportError::TooLarge(_))), "{r:?}");
+        assert!(start.elapsed().as_secs() < 2);
+    }
+
+    #[test]
+    fn server_variables_substitute_once() {
+        let doc = serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "paths": {},
+            "servers": [{
+                "url": "https://{h}/{v}",
+                "variables": {"h": {"default": "{v}"}, "v": {"default": "api"}}
+            }]
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        assert_eq!(r.environments[0].vars[0].value, "https://{v}/api");
+    }
+
+    #[test]
+    fn many_identical_servers_name_quickly() {
+        let servers: Vec<_> = (0..3000).map(|_| serde_json::json!({"url": "a"})).collect();
+        let doc = serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "paths": {},
+            "servers": servers
+        });
+        let start = std::time::Instant::now();
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        assert!(start.elapsed().as_secs() < 2);
+        assert_eq!(r.environments.len(), 3000);
+        assert_eq!(r.environments[2999].name, "a-3000");
     }
 }
