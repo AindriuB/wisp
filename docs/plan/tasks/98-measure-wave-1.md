@@ -46,3 +46,13 @@ are recorded and must stay within their budgets in `scripts/measure/budgets.json
 ## Amendment — orchestrator (2026-11-09)
 
 Do not merge branches 91-97 into this branch. Every branch goes through a PR, so 98 starts only after 91-97 have merged into main. Rebase onto origin/main, then dispatch measure.yml (or the release dry run) against main and read its numbers. The gate is unchanged: fail if the Windows binary is over 15,500,000 bytes, or if any target is over its budget. Record the numbers in `## Notes`. No code changes.
+
+## Measured results (run 42823763145, commit 71f9e1a, main with 91-97 merged)
+
+Run: https://github.com/AindriuB/wisp/actions/runs/42823763145 (conclusion success). Gate: Windows binary <= 15,500,000 B: PASS.
+
+| Target | binary_bytes | Change vs last recorded | Idle / after request RSS (KiB) | within_budget |
+|---|---|---|---|---|
+| aarch64-apple-darwin | 11,049,104 | -8,131,952 vs 19,181,056 (task 63 CI) | 92,112 / 96,768 | true |
+| x86_64-pc-windows-msvc | 14,514,688 | +884,224 vs 13,630,464 (task 77) | 41,748 / 50,888 (private 36,004 / 40,732) | true |
+| x86_64-unknown-linux-gnu | 24,799,280 | -13,193,720 vs 37,993,000 (task 63 CI) | 180,372 / 175,728 (RssAnon 63,180 / 51,508) | true |
