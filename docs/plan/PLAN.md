@@ -75,7 +75,10 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] Postman folders count toward no cap (about 870k empty folders fit in 10 MiB).
 - [P3] An environment name that is a reserved device name (for example server description "con") aborts the import partway through.
 - [P3] openapi.rs:451-458 (34-22, Nit): the example budget is charged after `to_string_pretty`, so a deep example briefly allocates about 60 times its size (728 MB peak for 9.8 MiB).
-- [P3] curl.rs:18-86: long options missing from the arg list still swallow the URL (`--tlspassword`, `--proxy-pass`, `--connect-to`, `--proto`, `--tlsuser`, `--sasl-authzid`, `--login-options`, `--ftp-account`, `--hostpubsha256`). Build the list from `curl --help all`.
+- [P3] 34-34 postman.rs:65: generated secret names can shadow collection variables, which they outrank at resolve time; reserve collection var keys in SecretSink first.
+- [P3] 34-35 postman.rs:195: unsupported auth types fall back to Inherit and get overwritten by URL userinfo, contradicting the warning; apply userinfo only when no auth object exists.
+- [P3] 34-36 tests/import.rs:199: credential end-to-end test skips URL userinfo and the secrets .gitignore.
+- [P3] openapi.rs: an OpenAPI server `description` becomes the environment file name, so credentials typed into a description reach a file name.
 - [P3] `unique` in write.rs is quadratic in the number of colliding names; use a HashSet plus a per-base counter, as postman.rs does.
 - [P3] `key_string` (yaml.rs) silently collapses null, sequence and mapping keys.
 - [P3] 34-9 curl.rs:467: `-d` without Content-Type becomes text/plain; curl sends urlencoded.
