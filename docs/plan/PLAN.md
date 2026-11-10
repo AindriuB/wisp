@@ -75,6 +75,20 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] core body.rs:206: a borrowed history body deleted by Clear or eviction while its tab is open reads as "unknown body handle: BodyId(n)"; show "history body was removed".
 - [P2] settings.toml location ignores WISP_DATA_DIR: the hand-check's test build wrote `history_bodies = false` into the user's real ~/Library/Application Support/wisp/settings.toml (removed afterwards). Test builds need an isolated settings location (honour WISP_DATA_DIR or add WISP_CONFIG_DIR) so hand-checks cannot touch real settings.
 - [NOTE] Resend tests exercise the scope helper, not `Workspace::send` (no gpui test harness).
+- [P3] 38-5 workspace.rs:647: storing a resend loses the original redacted list, so a later resend gives no warning.
+- [P3] 38-6 history.rs:163: after a collection switch the panel shows old rows until reload finishes; set Loading at reload start.
+- [P3] 38-7 root.rs:181: toggling the panel closed drops it without restoring focus.
+- [P3] 38-8 workspace.rs:812: with history_bodies off the body is still read on the UI thread.
+- [P3] 38-9 ui/history.rs:228: each render deep-clones up to 500 entries for click closures.
+- [P3] 38-10 settings.rs:381: round-trip test doesn't assert the written file text.
+- [P3] 38-11 ui/history.rs:434: storage test lives in the app UI module with a pid temp dir.
+- [P3] any redacted `auth.*` field resets auth to Inherit, including non-secret fields (ApiKey header name, SigV4 region/service) because storage over-redacts them; fix the redaction in storage.
+- [P3] tab.rs:87-89: the Resend notice keeps listing disabled headers after the user re-enables and fills them.
+- [P3] core body.rs:210-214: on Windows a pending-delete history body opens with PermissionDenied, not NotFound, so it shows a generic Io error instead of Removed.
+- [P3] storage history.rs:741-760: no test covers clear's best-effort deletes and later orphan sweep.
+- [P3] workspace.rs empty_json_leaves: keys compared in raw escaped form vs decoded names stored by the redactor (escaped keys never match); the `{{` branch skips to the first `}}` regardless of content.
+- [P3] workspace.rs test `long_key_with_many_empty_leaves_is_fast` asserts < 1 s wall-clock; may flake on slow CI.
+- [IDEA] Export storage's `mask_bare_refs` and use serde_json in the app for the redacted-body check instead of the hand-rolled scanner.
 
 ### Follow-ups from task 96 (not 0.2.0 wave 1)
 - [P3] 37-5 import.rs:435: warnings are shown verbatim; a malformed curl header can echo its token (fix at source, task 99 AC19).
