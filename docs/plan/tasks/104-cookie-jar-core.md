@@ -55,3 +55,15 @@ cargo writes no JUnit XML here, so tests are `command` checks.
 - Choosing the collection id or when a jar is loaded from or saved to disk (task 107).
 - `engine.rs` beyond the seam in Owns, `timing.rs`, `auth/oauth2/**` (tasks 103, 105).
 - The response-side `Set-Cookie` display in `crates/app/src/cookies.rs`.
+
+## Amendment 1
+User decision 2026-11-10: the jar enforces a bundled public-suffix list, so a response cannot set a cookie for a public suffix (`com`, `co.uk`, ...). Such `Set-Cookie` lines are rejected, as browsers do.
+- Build every jar with `cookie_store::CookieStore::new_with_public_suffix` (or equivalent), including the jars `load` builds.
+- Source of the list: prefer one already in the dependency tree, or a crate that embeds the list. If the only route is fetching `public_suffix_list.dat` from the network, STOP and report: downloads need the user's approval.
+- Size: Windows was 14,736,384 B after this task's first commit. Measure again and report the delta from that figure; the 15,500,000 B gate (AC7) still holds, and if it is exceeded, stop and report.
+
+- [ ] AC10 Against wiremock, in one collection: `Set-Cookie: x=1; Domain=com` from `https://evil.com` and `Set-Cookie: x=1; Domain=co.uk` from `https://evil.co.uk` are not stored (absent from `snapshot`) and not sent to `https://api.bank.com` or `https://bank.co.uk`. A `Domain=example.com` cookie from `https://www.example.com` is still stored and sent. The same holds for a jar populated through `load`.
+- [ ] AC11 The public-suffix list is parsed once per process (e.g. a `static` `OnceLock`/`LazyLock`), not per jar or per request.
+- [ ] AC12 The PR states the list's source (crate and version), the new lock entries, `binary_bytes` and its delta from 14,736,384.
+
+Checks: AC10 is covered by the `cookies` command (its tests live in `crates/core/tests/cookies.rs`); AC11 and AC12 by a `psl` read (how: the list is held in one process-wide static that every jar shares, and no network fetch exists in code or build scripts); the size gate by the `size` command.
