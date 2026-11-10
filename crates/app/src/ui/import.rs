@@ -531,6 +531,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wisp-import-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("collection.toml"), "format = 1\n").unwrap();
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../storage/tests/fixtures/import/postman.json"
