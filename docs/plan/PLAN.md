@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); see HISTORY. Tasks 103 (OAuth2 engine) and 104 (cookie jar) are now unblocked.
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); see HISTORY. Tasks 103 (OAuth2 engine) and 104 (cookie jar) are now unblocked.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -89,7 +89,6 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 ### Follow-ups from task 97 (not 0.2.0 wave 1)
 - [P3] workspace.rs:1006-1018: Save on a from-history tab does not clear `from_history`, so later sends of the saved request still show the "Resent..." notice.
 - [P3] core body.rs:206: a borrowed history body deleted by Clear or eviction while its tab is open reads as "unknown body handle: BodyId(n)"; show "history body was removed".
-- [P2] settings.toml location ignores WISP_DATA_DIR: the hand-check's test build wrote `history_bodies = false` into the user's real ~/Library/Application Support/wisp/settings.toml (removed afterwards). Test builds need an isolated settings location (honour WISP_DATA_DIR or add WISP_CONFIG_DIR) so hand-checks cannot touch real settings.
 - [NOTE] Resend tests exercise the scope helper, not `Workspace::send` (no gpui test harness).
 - [P3] 38-5 workspace.rs:647: storing a resend loses the original redacted list, so a later resend gives no warning.
 - [P3] 38-6 history.rs:163: after a collection switch the panel shows old rows until reload finishes; set Loading at reload start.

@@ -156,8 +156,10 @@ my-api/
 
 ## Settings location
 
-`settings.toml` sits beside the executable when a file named `portable` is
-there, otherwise in the OS config directory. Apart from the per-user data dir
+`settings.toml` is located in this order: an absolute `WISP_DATA_DIR` override
+(`settings.toml` directly in that directory); then beside the executable when a
+file named `portable` is there; otherwise the OS config directory. A relative or
+empty `WISP_DATA_DIR` is ignored. Apart from the per-user data dir
 (history and cookies, from 0.2.0; see `plan/specs/2026-11-09-wisp-0-2-0.md`),
 nothing else is persisted outside the collection folder.
 
