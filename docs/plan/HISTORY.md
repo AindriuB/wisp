@@ -22,8 +22,12 @@ History no longer lives in the collection's `.wisp/history.jsonl`. `HistoryStore
 **Cost:** Review round 1 found two races: concurrent appends at the 500 cap lost an entry and orphaned its files, and concurrent first appends each minted a collection id. Appends are now serialised per store and the id is resolved once before any append. `Set-Cookie` redaction was added mid-task (Amendment 1) on the user's decision. `clear` does not take the append lock yet, and a nameless `Set-Cookie` is not redacted; both are in PLAN.
 
 **PR #35 review round 1:** redaction widened to URL userinfo, credential-named params, vars, form fields and JSON keys, plus a header-name heuristic; added a cross-process file lock and an orphan sweep; eviction is best-effort. Re-review found the lock file was opened without read access, which fails `File::lock` on Windows; fixed by opening it read+write. Templated JSON bodies mask `{{refs}}` before parsing so they are redacted, and unparseable bodies fail closed.
+
 **PR #35 review round 2:** the credential-name test now lives in one shared `wisp_core::redact::is_credential_name`; reviewer items 35-10, 35-11 and 35-12 are fixed, `clear` takes `APPEND_LOCK`, body files are removed only after the index rewrite, and re-review was clean after a test fix.
+
 **Cross-PR review:** importers and the history store now share `wisp_core::redact::is_credential_name`; `import/mod.rs` `is_credential_header` calls it.
+
+**PR #35 review round 4:** bare `{{$uuid}}`-style refs (a leading `$`) are now accepted as refs, so JSON bodies containing them are kept rather than failing closed.
 
 ## 2026-11-10 — curl, Postman and OpenAPI importers
 `wisp-storage` now imports a curl command line, a Postman collection (and environment) and an OpenAPI document (JSON or YAML) into a Wisp collection, with warnings for anything it does not map. Input is treated as hostile: JSON is capped at 10 MiB and YAML at 2 MiB, nesting depth at 64, expanded bytes (anchors and aliases included) at a 64 MiB budget, requests or operations at 5,000, and a server URL at 64 KiB. YAML is checked by an event-level pass over `saphyr_parser::Parser::next_event()`, which is a direct workspace dependency, and tracks depth and each anchor's expanded size iteratively.

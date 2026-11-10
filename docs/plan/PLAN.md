@@ -151,6 +151,12 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] `history.rs` `redact_json_body`: once anything is redacted the JSON body is re-serialised compactly (keys re-sorted, formatting lost, integers beyond i64/u64 become lossy f64).
 - [P3] `history.rs` `redact_json_body`: restoring masked `{{refs}}` uses one `text.replace` per ref, O(refs x body); do a single pass.
 - [P3] `history.rs`: path vars (`Request.path`) are not redacted.
+- [P3] 35-21 `history.rs:370`: `mask_bare_refs` is quadratic with allocation on bodies full of `{{` while both locks are held; scan forward over grammar chars only, then require `}}`.
+- [P3] 35-22 `history.rs:665`: duplicate ids in the index can delete files a surviving line still uses; skip deletion for ids still present.
+- [P3] 35-23 core `redact.rs:5`: public fixed-length array type; history repeats the body-matching logic inline. Expose a slice or `contains_credential_word`.
+- [P3] 35-24 `tests/history.rs:590`: no positive tests that padded, dotted, `$` and Unicode refs survive, or uppercase Text secrets.
+- [P3] 35-25 (Nit) `redact.rs:29`: test name `credential_names` is not a sentence.
+- [P3] 35-27 (Nit) `import/mod.rs:370`: `is_credential_header` is a one-line passthrough; call the core fn directly.
 - [NOTE] `history.rs`: `lock()` blocks without timeout while `APPEND_LOCK` is held, so a stalled second Wisp process stalls appends for every collection in this one.
 - [NOTE] Name heuristic over-redacts (e.g. `monkey`, `auth_url`, `token_url`); accepted.
 - [P2] CI builds only ubuntu and macos; the Windows `File::lock` bug in PR #35 would have shipped. Add at least a Windows `cargo check`/test job (or a cross `cargo check --target x86_64-pc-windows-msvc`).
