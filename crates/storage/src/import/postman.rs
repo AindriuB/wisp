@@ -815,4 +815,30 @@ mod tests {
         assert!(secrets.iter().any(|v| v.value == "SECRETK"));
         assert!(secrets.iter().any(|v| v.value == "SECRETT"));
     }
+
+    #[test]
+    fn odd_credential_header_names_get_resolvable_refs() {
+        let doc = serde_json::json!({
+            "info": {"name": "c", "_postman_id": "x",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [{"name": "r", "request": {"method": "GET", "url": "http://h/",
+                "header": [{"key": "{{apiKeyHeader}}", "value": "SECRETA"},
+                           {"key": "X-Key}}", "value": "SECRETB"},
+                           {"key": "X Api Key", "value": "SECRETC"}]}}]
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        let req = find(&r.items, "r");
+        assert!(!format!("{req:?}").contains("SECRET"));
+        let secrets = &r.environments[0].secrets;
+        assert_eq!(req.headers.len(), 3);
+        for (h, v) in req.headers.iter().zip(["SECRETA", "SECRETB", "SECRETC"]) {
+            let refs = wisp_core::template::var_refs(&h.value);
+            assert_eq!(refs.len(), 1, "{h:?}");
+            assert!(
+                secrets
+                    .iter()
+                    .any(|s| s.name == refs[0].name && s.value == v)
+            );
+        }
+    }
 }

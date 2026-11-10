@@ -296,6 +296,24 @@ pub(crate) struct SecretSink {
     next: std::collections::HashMap<String, usize>,
 }
 
+/// Lowercase ASCII alphanumerics and `_`; every other run becomes one `_`.
+/// Bounded in input scanned and output length.
+fn sanitize_name(raw: &str) -> String {
+    let mut out = String::new();
+    // Bound the input scanned too: punctuation produces no output.
+    for c in raw.chars().take(MAX_SECRET_BASE_BYTES * 4) {
+        if out.len() >= MAX_SECRET_BASE_BYTES {
+            break;
+        }
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out
+}
+
 impl SecretSink {
     /// Keep `{{refs}}` and empty values; move a literal into the secrets
     /// environment and return a reference to it.
@@ -303,18 +321,12 @@ impl SecretSink {
         if value.is_empty() || value.contains("{{") {
             return value;
         }
-        let mut base = String::new();
-        // Bound the input scanned too: punctuation produces no output.
-        for c in request.chars().take(MAX_SECRET_BASE_BYTES * 4) {
-            if base.len() >= MAX_SECRET_BASE_BYTES {
-                break;
-            }
-            if c.is_ascii_alphanumeric() {
-                base.push(c.to_ascii_lowercase());
-            } else if !base.ends_with('_') {
-                base.push('_');
-            }
-        }
+        let base = sanitize_name(request);
+        let field = {
+            let f = sanitize_name(field);
+            let f = f.trim_matches('_');
+            if f.is_empty() { "value" } else { f }.to_string()
+        };
         let base = format!(
             "{}{field}",
             if base.is_empty() {

@@ -1215,4 +1215,23 @@ mod tests {
             assert!(secrets.iter().any(|s| s.name == refs[0].name));
         }
     }
+
+    #[test]
+    fn odd_credential_header_names_get_resolvable_refs() {
+        let (r, res) = req(
+            "curl -H '{{apiKeyHeader}}: SECRETA' -H 'X-Key}}: SECRETB' -H 'X Api Key: SECRETC' http://h/x",
+        );
+        assert!(!format!("{r:?}").contains("SECRET"));
+        let secrets = &res.environments[0].secrets;
+        assert_eq!(r.headers.len(), 3);
+        for (h, v) in r.headers.iter().zip(["SECRETA", "SECRETB", "SECRETC"]) {
+            let refs = wisp_core::template::var_refs(&h.value);
+            assert_eq!(refs.len(), 1, "{h:?}");
+            assert!(
+                secrets
+                    .iter()
+                    .any(|s| s.name == refs[0].name && s.value == v)
+            );
+        }
+    }
 }
