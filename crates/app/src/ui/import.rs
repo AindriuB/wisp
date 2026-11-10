@@ -126,9 +126,39 @@ fn error_line(e: &ImportError) -> String {
     e.to_string()
 }
 
+/// Read a regular file of at most the importer's input cap. Checks the
+/// metadata first and reads at most one byte past the cap, so a huge file or
+/// a FIFO never exhausts memory or blocks the dialog.
+fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let max = import::MAX_INPUT_BYTES;
+    let too_large = || {
+        error_line(&ImportError::TooLarge(format!(
+            "file is over {} MiB",
+            max >> 20
+        )))
+    };
+    let meta = std::fs::metadata(path).map_err(|e| format!("Cannot read file: {e}"))?;
+    if !meta.is_file() {
+        return Err("Cannot read file: not a regular file".to_string());
+    }
+    if meta.len() > max as u64 {
+        return Err(too_large());
+    }
+    let file = std::fs::File::open(path).map_err(|e| format!("Cannot read file: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(max as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Cannot read file: {e}"))?;
+    if bytes.len() > max {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+
 /// Read, detect and parse a file. Runs on the background executor.
 fn parse_file(path: &Path) -> Result<(Format, ImportResult), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Cannot read file: {e}"))?;
+    let bytes = read_capped(path)?;
     let format = import::detect(&bytes).ok_or_else(|| UNSUPPORTED_FORMAT.to_string())?;
     let result = match format {
         Format::Curl => import::curl::parse(&String::from_utf8_lossy(&bytes)),
@@ -147,13 +177,38 @@ fn write_into(
     result: &ImportResult,
     secrets_env: &str,
 ) -> Result<WriteReport, String> {
-    let rel = if rel.as_os_str().is_empty() || root.join(rel).is_dir() {
+    let rel = if rel.as_os_str().is_empty() {
         rel.to_path_buf()
     } else {
-        ops::create_folder(root, Path::new(""), &rel.to_string_lossy())
-            .map_err(|e| e.to_string())?
+        validated_target(root, rel)?
     };
     import::write(root, &rel, result, secrets_env).map_err(|e| error_line(&e))
+}
+
+/// Validate the target folder through storage's `ops` path checks before
+/// anything is imported into it, creating it when missing. An existing folder
+/// is probed by creating (and removing) a scratch folder inside it, which runs
+/// the same reserved-name, symlink and confinement checks as any other
+/// operation; a failure leaves nothing behind.
+fn validated_target(root: &Path, rel: &Path) -> Result<PathBuf, String> {
+    let abs = root.join(rel);
+    match std::fs::symlink_metadata(&abs) {
+        Ok(m) if m.file_type().is_symlink() => Err(format!("{} is a symlink", rel.display())),
+        Ok(m) if !m.is_dir() => Err(format!("{} is not a folder", rel.display())),
+        Ok(_) => {
+            let probe =
+                ops::create_folder(root, rel, "wisp-import-probe").map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_dir(root.join(&probe));
+            Ok(rel.to_path_buf())
+        }
+        Err(_) => {
+            if rel.to_string_lossy().eq_ignore_ascii_case("environments") {
+                return Err("`environments` is not editable here".to_string());
+            }
+            ops::create_folder(root, Path::new(""), &rel.to_string_lossy())
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
 enum Stage {
@@ -176,6 +231,8 @@ pub struct ImportView {
     paste: Entity<EditorState>,
     error: Option<SharedString>,
     busy: bool,
+    /// An import is being written: the dialog cannot be dismissed.
+    writing: bool,
     focus: FocusHandle,
     prev_focus: Option<FocusHandle>,
 }
@@ -193,6 +250,7 @@ impl ImportView {
             paste: cx.new(|cx| EditorState::new(window, cx)),
             error: None,
             busy: false,
+            writing: false,
             focus,
             prev_focus,
         }
@@ -200,6 +258,9 @@ impl ImportView {
 
     /// Return focus to where it was, then ask the host to close the dialog.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.writing {
+            return;
+        }
         if let Some(h) = self.prev_focus.take() {
             window.focus(&h, cx);
         }
@@ -336,6 +397,7 @@ impl ImportView {
         };
         let result = (**result).clone();
         self.busy = true;
+        self.writing = true;
         self.error = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -346,6 +408,7 @@ impl ImportView {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
+                this.writing = false;
                 match outcome {
                     Ok(report) => this.stage = Stage::Done { report, warnings },
                     Err(e) => this.error = Some(e.into()),
@@ -376,9 +439,14 @@ impl ImportView {
             .children(lines)
     }
 
-    fn close_button(cx: &mut Context<Self>) -> Button {
+    fn close_button(&self, cx: &mut Context<Self>) -> Button {
         Button::new("import-close")
-            .label("Close")
+            .label(if self.writing {
+                "Importing..."
+            } else {
+                "Close"
+            })
+            .disabled(self.writing)
             .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
     }
 }
@@ -390,7 +458,7 @@ impl Render for ImportView {
         if !has_root {
             body = body
                 .child("Open a collection first")
-                .child(Self::close_button(cx));
+                .child(self.close_button(cx));
         } else {
             match &self.stage {
                 Stage::Source => {
@@ -418,7 +486,7 @@ impl Render for ImportView {
                                             this.choose_file(window, cx)
                                         })),
                                 )
-                                .child(Self::close_button(cx)),
+                                .child(self.close_button(cx)),
                         );
                 }
                 Stage::Preview {
@@ -464,14 +532,14 @@ impl Render for ImportView {
                                         this.run_import(window, cx)
                                     })),
                             )
-                            .child(Self::close_button(cx)),
+                            .child(self.close_button(cx)),
                     );
                 }
                 Stage::Done { report, warnings } => {
                     body = body
                         .child(Self::lines("import-report", report_lines(report), cx))
                         .child(Self::lines("import-warnings", warning_lines(warnings), cx))
-                        .child(Self::close_button(cx));
+                        .child(self.close_button(cx));
                 }
             }
         }
@@ -526,25 +594,119 @@ mod tests {
         }
     }
 
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../storage/tests/fixtures/import"
+        ))
+        .join(name)
+    }
+
+    fn collection() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("collection.toml"), "format = 1\n").unwrap();
+        dir
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn parse_file_counts_each_fixture() {
+        let cases = [
+            ("postman.json", Format::Postman, (5, 2, 1)),
+            ("openapi.json", Format::OpenApi, (6, 1, 2)),
+            ("openapi.yaml", Format::OpenApi, (6, 1, 2)),
+        ];
+        for (name, want, counts) in cases {
+            let (format, result) = parse_file(&fixture(name)).unwrap();
+            let s = summarize(&result);
+            assert_eq!(format, want, "{name}");
+            assert_eq!((s.requests, s.folders, s.environments), counts, "{name}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_regular_and_oversized_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = parse_file(dir.path()).unwrap_err();
+        assert!(err.contains("not a regular file"), "{err}");
+        let big = dir.path().join("big.json");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(import::MAX_INPUT_BYTES as u64 + 1).unwrap();
+        let err = parse_file(&big).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+    }
+
     #[test]
     fn imports_postman_into_a_new_folder() {
-        let dir = std::env::temp_dir().join(format!("wisp-import-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("collection.toml"), "format = 1\n").unwrap();
-        let bytes = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../storage/tests/fixtures/import/postman.json"
-        ))
-        .unwrap();
-        let result = import::postman::parse(&bytes).unwrap();
+        let dir = collection();
+        let (_, result) = parse_file(&fixture("postman.json")).unwrap();
         let rel = folder_rel(&default_folder(&result, Format::Postman));
-        let report = write_into(&dir, &rel, &result, "imported").unwrap();
+        let report = write_into(dir.path(), &rel, &result, "imported").unwrap();
         assert!(report.requests > 0);
-        assert!(dir.join(&rel).is_dir());
-        let files = std::fs::read_dir(dir.join(&rel)).unwrap().count();
-        assert!(files > 0);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(dir.path().join(&rel).is_dir());
+        assert!(!entries(&dir.path().join(&rel)).is_empty());
+    }
+
+    #[test]
+    fn imports_into_an_existing_folder() {
+        let dir = collection();
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let (_, result) = parse_file(&fixture("postman.json")).unwrap();
+        let report = write_into(dir.path(), Path::new("api"), &result, "imported").unwrap();
+        assert!(report.requests > 0);
+        assert!(!entries(&dir.path().join("api")).is_empty());
+        assert!(
+            !entries(&dir.path().join("api"))
+                .iter()
+                .any(|n| n.contains("probe"))
+        );
+        assert!(!dir.path().join("api-2").exists());
+    }
+
+    #[test]
+    fn reserved_target_is_refused_with_nothing_written() {
+        let (_, result) = parse_file(&fixture("postman.json")).unwrap();
+        for existing in [false, true] {
+            let dir = collection();
+            if existing {
+                std::fs::create_dir(dir.path().join("environments")).unwrap();
+            }
+            let before = entries(dir.path());
+            let err =
+                write_into(dir.path(), Path::new("environments"), &result, "imported").unwrap_err();
+            assert!(!err.is_empty());
+            assert_eq!(entries(dir.path()), before);
+            if existing {
+                assert!(entries(&dir.path().join("environments")).is_empty());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_target_is_refused() {
+        let dir = collection();
+        let other = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(other.path(), dir.path().join("link")).unwrap();
+        let (_, result) = parse_file(&fixture("postman.json")).unwrap();
+        assert!(write_into(dir.path(), Path::new("link"), &result, "imported").is_err());
+        assert!(entries(other.path()).is_empty());
+    }
+
+    #[test]
+    fn write_failure_returns_an_error() {
+        let dir = collection();
+        std::fs::write(dir.path().join("api"), "not a folder").unwrap();
+        let (_, result) = parse_file(&fixture("postman.json")).unwrap();
+        assert!(write_into(dir.path(), Path::new("api"), &result, "imported").is_err());
     }
 
     #[test]
