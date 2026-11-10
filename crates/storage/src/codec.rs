@@ -5,11 +5,11 @@
 use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table, TableLike, Value};
-use wisp_core::request::{ApiKeyLocation, Auth, KeyValue, Var};
+use wisp_core::request::{ApiKeyLocation, Auth, ClientAuth, KeyValue, Var};
 
 use crate::StorageError;
 
-const AUTH_FIELDS: [&str; 11] = [
+const AUTH_FIELDS: [&str; 18] = [
     "username",
     "password",
     "token",
@@ -21,6 +21,13 @@ const AUTH_FIELDS: [&str; 11] = [
     "session_token",
     "region",
     "service",
+    "auth_url",
+    "token_url",
+    "client_id",
+    "client_secret",
+    "scope",
+    "client_auth",
+    "redirect_port",
 ];
 
 fn invalid(path: &Path, key: impl Into<String>, message: impl Into<String>) -> StorageError {
@@ -415,6 +422,30 @@ pub fn read_auth(table: &Table, default: Auth, path: &Path) -> Result<Auth, Stor
             region: req("region")?,
             service: req("service")?,
         },
+        "oauth2_client_credentials" => Auth::OAuth2ClientCredentials {
+            token_url: req("token_url")?,
+            client_id: req("client_id")?,
+            client_secret: field("client_secret")?.unwrap_or_default(),
+            scope: field("scope")?.unwrap_or_default(),
+            client_auth: read_client_auth(&field("client_auth")?, path)?,
+        },
+        "oauth2_auth_code" => Auth::OAuth2AuthCode {
+            auth_url: req("auth_url")?,
+            token_url: req("token_url")?,
+            client_id: req("client_id")?,
+            client_secret: field("client_secret")?.unwrap_or_default(),
+            scope: field("scope")?.unwrap_or_default(),
+            client_auth: read_client_auth(&field("client_auth")?, path)?,
+            redirect_port: match t.get("redirect_port") {
+                None => 0,
+                Some(item) => item
+                    .as_integer()
+                    .and_then(|n| u16::try_from(n).ok())
+                    .ok_or_else(|| {
+                        invalid(path, "auth.redirect_port", "expected a port number 0-65535")
+                    })?,
+            },
+        },
         other => {
             return Err(invalid(
                 path,
@@ -423,6 +454,25 @@ pub fn read_auth(table: &Table, default: Auth, path: &Path) -> Result<Auth, Stor
             ));
         }
     })
+}
+
+fn read_client_auth(v: &Option<String>, path: &Path) -> Result<ClientAuth, StorageError> {
+    match v.as_deref() {
+        None | Some("basic") => Ok(ClientAuth::Basic),
+        Some("body") => Ok(ClientAuth::Body),
+        Some(other) => Err(invalid(
+            path,
+            "auth.client_auth",
+            format!("unknown client authentication `{other}`"),
+        )),
+    }
+}
+
+fn client_auth_str(c: ClientAuth) -> &'static str {
+    match c {
+        ClientAuth::Basic => "basic",
+        ClientAuth::Body => "body",
+    }
 }
 
 /// Write `[auth]`, editing an existing table in place.
@@ -464,6 +514,41 @@ pub fn write_auth(table: &mut Table, auth: &Auth) {
                 ("service", service),
             ],
         ),
+        Auth::OAuth2ClientCredentials {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            client_auth,
+        } => (
+            "oauth2_client_credentials",
+            vec![
+                ("token_url", token_url),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("scope", scope),
+                ("client_auth", client_auth_str(*client_auth)),
+            ],
+        ),
+        Auth::OAuth2AuthCode {
+            auth_url,
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            client_auth,
+            ..
+        } => (
+            "oauth2_auth_code",
+            vec![
+                ("auth_url", auth_url),
+                ("token_url", token_url),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+                ("scope", scope),
+                ("client_auth", client_auth_str(*client_auth)),
+            ],
+        ),
         Auth::ApiKey {
             name,
             value,
@@ -493,11 +578,22 @@ pub fn write_auth(table: &mut Table, auth: &Auth) {
         // Skip an absent key whose value is the read default.
         let default = (k == "in" && v == "header")
             || (k == "password" && v.is_empty())
-            || (k == "session_token" && v.is_empty());
+            || (k == "session_token" && v.is_empty())
+            || (k == "client_secret" && v.is_empty())
+            || (k == "scope" && v.is_empty())
+            || (k == "client_auth" && v == "basic");
         if default && t.get(k).is_none() {
             continue;
         }
         set_str(t, k, v);
+    }
+    if let Auth::OAuth2AuthCode { redirect_port, .. } = auth {
+        let port = i64::from(*redirect_port);
+        if t.get("redirect_port").and_then(Item::as_integer) != Some(port)
+            && (port != 0 || t.get("redirect_port").is_some())
+        {
+            t.insert("redirect_port", Item::Value(Value::from(port)));
+        }
     }
 }
 
@@ -666,6 +762,38 @@ token = "abc"
                 region: "eu-west-1".into(),
                 service: "execute-api".into(),
             },
+            Auth::OAuth2ClientCredentials {
+                token_url: "https://idp.test/token".into(),
+                client_id: "cid".into(),
+                client_secret: "cs".into(),
+                scope: "read write".into(),
+                client_auth: ClientAuth::Body,
+            },
+            Auth::OAuth2ClientCredentials {
+                token_url: "https://idp.test/token".into(),
+                client_id: "cid".into(),
+                client_secret: String::new(),
+                scope: String::new(),
+                client_auth: ClientAuth::Basic,
+            },
+            Auth::OAuth2AuthCode {
+                auth_url: "https://idp.test/auth".into(),
+                token_url: "https://idp.test/token".into(),
+                client_id: "cid".into(),
+                client_secret: "cs".into(),
+                scope: "read".into(),
+                client_auth: ClientAuth::Body,
+                redirect_port: 8123,
+            },
+            Auth::OAuth2AuthCode {
+                auth_url: "{{a}}".into(),
+                token_url: "{{t}}".into(),
+                client_id: "{{c}}".into(),
+                client_secret: String::new(),
+                scope: String::new(),
+                client_auth: ClientAuth::Basic,
+                redirect_port: 0,
+            },
         ];
         for a in &all {
             // Write over every other variant to check stale fields are removed.
@@ -675,6 +803,34 @@ token = "abc"
                 write_auth(&mut doc, a);
                 let doc = parse(p(), &doc.to_string()).unwrap();
                 assert_eq!(&read_auth(&doc, Auth::None, p()).unwrap(), a);
+            }
+        }
+    }
+
+    #[test]
+    fn oauth2_auth_roundtrips_byte_for_byte_and_keeps_comments() {
+        let text = "# top\n[auth]\ntype = \"oauth2_auth_code\" # grant\nauth_url = \"https://i/a\"\ntoken_url = \"https://i/t\"\nclient_id = \"c\"\nclient_secret = \"{{s}}\" # secret\nscope = \"r\"\nclient_auth = \"body\"\nredirect_port = 8123\n";
+        let mut doc = parse(p(), text).unwrap();
+        let a = read_auth(&doc, Auth::None, p()).unwrap();
+        write_auth(&mut doc, &a);
+        assert_eq!(doc.to_string(), text);
+        let text = "[auth]\ntype = \"oauth2_client_credentials\"\ntoken_url = \"t\"\nclient_id = \"c\" # id\nclient_auth = \"body\"\n";
+        let mut doc = parse(p(), text).unwrap();
+        let a = read_auth(&doc, Auth::None, p()).unwrap();
+        write_auth(&mut doc, &a);
+        assert_eq!(doc.to_string(), text);
+    }
+
+    #[test]
+    fn unknown_oauth2_client_auth_is_invalid_naming_the_key() {
+        for ty in ["oauth2_client_credentials", "oauth2_auth_code"] {
+            let text = format!(
+                "[auth]\ntype = \"{ty}\"\nauth_url = \"a\"\ntoken_url = \"t\"\nclient_id = \"c\"\nclient_auth = \"mtls\"\n"
+            );
+            let doc = parse(p(), &text).unwrap();
+            match read_auth(&doc, Auth::None, p()) {
+                Err(StorageError::Invalid { key, .. }) => assert_eq!(key, "auth.client_auth"),
+                other => panic!("unexpected {other:?}"),
             }
         }
     }
