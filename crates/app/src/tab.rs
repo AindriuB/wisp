@@ -60,6 +60,8 @@ pub struct ResponseState {
     pub headers: Vec<Header>,
     pub ttfb: Option<Duration>,
     pub total: Option<Duration>,
+    pub dns: Option<Duration>,
+    pub connect: Option<Duration>,
     pub size: Option<u64>,
     pub received: u64,
     pub body: Option<BodyHandle>,
