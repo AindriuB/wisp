@@ -788,4 +788,31 @@ mod tests {
         parse(doc.to_string().as_bytes()).unwrap();
         assert!(t.elapsed().as_secs() < 2);
     }
+
+    #[test]
+    fn credential_name_headers_go_to_secrets() {
+        let doc = serde_json::json!({
+            "info": {"name": "c", "_postman_id": "x",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [{"name": "r", "request": {"method": "GET", "url": "http://h/",
+                "header": [{"key": "X-API-Key", "value": "SECRETK"},
+                           {"key": "X-Auth-Token", "value": "SECRETT"},
+                           {"key": "Accept", "value": "text/plain"}]}}]
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        let req = find(&r.items, "r");
+        assert!(!format!("{req:?}").contains("SECRET"));
+        let secrets = &r.environments[0].secrets;
+        for h in &req.headers {
+            if h.name == "Accept" {
+                assert_eq!(h.value, "text/plain");
+                continue;
+            }
+            let refs = wisp_core::template::var_refs(&h.value);
+            assert_eq!(refs.len(), 1, "{h:?}");
+            assert!(secrets.iter().any(|v| v.name == refs[0].name));
+        }
+        assert!(secrets.iter().any(|v| v.value == "SECRETK"));
+        assert!(secrets.iter().any(|v| v.value == "SECRETT"));
+    }
 }

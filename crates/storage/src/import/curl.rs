@@ -11,8 +11,13 @@ use super::{
 };
 
 /// Short options that take an argument and are not imported.
+/// Checked against the short options of `curl --help all` (7.84.0).
 const IGNORED_SHORT_WITH_ARG: &str = "oAemxwETKycDrUzCtQPY";
 /// Long options that take an argument and are not imported.
+///
+/// Built from `curl --help all` of curl 7.84.0 (every option shown with an
+/// argument), plus a few newer ones (`ech`, `ip-tos`, `upload-flags`, ...) and
+/// `proxy`. An option missing here would leave its argument to become the URL.
 const IGNORED_LONG_WITH_ARG: &[&str] = &[
     "output",
     "json",
@@ -93,6 +98,56 @@ const IGNORED_LONG_WITH_ARG: &[&str] = &[
     "connect-to",
     "proto",
     "hostpubsha256",
+    "abstract-unix-socket",
+    "alt-svc",
+    "create-file-mode",
+    "crlfile",
+    "curves",
+    "delegation",
+    "dns-interface",
+    "dns-ipv4-addr",
+    "dns-ipv6-addr",
+    "egd-file",
+    "engine",
+    "ftp-alternative-to-user",
+    "ftp-method",
+    "ftp-ssl-ccc-mode",
+    "happy-eyeballs-timeout-ms",
+    "hostpubmd5",
+    "hsts",
+    "krb",
+    "libcurl",
+    "mail-auth",
+    "parallel-max",
+    "proto-default",
+    "proto-redir",
+    "proxy-capath",
+    "proxy-cert-type",
+    "proxy-ciphers",
+    "proxy-crlfile",
+    "proxy-key-type",
+    "proxy-pinnedpubkey",
+    "proxy-service-name",
+    "proxy-tls13-ciphers",
+    "proxy-tlsauthtype",
+    "proxy1.0",
+    "pubkey",
+    "random-file",
+    "rate",
+    "service-name",
+    "socks4",
+    "socks4a",
+    "socks5-gssapi-service",
+    "tftp-blksize",
+    "tls13-ciphers",
+    "tlsauthtype",
+    "haproxy-clientip",
+    "ip-tos",
+    "vlan-priority",
+    "trace-config",
+    "upload-flags",
+    "ssl-sessions",
+    "ech",
 ];
 
 /// Split a shell-like command line into words.
@@ -346,6 +401,7 @@ fn set_url(f: &mut Flags, url: String) {
     if f.url.is_none() {
         f.url = Some(url);
     } else {
+        let url = url.split(['?', '#']).next().unwrap_or_default().to_string();
         let (url, _) = super::split_userinfo(&url);
         f.warn(format!("extra URL `{url}` is not imported"));
     }
@@ -983,6 +1039,180 @@ mod tests {
                 let all = format!("{r:?}{:?}{:?}", res.name, res.warnings);
                 assert!(!all.contains("SECRETVAL"), "{opt}: {all}");
             }
+        }
+    }
+
+    /// Every option of `curl --help all` (7.84.0) shown with an argument.
+    #[test]
+    fn every_argument_taking_option_consumes_its_argument() {
+        let longs = [
+            "abstract-unix-socket",
+            "alt-svc",
+            "aws-sigv4",
+            "cacert",
+            "capath",
+            "cert",
+            "cert-type",
+            "ciphers",
+            "config",
+            "connect-timeout",
+            "connect-to",
+            "continue-at",
+            "cookie-jar",
+            "create-file-mode",
+            "crlfile",
+            "curves",
+            "delegation",
+            "dns-interface",
+            "dns-ipv4-addr",
+            "dns-ipv6-addr",
+            "dns-servers",
+            "doh-url",
+            "dump-header",
+            "egd-file",
+            "engine",
+            "etag-compare",
+            "etag-save",
+            "expect100-timeout",
+            "form-string",
+            "ftp-account",
+            "ftp-alternative-to-user",
+            "ftp-method",
+            "ftp-port",
+            "ftp-ssl-ccc-mode",
+            "happy-eyeballs-timeout-ms",
+            "hostpubmd5",
+            "hostpubsha256",
+            "hsts",
+            "interface",
+            "keepalive-time",
+            "key",
+            "key-type",
+            "krb",
+            "libcurl",
+            "limit-rate",
+            "local-port",
+            "login-options",
+            "mail-auth",
+            "mail-from",
+            "mail-rcpt",
+            "max-filesize",
+            "max-redirs",
+            "max-time",
+            "netrc-file",
+            "noproxy",
+            "oauth2-bearer",
+            "output",
+            "output-dir",
+            "parallel-max",
+            "pass",
+            "pinnedpubkey",
+            "proto",
+            "proto-default",
+            "proto-redir",
+            "proxy",
+            "proxy-cacert",
+            "proxy-capath",
+            "proxy-cert",
+            "proxy-cert-type",
+            "proxy-ciphers",
+            "proxy-crlfile",
+            "proxy-header",
+            "proxy-key",
+            "proxy-key-type",
+            "proxy-pass",
+            "proxy-pinnedpubkey",
+            "proxy-service-name",
+            "proxy-tls13-ciphers",
+            "proxy-tlsauthtype",
+            "proxy-tlspassword",
+            "proxy-tlsuser",
+            "proxy-user",
+            "proxy1.0",
+            "pubkey",
+            "quote",
+            "random-file",
+            "range",
+            "rate",
+            "referer",
+            "request-target",
+            "resolve",
+            "retry",
+            "retry-delay",
+            "retry-max-time",
+            "sasl-authzid",
+            "service-name",
+            "socks4",
+            "socks4a",
+            "socks5",
+            "socks5-gssapi-service",
+            "socks5-hostname",
+            "speed-limit",
+            "speed-time",
+            "stderr",
+            "telnet-option",
+            "tftp-blksize",
+            "time-cond",
+            "tls-max",
+            "tls13-ciphers",
+            "tlsauthtype",
+            "tlspassword",
+            "tlsuser",
+            "trace",
+            "trace-ascii",
+            "unix-socket",
+            "upload-file",
+            "user-agent",
+            "write-out",
+        ];
+        for opt in longs {
+            for cmd in [
+                format!("curl --{opt} SECRETVAL http://h/x"),
+                format!("curl http://h/x --{opt} SECRETVAL"),
+            ] {
+                let (r, res) = req(&cmd);
+                assert_eq!(r.url, "http://h/x", "{opt}");
+                let all = format!("{r:?}{:?}{:?}", res.name, res.warnings);
+                assert!(!all.contains("SECRETVAL"), "{opt}: {all}");
+            }
+        }
+        for c in "EKCcDPQrYyxtTzAwUmeo".chars() {
+            for cmd in [
+                format!("curl -{c} SECRETVAL http://h/x"),
+                format!("curl http://h/x -{c}SECRETVAL"),
+            ] {
+                let (r, res) = req(&cmd);
+                assert_eq!(r.url, "http://h/x", "-{c}");
+                let all = format!("{r:?}{:?}{:?}", res.name, res.warnings);
+                assert!(!all.contains("SECRETVAL"), "-{c}: {all}");
+            }
+        }
+    }
+
+    #[test]
+    fn extra_url_warning_drops_query_and_userinfo() {
+        let (_, res) = req("curl http://h/x 'http://bob:SECRETPW@h2/y?token=SECRETVAL#SECRETFR'");
+        assert_eq!(res.warnings.len(), 1);
+        let all = format!("{:?}", res.warnings);
+        assert!(all.contains("h2/y"), "{all}");
+        for s in ["SECRETVAL", "SECRETPW", "SECRETFR"] {
+            assert!(!all.contains(s), "{all}");
+        }
+    }
+
+    #[test]
+    fn credential_name_headers_go_to_secrets() {
+        let (r, res) = req(
+            "curl -H 'X-API-Key: SECRETK' -H 'X-Auth-Token: SECRETT' -H 'Accept: text/plain' http://h/x",
+        );
+        assert_eq!(header(&r, "accept"), Some("text/plain"));
+        assert!(!format!("{r:?}").contains("SECRET"));
+        let secrets = &res.environments[0].secrets;
+        for (n, v) in [("x-api-key", "SECRETK"), ("x-auth-token", "SECRETT")] {
+            assert!(secrets.iter().any(|s| s.value == v), "{n}");
+            let refs = wisp_core::template::var_refs(header(&r, n).unwrap());
+            assert_eq!(refs.len(), 1);
+            assert!(secrets.iter().any(|s| s.name == refs[0].name));
         }
     }
 }

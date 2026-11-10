@@ -269,6 +269,7 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
     // Without a scheme the authority starts at the beginning. A `://` that
     // only appears after the authority (in a path or query) is not a scheme.
     let scheme_end = match url.find("://") {
+        _ if url.starts_with("//") => 2,
         Some(i) if !url[..i].contains(['/', '?', '#', '@']) => i + 3,
         _ => 0,
     };
@@ -356,9 +357,21 @@ impl SecretSink {
 /// Headers whose literal values are credentials.
 pub(crate) fn is_credential_header(name: &str) -> bool {
     let name = name.trim();
-    ["authorization", "proxy-authorization", "cookie"]
-        .iter()
-        .any(|h| name.eq_ignore_ascii_case(h))
+    let lower = name.to_ascii_lowercase();
+    [
+        "auth",
+        "token",
+        "secret",
+        "key",
+        "session",
+        "cookie",
+        "password",
+        "passwd",
+        "credential",
+        "signature",
+    ]
+    .iter()
+    .any(|h| lower.contains(h))
 }
 
 /// Percent-encode everything but unreserved characters.
@@ -447,6 +460,13 @@ mod tests {
         assert_eq!(super::split_userinfo("http://h/a@b").0, "http://h/a@b");
         assert_eq!(super::split_userinfo("h/a@b").1, None);
         assert_eq!(super::split_userinfo("h?x=a@b").1, None);
+        let (u, i) = super::split_userinfo("//bob:SECRETPW@h/x");
+        assert_eq!(u, "//h/x");
+        assert_eq!(i, Some(("bob".into(), "SECRETPW".into())));
+        assert_eq!(super::split_userinfo("//h/a@b").1, None);
+        assert!(super::is_credential_header(" X-API-Key "));
+        assert!(super::is_credential_header("Private-Token"));
+        assert!(!super::is_credential_header("Accept"));
         let (u, i) = super::split_userinfo("bob:pw@h/x");
         assert_eq!(u, "h/x");
         assert_eq!(i, Some(("bob".into(), "pw".into())));

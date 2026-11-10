@@ -250,7 +250,7 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
             url = stripped;
             let host = url
                 .split_once("://")
-                .map_or(url.as_str(), |(_, r)| r)
+                .map_or(url.trim_start_matches("//"), |(_, r)| r)
                 .split(['/', '?', '#'])
                 .next()
                 .unwrap_or("");
@@ -913,5 +913,19 @@ mod tests {
                 .iter()
                 .any(|w| w.message.contains("api.example.com"))
         );
+    }
+
+    #[test]
+    fn protocol_relative_server_userinfo_is_dropped() {
+        let doc = br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+            "servers":[{"url":"//bob:SECRETPW@h/v1"}],
+            "paths":{}}"#;
+        let r = parse(doc).unwrap();
+        assert_eq!(r.environments[0].vars[0].value, "//h/v1");
+        let all = format!(
+            "{r:?}{:?}{}",
+            r.environments[0].name, r.environments[0].name
+        );
+        assert!(!all.contains("SECRETPW") && !all.contains("bob"), "{all}");
     }
 }
