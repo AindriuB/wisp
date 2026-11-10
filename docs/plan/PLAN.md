@@ -71,6 +71,13 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
 ### Follow-ups from task 94 (not 0.2.0 wave 1)
+- [P3] 34-43 curl.rs:355: unknown options fail open; their argument can become the committed URL. Prefer the `://` positional, or fail with a Parse error naming the option.
+- [P3] 34-44 mod.rs:271: `split_userinfo` misses lenient forms `https:///u:p@h` and `http:/u:p@h` that reqwest accepts.
+- [P3] 34-45 mod.rs:358: the heuristic misses jwt, bearer, dpop, assertion and pass header names (to be fixed once in the shared `wisp_core::redact` list).
+- [P3] 34-46 curl.rs:404: the extra-URL warning cuts at `?` or `#` before stripping userinfo, leaking part of a password; echo only the host.
+- [P3] 34-50 curl.rs:1228: the new header-name tests skip terminated and whole-value checks; the "X Api Key" case passes without the fix.
+- [P3] 34-47 (Nit) curl.rs:1047: the every-option test omits preproxy, json and post-7.84 entries; iterate the const.
+- [NOTE] After PR #35 merges, switch import/mod.rs `is_credential_header` to `wisp_core::redact::is_credential_name` so importers and history share one list.
 - [P3] Collection- and folder-level Postman auth and variables are warnings only. Mapping them needs new `ImportResult` fields; most Postman collections put auth there.
 - [P3] Postman folders count toward no cap (about 870k empty folders fit in 10 MiB).
 - [P3] An environment name that is a reserved device name (for example server description "con") aborts the import partway through.
