@@ -1166,12 +1166,16 @@ async fn a_refresh_in_flight_during_reauthorize_never_lands() {
     .await
     .expect("the refresh started");
     authorize_fully(&engine, &rx, auth.clone()).await;
-    loop {
-        let ev = rx.recv().await.unwrap();
-        if matches!(ev, Event::Completed { .. } | Event::Failed { .. }) {
-            break;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let ev = rx.recv().await.unwrap();
+            if matches!(ev, Event::Completed { .. } | Event::Failed { .. }) {
+                break;
+            }
         }
-    }
+    })
+    .await
+    .expect("the in-flight send finished");
     send(&engine, &rx, request(target.uri(), auth.clone())).await;
     clock.advance(Duration::from_secs(4000));
     send(&engine, &rx, request(target.uri(), auth)).await;
@@ -1247,4 +1251,176 @@ async fn reauthorizing_forgets_the_stored_token_even_when_not_persisting() {
         "Not authorized: use Authorize first"
     );
     assert_eq!(store.forgets.lock().unwrap().len(), 1);
+}
+
+/// A store whose save of one token can be paused until the test releases it.
+struct PausingStore {
+    inner: Recording,
+    pause_on: &'static str,
+    reached: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl RefreshTokenStore for PausingStore {
+    fn load(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError> {
+        self.inner.load(key)
+    }
+    fn save(&self, key: &TokenKey, rt: &str) -> Result<(), RefreshStoreError> {
+        if rt == self.pause_on {
+            let tx = self.reached.lock().unwrap().take();
+            let rx = self.release.lock().unwrap().take();
+            if let (Some(tx), Some(rx)) = (tx, rx) {
+                tx.send(()).unwrap();
+                let _ = rx.recv();
+            }
+        }
+        self.inner.save(key, rt)
+    }
+    fn forget(&self, key: &TokenKey) -> Result<(), RefreshStoreError> {
+        self.inner.forget(key)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_paused_in_the_store_cannot_overwrite_a_reauthorize() {
+    let idp = MockServer::start().await;
+    let code =
+        || Mock::given(method("POST")).and(wiremock::matchers::body_string_contains("code=c"));
+    code()
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_X", "token_type": "bearer", "expires_in": 100,
+            "refresh_token": "RT_X",
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&idp)
+        .await;
+    code()
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_Y", "token_type": "bearer", "expires_in": 100,
+        })))
+        .with_priority(2)
+        .mount(&idp)
+        .await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_string_contains(
+            "grant_type=refresh_token",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_X2", "token_type": "bearer", "expires_in": 3600,
+            "refresh_token": "RT_X2",
+        })))
+        .with_priority(3)
+        .mount(&idp)
+        .await;
+    let target = resource_server().await;
+    let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let store = Arc::new(PausingStore {
+        inner: Recording::default(),
+        pause_on: "RT_X2",
+        reached: Mutex::new(Some(reached_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let (engine, rx, clock) = engine_with(store.clone());
+    let auth = code_auth(&idp.uri(), 0, true);
+    authorize_fully(&engine, &rx, auth.clone()).await;
+    clock.advance(Duration::from_secs(200));
+    engine.submit(Command::Send(request(target.uri(), auth.clone())));
+    // The refresh is now blocked inside the store's save of RT_X2.
+    tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .expect("the refresh reached the store");
+    // Release only after the re-authorize has had time to finish if nothing orders them.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        let _ = release_tx.send(());
+    });
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        authorize_fully(&engine, &rx, auth.clone()),
+    )
+    .await
+    .expect("re-authorize completed");
+    // The paused send's terminal event may already have been consumed above (when the
+    // re-authorize waited for the store); otherwise give it a moment to land.
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Ok(ev) = rx.recv().await {
+            if matches!(ev, Event::Completed { .. } | Event::Failed { .. }) {
+                break;
+            }
+        }
+    })
+    .await;
+    let key = store.inner.saves.lock().unwrap()[0].0.clone();
+    assert_eq!(store.inner.inner.load(&key).unwrap(), None);
+    clock.advance(Duration::from_secs(4000));
+    send(&engine, &rx, request(target.uri(), auth)).await;
+    let posts = seen(&idp, "/token").await;
+    assert!(!posts.iter().any(|(_, b)| b.contains("RT_X2")), "{posts:?}");
+}
+
+#[tokio::test]
+async fn reauthorizing_with_persist_off_forgets_the_stored_token_and_it_is_never_posted() {
+    let idp = MockServer::start().await;
+    let code =
+        || Mock::given(method("POST")).and(wiremock::matchers::body_string_contains("code=c"));
+    code()
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_X", "token_type": "bearer", "expires_in": 100,
+            "refresh_token": "RT_X",
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&idp)
+        .await;
+    code()
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_Y", "token_type": "bearer", "expires_in": 100,
+            "refresh_token": "RT_Y",
+        })))
+        .with_priority(2)
+        .mount(&idp)
+        .await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_string_contains(
+            "grant_type=refresh_token",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(token_body("AT_R")))
+        .with_priority(3)
+        .mount(&idp)
+        .await;
+    let target = resource_server().await;
+    let store = Arc::new(Recording::default());
+    let (engine, rx, clock) = engine_with(store.clone());
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, true)).await;
+    let key = store.saves.lock().unwrap()[0].0.clone();
+    assert_eq!(store.inner.load(&key).unwrap().as_deref(), Some("RT_X"));
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, false)).await;
+    assert_eq!(store.inner.load(&key).unwrap(), None);
+    clock.advance(Duration::from_secs(200));
+    send(
+        &engine,
+        &rx,
+        request(target.uri(), code_auth(&idp.uri(), 0, true)),
+    )
+    .await;
+    let posts = seen(&idp, "/token").await;
+    assert!(!posts.iter().any(|(_, b)| b.contains("RT_X")), "{posts:?}");
+}
+async fn futures_dbg(s: &MockServer) -> Vec<String> {
+    s.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            format!(
+                "{} {} {}",
+                r.method,
+                r.url,
+                String::from_utf8_lossy(&r.body)
+            )
+        })
+        .collect()
 }

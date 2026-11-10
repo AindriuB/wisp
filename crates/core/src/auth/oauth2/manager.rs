@@ -132,6 +132,9 @@ pub(crate) struct OAuth2 {
     stale: Mutex<std::collections::HashSet<TokenKey>>,
     /// Bumped by every authorize of a key; a refresh that started before it must not land.
     generation: Mutex<HashMap<TokenKey, u64>>,
+    /// Held across "check generation, then call the store" so a late refresh cannot overwrite
+    /// a re-authorize's store state. Never held with the in-memory locks across a store call.
+    store_locks: Mutex<HashMap<TokenKey, Arc<tokio::sync::Mutex<()>>>>,
     store: Arc<dyn RefreshTokenStore>,
     clock: Arc<dyn Clock>,
 }
@@ -159,6 +162,7 @@ impl OAuth2 {
             cache: Mutex::default(),
             stale: Mutex::default(),
             generation: Mutex::default(),
+            store_locks: Mutex::default(),
             store,
             clock,
         }
@@ -170,6 +174,11 @@ impl OAuth2 {
 
     fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<TokenKey, Entry>> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn store_lock(&self, key: &TokenKey) -> Arc<tokio::sync::Mutex<()>> {
+        let mut m = self.store_locks.lock().unwrap_or_else(|e| e.into_inner());
+        m.entry(key.clone()).or_default().clone()
     }
 
     fn generation(&self, key: &TokenKey) -> u64 {
@@ -199,7 +208,7 @@ impl OAuth2 {
     /// stored one is forgotten whatever `persist_refresh` says, and the key's generation moves
     /// on. `refreshed` is `(generation read before the refresh, the refresh token it used)`:
     /// when the generation has moved, nothing is cached or saved and `false` is returned.
-    fn put(
+    async fn put(
         &self,
         p: &Params<'_>,
         resp: &TokenResponse,
@@ -209,6 +218,8 @@ impl OAuth2 {
         let expires_at = resp
             .expires_in
             .and_then(|d| self.clock.now().checked_add(d));
+        let lock = self.store_lock(&p.key);
+        let _store_guard = lock.lock().await;
         {
             let mut map = self.entries();
             if let Some((epoch, _)) = &refreshed
@@ -234,18 +245,21 @@ impl OAuth2 {
                 e.refresh = Some(used);
             }
         }
-        if let Some(rt) = &resp.refresh_token {
-            if p.persist_refresh {
-                match self.store.save(&p.key, rt.expose()) {
-                    Ok(()) => {
-                        self.stale().remove(&p.key);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
-                    }
+        let saved = match &resp.refresh_token {
+            Some(rt) if p.persist_refresh => match self.store.save(&p.key, rt.expose()) {
+                Ok(()) => {
+                    self.stale().remove(&p.key);
+                    true
                 }
-            }
-        } else if !keep_refresh {
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+                    false
+                }
+            },
+            _ => false,
+        };
+        if !saved && !keep_refresh {
+            // A re-authorize leaves no earlier authorization's token in the store.
             match self.store.forget(&p.key) {
                 Ok(()) => {
                     self.stale().remove(&p.key);
@@ -288,13 +302,17 @@ impl OAuth2 {
                 post(&http, &url, &p.creds, &fields, timeout).await?
             }
             Grant::AuthCode => {
-                let epoch = self.generation(&p.key);
-                let held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
-                let refresh = match held {
-                    Some(r) => r,
-                    None if p.persist_refresh && !self.stale().contains(&p.key) => {
-                        match self.store.load(&p.key) {
-                            Ok(Some(r)) => Secret::new(r),
+                let mut epoch = self.generation(&p.key);
+                let mut held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
+                if held.is_none() && p.persist_refresh {
+                    // Serialise with a re-authorize's store writes, then look again.
+                    let lock = self.store_lock(&p.key);
+                    let _guard = lock.lock().await;
+                    epoch = self.generation(&p.key);
+                    held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
+                    if held.is_none() && !self.stale().contains(&p.key) {
+                        held = match self.store.load(&p.key) {
+                            Ok(Some(r)) => Some(Secret::new(r)),
                             Ok(None) => return Err(not_authorized()),
                             Err(e) => {
                                 return Err(err(
@@ -302,16 +320,18 @@ impl OAuth2 {
                                     format!("cannot read stored refresh token: {e}"),
                                 ));
                             }
-                        }
+                        };
                     }
-                    None => return Err(not_authorized()),
+                }
+                let Some(refresh) = held else {
+                    return Err(not_authorized());
                 };
                 let fields = [
                     ("grant_type", "refresh_token"),
                     ("refresh_token", refresh.expose()),
                 ];
                 let resp = post(&http, &url, &p.creds, &fields, timeout).await?;
-                if !self.put(&p, &resp, true, Some((epoch, refresh))) {
+                if !self.put(&p, &resp, true, Some((epoch, refresh))).await {
                     // A re-authorize landed meanwhile: use its state, never this result.
                     return match self.fresh(&p.key) {
                         Some(t) => Ok((p.key, t)),
@@ -321,7 +341,7 @@ impl OAuth2 {
                 return Ok((p.key, resp.access_token));
             }
         };
-        self.put(&p, &resp, true, None);
+        self.put(&p, &resp, true, None).await;
         Ok((p.key, resp.access_token))
     }
 
@@ -432,7 +452,7 @@ impl OAuth2 {
             r = post(&http, &token_url, &p.creds, &fields, DEFAULT_TOKEN_TIMEOUT) => r?,
             () = &mut cancelled => return Err(err(ErrorKind::Auth, "cancelled")),
         };
-        self.put(&p, &resp, false, None);
+        self.put(&p, &resp, false, None).await;
         Ok(())
     }
 }
