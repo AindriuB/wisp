@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 93 | History moved to a per-user store (index plus capped bodies, auth and Set-Cookie redacted, count and byte eviction), written off the UI thread | ## 2026-11-10 — Per-user history store |
 | 2026-11-10 | 95 | Digest (RFC 7616) and AWS SigV4 auth with editor kinds; engine follows redirects itself for these, re-signs same-origin and drops auth cross-origin | ## 2026-11-10 — Digest and AWS SigV4 auth |
 | 2026-11-09 | 92 | Per-user data dir location rule (WISP_DATA_DIR, portable, OS dir) and random collection id in collection.toml, in wisp-storage; not yet used | ## 2026-11-09 — Per-user data dir and collection ID |
 | 2026-11-09 | 91 | Wave-1 0.2.0 dependencies (sha2, hmac, md-5 in core; saphyr, uuid in storage) and empty data_dir/import stubs; no behaviour | ## 2026-11-09 — Wave-1 dependencies and storage stubs for 0.2.0 |
