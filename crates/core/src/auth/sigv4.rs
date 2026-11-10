@@ -31,11 +31,11 @@ pub struct Signed {
     pub added: Vec<(String, String)>,
 }
 
-/// `added` and `authorization` carry the access key id and session token, so Debug hides them.
+/// `added` and `authorization` carry the access key id and session token, and `canonical_request` the token header, so Debug hides them.
 impl std::fmt::Debug for Signed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Signed")
-            .field("canonical_request", &self.canonical_request)
+            .field("canonical_request", &"<redacted>")
             .field("string_to_sign", &self.string_to_sign)
             .field("authorization", &"<redacted>")
             .field(
@@ -230,21 +230,6 @@ pub fn sign(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn debug_redacts_signed_credentials() {
-        let signed = Signed {
-            canonical_request: String::new(),
-            string_to_sign: String::new(),
-            authorization: "AWS4-HMAC-SHA256 Credential=AKIDSECRET/x".into(),
-            added: vec![("x-amz-security-token".into(), "TOKENSECRET".into())],
-        };
-        let d = format!("{signed:?}");
-        assert!(
-            !d.contains("AKIDSECRET") && !d.contains("TOKENSECRET"),
-            "{d}"
-        );
-    }
-
     use super::*;
 
     // Vectors: the AWS Signature Version 4 test suite
@@ -468,5 +453,25 @@ mod tests {
         };
         let s3 = sign("GET", url, &[], EMPTY_HASH, &c, TIME).unwrap();
         assert!(s3.canonical_request.starts_with("GET\n/a%20b\n"));
+    }
+
+    #[test]
+    fn debug_redacts_signed_credentials() {
+        let signed = sign(
+            "GET",
+            "http://h/",
+            &[],
+            EMPTY_HASH,
+            &creds("TOKENSECRET"),
+            TIME,
+        )
+        .unwrap();
+        assert!(signed.canonical_request.contains("TOKENSECRET"));
+        for d in [format!("{signed:?}"), format!("{signed:#?}")] {
+            assert!(
+                !d.contains("TOKENSECRET") && !d.contains("AKIDEXAMPLE"),
+                "{d}"
+            );
+        }
     }
 }

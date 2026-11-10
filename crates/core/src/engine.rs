@@ -794,8 +794,9 @@ async fn perform(
             break resp;
         }
         let code = resp.status().as_u16();
-        // 307/308 keep method and body. Of the rest, own_redirects follows 301/302/303 like
-        // reqwest (POST, or any non-HEAD for 303, becomes GET without a body).
+        // 307/308 keep method and body. With own_redirects, 303 turns any non-HEAD method into
+        // GET and 301/302 turn POST into GET, both without a body. Other methods keep their
+        // method and body on 301/302, which RFC 9110 allows (reqwest rewrites more of them).
         let keeps_body = match code {
             307 | 308 => true,
             301..=303 if own_redirects => {
