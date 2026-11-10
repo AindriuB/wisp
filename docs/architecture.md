@@ -81,6 +81,11 @@ engine.submit(Command::Cancel(id));
 - One `reqwest::Client` is kept per settings combination (TLS verify, proxy,
   redirect policy) for connection pooling. The cookie jar is per collection and
   in memory only.
+- Redirects: Basic, Bearer and ApiKey requests use reqwest's redirect path.
+  For Digest and AWS SigV4 the engine follows redirects itself (up to 9),
+  re-signs each same-origin hop, and drops all engine-added auth after the
+  first cross-origin hop, so credentials and signatures never leave the origin
+  they were made for.
 
 ### resolve() is pure
 
