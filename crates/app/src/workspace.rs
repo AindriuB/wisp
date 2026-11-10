@@ -6,9 +6,9 @@ use std::time::{Duration, SystemTime};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task, WeakEntity};
 use wisp_core::body::{BodyHandle, BodyStore};
-use wisp_core::request::{CollectionDefaults, Environment, Request};
+use wisp_core::request::{Auth, Body, CollectionDefaults, Environment, PartValue, Request};
 use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
-use wisp_core::{Command, Engine, EngineConfig, Event, EventReceiver, RequestId};
+use wisp_core::{Command, Engine, EngineConfig, Event, EventReceiver, PreparedRequest, RequestId};
 use wisp_storage::collection::{CollectionId, ensure_collection_id, read_collection_id};
 use wisp_storage::collection::{CollectionTree, Node, open_collection};
 use wisp_storage::data_dir::DataDir;
@@ -141,25 +141,200 @@ fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
 }
 
 /// A tab's own path wins. A from-history tab has none, so its entry's original
-/// request path scopes the resolve; the flag is true when that path is gone, in
-/// which case only the collection defaults apply.
+/// request path scopes the resolve, but only while the tab's URL is still the
+/// stored one. Flags: the original path is gone; the URL was edited. Either way
+/// only the collection defaults apply.
 fn scope_path_for(
     tree: &CollectionTree,
     tab_path: Option<&Path>,
     origin: Option<&HistoryOrigin>,
-) -> (Option<PathBuf>, bool) {
+    draft_url: &str,
+) -> (Option<PathBuf>, bool, bool) {
     if let Some(p) = tab_path {
-        return (Some(p.to_path_buf()), false);
+        return (Some(p.to_path_buf()), false, false);
     }
-    let Some(orig) = origin.and_then(|o| o.request.as_deref()) else {
-        return (None, false);
+    let Some(origin) = origin else {
+        return (None, false, false);
     };
+    let Some(orig) = origin.request.as_deref() else {
+        return (None, false, false);
+    };
+    if origin.url != draft_url {
+        return (None, false, true);
+    }
     let rel = PathBuf::from(orig);
     if tree_has_request(&tree.nodes, &rel) {
-        (Some(rel), false)
+        (Some(rel), false, false)
     } else {
-        (None, true)
+        (None, true, false)
     }
+}
+
+/// Make a stored (redacted) request safe to resend: nothing emptied by
+/// redaction may reach the wire. Redacted request vars are removed, redacted
+/// headers, params and form fields are disabled so the user can re-enable and
+/// fill them, redacted auth becomes Inherit. Returns what was changed and the
+/// redacted names this did not handle.
+fn sanitize_redacted(req: &mut Request, redacted: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut adjustments = Vec::new();
+    let mut left = Vec::new();
+    let note = |a: &mut Vec<String>, t: String| {
+        if !a.contains(&t) {
+            a.push(t);
+        }
+    };
+    for name in redacted {
+        let mut handled = false;
+        if name.starts_with("auth.") {
+            req.auth = Auth::Inherit;
+            note(&mut adjustments, "reset auth to inherit".into());
+            handled = true;
+        } else if let Some(n) = name.strip_prefix("vars.") {
+            let before = req.vars.len();
+            req.vars.retain(|v| !(v.name == n && v.value.is_empty()));
+            if req.vars.len() != before {
+                note(&mut adjustments, format!("removed var {n}"));
+                handled = true;
+            }
+        } else if let Some(n) = name.strip_prefix("params.") {
+            for p in req
+                .params
+                .iter_mut()
+                .filter(|p| p.name == n && p.value.is_empty())
+            {
+                p.enabled = false;
+                note(&mut adjustments, format!("disabled param {n}"));
+                handled = true;
+            }
+        } else if let Some(n) = name.strip_prefix("form.") {
+            match &mut req.body {
+                Body::Form(fields) => {
+                    for f in fields
+                        .iter_mut()
+                        .filter(|f| f.name == n && f.value.is_empty())
+                    {
+                        f.enabled = false;
+                        note(&mut adjustments, format!("disabled form field {n}"));
+                        handled = true;
+                    }
+                }
+                Body::Multipart(parts) => {
+                    for p in parts.iter_mut().filter(|p| {
+                        p.name == n && matches!(&p.value, PartValue::Text(t) if t.is_empty())
+                    }) {
+                        p.enabled = false;
+                        note(&mut adjustments, format!("disabled form field {n}"));
+                        handled = true;
+                    }
+                }
+                _ => {}
+            }
+        } else if let Some(n) = name.strip_prefix("query.") {
+            if let Some(url) = remove_empty_query(&req.url, n) {
+                req.url = url;
+                note(&mut adjustments, format!("removed query {n} from the URL"));
+                handled = true;
+            }
+        } else if name == "url.username" || name == "url.password" {
+            if let Some(url) = strip_userinfo(&req.url) {
+                req.url = url;
+                note(&mut adjustments, "removed credentials from the URL".into());
+                handled = true;
+            }
+        } else {
+            for h in req
+                .headers
+                .iter_mut()
+                .filter(|h| h.name == *name && h.value.is_empty())
+            {
+                h.enabled = false;
+                note(&mut adjustments, format!("disabled header {name}"));
+                handled = true;
+            }
+        }
+        if !handled {
+            left.push(name.clone());
+        }
+    }
+    (adjustments, left)
+}
+
+/// The URL without the `name=` pair whose value was emptied, if there is one.
+fn remove_empty_query(url: &str, name: &str) -> Option<String> {
+    let (rest, fragment) = match url.find('#') {
+        Some(i) => (&url[..i], &url[i..]),
+        None => (url, ""),
+    };
+    let (base, query) = rest.split_once('?')?;
+    let target = format!("{name}=");
+    let pairs: Vec<&str> = query.split('&').collect();
+    if !pairs.contains(&target.as_str()) {
+        return None;
+    }
+    let kept: Vec<&str> = pairs.into_iter().filter(|p| *p != target).collect();
+    let mut out = base.to_string();
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    out.push_str(fragment);
+    Some(out)
+}
+
+/// The URL without its `user:password@` part, if it has one.
+fn strip_userinfo(url: &str) -> Option<String> {
+    let start = url.find("://").map_or(0, |i| i + 3);
+    let end = url[start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |i| start + i);
+    let at = url[start..end].rfind('@')?;
+    Some(format!("{}{}", &url[..start], &url[start + at + 1..]))
+}
+
+/// A request ready to send, the scope path it resolved with, and the Resend
+/// notice of a from-history tab.
+struct SendPlan {
+    prepared: PreparedRequest,
+    scope_path: Option<PathBuf>,
+    notice: Option<String>,
+}
+
+/// Resolve a draft for sending. Pure: everything it reads is passed in.
+fn prepare_send(
+    draft: &Request,
+    tab_path: Option<&Path>,
+    origin: Option<&HistoryOrigin>,
+    tree: Option<&CollectionTree>,
+    empty_defaults: &CollectionDefaults,
+    env: Option<&Environment>,
+) -> Result<SendPlan, ResolveError> {
+    let (scope_path, original_missing, url_edited) = match tree {
+        Some(t) => scope_path_for(t, tab_path, origin, &draft.url),
+        None => (tab_path.map(Path::to_path_buf), false, false),
+    };
+    let scope = match tree {
+        Some(t) => t.scope_for(scope_path.as_deref().unwrap_or(Path::new("")), env),
+        None => Scope {
+            collection: empty_defaults,
+            folders: Vec::new(),
+            environment: None,
+        },
+    };
+    let prepared = resolve(draft, &scope)?;
+    let notice = origin.map(|o| {
+        history_ui::resend_notice(
+            env.map(|e| e.name.as_str()),
+            &o.adjustments,
+            &o.redacted,
+            original_missing,
+            url_edited,
+        )
+    });
+    Ok(SendPlan {
+        prepared,
+        scope_path,
+        notice,
+    })
 }
 
 /// The request path a history entry records: the scope path used to resolve,
@@ -594,19 +769,6 @@ impl Workspace {
         }
     }
 
-    /// The path whose inherited defaults apply when sending a tab, and whether a
-    /// from-history tab's original request no longer exists.
-    fn resend_scope_path(
-        &self,
-        tab_path: Option<&Path>,
-        origin: Option<&HistoryOrigin>,
-    ) -> (Option<PathBuf>, bool) {
-        match &self.collection {
-            Some(c) => scope_path_for(&c.tree, tab_path, origin),
-            None => (tab_path.map(Path::to_path_buf), false),
-        }
-    }
-
     pub fn send(
         &mut self,
         tab: &Entity<RequestTab>,
@@ -623,22 +785,21 @@ impl Workspace {
                 t.from_history.clone(),
             )
         };
-        let (scope_path, original_missing) =
-            self.resend_scope_path(path.as_deref(), origin.as_ref());
-        let prepared = resolve(&draft, &self.scope_for(scope_path.as_deref()))?;
+        let plan = prepare_send(
+            &draft,
+            path.as_deref(),
+            origin.as_ref(),
+            self.collection.as_ref().map(|c| &c.tree),
+            &self.empty_defaults,
+            self.collection.as_ref().and_then(|c| c.active_env.as_ref()),
+        )?;
+        let scope_path = plan.scope_path;
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
         }
-        let id = self.engine.submit(Command::Send(prepared));
-        if let Some(origin) = origin {
-            let env = self
-                .collection
-                .as_ref()
-                .and_then(|c| c.active_env.as_ref())
-                .map(|e| e.name.as_str());
-            cx.emit(WorkspaceEvent::Notice(
-                history_ui::resend_notice(env, &origin.redacted, original_missing).into(),
-            ));
+        let id = self.engine.submit(Command::Send(plan.prepared));
+        if let Some(notice) = plan.notice {
+            cx.emit(WorkspaceEvent::Notice(notice.into()));
         }
         self.routes.insert(id, tab.downgrade());
         self.sent.insert(
@@ -913,15 +1074,19 @@ impl Workspace {
                             this.release_body(&h);
                         }
                     }
-                    Ok((stored, handle)) => {
+                    Ok((mut stored, handle)) => {
+                        let (adjustments, redacted) =
+                            sanitize_redacted(&mut stored.request, &entry.redacted);
                         let response =
                             history_ui::stored_response(&entry, stored.response_headers, handle);
                         let origin = HistoryOrigin {
                             at_ms: entry.at,
                             body_stored: entry.body_stored,
                             body_truncated: entry.body_truncated,
-                            redacted: entry.redacted.clone(),
+                            redacted,
+                            adjustments,
                             request: entry.request.clone(),
+                            url: stored.request.url.clone(),
                         };
                         let tab =
                             cx.new(|_| RequestTab::from_history(stored.request, response, origin));
@@ -1092,6 +1257,7 @@ fn describe_problems(e: &ResolveError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wisp_core::request::{KeyValue, Var};
 
     #[test]
     fn close_step_clean_closes() {
@@ -1188,24 +1354,35 @@ mod tests {
         std::fs::write(p, text).unwrap();
     }
 
+    const URL: &str = "http://example.test/";
+
     fn origin(request: Option<&str>) -> HistoryOrigin {
         HistoryOrigin {
             at_ms: 0,
             body_stored: false,
             body_truncated: false,
             redacted: Vec::new(),
+            adjustments: Vec::new(),
             request: request.map(String::from),
+            url: URL.into(),
+        }
+    }
+
+    fn env(name: &str, token: &str) -> Environment {
+        Environment {
+            name: name.into(),
+            vars: vec![Var {
+                name: "token".into(),
+                value: token.into(),
+            }],
+            secrets: Vec::new(),
         }
     }
 
     fn auth_collection() -> (tempfile::TempDir, CollectionTree) {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
-        write(
-            r,
-            "collection.toml",
-            "format = 1\n\n[vars]\ntoken = \"s3cret\"\n",
-        );
+        write(r, "collection.toml", "format = 1\n");
         write(
             r,
             "users/folder.toml",
@@ -1220,66 +1397,173 @@ mod tests {
         (d, tree)
     }
 
-    fn resend_headers(tree: &CollectionTree, o: &HistoryOrigin) -> (Vec<(String, String)>, bool) {
-        let (path, missing) = scope_path_for(tree, None, Some(o));
-        let req = Request {
-            url: "http://example.test/".into(),
+    fn plan(
+        tree: &CollectionTree,
+        draft: &Request,
+        o: &HistoryOrigin,
+        e: &Environment,
+    ) -> SendPlan {
+        prepare_send(
+            draft,
+            None,
+            Some(o),
+            Some(tree),
+            &CollectionDefaults::default(),
+            Some(e),
+        )
+        .unwrap()
+    }
+
+    fn draft() -> Request {
+        Request {
+            url: URL.into(),
             ..Request::default()
-        };
-        let scope = tree.scope_for(path.as_deref().unwrap_or(Path::new("")), None);
-        let p = resolve(&req, &scope).unwrap();
-        let h = p
+        }
+    }
+
+    fn header<'a>(p: &'a SendPlan, name: &str) -> Option<&'a str> {
+        p.prepared
             .headers
             .iter()
-            .map(|h| (h.name.clone(), h.value.clone()))
-            .collect();
-        (h, missing)
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.value.as_str())
     }
 
     #[test]
-    fn resend_from_history_inherits_folder_auth() {
+    fn folder_bearer_token_follows_the_environment() {
         let (_d, tree) = auth_collection();
-        let (headers, missing) = resend_headers(&tree, &origin(Some("users/get.toml")));
-        assert!(!missing);
-        assert!(
-            headers
-                .iter()
-                .any(|(n, v)| n.eq_ignore_ascii_case("authorization") && v == "Bearer s3cret"),
-            "{headers:?}"
-        );
+        let o = origin(Some("users/get.toml"));
+        let dev = plan(&tree, &draft(), &o, &env("dev", "dev-tok"));
+        let prod = plan(&tree, &draft(), &o, &env("prod", "prod-tok"));
+        assert_eq!(header(&dev, "authorization"), Some("Bearer dev-tok"));
+        assert_eq!(header(&prod, "authorization"), Some("Bearer prod-tok"));
+        assert!(dev.notice.unwrap().contains("(dev)"));
+        assert!(prod.notice.unwrap().contains("(prod)"));
     }
 
     #[test]
-    fn resend_from_history_missing_path_falls_back() {
+    fn edited_url_drops_the_folder_scope() {
+        let (_d, tree) = auth_collection();
+        let mut d = draft();
+        d.url = "http://other.test/".into();
+        let p = plan(
+            &tree,
+            &d,
+            &origin(Some("users/get.toml")),
+            &env("prod", "prod-tok"),
+        );
+        assert_eq!(header(&p, "authorization"), None);
+        assert_eq!(p.scope_path, None);
+        assert!(p.notice.unwrap().contains("URL was edited"));
+    }
+
+    #[test]
+    fn missing_original_falls_back_to_collection_defaults() {
         let (d, _) = auth_collection();
         std::fs::remove_file(d.path().join("users/get.toml")).unwrap();
         let tree = open_collection(d.path()).unwrap();
-        let (headers, missing) = resend_headers(&tree, &origin(Some("users/get.toml")));
-        assert!(missing);
-        assert!(
-            !headers
-                .iter()
-                .any(|(n, _)| n.eq_ignore_ascii_case("authorization"))
+        let p = plan(
+            &tree,
+            &draft(),
+            &origin(Some("users/get.toml")),
+            &env("dev", "t"),
         );
+        assert_eq!(header(&p, "authorization"), None);
+        assert!(p.notice.unwrap().contains("original request was not found"));
         // A tab with its own path is unaffected.
-        let own = scope_path_for(&tree, Some(Path::new("a.toml")), Some(&origin(None)));
-        assert_eq!(own, (Some(PathBuf::from("a.toml")), false));
+        let own = scope_path_for(&tree, Some(Path::new("a.toml")), Some(&origin(None)), URL);
+        assert_eq!(own, (Some(PathBuf::from("a.toml")), false, false));
     }
 
     #[test]
     fn resend_chain_keeps_scope() {
         let (_d, tree) = auth_collection();
-        let (path, _) = scope_path_for(&tree, None, Some(&origin(Some("users/get.toml"))));
-        let recorded = recorded_request(path.as_deref());
-        assert_eq!(recorded.as_deref(), Some("users/get.toml"));
-        let (headers, missing) = resend_headers(&tree, &origin(recorded.as_deref()));
-        assert!(!missing);
-        assert!(
-            headers
-                .iter()
-                .any(|(n, v)| n.eq_ignore_ascii_case("authorization") && v == "Bearer s3cret"),
-            "{headers:?}"
+        let first = plan(
+            &tree,
+            &draft(),
+            &origin(Some("users/get.toml")),
+            &env("dev", "t"),
         );
+        let recorded = recorded_request(first.scope_path.as_deref());
+        assert_eq!(recorded.as_deref(), Some("users/get.toml"));
+        let again = plan(
+            &tree,
+            &draft(),
+            &origin(recorded.as_deref()),
+            &env("prod", "p"),
+        );
+        assert_eq!(header(&again, "authorization"), Some("Bearer p"));
+    }
+
+    fn kv(name: &str, value: &str) -> KeyValue {
+        KeyValue {
+            name: name.into(),
+            value: value.into(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn redacted_fields_never_send_an_empty_value_or_override_the_environment() {
+        let (_d, tree) = auth_collection();
+        // As stored: secrets emptied, the names listed.
+        let mut req = draft();
+        req.vars = vec![Var {
+            name: "token".into(),
+            value: String::new(),
+        }];
+        req.auth = Auth::Bearer {
+            token: String::new(),
+        };
+        req.headers = vec![
+            kv("Authorization", ""),
+            kv("X-Api-Key", ""),
+            kv("Accept", "*/*"),
+        ];
+        req.params = vec![kv("api_key", "")];
+        req.body = Body::Form(vec![kv("password", ""), kv("user", "bob")]);
+        req.url = "http://example.test/?secret=&a=1".into();
+        let redacted: Vec<String> = [
+            "auth.token",
+            "vars.token",
+            "Authorization",
+            "X-Api-Key",
+            "params.api_key",
+            "form.password",
+            "query.secret",
+        ]
+        .map(String::from)
+        .to_vec();
+        let (adjustments, left) = sanitize_redacted(&mut req, &redacted);
+        assert!(left.is_empty(), "{left:?}");
+        assert!(req.vars.is_empty());
+        assert_eq!(req.auth, Auth::Inherit);
+        assert!(!req.headers[0].enabled && !req.headers[1].enabled && req.headers[2].enabled);
+        assert!(!req.params[0].enabled);
+        assert_eq!(req.url, "http://example.test/?a=1");
+        let Body::Form(f) = &req.body else { panic!() };
+        assert!(!f[0].enabled && f[1].enabled);
+        assert!(adjustments.contains(&"disabled header Authorization".to_string()));
+        assert!(adjustments.contains(&"reset auth to inherit".to_string()));
+
+        let mut o = origin(Some("users/get.toml"));
+        o.url = req.url.clone();
+        o.adjustments = adjustments;
+        let p = plan(&tree, &req, &o, &env("prod", "prod-tok"));
+        // The environment's token is used, not an emptied var, and the folder's auth applies.
+        assert_eq!(header(&p, "authorization"), Some("Bearer prod-tok"));
+        assert_eq!(header(&p, "x-api-key"), None);
+        assert_eq!(header(&p, "accept"), Some("*/*"));
+        assert!(p.notice.unwrap().contains("disabled header X-Api-Key"));
+    }
+
+    #[test]
+    fn userinfo_is_stripped_from_a_redacted_url() {
+        let mut req = draft();
+        req.url = "http://@example.test/x".into();
+        let (adj, left) = sanitize_redacted(&mut req, &["url.password".into()]);
+        assert_eq!(req.url, "http://example.test/x");
+        assert!(left.is_empty() && adj.len() == 1);
     }
 
     fn history_fixture(body: &[u8]) -> (tempfile::TempDir, DataDir, CollectionId, HistoryEntry) {

@@ -673,21 +673,20 @@ impl HistoryStore {
             }
             atomic_write_private(&self.index(), &text)?;
         }
-        let mut first_err = None;
         let doomed = dropped
             .iter()
             .flat_map(|(id, _)| self.body_files(id))
             .chain(orphans);
         for p in doomed {
-            match fs::remove_file(&p) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    first_err.get_or_insert(io(&p, err));
-                }
+            // A file still open elsewhere (Windows pending delete) is left as an
+            // orphan; the next sweep removes it.
+            if let Err(err) = fs::remove_file(&p)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::debug!(path = %p.display(), error = %err, "history body left for the next sweep");
             }
         }
-        first_err.map_or(Ok(()), Err)
+        Ok(())
     }
 
     /// All entries, newest first.
@@ -742,10 +741,21 @@ impl HistoryStore {
     pub fn clear(&self) -> Result<(), StorageError> {
         let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _file_lock = self.lock_file()?;
-        match fs::remove_dir_all(&self.dir) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io(&self.dir, e)),
+        // The index goes first: without it no entry lists, so any body file that
+        // cannot be deleted now (open or pending delete) is an orphan the next
+        // sweep removes, and clearing does not fail because of it.
+        match fs::remove_file(self.index()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io(&self.index(), e)),
         }
+        if let Ok(rd) = fs::read_dir(self.bodies()) {
+            for f in rd.flatten() {
+                let _ = fs::remove_file(f.path());
+            }
+        }
+        // Best effort: the directory may still hold the lock file or a leftover.
+        let _ = fs::remove_dir_all(&self.dir);
+        Ok(())
     }
 }

@@ -29,6 +29,9 @@ pub enum BodyError {
     Io(String),
     #[error("unknown body handle: {0:?}")]
     UnknownHandle(BodyId),
+    /// A borrowed file (a history body) no longer exists.
+    #[error("history body was removed")]
+    Removed,
 }
 
 impl From<std::io::Error> for BodyError {
@@ -184,7 +187,7 @@ impl BodyStore {
 
     /// Reads up to `len` bytes starting at `offset`; short or empty at the end.
     pub fn read(&self, handle: &BodyHandle, offset: u64, len: usize) -> Result<Vec<u8>, BodyError> {
-        let path = {
+        let (path, borrowed) = {
             let entries = self.inner.lock();
             match entries.get(&handle.id) {
                 None => return Err(BodyError::UnknownHandle(handle.id)),
@@ -197,7 +200,8 @@ impl BodyStore {
                     let end = start.saturating_add(len).min(data.len());
                     return Ok(data[start..end].to_vec());
                 }
-                Some(Entry::File(path) | Entry::Borrowed(path)) => path.clone(),
+                Some(Entry::File(path)) => (path.clone(), false),
+                Some(Entry::Borrowed(path)) => (path.clone(), true),
             }
         };
         if offset >= handle.len {
@@ -205,6 +209,7 @@ impl BodyStore {
         }
         let mut file = File::open(&path).map_err(|e| match e.kind() {
             // Released between the lookup and the open.
+            std::io::ErrorKind::NotFound if borrowed => BodyError::Removed,
             std::io::ErrorKind::NotFound => BodyError::UnknownHandle(handle.id),
             _ => BodyError::from(e),
         })?;
@@ -344,6 +349,19 @@ mod tests {
         drop(store);
         assert!(path.exists());
         let _ = h2;
+    }
+
+    #[test]
+    fn borrowed_file_deleted_underneath_reads_as_removed() {
+        let base = TempBase::new();
+        let path = base.0.join("gone.bin");
+        std::fs::write(&path, b"hello").unwrap();
+        let store = BodyStore::with_spill_base(10, base.0.clone());
+        let h = store.open_file(path.clone(), 5);
+        std::fs::remove_file(&path).unwrap();
+        let err = store.read(&h, 0, 10).unwrap_err();
+        assert!(matches!(err, BodyError::Removed), "{err:?}");
+        assert_eq!(err.to_string(), "history body was removed");
     }
 
     /// Test-owned base directory, removed on drop.

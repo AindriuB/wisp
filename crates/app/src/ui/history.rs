@@ -62,17 +62,32 @@ pub fn now_ms() -> u64 {
 }
 
 /// The Notice shown when a from-history tab is sent again.
-pub fn resend_notice(env: Option<&str>, redacted: &[String], original_missing: bool) -> String {
+pub fn resend_notice(
+    env: Option<&str>,
+    adjustments: &[String],
+    redacted: &[String],
+    original_missing: bool,
+    url_edited: bool,
+) -> String {
     let mut text = format!(
         "Resent with the current environment ({})",
         env.unwrap_or("no environment")
     );
+    if !adjustments.is_empty() {
+        text.push_str("; because values were not stored: ");
+        text.push_str(&adjustments.join(", "));
+    }
     if !redacted.is_empty() {
         text.push_str("; redacted values were not stored: ");
         text.push_str(&redacted.join(", "));
     }
     if original_missing {
         text.push_str("; the original request was not found, so only collection defaults applied");
+    }
+    if url_edited {
+        text.push_str(
+            "; the URL was edited, so only collection defaults applied, not the original folder's",
+        );
     }
     text
 }
@@ -348,17 +363,19 @@ mod tests {
     #[test]
     fn resend_notice_with_and_without_names_and_environment() {
         assert_eq!(
-            resend_notice(Some("dev"), &[], false),
+            resend_notice(Some("dev"), &[], &[], false, false),
             "Resent with the current environment (dev)"
         );
         assert_eq!(
-            resend_notice(None, &[], false),
+            resend_notice(None, &[], &[], false, false),
             "Resent with the current environment (no environment)"
         );
         assert_eq!(
             resend_notice(
                 Some("dev"),
+                &[],
                 &["Authorization".into(), "token".into()],
+                false,
                 false
             ),
             "Resent with the current environment (dev); redacted values were not stored: Authorization, token"
@@ -368,8 +385,25 @@ mod tests {
     #[test]
     fn resend_notice_says_when_the_original_request_is_gone() {
         assert_eq!(
-            resend_notice(None, &[], true),
+            resend_notice(None, &[], &[], true, false),
             "Resent with the current environment (no environment); the original request was not found, so only collection defaults applied"
+        );
+    }
+
+    #[test]
+    fn resend_notice_names_adjustments_and_an_edited_url() {
+        assert_eq!(
+            resend_notice(
+                Some("dev"),
+                &[
+                    "disabled header Authorization".into(),
+                    "reset auth to inherit".into()
+                ],
+                &[],
+                false,
+                true
+            ),
+            "Resent with the current environment (dev); because values were not stored: disabled header Authorization, reset auth to inherit; the URL was edited, so only collection defaults applied, not the original folder's"
         );
     }
 
@@ -380,7 +414,9 @@ mod tests {
             body_stored: true,
             body_truncated: false,
             redacted: Vec::new(),
+            adjustments: Vec::new(),
             request: None,
+            url: String::new(),
         };
         assert_eq!(origin_line(&o, 5 * 60_000), "From history, 5 min ago");
         o.body_truncated = true;

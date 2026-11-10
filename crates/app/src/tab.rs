@@ -84,8 +84,14 @@ pub struct HistoryOrigin {
     pub body_truncated: bool,
     /// Names whose values were not stored; never shown with a value.
     pub redacted: Vec<String>,
+    /// What opening the entry removed, disabled or reset so no emptied
+    /// credential is sent; shown in the Resend notice.
+    pub adjustments: Vec<String>,
     /// The entry's original request path, used only to scope Resend's resolve.
     pub request: Option<String>,
+    /// The URL template the tab opened with; the folder scope applies only
+    /// while the draft URL still equals it.
+    pub url: String,
 }
 
 pub struct RequestTab {
