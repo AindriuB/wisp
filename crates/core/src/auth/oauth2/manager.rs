@@ -130,6 +130,8 @@ pub(crate) struct OAuth2 {
     cache: Mutex<HashMap<TokenKey, Entry>>,
     /// Keys whose stored refresh token is stale: a forget failed, so `bearer` must not load it.
     stale: Mutex<std::collections::HashSet<TokenKey>>,
+    /// Bumped by every authorize of a key; a refresh that started before it must not land.
+    generation: Mutex<HashMap<TokenKey, u64>>,
     store: Arc<dyn RefreshTokenStore>,
     clock: Arc<dyn Clock>,
 }
@@ -156,6 +158,7 @@ impl OAuth2 {
         Self {
             cache: Mutex::default(),
             stale: Mutex::default(),
+            generation: Mutex::default(),
             store,
             clock,
         }
@@ -167,6 +170,11 @@ impl OAuth2 {
 
     fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<TokenKey, Entry>> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn generation(&self, key: &TokenKey) -> u64 {
+        let g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
+        g.get(key).copied().unwrap_or(0)
     }
 
     fn fresh(&self, key: &TokenKey) -> Option<Secret> {
@@ -187,14 +195,31 @@ impl OAuth2 {
     }
 
     /// Caches a token response. A new refresh token replaces the old one; when the response
-    /// has none, `keep_refresh` says whether the old one stays; if not, it is also forgotten in
-    /// the store when `persist_refresh` is set.
-    fn put(&self, p: &Params<'_>, resp: &TokenResponse, keep_refresh: bool) {
+    /// has none, `keep_refresh` says whether the old one stays. If not (an authorize), the
+    /// stored one is forgotten whatever `persist_refresh` says, and the key's generation moves
+    /// on. `refreshed` is `(generation read before the refresh, the refresh token it used)`:
+    /// when the generation has moved, nothing is cached or saved and `false` is returned.
+    fn put(
+        &self,
+        p: &Params<'_>,
+        resp: &TokenResponse,
+        keep_refresh: bool,
+        refreshed: Option<(u64, Secret)>,
+    ) -> bool {
         let expires_at = resp
             .expires_in
             .and_then(|d| self.clock.now().checked_add(d));
         {
             let mut map = self.entries();
+            if let Some((epoch, _)) = &refreshed
+                && self.generation(&p.key) != *epoch
+            {
+                return false;
+            }
+            if !keep_refresh {
+                let mut g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
+                *g.entry(p.key.clone()).or_insert(0) += 1;
+            }
             let e = map.entry(p.key.clone()).or_default();
             e.access = Some(Access {
                 token: resp.access_token.clone(),
@@ -204,18 +229,20 @@ impl OAuth2 {
                 e.refresh = Some(rt.clone());
             } else if !keep_refresh {
                 e.refresh = None;
+            } else if let Some((_, used)) = refreshed {
+                // The old refresh token stays valid; remember it in memory.
+                e.refresh = Some(used);
             }
         }
-        if !p.persist_refresh {
-            return;
-        }
         if let Some(rt) = &resp.refresh_token {
-            match self.store.save(&p.key, rt.expose()) {
-                Ok(()) => {
-                    self.stale().remove(&p.key);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+            if p.persist_refresh {
+                match self.store.save(&p.key, rt.expose()) {
+                    Ok(()) => {
+                        self.stale().remove(&p.key);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+                    }
                 }
             }
         } else if !keep_refresh {
@@ -229,6 +256,7 @@ impl OAuth2 {
                 }
             }
         }
+        true
     }
 
     /// The bearer token for a send: cached, refreshed or fetched. Returns its cache key too.
@@ -260,6 +288,7 @@ impl OAuth2 {
                 post(&http, &url, &p.creds, &fields, timeout).await?
             }
             Grant::AuthCode => {
+                let epoch = self.generation(&p.key);
                 let held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
                 let refresh = match held {
                     Some(r) => r,
@@ -282,14 +311,17 @@ impl OAuth2 {
                     ("refresh_token", refresh.expose()),
                 ];
                 let resp = post(&http, &url, &p.creds, &fields, timeout).await?;
-                if resp.refresh_token.is_none() {
-                    // The old refresh token stays valid; remember it in memory.
-                    self.entries().entry(p.key.clone()).or_default().refresh = Some(refresh);
+                if !self.put(&p, &resp, true, Some((epoch, refresh))) {
+                    // A re-authorize landed meanwhile: use its state, never this result.
+                    return match self.fresh(&p.key) {
+                        Some(t) => Ok((p.key, t)),
+                        None => Err(not_authorized()),
+                    };
                 }
-                resp
+                return Ok((p.key, resp.access_token));
             }
         };
-        self.put(&p, &resp, true);
+        self.put(&p, &resp, true, None);
         Ok((p.key, resp.access_token))
     }
 
@@ -400,7 +432,7 @@ impl OAuth2 {
             r = post(&http, &token_url, &p.creds, &fields, DEFAULT_TOKEN_TIMEOUT) => r?,
             () = &mut cancelled => return Err(err(ErrorKind::Auth, "cancelled")),
         };
-        self.put(&p, &resp, false);
+        self.put(&p, &resp, false, None);
         Ok(())
     }
 }

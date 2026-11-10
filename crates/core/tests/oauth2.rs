@@ -504,12 +504,16 @@ async fn authorize(
         environment: None,
         timeout,
     });
-    match rx.recv().await.unwrap() {
-        Event::AuthUrl { id: got, url } => {
-            assert_eq!(got, id);
-            (id, reqwest::Url::parse(&url).unwrap())
+    loop {
+        match rx.recv().await.unwrap() {
+            Event::AuthUrl { id: got, url } => {
+                assert_eq!(got, id);
+                return (id, reqwest::Url::parse(&url).unwrap());
+            }
+            // A send already in flight may announce itself first.
+            Event::Started { .. } => {}
+            other => panic!("unexpected {other:?}"),
         }
-        other => panic!("unexpected {other:?}"),
     }
 }
 
@@ -1090,10 +1094,12 @@ async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
         authorize_fully(&engine, &rx, auth.clone()).await;
         assert_eq!(store.saves.lock().unwrap().len(), 1);
         authorize_fully(&engine, &rx, auth.clone()).await;
-        assert_eq!(store.forgets.lock().unwrap().len(), 1);
-        if fail_forget {
-            // The failed forget leaves RT_X in the store; AuthCompleted was still emitted.
-            // The stale marker keeps the send from refreshing with RT_X (the mock expects 0).
+        // A failed forget leaves RT_X in the store; AuthCompleted was still emitted and the
+        // stale marker keeps the send from refreshing with RT_X (the mock expects 0).
+        {
+            let forgets = store.forgets.lock().unwrap();
+            assert_eq!(forgets.len(), 1);
+            assert_eq!(forgets[0], store.saves.lock().unwrap()[0].0);
         }
         clock.advance(Duration::from_secs(200));
         let evs = send(&engine, &rx, request(target.uri(), auth)).await;
@@ -1103,4 +1109,142 @@ async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
         );
         assert_eq!(store.forgets.lock().unwrap().len(), 1);
     }
+}
+
+#[tokio::test]
+async fn a_refresh_in_flight_during_reauthorize_never_lands() {
+    let idp = MockServer::start().await;
+    let code =
+        || Mock::given(method("POST")).and(wiremock::matchers::body_string_contains("code=c"));
+    code()
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_X", "token_type": "bearer", "expires_in": 100,
+            "refresh_token": "RT_X",
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&idp)
+        .await;
+    code()
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_Y", "token_type": "bearer", "expires_in": 3600,
+        })))
+        .with_priority(2)
+        .mount(&idp)
+        .await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_string_contains(
+            "grant_type=refresh_token",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(1500))
+                .set_body_json(json!({
+                    "access_token": "AT_X2", "token_type": "bearer", "expires_in": 3600,
+                    "refresh_token": "RT_X2",
+                })),
+        )
+        .with_priority(3)
+        .mount(&idp)
+        .await;
+    let target = resource_server().await;
+    let store = Arc::new(Recording::default());
+    let (engine, rx, clock) = engine_with(store.clone());
+    let auth = code_auth(&idp.uri(), 0, true);
+    authorize_fully(&engine, &rx, auth.clone()).await;
+    clock.advance(Duration::from_secs(200));
+    engine.submit(Command::Send(request(target.uri(), auth.clone())));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while seen(&idp, "/token")
+            .await
+            .iter()
+            .all(|(_, b)| !b.contains("grant_type=refresh_token"))
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the refresh started");
+    authorize_fully(&engine, &rx, auth.clone()).await;
+    loop {
+        let ev = rx.recv().await.unwrap();
+        if matches!(ev, Event::Completed { .. } | Event::Failed { .. }) {
+            break;
+        }
+    }
+    send(&engine, &rx, request(target.uri(), auth.clone())).await;
+    clock.advance(Duration::from_secs(4000));
+    send(&engine, &rx, request(target.uri(), auth)).await;
+    let bearers: Vec<String> = seen(&target, "/")
+        .await
+        .into_iter()
+        .map(|(a, _)| a)
+        .collect();
+    assert!(!bearers.iter().any(|a| a.contains("AT_X2")), "{bearers:?}");
+    let posts = seen(&idp, "/token").await;
+    assert!(!posts.iter().any(|(_, b)| b.contains("RT_X2")));
+    assert_eq!(
+        posts
+            .iter()
+            .filter(|(_, b)| b.contains("grant_type=refresh_token"))
+            .count(),
+        1
+    );
+    assert!(
+        store
+            .saves
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, t)| t != "RT_X2")
+    );
+}
+
+#[tokio::test]
+async fn reauthorizing_forgets_the_stored_token_even_when_not_persisting() {
+    let idp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_string_contains("code=c"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_X", "token_type": "bearer", "expires_in": 100,
+            "refresh_token": "RT_X",
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&idp)
+        .await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_string_contains("code=c"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT_Y", "token_type": "bearer", "expires_in": 100,
+        })))
+        .with_priority(2)
+        .mount(&idp)
+        .await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::body_string_contains(
+            "grant_type=refresh_token",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(token_body("AT_BAD")))
+        .expect(0)
+        .with_priority(3)
+        .mount(&idp)
+        .await;
+    let target = resource_server().await;
+    let store = Arc::new(Recording::default());
+    let (engine, rx, clock) = engine_with(store.clone());
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, true)).await;
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, false)).await;
+    clock.advance(Duration::from_secs(200));
+    let evs = send(
+        &engine,
+        &rx,
+        request(target.uri(), code_auth(&idp.uri(), 0, true)),
+    )
+    .await;
+    assert_eq!(
+        auth_error(&evs).message,
+        "Not authorized: use Authorize first"
+    );
+    assert_eq!(store.forgets.lock().unwrap().len(), 1);
 }
