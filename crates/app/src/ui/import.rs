@@ -225,6 +225,11 @@ enum Stage {
     },
 }
 
+/// The dialog may close unless an import is mid-write.
+fn can_dismiss(writing: bool) -> bool {
+    !writing
+}
+
 pub struct ImportView {
     workspace: Entity<Workspace>,
     stage: Stage,
@@ -258,7 +263,7 @@ impl ImportView {
 
     /// Return focus to where it was, then ask the host to close the dialog.
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.writing {
+        if !can_dismiss(self.writing) {
             return;
         }
         if let Some(h) = self.prev_focus.take() {
@@ -565,6 +570,13 @@ mod tests {
     use super::*;
     use wisp_core::request::{Request, Var};
     use wisp_storage::import::ImportedEnv;
+
+    #[test]
+    fn dismiss_allowed_unless_writing() {
+        // Idle, previewing, done and errored all have `writing == false`.
+        assert!(can_dismiss(false));
+        assert!(!can_dismiss(true));
+    }
 
     fn req(name: &str) -> ImportItem {
         ImportItem::Request {
