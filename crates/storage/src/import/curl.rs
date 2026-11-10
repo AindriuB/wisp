@@ -434,7 +434,15 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
             };
             let v = v.split(";type=").next().unwrap_or("");
             let value = if let Some(path) = v.strip_prefix('@') {
-                PartValue::File(PathBuf::from(path.split(';').next().unwrap_or(path)))
+                match super::safe_file_path(path.split(';').next().unwrap_or(path)) {
+                    Some(p) => PartValue::File(p),
+                    None => {
+                        f.warnings.push(format!(
+                            "file part `{n}` has an unsafe path; imported without a file"
+                        ));
+                        PartValue::File(PathBuf::new())
+                    }
+                }
             } else if v.starts_with('<') {
                 f.warnings.push(format!(
                     "form field `{n}` reads a file as text; not imported"
@@ -601,12 +609,15 @@ mod tests {
 
     #[test]
     fn multipart_with_file() {
-        let (r, _) = req("curl -F 'name=bob' -F 'f=@/tmp/a.png;type=image/png' http://h/up");
+        let (r, _) = req("curl -F 'name=bob' -F 'f=@assets/a.png;type=image/png' http://h/up");
         let Body::Multipart(parts) = r.body else {
             panic!()
         };
         assert_eq!(parts[0].value, PartValue::Text("bob".into()));
-        assert_eq!(parts[1].value, PartValue::File(PathBuf::from("/tmp/a.png")));
+        assert_eq!(
+            parts[1].value,
+            PartValue::File(PathBuf::from("assets/a.png"))
+        );
         assert_eq!(r.method, Method::Post);
     }
 
@@ -712,5 +723,43 @@ mod tests {
         assert_eq!(r.url, "https://h/x");
         assert!(matches!(r.body, Body::None));
         assert!(w.warnings.iter().any(|m| m.message.contains("--json")));
+    }
+
+    #[test]
+    fn unsafe_file_paths_are_dropped() {
+        for bad in [
+            "/etc/passwd",
+            "~/.ssh/id_rsa",
+            "../x",
+            "a/../../x",
+            "C:\\x",
+            "\\\\host\\share\\x",
+        ] {
+            let (r, res) = req(&format!("curl -F 'f=@{bad}' http://h/up"));
+            let Body::Multipart(parts) = r.body else {
+                panic!()
+            };
+            assert_eq!(parts[0].value, PartValue::File(PathBuf::new()), "{bad}");
+            let w = res
+                .warnings
+                .iter()
+                .find(|w| w.message.contains("`f`"))
+                .unwrap();
+            assert!(!w.message.contains(bad) && !w.at.contains(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn plus_is_space_in_form_data_and_queries() {
+        let (r, _) = req("curl -d 'k=a+b&j=a%2Bb' http://h/x");
+        let Body::Form(kv) = r.body else { panic!() };
+        assert_eq!(kv[0].value, "a b");
+        assert_eq!(kv[1].value, "a+b");
+        let (r, _) = req("curl -G -d 'k=a+b&j=a%2Bb' http://h/x");
+        assert_eq!(r.params[0].value, "a b");
+        assert_eq!(r.params[1].value, "a+b");
+        let (r, _) = req("curl 'http://h/x?k=a+b&j=a%2Bb'");
+        assert_eq!(r.params[0].value, "a b");
+        assert_eq!(r.params[1].value, "a+b");
     }
 }

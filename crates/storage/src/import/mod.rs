@@ -48,11 +48,45 @@ pub enum Format {
 }
 
 /// A variable set to create as an environment.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub struct ImportedEnv {
     pub name: String,
     pub vars: Vec<Var>,
     pub secrets: Vec<Var>,
+}
+
+impl std::fmt::Debug for ImportedEnv {
+    /// Secret values never print; their names do.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct Redacted<'a>(&'a [Var]);
+        impl std::fmt::Debug for Redacted<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_list()
+                    .entries(self.0.iter().map(|v| (&v.name, "<redacted>")))
+                    .finish()
+            }
+        }
+        f.debug_struct("ImportedEnv")
+            .field("name", &self.name)
+            .field("vars", &self.vars)
+            .field("secrets", &Redacted(&self.secrets))
+            .finish()
+    }
+}
+
+/// Most warnings kept; one summary warning stands in for the rest.
+pub const MAX_WARNINGS: usize = 1_000;
+const MAX_WARNING_BYTES: usize = 512;
+
+fn truncate_bytes(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
 }
 
 /// A construct that was not imported, and where it was.
@@ -89,9 +123,19 @@ pub struct ImportResult {
 
 impl ImportResult {
     pub(crate) fn warn(&mut self, at: &str, message: impl Into<String>) {
+        if self.warnings.len() > MAX_WARNINGS {
+            return;
+        }
+        if self.warnings.len() == MAX_WARNINGS {
+            self.warnings.push(ImportWarning {
+                at: String::new(),
+                message: format!("more than {MAX_WARNINGS} warnings; the rest are not shown"),
+            });
+            return;
+        }
         self.warnings.push(ImportWarning {
-            at: at.to_string(),
-            message: message.into(),
+            at: truncate_bytes(at.to_string(), MAX_WARNING_BYTES),
+            message: truncate_bytes(message.into(), MAX_WARNING_BYTES),
         });
     }
 }
@@ -210,6 +254,26 @@ fn hex(b: u8) -> Option<u8> {
     (b as char).to_digit(16).map(|d| d as u8)
 }
 
+/// Decode form-urlencoded text: `+` is a space, then `%XX` escapes.
+pub(crate) fn form_decode(s: &str) -> String {
+    percent_decode(&s.replace('+', " "))
+}
+
+/// A file path from foreign input that is safe to keep: relative, with no
+/// `~` and no `..`, on any platform's syntax. `None` means refuse it.
+pub(crate) fn safe_file_path(p: &str) -> Option<std::path::PathBuf> {
+    let b = p.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if p.is_empty()
+        || p.starts_with(['/', '\\', '~'])
+        || drive
+        || p.split(['/', '\\']).any(|c| c == "..")
+    {
+        return None;
+    }
+    Some(std::path::PathBuf::from(p))
+}
+
 /// Percent-encode everything but unreserved characters.
 pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::new();
@@ -230,8 +294,8 @@ pub(crate) fn parse_query(q: &str) -> Vec<KeyValue> {
         .map(|p| {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
             KeyValue {
-                name: percent_decode(k),
-                value: percent_decode(v),
+                name: form_decode(k),
+                value: form_decode(v),
                 enabled: true,
             }
         })
@@ -286,5 +350,62 @@ pub(crate) fn method_name(m: wisp_core::Method) -> &'static str {
         Method::Delete => "DELETE",
         Method::Head => "HEAD",
         Method::Options => "OPTIONS",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_imported_env() {
+        let env = ImportedEnv {
+            name: "prod".into(),
+            vars: vec![Var {
+                name: "host".into(),
+                value: "example.com".into(),
+            }],
+            secrets: vec![Var {
+                name: "token".into(),
+                value: "hunter2-secret".into(),
+            }],
+        };
+        for out in [format!("{env:?}"), format!("{env:#?}")] {
+            assert!(!out.contains("hunter2-secret"), "{out}");
+            assert!(out.contains("token") && out.contains("<redacted>"), "{out}");
+            assert!(out.contains("example.com") && out.contains("prod"));
+        }
+        let r = ImportResult {
+            environments: vec![env],
+            ..Default::default()
+        };
+        assert!(!format!("{r:?}").contains("hunter2-secret"));
+    }
+
+    #[test]
+    fn form_decode_plus_and_percent() {
+        assert_eq!(form_decode("a+b"), "a b");
+        assert_eq!(form_decode("a%2Bb"), "a+b");
+    }
+
+    #[test]
+    fn safe_paths() {
+        for bad in [
+            "",
+            "/etc/passwd",
+            "~/.ssh/id_rsa",
+            "~",
+            "../x",
+            "a/../b",
+            "a\\..\\b",
+            "C:\\x",
+            "c:/x",
+            "\\\\h\\s\\x",
+        ] {
+            assert!(safe_file_path(bad).is_none(), "{bad}");
+        }
+        for ok in ["a.png", "assets/a.png", "a..b/c", "x\\y"] {
+            assert!(safe_file_path(ok).is_some(), "{ok}");
+        }
     }
 }

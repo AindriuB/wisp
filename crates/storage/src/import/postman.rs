@@ -249,8 +249,8 @@ fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>) {
                 q.iter()
                     .filter(|p| !text(p.get("key")).is_empty())
                     .map(|p| KeyValue {
-                        name: text(p.get("key")),
-                        value: text(p.get("value")),
+                        name: super::percent_decode(&text(p.get("key"))),
+                        value: super::percent_decode(&text(p.get("value"))),
                         enabled: !p.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                     })
                     .collect()
@@ -366,7 +366,18 @@ fn body_of(cx: &mut Ctx, body: Option<&Value>, headers: &[KeyValue], at: &str) -
                             .warn(at, format!("file part `{name}` has no file; skipped"));
                         continue;
                     }
-                    PartValue::File(PathBuf::from(src))
+                    match super::safe_file_path(&src) {
+                        Some(p) => PartValue::File(p),
+                        None => {
+                            cx.result.warn(
+                                at,
+                                format!(
+                                    "file part `{name}` has an unsafe path; imported without a file"
+                                ),
+                            );
+                            PartValue::File(PathBuf::new())
+                        }
+                    }
                 } else {
                     PartValue::Text(text(p.get("value")))
                 };
@@ -664,5 +675,68 @@ mod tests {
         assert_eq!(names.len(), secrets.len());
         assert!(secrets.len() >= 8000);
         assert!(t.elapsed().as_secs() < 2);
+    }
+
+    fn one_request(body: serde_json::Value, url: serde_json::Value) -> (Request, ImportResult) {
+        let doc = serde_json::json!({
+            "info": {"name": "c", "_postman_id": "x",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [{"name": "r", "request": {"method": "POST", "url": url, "body": body}}]
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        let req = find(&r.items, "r").clone();
+        (req, r)
+    }
+
+    #[test]
+    fn unsafe_file_parts_are_dropped() {
+        for bad in [
+            "/etc/passwd",
+            "~/.ssh/id_rsa",
+            "../x",
+            "C:\\x",
+            "\\\\host\\share\\x",
+        ] {
+            let body = serde_json::json!({"mode": "formdata",
+                "formdata": [{"key": "f", "type": "file", "src": bad}]});
+            let (req, r) = one_request(body, "http://h/up".into());
+            let Body::Multipart(parts) = req.body else {
+                panic!()
+            };
+            assert_eq!(parts[0].value, PartValue::File(PathBuf::new()), "{bad}");
+            let w = r
+                .warnings
+                .iter()
+                .find(|w| w.message.contains("`f`"))
+                .unwrap();
+            assert!(!w.message.contains(bad) && !w.at.contains(bad), "{bad}");
+        }
+        let body = serde_json::json!({"mode": "formdata",
+            "formdata": [{"key": "f", "type": "file", "src": "assets/a.png"}]});
+        let (req, _) = one_request(body, "http://h/up".into());
+        let Body::Multipart(parts) = req.body else {
+            panic!()
+        };
+        assert_eq!(
+            parts[0].value,
+            PartValue::File(PathBuf::from("assets/a.png"))
+        );
+    }
+
+    #[test]
+    fn query_array_is_percent_decoded() {
+        let url = serde_json::json!({"raw": "http://h/x?a%20b=c%20d",
+            "query": [{"key": "a%20b", "value": "c%20d"}]});
+        let (req, _) = one_request(serde_json::json!({}), url);
+        assert_eq!(req.params[0].name, "a b");
+        assert_eq!(req.params[0].value, "c d");
+    }
+
+    #[test]
+    fn raw_url_query_plus_is_space() {
+        let url = serde_json::json!("http://h/x?k=a+b&j=a%2Bb");
+        let (req, _) = one_request(serde_json::json!({}), url);
+        assert_eq!(req.params[0].value, "a b");
+        assert_eq!(req.params[1].value, "a+b");
     }
 }

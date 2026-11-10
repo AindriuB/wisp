@@ -140,6 +140,10 @@ fn fold(s: &str) -> String {
 
 /// A name the collection will accept: no control characters or leading dots,
 /// not empty, not a reserved device name, and not unreasonably long.
+/// Longest file or folder name stem, in bytes; leaves room for a numeric
+/// suffix and an extension under the 255-byte limit.
+const MAX_NAME_BYTES: usize = 80;
+
 fn clean_name(name: &str) -> String {
     let s: String = name.chars().filter(|c| !c.is_control()).collect();
     let s: String = s
@@ -147,7 +151,10 @@ fn clean_name(name: &str) -> String {
         .trim_start_matches('.')
         .trim()
         .chars()
-        .take(80)
+        .scan(0usize, |n, c| {
+            *n += c.len_utf8();
+            (*n <= MAX_NAME_BYTES).then_some(c)
+        })
         .collect();
     let s = s.trim().to_string();
     if s.is_empty() {
@@ -261,5 +268,30 @@ mod tests {
         assert_eq!(report.environments, 1500);
         assert_eq!(report.renamed.last().unwrap().1, "a-1500");
         assert!(start.elapsed().as_secs() < 20);
+    }
+
+    #[test]
+    fn names_are_byte_capped_on_char_boundaries() {
+        for unit in ["é", "😀", "日"] {
+            let n = clean_name(&unit.repeat(200));
+            assert!(n.len() <= MAX_NAME_BYTES, "{unit}");
+            assert!(n.chars().all(|c| unit.starts_with(c)));
+            assert!(!n.is_empty());
+        }
+    }
+
+    #[test]
+    fn multibyte_names_write_without_error() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("collection.toml"), "format = 1\n").unwrap();
+        let mut r = ImportResult::default();
+        r.items.push(ImportItem::Folder {
+            name: "😀".repeat(200),
+            items: vec![ImportItem::Request {
+                name: "é".repeat(200),
+                request: Default::default(),
+            }],
+        });
+        write(d.path(), Path::new(""), &r, "imported").unwrap();
     }
 }

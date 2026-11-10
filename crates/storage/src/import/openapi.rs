@@ -17,10 +17,17 @@ const MAX_EXAMPLE_BYTES: usize = 64 * 1024 * 1024;
 
 fn spend(budget: &mut usize, n: usize) -> Result<(), ImportError> {
     *budget = budget.checked_sub(n).ok_or_else(|| {
-        ImportError::TooLarge("example data over 64 MiB after resolving $refs".into())
+        ImportError::TooLarge("work over budget while resolving $refs and parameters".into())
     })?;
     Ok(())
 }
+
+/// Work units charged for each path item, operation, parameter visit and
+/// `$ref` hop, so shared references cannot multiply unseen work.
+const VISIT_COST: usize = 256;
+
+/// Most environments one import may produce.
+pub const MAX_ENVIRONMENTS: usize = 50;
 
 const METHODS: [(&str, Method); 7] = [
     ("get", Method::Get),
@@ -89,13 +96,15 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
     if let Some(paths) = doc.get("paths").and_then(Value::as_object) {
         for (path, item) in paths {
             let at = path.clone();
-            let Some(item) = deref(&doc, item, &at, &mut result) else {
+            spend(&mut budget, VISIT_COST + path.len())?;
+            let Some(item) = deref(&doc, item, &at, &mut result, &mut budget)? else {
                 continue;
             };
             for (key, method) in METHODS {
                 let Some(op) = item.get(key).filter(|o| o.is_object()) else {
                     continue;
                 };
+                spend(&mut budget, VISIT_COST)?;
                 counter.add()?;
                 let (tag, request) =
                     operation(&doc, &mut result, &mut budget, path, method, item, op)?;
@@ -131,8 +140,13 @@ pub(super) fn env_name(s: &str) -> String {
             out.push('-');
         }
     }
+    // Output is ASCII, so chars are bytes; leave room for a suffix and extension.
+    out.truncate(MAX_NAME_BYTES);
     out.trim_end_matches('-').to_string()
 }
+
+/// Longest environment name an importer produces, in bytes.
+const MAX_NAME_BYTES: usize = 100;
 
 /// Longest server URL accepted after variable substitution.
 const MAX_URL_BYTES: usize = 64 * 1024;
@@ -188,7 +202,16 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
     };
     let mut taken: HashSet<String> = HashSet::new();
     let mut next: HashMap<String, usize> = HashMap::new();
-    for (i, s) in servers.iter().enumerate() {
+    if servers.len() > MAX_ENVIRONMENTS {
+        result.warn(
+            &root,
+            format!(
+                "{} servers; only the first {MAX_ENVIRONMENTS} became environments",
+                servers.len()
+            ),
+        );
+    }
+    for (i, s) in servers.iter().enumerate().take(MAX_ENVIRONMENTS) {
         let mut url = text(s.get("url"));
         if let Some(vars) = s.get("variables").and_then(Value::as_object) {
             url = substitute(&url, vars)?;
@@ -232,23 +255,25 @@ fn deref<'a>(
     v: &'a Value,
     at: &str,
     result: &mut ImportResult,
-) -> Option<&'a Value> {
+    budget: &mut usize,
+) -> Result<Option<&'a Value>, ImportError> {
     let mut cur = v;
     let mut seen: HashSet<&str> = HashSet::new();
     while let Some(r) = cur.get("$ref").and_then(Value::as_str) {
+        spend(budget, VISIT_COST + r.len())?;
         let Some(pointer) = r.strip_prefix('#') else {
             result.warn(at, format!("external $ref `{r}` is not imported"));
-            return None;
+            return Ok(None);
         };
         if !seen.insert(r) {
             result.warn(at, format!("$ref cycle at `{r}`"));
-            return None;
+            return Ok(None);
         }
         let mut node = root;
         if !pointer.is_empty() {
             let Some(rest) = pointer.strip_prefix('/') else {
                 result.warn(at, format!("unsupported $ref `{r}`"));
-                return None;
+                return Ok(None);
             };
             for seg in rest.split('/') {
                 let seg = super::percent_decode(seg)
@@ -263,14 +288,14 @@ fn deref<'a>(
                     Some(n) => node = n,
                     None => {
                         result.warn(at, format!("$ref `{r}` does not resolve"));
-                        return None;
+                        return Ok(None);
                     }
                 }
             }
         }
         cur = node;
     }
-    Some(cur)
+    Ok(Some(cur))
 }
 
 fn scalar_text(v: &Value) -> String {
@@ -290,19 +315,25 @@ fn example<'a>(
     node: &'a Value,
     at: &str,
     result: &mut ImportResult,
-) -> Option<&'a Value> {
+    budget: &mut usize,
+) -> Result<Option<&'a Value>, ImportError> {
     if let Some(e) = node.get("example") {
-        return Some(e);
+        return Ok(Some(e));
     }
     if let Some(m) = node.get("examples").and_then(Value::as_object)
         && let Some((_, first)) = m.iter().next()
-        && let Some(ex) = deref(doc, first, at, result)
+        && let Some(ex) = deref(doc, first, at, result, budget)?
         && let Some(v) = ex.get("value")
     {
-        return Some(v);
+        return Ok(Some(v));
     }
-    let schema = deref(doc, node.get("schema")?, at, result)?;
-    schema.get("example").or_else(|| schema.get("default"))
+    let Some(schema_ref) = node.get("schema") else {
+        return Ok(None);
+    };
+    let Some(schema) = deref(doc, schema_ref, at, result, budget)? else {
+        return Ok(None);
+    };
+    Ok(schema.get("example").or_else(|| schema.get("default")))
 }
 
 fn operation(
@@ -336,7 +367,8 @@ fn operation(
     let mut index: HashMap<(String, String), usize> = HashMap::new();
     for list in [item.get("parameters"), op.get("parameters")] {
         for p in list.and_then(Value::as_array).into_iter().flatten() {
-            let Some(p) = deref(doc, p, &at, result) else {
+            spend(budget, VISIT_COST)?;
+            let Some(p) = deref(doc, p, &at, result, budget)? else {
                 continue;
             };
             let key = (text(p.get("name")), text(p.get("in")));
@@ -350,10 +382,11 @@ fn operation(
     }
     for p in params {
         let pname = text(p.get("name"));
+        spend(budget, VISIT_COST + pname.len())?;
         if pname.is_empty() {
             continue;
         }
-        let value = example(doc, p, &at, result).map(scalar_text);
+        let value = example(doc, p, &at, result, budget)?.map(scalar_text);
         spend(budget, pname.len() + value.as_ref().map_or(0, String::len))?;
         let required = p.get("required").and_then(Value::as_bool).unwrap_or(false);
         let kv = |value: Option<String>| KeyValue {
@@ -382,7 +415,7 @@ fn operation(
     }
 
     if let Some(body) = op.get("requestBody")
-        && let Some(body) = deref(doc, body, &at, result)
+        && let Some(body) = deref(doc, body, &at, result, budget)?
         && let Some(content) = body.get("content").and_then(Value::as_object)
     {
         let json = content
@@ -391,7 +424,7 @@ fn operation(
             .or_else(|| content.iter().find(|(k, _)| k.contains("json")));
         match json {
             Some((_, media)) => {
-                let content = example(doc, media, &at, result)
+                let content = example(doc, media, &at, result, budget)?
                     .map(|v| match v {
                         Value::String(s) => s.clone(),
                         other => serde_json::to_string_pretty(other).unwrap_or_default(),
@@ -645,7 +678,79 @@ mod tests {
         let start = std::time::Instant::now();
         let r = parse(doc.to_string().as_bytes()).unwrap();
         assert!(start.elapsed().as_secs() < 2);
-        assert_eq!(r.environments.len(), 3000);
-        assert_eq!(r.environments[2999].name, "a-3000");
+        assert_eq!(r.environments.len(), MAX_ENVIRONMENTS);
+        assert_eq!(r.environments[49].name, "a-50");
+    }
+
+    #[test]
+    fn shared_path_item_ref_is_charged() {
+        let params: Vec<_> = (0..2000)
+            .map(|i| serde_json::json!({"name": format!("p{i}"), "in": "query"}))
+            .collect();
+        let mut paths = serde_json::Map::new();
+        for i in 0..4000 {
+            paths.insert(
+                format!("/p{i}"),
+                serde_json::json!({"$ref": "#/components/pathItems/Big"}),
+            );
+        }
+        let doc = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": {"title": "t", "version": "1"},
+            "paths": paths,
+            "components": {"pathItems": {"Big": {
+                "parameters": params,
+                "get": {}, "put": {}, "post": {}
+            }}}
+        });
+        let start = std::time::Instant::now();
+        let r = parse(doc.to_string().as_bytes());
+        assert!(matches!(r, Err(ImportError::TooLarge(_))));
+        assert!(start.elapsed().as_secs() < 10);
+    }
+
+    #[test]
+    fn warnings_are_capped() {
+        let params: Vec<_> = (0..3000)
+            .map(|i| serde_json::json!({"name": format!("p{i}"), "in": "cookie"}))
+            .collect();
+        let doc = serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "paths": {"/a": {"get": {"parameters": params}}}
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        assert_eq!(r.warnings.len(), crate::import::MAX_WARNINGS + 1);
+        assert!(r.warnings.last().unwrap().message.contains("warnings"));
+    }
+
+    #[test]
+    fn environments_are_capped() {
+        let servers: Vec<_> = (0..200)
+            .map(|i| serde_json::json!({"url": format!("https://h{i}")}))
+            .collect();
+        let doc = serde_json::json!({
+            "openapi": "3.0.0",
+            "info": {"title": "t", "version": "1"},
+            "paths": {},
+            "servers": servers
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        assert_eq!(r.environments.len(), MAX_ENVIRONMENTS);
+        let w: Vec<_> = r
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("servers"))
+            .collect();
+        assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn env_names_are_byte_capped() {
+        let n = env_name(&"é".repeat(200));
+        assert!(n.is_empty());
+        let n = env_name(&"a".repeat(1000));
+        assert_eq!(n.len(), MAX_NAME_BYTES);
+        assert!(n.len() + ".secrets.toml".len() + 6 <= 255);
     }
 }
