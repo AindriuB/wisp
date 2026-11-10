@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use wisp_core::request::{ApiKeyLocation, Auth, Request};
+use wisp_core::request::{ApiKeyLocation, Auth, Body, PartValue, Request};
 use wisp_core::{ErrorKind, Header, Method};
 
 use crate::StorageError;
@@ -29,17 +29,145 @@ pub const MAX_BYTES: u64 = 100 * 1024 * 1024;
 /// Serialises appends: a store is opened per call site, so the lock is process-wide.
 static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Advisory cross-process lock, released when dropped.
+struct DirLock(fs::File);
+
+impl Drop for DirLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 const INDEX_FILE: &str = "index.jsonl";
 const BODIES_DIR: &str = "bodies";
 
-/// Header names whose values are never stored (compared case-insensitively).
-const SENSITIVE_HEADERS: [&str; 5] = [
-    "authorization",
-    "proxy-authorization",
+/// Name fragments that mark a header, param, var or field as credential-bearing
+/// (matched case-insensitively anywhere in the name).
+const SECRET_FRAGMENTS: [&str; 10] = [
+    "auth",
+    "token",
+    "secret",
+    "key",
+    "session",
     "cookie",
-    "x-api-key",
-    "x-amz-security-token",
+    "password",
+    "passwd",
+    "credential",
+    "signature",
 ];
+
+fn is_secret_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    SECRET_FRAGMENTS.iter().any(|f| lower.contains(f))
+}
+
+/// Keep only a lone `{{var}}` reference in `value`; true when it changed.
+fn scrub(value: &mut String) -> bool {
+    let kept = keep_var_ref(value);
+    if kept == *value {
+        return false;
+    }
+    *value = kept;
+    true
+}
+
+fn note(names: &mut Vec<String>, name: String) {
+    if !names.contains(&name) {
+        names.push(name);
+    }
+}
+
+/// Redact userinfo and credential-named query values in a URL template.
+fn redact_url(url: &str, names: &mut Vec<String>) -> String {
+    let (rest, fragment) = match url.find('#') {
+        Some(i) => (&url[..i], &url[i..]),
+        None => (url, ""),
+    };
+    let (base, query) = match rest.find('?') {
+        Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+        None => (rest, None),
+    };
+    let auth_start = base.find("://").map_or(0, |i| i + 3);
+    let auth_end = base[auth_start..]
+        .find('/')
+        .map_or(base.len(), |i| auth_start + i);
+    let mut out = String::with_capacity(url.len());
+    match base[auth_start..auth_end].rfind('@') {
+        Some(at) => {
+            let at = auth_start + at;
+            let info = &base[auth_start..at];
+            out.push_str(&base[..auth_start]);
+            let (mut user, pass) = match info.split_once(':') {
+                Some((u, p)) => (u.to_string(), Some(p.to_string())),
+                None => (info.to_string(), None),
+            };
+            if scrub(&mut user) {
+                note(names, "url.username".into());
+            }
+            out.push_str(&user);
+            if let Some(mut p) = pass {
+                if scrub(&mut p) {
+                    note(names, "url.password".into());
+                }
+                out.push(':');
+                out.push_str(&p);
+            }
+            out.push_str(&base[at..]);
+        }
+        None => out.push_str(base),
+    }
+    if let Some(q) = query {
+        out.push('?');
+        let pairs: Vec<String> = q
+            .split('&')
+            .map(|pair| match pair.split_once('=') {
+                Some((n, v)) if is_secret_name(n) => {
+                    let mut v = v.to_string();
+                    if scrub(&mut v) {
+                        note(names, format!("query.{n}"));
+                    }
+                    format!("{n}={v}")
+                }
+                _ => pair.to_string(),
+            })
+            .collect();
+        out.push_str(&pairs.join("&"));
+    }
+    out.push_str(fragment);
+    out
+}
+
+/// Redact string leaves of a JSON value; `secret` is true under a credential-named key.
+fn redact_json(v: &mut serde_json::Value, secret: bool, path: &str, names: &mut Vec<String>) {
+    use serde_json::Value;
+    match v {
+        Value::Object(m) => {
+            for (k, child) in m.iter_mut() {
+                let p = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                redact_json(child, secret || is_secret_name(k), &p, names);
+            }
+        }
+        Value::Array(a) => {
+            for child in a {
+                redact_json(child, secret, path, names);
+            }
+        }
+        Value::String(s) if secret => {
+            if scrub(s) {
+                note(names, format!("body.{path}"));
+            }
+        }
+        Value::Number(_) | Value::Bool(_) if secret => {
+            *v = Value::String(String::new());
+            note(names, format!("body.{path}"));
+        }
+        _ => {}
+    }
+}
 
 /// How a request ended. Carries no error message, since those embed resolved URLs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -174,16 +302,56 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
     };
     for h in &mut out.headers {
         let lower = h.name.to_ascii_lowercase();
-        if SENSITIVE_HEADERS.contains(&lower.as_str()) || api_key_header.as_deref() == Some(&lower)
+        if (is_secret_name(&h.name) || api_key_header.as_deref() == Some(&lower))
+            && scrub(&mut h.value)
         {
-            let kept = keep_var_ref(&h.value);
-            if kept != h.value {
-                h.value = kept;
-                if !names.contains(&h.name) {
-                    names.push(h.name.clone());
+            note(&mut names, h.name.clone());
+        }
+    }
+    out.url = redact_url(&req.url, &mut names);
+    for p in &mut out.params {
+        if is_secret_name(&p.name) && scrub(&mut p.value) {
+            note(&mut names, format!("params.{}", p.name));
+        }
+    }
+    for v in &mut out.vars {
+        if is_secret_name(&v.name) && scrub(&mut v.value) {
+            note(&mut names, format!("vars.{}", v.name));
+        }
+    }
+    match &mut out.body {
+        Body::Form(fields) => {
+            for f in fields {
+                if is_secret_name(&f.name) && scrub(&mut f.value) {
+                    note(&mut names, format!("form.{}", f.name));
                 }
             }
         }
+        Body::Multipart(parts) => {
+            for p in parts {
+                if let PartValue::Text(t) = &mut p.value
+                    && is_secret_name(&p.name)
+                    && scrub(t)
+                {
+                    note(&mut names, format!("form.{}", p.name));
+                }
+            }
+        }
+        Body::Json(b) => {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&b.content) {
+                let mut found = Vec::new();
+                redact_json(&mut v, false, "", &mut found);
+                if !found.is_empty()
+                    && let Ok(text) = serde_json::to_string(&v)
+                {
+                    b.content = text;
+                    for n in found {
+                        note(&mut names, n);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
     (out, names)
 }
@@ -264,9 +432,29 @@ impl HistoryStore {
         ]
     }
 
+    /// Take the advisory file lock for this collection. It sits beside the collection's
+    /// directory (`<id>.lock`) so that [`HistoryStore::clear`] can remove the directory.
+    fn lock_file(&self) -> Result<DirLock, StorageError> {
+        let path = self.dir.with_extension("lock");
+        if let Some(parent) = path.parent() {
+            ensure_private_dir(parent)?;
+        }
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let f = opts.open(&path).map_err(|e| io(&path, e))?;
+        f.lock().map_err(|e| io(&path, e))?;
+        Ok(DirLock(f))
+    }
+
     /// Store one finished request. `body` is cut to [`BODY_CAP`] bytes.
     pub fn append(&self, new: NewEntry, body: Option<&[u8]>) -> Result<HistoryEntry, StorageError> {
         let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_lock = self.lock_file()?;
         ensure_private_dir(&self.bodies())?;
         let id = uuid::Uuid::new_v4().simple().to_string();
         let (request, mut redacted) = redact_request(&new.request);
@@ -283,6 +471,7 @@ impl HistoryStore {
         if let Some(b) = stored {
             atomic_write_private(&bin, b)?;
         }
+        let url = request.url.clone();
         let file = ReqFile {
             request,
             response_headers,
@@ -297,7 +486,7 @@ impl HistoryStore {
             at: millis(new.at.duration_since(UNIX_EPOCH).unwrap_or_default()),
             request: new.request_path,
             method: new.request.method,
-            url: new.request.url,
+            url,
             outcome: new.outcome,
             status: new.status,
             ttfb_ms: new.ttfb.map(millis),
@@ -325,7 +514,11 @@ impl HistoryStore {
         let mut f = opts.open(&index).map_err(|e| io(&index, e))?;
         f.write_all(line.as_bytes()).map_err(|e| io(&index, e))?;
         drop(f);
-        self.evict()?;
+        // Best effort: the entry is stored, so a failed sweep must not report it dropped.
+        // Leftover files are swept as orphans by the next append.
+        if let Err(e) = self.evict() {
+            tracing::warn!(error = %e, "history eviction failed");
+        }
         Ok(entry)
     }
 
@@ -352,42 +545,65 @@ impl HistoryStore {
             .sum()
     }
 
+    /// Drop the oldest entries over the caps and sweep body files the index does not list.
+    /// The index is rewritten before any file is deleted, so a failure leaves orphans, not
+    /// dangling index lines.
     fn evict(&self) -> Result<(), StorageError> {
         let mut entries = self.read_index()?;
-        let mut sizes: Vec<u64> = entries.iter().map(|e| self.entry_bytes(&e.id)).collect();
-        let mut total: u64 = sizes.iter().sum();
+        let known: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.id.as_str()).collect();
+        let mut orphans: Vec<PathBuf> = Vec::new();
+        let mut orphan_bytes: u64 = 0;
+        if let Ok(rd) = fs::read_dir(self.bodies()) {
+            for f in rd.flatten() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                let stem = name.split('.').next().unwrap_or_default();
+                if valid_id(stem) && !known.contains(stem) {
+                    orphan_bytes += f.metadata().map_or(0, |m| m.len());
+                    orphans.push(f.path());
+                }
+            }
+        }
+        let sizes: Vec<u64> = entries.iter().map(|e| self.entry_bytes(&e.id)).collect();
+        let mut total: u64 = sizes.iter().sum::<u64>() + orphan_bytes;
         let mut drop_n = entries.len().saturating_sub(self.max_entries);
         for s in sizes.iter().take(drop_n) {
             total -= s;
         }
+        // Orphans are always removed, so they leave the total too.
+        total -= orphan_bytes;
         while total > self.max_bytes && drop_n + 1 < entries.len() {
             total -= sizes[drop_n];
             drop_n += 1;
         }
-        if drop_n == 0 {
-            return Ok(());
+        let dropped: Vec<HistoryEntry> = entries.drain(..drop_n).collect();
+        if drop_n > 0 {
+            let mut text = String::new();
+            for e in &entries {
+                text.push_str(
+                    &serde_json::to_string(e).map_err(|e| StorageError::History {
+                        message: e.to_string(),
+                    })?,
+                );
+                text.push('\n');
+            }
+            atomic_write_private(&self.index(), text.as_bytes())?;
         }
-        for e in &entries[..drop_n] {
-            for p in self.body_files(&e.id) {
-                match fs::remove_file(&p) {
-                    Ok(()) => {}
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(err) => return Err(io(&p, err)),
+        let mut first_err = None;
+        let doomed = dropped
+            .iter()
+            .flat_map(|e| self.body_files(&e.id))
+            .chain(orphans);
+        for p in doomed {
+            match fs::remove_file(&p) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    first_err.get_or_insert(io(&p, err));
                 }
             }
         }
-        entries.drain(..drop_n);
-        sizes.drain(..drop_n);
-        let mut text = String::new();
-        for e in &entries {
-            text.push_str(
-                &serde_json::to_string(e).map_err(|e| StorageError::History {
-                    message: e.to_string(),
-                })?,
-            );
-            text.push('\n');
-        }
-        atomic_write_private(&self.index(), text.as_bytes())
+        first_err.map_or(Ok(()), Err)
     }
 
     /// All entries, newest first.
@@ -424,6 +640,8 @@ impl HistoryStore {
 
     /// Remove this collection's history.
     pub fn clear(&self) -> Result<(), StorageError> {
+        let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_lock = self.lock_file()?;
         match fs::remove_dir_all(&self.dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

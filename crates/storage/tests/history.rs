@@ -1,7 +1,9 @@
 use std::fs;
 use std::time::{Duration, SystemTime};
 
-use wisp_core::request::{ApiKeyLocation, Auth, KeyValue, Request};
+use wisp_core::request::{
+    ApiKeyLocation, Auth, Body, KeyValue, Part, PartValue, Request, TextBody, Var,
+};
 use wisp_core::{ErrorKind, Header};
 use wisp_storage::collection::CollectionId;
 use wisp_storage::data_dir::DataDir;
@@ -310,4 +312,203 @@ fn concurrent_appends_leave_no_orphans() {
     assert_eq!(n, 5);
     let files = fs::read_dir(bodies_dir(&data)).unwrap().count();
     assert_eq!(files, 2 * n);
+}
+
+fn raw_files(data: &DataDir) -> String {
+    let dir = data.history_dir(&cid("abcdef0123456789"));
+    let mut all = fs::read_to_string(dir.join("index.jsonl")).unwrap_or_default();
+    for f in fs::read_dir(dir.join("bodies")).unwrap() {
+        let p = f.unwrap().path();
+        if p.to_string_lossy().ends_with(".req.json") {
+            all.push_str(&fs::read_to_string(p).unwrap());
+        }
+    }
+    all
+}
+
+#[test]
+fn redacts_secrets_in_url_params_vars_and_bodies() {
+    let (_d, data, store) = setup();
+    let json = r#"{"user":"bob","password":"JSONPW","nested":{"api_token":"JSONTOK","ok":"fine","ref_token":"{{t}}"},"list":[{"secret":"JSONSEC"}],"pin_key":1234}"#;
+    let req = Request {
+        url: "https://uuser:UPASS@host/p?api_key=QKEY&x=1&token={{t}}#f".into(),
+        params: vec![kv("access_token", "PARAMTOK"), kv("page", "2")],
+        vars: vec![
+            Var {
+                name: "client_secret".into(),
+                value: "VARSEC".into(),
+            },
+            Var {
+                name: "region".into(),
+                value: "eu".into(),
+            },
+        ],
+        body: Body::Json(TextBody {
+            content: json.into(),
+            sidecar: None,
+        }),
+        ..Request::default()
+    };
+    let e = store.append(new_entry(req), None).unwrap();
+    let raw = raw_files(&data);
+    for lit in [
+        "UPASS", "uuser", "QKEY", "PARAMTOK", "VARSEC", "JSONPW", "JSONTOK", "JSONSEC", "1234",
+    ] {
+        assert!(!raw.contains(lit), "{lit} leaked");
+    }
+    for keep in ["{{t}}", "bob", "fine", "x=1", "page", "eu", "host/p"] {
+        assert!(raw.contains(keep), "{keep} lost");
+    }
+    assert_eq!(e.url, "https://:@host/p?api_key=&x=1&token={{t}}#f");
+    for n in [
+        "url.username",
+        "url.password",
+        "query.api_key",
+        "params.access_token",
+        "vars.client_secret",
+    ] {
+        assert!(e.redacted.contains(&n.to_string()), "{n} not recorded");
+    }
+}
+
+#[test]
+fn redacts_secrets_in_form_and_multipart_bodies() {
+    let (_d, data, store) = setup();
+    let form = Request {
+        body: Body::Form(vec![kv("password", "FORMPW"), kv("name", "n")]),
+        ..Request::default()
+    };
+    store.append(new_entry(form), None).unwrap();
+    let multi = Request {
+        body: Body::Multipart(vec![
+            Part {
+                name: "client_secret".into(),
+                value: PartValue::Text("MPSEC".into()),
+                enabled: true,
+            },
+            Part {
+                name: "title".into(),
+                value: PartValue::Text("hello".into()),
+                enabled: true,
+            },
+        ]),
+        ..Request::default()
+    };
+    store.append(new_entry(multi), None).unwrap();
+    let raw = raw_files(&data);
+    assert!(!raw.contains("FORMPW") && !raw.contains("MPSEC"));
+    assert!(raw.contains("hello") && raw.contains("\"n\""));
+}
+
+#[test]
+fn scheme_less_userinfo_is_redacted() {
+    let (_d, data, store) = setup();
+    store.append(plain("bob:SCHEMELESS@host/x"), None).unwrap();
+    assert!(!raw_files(&data).contains("SCHEMELESS"));
+}
+
+#[test]
+fn header_name_heuristic_table() {
+    let (_d, _data, store) = setup();
+    let secret = [
+        "Authorization",
+        "PROXY-AUTHORIZATION",
+        "X-Auth-Token",
+        "Private-Token",
+        "Api-Key",
+        "x-api-key",
+        "X-Amz-Security-Token",
+        "Cookie",
+        "X-Session-Id",
+        "X-Client-Secret",
+        "X-Password",
+        "X-Passwd",
+        "X-Credentials",
+        "X-Signature",
+        "x-Amz-SIGNATURE",
+    ];
+    let plain_names = ["Accept", "Content-Type", "User-Agent", "X-Request-Id"];
+    let headers: Vec<KeyValue> = secret
+        .iter()
+        .chain(plain_names.iter())
+        .map(|n| kv(n, "LITERAL"))
+        .collect();
+    let e = store
+        .append(
+            new_entry(Request {
+                headers,
+                ..Request::default()
+            }),
+            None,
+        )
+        .unwrap();
+    let loaded = store.load(&e.id).unwrap().request.headers;
+    for h in &loaded {
+        let expect = if secret.contains(&h.name.as_str()) {
+            ""
+        } else {
+            "LITERAL"
+        };
+        assert_eq!(h.value, expect, "{}", h.name);
+    }
+    let kept = Request {
+        headers: vec![kv("X-Auth-Token", "{{tok}}")],
+        ..Request::default()
+    };
+    let e = store.append(new_entry(kept), None).unwrap();
+    assert_eq!(
+        store.load(&e.id).unwrap().request.headers[0].value,
+        "{{tok}}"
+    );
+}
+
+#[test]
+fn next_append_removes_orphan_bodies() {
+    let (_d, data, store) = setup();
+    store.append(plain("/a"), Some(b"x")).unwrap();
+    let orphan = bodies_dir(&data).join(format!("{}.bin", "a".repeat(32)));
+    fs::write(&orphan, b"orphan").unwrap();
+    store.append(plain("/b"), Some(b"y")).unwrap();
+    assert!(!orphan.exists());
+    assert_eq!(fs::read_dir(bodies_dir(&data)).unwrap().count(), 4);
+}
+
+#[test]
+fn file_lock_serialises_appends() {
+    let (_d, data, store) = setup();
+    store.append(plain("/a"), None).unwrap();
+    let lock_path = data
+        .history_dir(&cid("abcdef0123456789"))
+        .with_extension("lock");
+    let held = fs::OpenOptions::new()
+        .append(true)
+        .open(&lock_path)
+        .unwrap();
+    held.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let s = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    let h = std::thread::spawn(move || {
+        s.append(plain("/b"), None).unwrap();
+        tx.send(()).unwrap();
+    });
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+    held.unlock().unwrap();
+    rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    h.join().unwrap();
+    assert_eq!(store.list().unwrap().len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn eviction_failure_still_returns_the_entry() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, data, store) = setup();
+    let store = store.with_caps(1, u64::MAX);
+    store.append(plain("/a"), None).unwrap();
+    let dir = data.history_dir(&cid("abcdef0123456789"));
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let r = store.append(plain("/b"), None);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let e = r.unwrap();
+    assert!(store.list().unwrap().iter().any(|x| x.id == e.id));
 }
