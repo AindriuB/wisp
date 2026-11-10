@@ -1,10 +1,19 @@
-//! OAuth2 seams: the refresh-token store keyed by [`TokenKey`].
+//! OAuth2 in the engine: the token cache, the grant flows and the refresh-token store seam.
 //!
-//! The grant flows themselves arrive with the engine's OAuth2 support.
+//! Access tokens live in memory only. Refresh tokens live in memory too, and also go to the
+//! [`RefreshTokenStore`] when the auth sets `persist_refresh`.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
+
+mod loopback;
+mod manager;
+mod pkce;
+mod token;
+
+pub use manager::Clock;
+pub(crate) use manager::{OAuth2, SystemClock};
 
 /// Which OAuth2 grant a token belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,11 +36,28 @@ pub struct TokenKey {
     pub environment: Option<String>,
 }
 
+/// A failure of a [`RefreshTokenStore`]. The message must never hold a token; the engine shows
+/// it to the user and logs it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct RefreshStoreError(String);
+
+impl RefreshStoreError {
+    /// A store failure with a message that holds no token.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 /// Where refresh tokens live between runs. Values are secrets: implementations must not log them.
+///
+/// Implementations may block (a keychain prompt waits for the user). The engine must therefore
+/// call a blocking store through `tokio::task::spawn_blocking`; that wiring arrives with the
+/// keychain store. [`MemoryOnly`] never blocks and never fails.
 pub trait RefreshTokenStore: Send + Sync {
-    fn load(&self, key: &TokenKey) -> Option<String>;
-    fn save(&self, key: &TokenKey, refresh_token: &str);
-    fn forget(&self, key: &TokenKey);
+    fn load(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError>;
+    fn save(&self, key: &TokenKey, refresh_token: &str) -> Result<(), RefreshStoreError>;
+    fn forget(&self, key: &TokenKey) -> Result<(), RefreshStoreError>;
 }
 
 /// Keeps refresh tokens in process memory only; the default store.
@@ -41,19 +67,21 @@ pub struct MemoryOnly {
 }
 
 impl RefreshTokenStore for MemoryOnly {
-    fn load(&self, key: &TokenKey) -> Option<String> {
+    fn load(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError> {
         let map = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
-        map.get(key).cloned()
+        Ok(map.get(key).cloned())
     }
 
-    fn save(&self, key: &TokenKey, refresh_token: &str) {
+    fn save(&self, key: &TokenKey, refresh_token: &str) -> Result<(), RefreshStoreError> {
         let mut map = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
         map.insert(key.clone(), refresh_token.to_owned());
+        Ok(())
     }
 
-    fn forget(&self, key: &TokenKey) {
+    fn forget(&self, key: &TokenKey) -> Result<(), RefreshStoreError> {
         let mut map = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
         map.remove(key);
+        Ok(())
     }
 }
 
@@ -83,32 +111,32 @@ mod tests {
     #[test]
     fn keys_differing_only_in_collection_or_environment_are_distinct() {
         let s = MemoryOnly::default();
-        s.save(&key(), "rt-1");
+        s.save(&key(), "rt-1").unwrap();
         let mut other_collection = key();
         other_collection.collection = Some("c2".into());
         let mut other_env = key();
         other_env.environment = None;
         assert_ne!(key(), other_collection);
         assert_ne!(key(), other_env);
-        assert_eq!(s.load(&other_collection), None);
-        assert_eq!(s.load(&other_env), None);
-        assert_eq!(s.load(&key()).as_deref(), Some("rt-1"));
+        assert_eq!(s.load(&other_collection).unwrap(), None);
+        assert_eq!(s.load(&other_env).unwrap(), None);
+        assert_eq!(s.load(&key()).unwrap().as_deref(), Some("rt-1"));
     }
 
     #[test]
     fn memory_only_saves_loads_and_forgets() {
         let s = MemoryOnly::default();
-        assert_eq!(s.load(&key()), None);
-        s.save(&key(), "rt-1");
-        assert_eq!(s.load(&key()).as_deref(), Some("rt-1"));
-        s.forget(&key());
-        assert_eq!(s.load(&key()), None);
+        assert_eq!(s.load(&key()).unwrap(), None);
+        s.save(&key(), "rt-1").unwrap();
+        assert_eq!(s.load(&key()).unwrap().as_deref(), Some("rt-1"));
+        s.forget(&key()).unwrap();
+        assert_eq!(s.load(&key()).unwrap(), None);
     }
 
     #[test]
     fn debug_redacts_memory_only_tokens() {
         let s = MemoryOnly::default();
-        s.save(&key(), "REFRESHMARKER");
+        s.save(&key(), "REFRESHMARKER").unwrap();
         for text in [format!("{s:?}"), format!("{s:#?}")] {
             assert!(text.contains("<redacted>"));
             assert!(!text.contains("REFRESHMARKER"), "{text}");

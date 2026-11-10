@@ -106,8 +106,9 @@ fn keep_var_ref(s: &str) -> String {
 }
 
 impl Auth {
-    /// A copy that keeps only variable references, for storing in history. A field whose
-    /// value is exactly one `{{var}}` reference is kept; any other value becomes empty.
+    /// A copy for storing in history. A secret field whose value is exactly one `{{var}}`
+    /// reference is kept; any other value becomes empty. The OAuth2 types empty only
+    /// `client_secret`: their URLs, client id, scope and the rest are not secret.
     pub fn redacted(&self) -> Auth {
         let k = keep_var_ref;
         match self {
@@ -151,10 +152,10 @@ impl Auth {
                 scope,
                 client_auth,
             } => Auth::OAuth2ClientCredentials {
-                token_url: k(token_url),
-                client_id: k(client_id),
+                token_url: token_url.clone(),
+                client_id: client_id.clone(),
                 client_secret: k(client_secret),
-                scope: k(scope),
+                scope: scope.clone(),
                 client_auth: *client_auth,
             },
             Auth::OAuth2AuthCode {
@@ -166,11 +167,11 @@ impl Auth {
                 client_auth,
                 redirect_port,
             } => Auth::OAuth2AuthCode {
-                auth_url: k(auth_url),
-                token_url: k(token_url),
-                client_id: k(client_id),
+                auth_url: auth_url.clone(),
+                token_url: token_url.clone(),
+                client_id: client_id.clone(),
                 client_secret: k(client_secret),
-                scope: k(scope),
+                scope: scope.clone(),
                 client_auth: *client_auth,
                 redirect_port: *redirect_port,
             },
@@ -426,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_oauth2_empties_literals_and_keeps_var_refs() {
+    fn redacted_oauth2_empties_only_the_client_secret() {
         for (a, kept) in oauth2_pair("SECRETVAL")
             .into_iter()
             .zip(oauth2_pair("{{secret}}"))
@@ -438,6 +439,13 @@ mod tests {
                 panic!("variant changed");
             };
             assert_eq!(client_secret, "");
+            let mut expect = a.clone();
+            if let Auth::OAuth2ClientCredentials { client_secret, .. }
+            | Auth::OAuth2AuthCode { client_secret, .. } = &mut expect
+            {
+                client_secret.clear();
+            }
+            assert_eq!(r, expect);
             let (Auth::OAuth2ClientCredentials { client_secret, .. }
             | Auth::OAuth2AuthCode { client_secret, .. }) = kept.redacted()
             else {

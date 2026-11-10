@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::oneshot;
 
-use crate::auth::oauth2::{MemoryOnly, RefreshTokenStore};
+use crate::auth::oauth2::{Clock, MemoryOnly, OAuth2, RefreshTokenStore, TokenKey};
 use crate::auth::{EngineAuth, digest, sigv4};
 use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
 use crate::client::{ClientCache, HTTP1_MAX_RESPONSE_HEADERS};
@@ -97,9 +97,7 @@ struct Inner {
     next_id: AtomicU64,
     inflight: Inflight,
     default_timeout: Option<Duration>,
-    /// Held for the OAuth2 flows; unused until they land.
-    #[allow(dead_code)]
-    refresh_tokens: Arc<dyn RefreshTokenStore>,
+    oauth: Arc<OAuth2>,
 }
 
 impl Drop for Inner {
@@ -139,6 +137,17 @@ impl Engine {
     /// # Panics
     /// Panics only if the OS cannot create the runtime or TLS client at startup.
     pub fn start(config: EngineConfig) -> (Engine, EventReceiver) {
+        Self::start_with_clock(config, Arc::new(crate::auth::oauth2::SystemClock))
+    }
+
+    /// Like [`Engine::start`], with the clock that decides when cached OAuth2 tokens expire.
+    ///
+    /// # Panics
+    /// Panics only if the OS cannot create the runtime or TLS client at startup.
+    pub fn start_with_clock(
+        config: EngineConfig,
+        clock: Arc<dyn Clock>,
+    ) -> (Engine, EventReceiver) {
         let threads = clamp_threads(config.worker_threads);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(threads)
@@ -155,7 +164,7 @@ impl Engine {
             next_id: AtomicU64::new(1),
             inflight: Arc::default(),
             default_timeout: config.default_timeout,
-            refresh_tokens: config.refresh_tokens,
+            oauth: Arc::new(OAuth2::new(config.refresh_tokens, clock)),
         };
         (
             Engine {
@@ -174,17 +183,44 @@ impl Engine {
                 }
                 id
             }
-            Command::AuthorizeCancel(id) => id,
-            Command::AuthorizeStart { .. } => {
+            Command::AuthorizeCancel(id) => {
+                if let Some(tx) = lock(&self.inner.inflight).remove(&id) {
+                    let _ = tx.send(());
+                }
+                id
+            }
+            Command::AuthorizeStart {
+                auth,
+                client,
+                environment,
+                timeout,
+            } => {
                 let id = RequestId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
+                let (ctx, crx) = oneshot::channel();
+                lock(&self.inner.inflight).insert(id, ctx);
+                let clients = self.inner.clients.clone();
+                let oauth = self.inner.oauth.clone();
                 let events = self.inner.events.clone();
+                let inflight = self.inner.inflight.clone();
                 let fut = async move {
-                    let _ = events
-                        .send(Event::AuthFailed {
+                    let result = oauth
+                        .authorize(
+                            &clients,
+                            &events,
                             id,
-                            error: err(ErrorKind::Auth, OAUTH2_UNAVAILABLE),
-                        })
+                            &auth,
+                            &client,
+                            &environment,
+                            timeout,
+                            crx,
+                        )
                         .await;
+                    lock(&inflight).remove(&id);
+                    let ev = match result {
+                        Ok(()) => Event::AuthCompleted { id },
+                        Err(error) => Event::AuthFailed { id, error },
+                    };
+                    let _ = events.send(ev).await;
                 };
                 match &self.inner.runtime {
                     Some(rt) => {
@@ -199,6 +235,7 @@ impl Engine {
                 let (ctx, crx) = oneshot::channel();
                 lock(&self.inner.inflight).insert(id, ctx);
                 let clients = self.inner.clients.clone();
+                let oauth = self.inner.oauth.clone();
                 let bodies = self.inner.bodies.clone();
                 let events = self.inner.events.clone();
                 let inflight = self.inner.inflight.clone();
@@ -212,7 +249,7 @@ impl Engine {
                         })
                         .await;
                     let terminal = tokio::select! {
-                        r = perform(id, &clients, &bodies, &events, req, timeout, start) => {
+                        r = perform(id, &clients, &oauth, &bodies, &events, req, timeout, start) => {
                             Some(match r {
                                 Ok((size, body)) => Event::Completed {
                                     id,
@@ -242,8 +279,6 @@ impl Engine {
         }
     }
 }
-
-const OAUTH2_UNAVAILABLE: &str = "OAuth2 is not available in this build yet";
 
 fn clamp_threads(n: usize) -> usize {
     n.clamp(1, 2)
@@ -642,21 +677,17 @@ async fn payload_hash(pending: &Pending, service: &str) -> Result<String, Engine
 }
 
 /// Runs one request, emitting `Headers` and `Progress`; returns the size and body.
+#[allow(clippy::too_many_arguments)]
 async fn perform(
     id: RequestId,
     clients: &ClientCache,
+    oauth: &OAuth2,
     bodies: &BodyStore,
     events: &async_channel::Sender<Event>,
     req: PreparedRequest,
     timeout: Option<Duration>,
     start: Instant,
 ) -> Result<(u64, BodyHandle), EngineError> {
-    if matches!(
-        req.auth,
-        Some(EngineAuth::OAuth2ClientCredentials { .. } | EngineAuth::OAuth2AuthCode { .. })
-    ) {
-        return Err(err(ErrorKind::Auth, OAUTH2_UNAVAILABLE));
-    }
     let url =
         reqwest::Url::parse(&req.url).map_err(|e| err(ErrorKind::InvalidUrl, e.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -686,6 +717,18 @@ async fn perform(
     } else {
         clients.get(&req.client)?
     };
+    // The bearer token of OAuth2 auth, fetched or refreshed before the first byte is sent.
+    let bearer: Option<(TokenKey, String)> = match &req.auth {
+        Some(
+            a @ (EngineAuth::OAuth2ClientCredentials { .. } | EngineAuth::OAuth2AuthCode { .. }),
+        ) => {
+            let (key, token) = oauth
+                .bearer(clients, a, &req.client, &req.environment, timeout)
+                .await?;
+            Some((key, format!("Bearer {}", token.expose())))
+        }
+        _ => None,
+    };
     let mut method = match req.method {
         Method::Get => reqwest::Method::GET,
         Method::Post => reqwest::Method::POST,
@@ -700,7 +743,7 @@ async fn perform(
     let engine_length = multipart || matches!(req.body, PreparedBody::File(_));
     let mut header_list: Vec<(String, String)> = Vec::new();
     for h in &req.headers {
-        // Digest and SigV4 own the Authorization header.
+        // Digest, SigV4 and OAuth2 own the Authorization header.
         if req.auth.is_some() && h.name.eq_ignore_ascii_case("authorization") {
             continue;
         }
@@ -768,6 +811,16 @@ async fn perform(
         }
         if let (true, Some(h)) = (auth_live, &digest_header) {
             rb = rb.header("authorization", h.as_str());
+        }
+        if let (true, Some((_, h))) = (auth_live, &bearer) {
+            let mut value = reqwest::header::HeaderValue::from_str(h).map_err(|_| {
+                err(
+                    ErrorKind::Auth,
+                    "the access token is not a valid header value",
+                )
+            })?;
+            value.set_sensitive(true);
+            rb = rb.header(reqwest::header::AUTHORIZATION, value);
         }
         if let (
             Some(EngineAuth::AwsSigV4 {
@@ -916,6 +969,10 @@ async fn perform(
         }
         url = next;
     };
+    // A 401 from the origin that got the token: drop it so the next send fetches a new one.
+    if let (true, Some((key, _)), 401) = (auth_live, &bearer, resp.status().as_u16()) {
+        oauth.invalidate(key);
+    }
     let status = resp.status();
     let headers: Vec<Header> = resp
         .headers()

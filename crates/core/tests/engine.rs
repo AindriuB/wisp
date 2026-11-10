@@ -974,51 +974,6 @@ async fn follow_redirects_false_surfaces_a_307_for_a_streamed_body() {
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
-fn oauth2_engine_auth() -> wisp_core::auth::EngineAuth {
-    wisp_core::auth::EngineAuth::OAuth2ClientCredentials {
-        token_url: "https://idp.test/token".into(),
-        client_id: "cid".into(),
-        client_secret: "SECRET".into(),
-        scope: String::new(),
-        client_auth: wisp_core::request::ClientAuth::Basic,
-    }
-}
-
-#[tokio::test]
-async fn send_with_oauth2_auth_fails_with_the_auth_kind() {
-    let (engine, rx) = Engine::start(EngineConfig::default());
-    let mut req = get("http://127.0.0.1:1/".into());
-    req.auth = Some(oauth2_engine_auth());
-    engine.submit(Command::Send(req));
-    let evs = collect_until_terminal(&rx).await;
-    match evs.last().unwrap() {
-        Event::Failed { error, .. } => {
-            assert_eq!(error.kind, ErrorKind::Auth);
-            assert_eq!(error.message, "OAuth2 is not available in this build yet");
-        }
-        other => panic!("unexpected {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn authorize_start_is_answered_with_auth_failed() {
-    let (engine, rx) = Engine::start(EngineConfig::default());
-    let id = engine.submit(Command::AuthorizeStart {
-        auth: oauth2_engine_auth(),
-        environment: None,
-        client: get(String::new()).client,
-        timeout: None,
-    });
-    match rx.recv().await.unwrap() {
-        Event::AuthFailed { id: got, error } => {
-            assert_eq!(got, id);
-            assert_eq!(error.kind, ErrorKind::Auth);
-            assert_eq!(error.message, "OAuth2 is not available in this build yet");
-        }
-        other => panic!("unexpected {other:?}"),
-    }
-}
-
 #[tokio::test]
 async fn completed_carries_empty_timings() {
     let server = MockServer::start().await;
@@ -1044,17 +999,20 @@ async fn completed_carries_empty_timings() {
 fn debug_redacts_engine_config() {
     use wisp_core::auth::oauth2::{Grant, TokenKey};
     let config = EngineConfig::default();
-    config.refresh_tokens.save(
-        &TokenKey {
-            grant: Grant::AuthCode,
-            token_url: "https://i/t".into(),
-            client_id: "c".into(),
-            scope: "r".into(),
-            collection: None,
-            environment: None,
-        },
-        "REFRESH-MARKER-123",
-    );
+    config
+        .refresh_tokens
+        .save(
+            &TokenKey {
+                grant: Grant::AuthCode,
+                token_url: "https://i/t".into(),
+                client_id: "c".into(),
+                scope: "r".into(),
+                collection: None,
+                environment: None,
+            },
+            "REFRESH-MARKER-123",
+        )
+        .unwrap();
     let text = format!("{config:?}");
     assert!(text.contains("EngineConfig"));
     assert!(text.contains("<redacted>"));
