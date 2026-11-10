@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
-- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID); see HISTORY.
+- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 94 (importers); see HISTORY.
 - **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
@@ -69,6 +69,18 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 94 (not 0.2.0 wave 1)
+- [P3] Collection- and folder-level Postman auth and variables are warnings only. Mapping them needs new `ImportResult` fields; most Postman collections put auth there.
+- [P3] Postman folders count toward no cap (about 870k empty folders fit in 10 MiB).
+- [P3] An environment name that is a reserved device name (for example server description "con") aborts the import partway through.
+- [P3] curl `-u` passwords, literal Authorization headers and Postman collection-variable values land in committed TOML. The spec covers only Postman auth; consider extending it.
+- [P3] openapi.rs:344-347: the example budget is charged after `to_string_pretty`, so a deep example briefly allocates about 60 times its size (728 MB peak for 9.8 MiB).
+- [P3] curl.rs:18-86: long options missing from the arg list still swallow the URL (`--tlspassword`, `--proxy-pass`, `--connect-to`, `--proto`, `--tlsuser`, `--sasl-authzid`, `--login-options`, `--ftp-account`, `--hostpubsha256`). Build the list from `curl --help all`.
+- [P3] `unique` in write.rs is quadratic in the number of colliding names; use a HashSet plus a per-base counter, as postman.rs does.
+- [P3] `key_string` (yaml.rs) silently collapses null, sequence and mapping keys.
+- [NOTE] `write` is not atomic; an error partway through leaves a partial import.
+- [NOTE] saphyr-parser 0.3.3 buffers whole flow collections (scanner.rs:866-880); bounded by the 2 MiB YAML cap to about 450 MB. Accepted.
 
 ### Follow-ups from task 92 (not for 0.2.0 wave 1)
 - [P3] `ensure_collection_id` (`collection.rs:242-257`) has a read-modify-write race: two instances adding an ID at once means the last rename wins. `save_collection_defaults` has the same window.
