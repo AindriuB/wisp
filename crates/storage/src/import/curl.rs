@@ -331,6 +331,7 @@ fn set_url(f: &mut Flags, url: String) {
     if f.url.is_none() {
         f.url = Some(url);
     } else {
+        let (url, _) = super::split_userinfo(&url);
         f.warn(format!("extra URL `{url}` is not imported"));
     }
 }
@@ -843,6 +844,28 @@ mod tests {
         assert!(env.secrets.iter().any(|v| v.value == "bob"));
         assert!(!format!("{r:?}{:?}", res.warnings).contains("p@ss"));
         assert!(!format!("{:?}", res.name).contains("bob"));
+    }
+
+    #[test]
+    fn schemeless_url_userinfo_goes_to_secrets() {
+        let (r, res) = req("curl bob:SECRETPW@h/x");
+        assert!(!r.url.contains("bob:SECRETPW@") && r.url.ends_with("h/x"));
+        assert!(!res.name.contains("SECRETPW") && !res.name.contains("bob:"));
+        assert!(matches!(r.auth, Auth::Basic { .. }));
+        assert!(
+            res.environments[0]
+                .secrets
+                .iter()
+                .any(|v| v.value == "SECRETPW")
+        );
+        assert!(!format!("{r:?}{:?}", res.warnings).contains("SECRETPW"));
+    }
+
+    #[test]
+    fn extra_url_warning_has_no_userinfo() {
+        let (_, res) = req("curl http://h/x http://bob:SECRETPW@h2/y");
+        assert!(!res.warnings.is_empty());
+        assert!(!format!("{:?}", res.warnings).contains("SECRETPW"));
     }
 
     #[test]

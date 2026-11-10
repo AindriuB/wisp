@@ -263,11 +263,14 @@ pub(crate) fn form_decode(s: &str) -> String {
 /// name times many credential headers stays cheap.
 const MAX_SECRET_BASE_BYTES: usize = 64;
 
-/// Split `user:pass@` off the authority of `scheme://...`. Returns the URL
+/// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
 /// without it and the percent-decoded `(user, password)`.
 pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
-    let Some(scheme_end) = url.find("://").map(|i| i + 3) else {
-        return (url.to_string(), None);
+    // Without a scheme the authority starts at the beginning. A `://` that
+    // only appears after the authority (in a path or query) is not a scheme.
+    let scheme_end = match url.find("://") {
+        Some(i) if !url[..i].contains(['/', '?', '#', '@']) => i + 3,
+        _ => 0,
     };
     let rest = &url[scheme_end..];
     let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -435,6 +438,16 @@ pub(crate) fn method_name(m: wisp_core::Method) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn split_userinfo_ignores_at_after_authority() {
+        assert_eq!(super::split_userinfo("http://h/a@b").0, "http://h/a@b");
+        assert_eq!(super::split_userinfo("h/a@b").1, None);
+        assert_eq!(super::split_userinfo("h?x=a@b").1, None);
+        let (u, i) = super::split_userinfo("bob:pw@h/x");
+        assert_eq!(u, "h/x");
+        assert_eq!(i, Some(("bob".into(), "pw".into())));
+    }
+
     use super::*;
 
     #[test]

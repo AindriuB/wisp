@@ -711,6 +711,24 @@ mod tests {
     }
 
     #[test]
+    fn schemeless_url_userinfo_goes_to_secrets() {
+        let (req, r) = one_request(
+            serde_json::json!({"mode": "raw", "raw": ""}),
+            "bob:SECRETPW@h/up".into(),
+        );
+        assert!(!req.url.contains("bob:SECRETPW@") && req.url.ends_with("h/up"));
+        assert!(!req.name.contains("SECRETPW"));
+        assert!(matches!(req.auth, Auth::Basic { .. }));
+        assert!(
+            r.environments[0]
+                .secrets
+                .iter()
+                .any(|v| v.value == "SECRETPW")
+        );
+        assert!(!format!("{req:?}{:?}", r.warnings).contains("SECRETPW"));
+    }
+
+    #[test]
     fn explicit_auth_beats_url_userinfo() {
         let doc = serde_json::json!({
             "info": {"name": "c", "_postman_id": "x",
