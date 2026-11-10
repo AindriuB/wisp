@@ -6,13 +6,16 @@ use gpui::{
 };
 use gpui_component::ActiveTheme as _;
 use gpui_component::IndexPath;
+use gpui_component::Sizable as _;
+use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use wisp_core::request::{ApiKeyLocation, Auth, ClientAuth};
 use wisp_core::resolve::Scope;
 
-use crate::tab::{RequestTab, TabEvent};
+use crate::tab::{AuthorizeState, RequestTab, TabEvent};
+use crate::ui::oauth;
 use crate::workspace::Workspace;
 
 type LabelSelect = Entity<SelectState<Vec<&'static str>>>;
@@ -26,13 +29,11 @@ enum AuthKind {
     ApiKey,
     Digest,
     AwsSigV4,
-    /// Read-only until the OAuth2 editor lands; never offered in the type list.
     OAuth2ClientCredentials,
-    /// Read-only until the OAuth2 editor lands; never offered in the type list.
     OAuth2AuthCode,
 }
 
-const KINDS: [AuthKind; 7] = [
+const KINDS: [AuthKind; 9] = [
     AuthKind::None,
     AuthKind::Inherit,
     AuthKind::Basic,
@@ -40,6 +41,8 @@ const KINDS: [AuthKind; 7] = [
     AuthKind::ApiKey,
     AuthKind::Digest,
     AuthKind::AwsSigV4,
+    AuthKind::OAuth2ClientCredentials,
+    AuthKind::OAuth2AuthCode,
 ];
 
 impl AuthKind {
@@ -89,10 +92,21 @@ enum Slot {
     SessionToken,
     Region,
     Service,
+    AuthUrl,
+    TokenUrl,
+    ClientId,
+    ClientSecret,
+    Scope,
+    RedirectPort,
 }
 
 /// The auth value for `kind`, reading each field through `text`.
-fn build_auth(kind: AuthKind, location: ApiKeyLocation, text: &dyn Fn(Slot) -> String) -> Auth {
+fn build_auth(
+    kind: AuthKind,
+    location: ApiKeyLocation,
+    client_auth: ClientAuth,
+    text: &dyn Fn(Slot) -> String,
+) -> Auth {
     match kind {
         AuthKind::None => Auth::None,
         AuthKind::Inherit => Auth::Inherit,
@@ -119,9 +133,28 @@ fn build_auth(kind: AuthKind, location: ApiKeyLocation, text: &dyn Fn(Slot) -> S
             region: text(Slot::Region),
             service: text(Slot::Service),
         },
-        // `current_auth` returns the draft's value for these; they have no fields here.
-        AuthKind::OAuth2ClientCredentials | AuthKind::OAuth2AuthCode => Auth::Inherit,
+        AuthKind::OAuth2ClientCredentials => Auth::OAuth2ClientCredentials {
+            token_url: text(Slot::TokenUrl),
+            client_id: text(Slot::ClientId),
+            client_secret: text(Slot::ClientSecret),
+            scope: text(Slot::Scope),
+            client_auth,
+        },
+        AuthKind::OAuth2AuthCode => Auth::OAuth2AuthCode {
+            auth_url: text(Slot::AuthUrl),
+            token_url: text(Slot::TokenUrl),
+            client_id: text(Slot::ClientId),
+            client_secret: text(Slot::ClientSecret),
+            scope: text(Slot::Scope),
+            client_auth,
+            redirect_port: parse_port(&text(Slot::RedirectPort)),
+        },
     }
+}
+
+/// A redirect port from its field: blank or anything that is not a port means 0, any free port.
+fn parse_port(text: &str) -> u16 {
+    text.trim().parse().unwrap_or(0)
 }
 
 /// The field values an auth value carries.
@@ -150,36 +183,17 @@ fn slots_of(auth: &Auth) -> Vec<(Slot, String)> {
             (Slot::Region, region.clone()),
             (Slot::Service, service.clone()),
         ],
-        Auth::OAuth2ClientCredentials { .. } | Auth::OAuth2AuthCode { .. } => Vec::new(),
-    }
-}
-
-/// Read-only rows for an OAuth2 value as (label, text). The secret is never shown.
-fn oauth2_rows(auth: &Auth) -> Vec<(&'static str, String)> {
-    let client_auth = |c: &ClientAuth| match c {
-        ClientAuth::Basic => "Basic".to_string(),
-        ClientAuth::Body => "Request body".to_string(),
-    };
-    let secret = |s: &str| {
-        if s.is_empty() {
-            "(none)".to_string()
-        } else {
-            "(set)".to_string()
-        }
-    };
-    match auth {
         Auth::OAuth2ClientCredentials {
             token_url,
             client_id,
             client_secret,
             scope,
-            client_auth: ca,
+            ..
         } => vec![
-            ("Token URL", token_url.clone()),
-            ("Client ID", client_id.clone()),
-            ("Client secret", secret(client_secret)),
-            ("Scope", scope.clone()),
-            ("Client auth", client_auth(ca)),
+            (Slot::TokenUrl, token_url.clone()),
+            (Slot::ClientId, client_id.clone()),
+            (Slot::ClientSecret, client_secret.clone()),
+            (Slot::Scope, scope.clone()),
         ],
         Auth::OAuth2AuthCode {
             auth_url,
@@ -187,18 +201,32 @@ fn oauth2_rows(auth: &Auth) -> Vec<(&'static str, String)> {
             client_id,
             client_secret,
             scope,
-            client_auth: ca,
             redirect_port,
+            ..
         } => vec![
-            ("Auth URL", auth_url.clone()),
-            ("Token URL", token_url.clone()),
-            ("Client ID", client_id.clone()),
-            ("Client secret", secret(client_secret)),
-            ("Scope", scope.clone()),
-            ("Client auth", client_auth(ca)),
-            ("Redirect port", redirect_port.to_string()),
+            (Slot::AuthUrl, auth_url.clone()),
+            (Slot::TokenUrl, token_url.clone()),
+            (Slot::ClientId, client_id.clone()),
+            (Slot::ClientSecret, client_secret.clone()),
+            (Slot::Scope, scope.clone()),
+            (
+                Slot::RedirectPort,
+                if *redirect_port == 0 {
+                    String::new()
+                } else {
+                    redirect_port.to_string()
+                },
+            ),
         ],
-        _ => Vec::new(),
+    }
+}
+
+const CLIENT_AUTHS: [ClientAuth; 2] = [ClientAuth::Basic, ClientAuth::Body];
+
+fn client_auth_label(c: ClientAuth) -> &'static str {
+    match c {
+        ClientAuth::Basic => "Basic",
+        ClientAuth::Body => "Body",
     }
 }
 
@@ -236,6 +264,8 @@ pub struct AuthEditor {
     location: ApiKeyLocation,
     kind_select: LabelSelect,
     loc_select: LabelSelect,
+    client_auth: ClientAuth,
+    client_auth_select: LabelSelect,
     username: Entity<InputState>,
     password: Entity<InputState>,
     token: Entity<InputState>,
@@ -246,6 +276,14 @@ pub struct AuthEditor {
     session_token: Entity<InputState>,
     region: Entity<InputState>,
     service: Entity<InputState>,
+    auth_url: Entity<InputState>,
+    token_url: Entity<InputState>,
+    client_id: Entity<InputState>,
+    client_secret: Entity<InputState>,
+    scope: Entity<InputState>,
+    redirect_port: Entity<InputState>,
+    /// Shows the authorization URL as selectable text; never read back.
+    shown_url: Entity<InputState>,
     _subs: Vec<Subscription>,
 }
 
@@ -264,6 +302,11 @@ impl AuthEditor {
             let items: Vec<&'static str> = LOCATIONS.iter().map(|l| location_label(*l)).collect();
             SelectState::new(items, Some(IndexPath::new(0)), window, cx)
         });
+        let client_auth_select = cx.new(|cx| {
+            let items: Vec<&'static str> =
+                CLIENT_AUTHS.iter().map(|c| client_auth_label(*c)).collect();
+            SelectState::new(items, Some(IndexPath::new(0)), window, cx)
+        });
         let plain = |ph: &'static str, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| InputState::new(window, cx).placeholder(ph))
         };
@@ -280,6 +323,13 @@ impl AuthEditor {
         let session_token = secret("Session token (optional)", window, cx);
         let region = plain("us-east-1", window, cx);
         let service = plain("s3", window, cx);
+        let auth_url = plain("https://idp.example/authorize", window, cx);
+        let token_url = plain("https://idp.example/token", window, cx);
+        let client_id = plain("Client ID", window, cx);
+        let client_secret = secret("Client secret (optional)", window, cx);
+        let scope = plain("Scope", window, cx);
+        let redirect_port = plain("Blank or 0 = any free port", window, cx);
+        let shown_url = plain("", window, cx);
 
         let mut subs = Vec::new();
         for input in [
@@ -293,11 +343,18 @@ impl AuthEditor {
             &session_token,
             &region,
             &service,
+            &auth_url,
+            &token_url,
+            &client_id,
+            &client_secret,
+            &scope,
+            &redirect_port,
         ] {
             subs.push(cx.subscribe_in(input, window, Self::on_input));
         }
         subs.push(cx.subscribe_in(&kind_select, window, Self::on_kind));
         subs.push(cx.subscribe_in(&loc_select, window, Self::on_location));
+        subs.push(cx.subscribe_in(&client_auth_select, window, Self::on_client_auth));
         subs.push(cx.subscribe_in(&tab, window, Self::on_tab));
         subs.push(cx.observe(&workspace, |_, _, cx| cx.notify()));
 
@@ -308,6 +365,8 @@ impl AuthEditor {
             location: ApiKeyLocation::Header,
             kind_select,
             loc_select,
+            client_auth: ClientAuth::Basic,
+            client_auth_select,
             username,
             password,
             token,
@@ -318,6 +377,13 @@ impl AuthEditor {
             session_token,
             region,
             service,
+            auth_url,
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            redirect_port,
+            shown_url,
             _subs: subs,
         };
         this.resync(window, cx);
@@ -328,31 +394,31 @@ impl AuthEditor {
         input.read(cx).value().to_string()
     }
 
+    fn input(&self, slot: Slot) -> &Entity<InputState> {
+        match slot {
+            Slot::Username => &self.username,
+            Slot::Password => &self.password,
+            Slot::Token => &self.token,
+            Slot::KeyName => &self.key_name,
+            Slot::KeyValue => &self.key_value,
+            Slot::AccessKey => &self.access_key,
+            Slot::SecretKey => &self.secret_key,
+            Slot::SessionToken => &self.session_token,
+            Slot::Region => &self.region,
+            Slot::Service => &self.service,
+            Slot::AuthUrl => &self.auth_url,
+            Slot::TokenUrl => &self.token_url,
+            Slot::ClientId => &self.client_id,
+            Slot::ClientSecret => &self.client_secret,
+            Slot::Scope => &self.scope,
+            Slot::RedirectPort => &self.redirect_port,
+        }
+    }
+
     /// The draft value for the selected scheme, built from the field memory.
     fn current_auth(&self, cx: &Context<Self>) -> Auth {
-        if matches!(
-            self.kind,
-            AuthKind::OAuth2ClientCredentials | AuthKind::OAuth2AuthCode
-        ) {
-            // Read-only here: keep the draft's value exactly.
-            return self.tab.read(cx).draft.auth.clone();
-        }
-        let text = |slot: Slot| {
-            let input = match slot {
-                Slot::Username => &self.username,
-                Slot::Password => &self.password,
-                Slot::Token => &self.token,
-                Slot::KeyName => &self.key_name,
-                Slot::KeyValue => &self.key_value,
-                Slot::AccessKey => &self.access_key,
-                Slot::SecretKey => &self.secret_key,
-                Slot::SessionToken => &self.session_token,
-                Slot::Region => &self.region,
-                Slot::Service => &self.service,
-            };
-            Self::text(input, cx)
-        };
-        build_auth(self.kind, self.location, &text)
+        let text = |slot: Slot| Self::text(self.input(slot), cx);
+        build_auth(self.kind, self.location, self.client_auth, &text)
     }
 
     /// One `tab.edit` per real change; echoes of a resync compare equal.
@@ -412,6 +478,26 @@ impl AuthEditor {
         }
     }
 
+    fn on_client_auth(
+        &mut self,
+        _: &LabelSelect,
+        event: &SelectEvent<Vec<&'static str>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(Some(label)) = event else {
+            return;
+        };
+        if let Some(c) = CLIENT_AUTHS
+            .into_iter()
+            .find(|c| client_auth_label(*c) == *label)
+        {
+            self.client_auth = c;
+            self.commit(cx);
+            cx.notify();
+        }
+    }
+
     fn on_tab(
         &mut self,
         _: &Entity<RequestTab>,
@@ -419,8 +505,18 @@ impl AuthEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(event, TabEvent::DraftReplaced) {
-            self.resync(window, cx);
+        match event {
+            TabEvent::DraftReplaced => self.resync(window, cx),
+            TabEvent::AuthorizeChanged => {
+                let url = match &self.tab.read(cx).authorize {
+                    AuthorizeState::Waiting { url: Some(u), .. } => u.clone(),
+                    _ => String::new(),
+                };
+                self.shown_url
+                    .update(cx, |s, cx| s.set_value(url, window, cx));
+                cx.notify();
+            }
+            _ => {}
         }
     }
 
@@ -437,24 +533,21 @@ impl AuthEditor {
             }
         };
         for (slot, text) in slots_of(&auth) {
-            let input = match slot {
-                Slot::Username => &self.username,
-                Slot::Password => &self.password,
-                Slot::Token => &self.token,
-                Slot::KeyName => &self.key_name,
-                Slot::KeyValue => &self.key_value,
-                Slot::AccessKey => &self.access_key,
-                Slot::SecretKey => &self.secret_key,
-                Slot::SessionToken => &self.session_token,
-                Slot::Region => &self.region,
-                Slot::Service => &self.service,
-            };
+            let input = self.input(slot);
             set(input, text, window, cx);
         }
         if let Auth::ApiKey { location, .. } = auth {
             self.location = location;
             self.loc_select.update(cx, |s, cx| {
                 s.set_selected_value(&location_label(location), window, cx)
+            });
+        }
+        if let Auth::OAuth2ClientCredentials { client_auth, .. }
+        | Auth::OAuth2AuthCode { client_auth, .. } = auth
+        {
+            self.client_auth = client_auth;
+            self.client_auth_select.update(cx, |s, cx| {
+                s.set_selected_value(&client_auth_label(client_auth), window, cx)
             });
         }
         let label = self.kind.label();
@@ -482,6 +575,61 @@ impl AuthEditor {
         };
         names.reverse();
         inherited_line(&scope, &names).unwrap_or_else(|| "No auth is inherited".to_string())
+    }
+
+    fn oauth2_fields(&self, col: gpui::Div, auth_code: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let mut col = col;
+        if auth_code {
+            col = col.child(Self::row("Auth URL", Input::new(&self.auth_url)));
+        }
+        col = col
+            .child(Self::row("Token URL", Input::new(&self.token_url)))
+            .child(Self::row("Client ID", Input::new(&self.client_id)))
+            .child(Self::row(
+                "Client secret",
+                Input::new(&self.client_secret).mask_toggle(),
+            ))
+            .child(Self::row("Scope", Input::new(&self.scope)))
+            .child(Self::row(
+                "Client auth",
+                Select::new(&self.client_auth_select).id("auth-client-auth"),
+            ));
+        if !auth_code {
+            return col;
+        }
+        col = col.child(Self::row("Redirect port", Input::new(&self.redirect_port)));
+        let state = self.tab.read(cx).authorize.clone();
+        let (workspace, tab) = (self.workspace.clone(), self.tab.clone());
+        if state.waiting_id().is_none() {
+            col = col.child(
+                div().child(
+                    Button::new("oauth-authorize")
+                        .label("Authorize")
+                        .small()
+                        .on_click(move |_, _, cx| {
+                            workspace.update(cx, |w, cx| {
+                                if let Err(e) = w.authorize(&tab, cx) {
+                                    let text = format!(
+                                        "Cannot authorize: {}",
+                                        crate::workspace::describe_problems(&e)
+                                    );
+                                    cx.emit(crate::workspace::WorkspaceEvent::Notice(text.into()));
+                                }
+                            });
+                        }),
+                ),
+            );
+        }
+        let (workspace, tab) = (self.workspace.clone(), self.tab.clone());
+        let strip = oauth::strip(
+            &state,
+            &self.shown_url,
+            move |_, _, cx| {
+                workspace.update(cx, |w, cx| w.authorize_cancel(&tab, cx));
+            },
+            cx,
+        );
+        col.children(strip)
     }
 
     fn row(label: &'static str, body: impl IntoElement) -> gpui::Div {
@@ -544,19 +692,8 @@ impl Render for AuthEditor {
                 ))
                 .child(Self::row("Region", Input::new(&self.region)))
                 .child(Self::row("Service", Input::new(&self.service))),
-            AuthKind::OAuth2ClientCredentials | AuthKind::OAuth2AuthCode => {
-                let auth = self.tab.read(cx).draft.auth.clone();
-                let mut col = col.child(div().text_color(cx.theme().muted_foreground).child(
-                    SharedString::from(format!(
-                        "{} (read-only; editing arrives in a later version)",
-                        self.kind.label()
-                    )),
-                ));
-                for (label, text) in oauth2_rows(&auth) {
-                    col = col.child(Self::row(label, SharedString::from(text)));
-                }
-                col
-            }
+            AuthKind::OAuth2ClientCredentials => self.oauth2_fields(col, false, cx),
+            AuthKind::OAuth2AuthCode => self.oauth2_fields(col, true, cx),
         };
         div()
             .size_full()
@@ -590,28 +727,87 @@ mod tests {
     }
 
     #[test]
-    fn oauth2_is_labelled_but_not_offered_and_shows_no_secret() {
-        let a = Auth::OAuth2AuthCode {
-            auth_url: "https://i/a".into(),
-            token_url: "https://i/t".into(),
-            client_id: "cid".into(),
-            client_secret: "SECRETMARK".into(),
-            scope: "r".into(),
-            client_auth: ClientAuth::Body,
-            redirect_port: 8123,
+    fn oauth2_kinds_are_labelled_and_offered() {
+        for a in oauth_samples() {
+            let kind = AuthKind::of(&a);
+            assert!(KINDS.contains(&kind));
+            assert_eq!(type_name(&a), kind.label());
+        }
+        let labels: Vec<&str> = KINDS.iter().map(|k| k.label()).collect();
+        assert!(labels.contains(&"OAuth2 client credentials"));
+        assert!(labels.contains(&"OAuth2 authorization code"));
+    }
+
+    fn round_trip(a: &Auth) -> Auth {
+        let slots = slots_of(a);
+        let text = |slot: Slot| {
+            slots
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
         };
-        assert_eq!(AuthKind::of(&a), AuthKind::OAuth2AuthCode);
-        assert_eq!(type_name(&a), "OAuth2 authorization code");
-        assert!(!KINDS.contains(&AuthKind::OAuth2AuthCode));
-        assert!(!KINDS.contains(&AuthKind::OAuth2ClientCredentials));
-        let rows = oauth2_rows(&a);
-        assert_eq!(rows.len(), 7);
-        assert!(rows.iter().all(|(_, t)| !t.contains("SECRETMARK")));
-        assert!(
-            rows.iter()
-                .any(|(l, t)| *l == "Redirect port" && t == "8123")
-        );
-        assert!(slots_of(&a).is_empty());
+        let (location, client_auth) = match a {
+            Auth::ApiKey { location, .. } => (*location, ClientAuth::Basic),
+            Auth::OAuth2ClientCredentials { client_auth, .. }
+            | Auth::OAuth2AuthCode { client_auth, .. } => (ApiKeyLocation::Header, *client_auth),
+            _ => (ApiKeyLocation::Header, ClientAuth::Basic),
+        };
+        build_auth(AuthKind::of(a), location, client_auth, &text)
+    }
+
+    #[test]
+    fn oauth2_fields_round_trip_through_the_slots() {
+        for a in oauth_samples() {
+            assert_eq!(round_trip(&a), a);
+        }
+        // Blank or invalid redirect port means any.
+        assert_eq!(parse_port(""), 0);
+        assert_eq!(parse_port("0"), 0);
+        assert_eq!(parse_port(" 8123 "), 8123);
+        assert_eq!(parse_port("99999"), 0);
+    }
+
+    #[test]
+    fn oauth2_secret_slot_is_the_masked_secret_only() {
+        // The secret text is never part of any other slot.
+        for a in oauth_samples() {
+            let secret = match &a {
+                Auth::OAuth2ClientCredentials { client_secret, .. }
+                | Auth::OAuth2AuthCode { client_secret, .. } => client_secret.clone(),
+                _ => unreachable!(),
+            };
+            for (slot, v) in slots_of(&a) {
+                assert_eq!(v == secret, slot == Slot::ClientSecret, "{slot:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn oauth2_build_auth_maps_only_inherit_to_inherit() {
+        let all = [
+            AuthKind::None,
+            AuthKind::Inherit,
+            AuthKind::Basic,
+            AuthKind::Bearer,
+            AuthKind::ApiKey,
+            AuthKind::Digest,
+            AuthKind::AwsSigV4,
+            AuthKind::OAuth2ClientCredentials,
+            AuthKind::OAuth2AuthCode,
+        ];
+        assert_eq!(all.len(), KINDS.len());
+        for kind in all {
+            let built = build_auth(kind, ApiKeyLocation::Header, ClientAuth::Basic, &|_| {
+                String::new()
+            });
+            assert_eq!(
+                built == Auth::Inherit,
+                kind == AuthKind::Inherit,
+                "{kind:?}"
+            );
+            assert_eq!(AuthKind::of(&built), kind);
+        }
     }
 
     #[test]
@@ -664,7 +860,10 @@ mod tests {
                 Auth::ApiKey { location, .. } => *location,
                 _ => ApiKeyLocation::Header,
             };
-            assert_eq!(&build_auth(AuthKind::of(a), location, &text), a);
+            assert_eq!(
+                &build_auth(AuthKind::of(a), location, ClientAuth::Basic, &text),
+                a
+            );
         }
     }
 
@@ -684,7 +883,12 @@ mod tests {
                 .unwrap_or_default()
         };
         assert_eq!(
-            build_auth(AuthKind::Digest, ApiKeyLocation::Header, &text),
+            build_auth(
+                AuthKind::Digest,
+                ApiKeyLocation::Header,
+                ClientAuth::Basic,
+                &text
+            ),
             Auth::Digest {
                 username: "u".into(),
                 password: "p".into()

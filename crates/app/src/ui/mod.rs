@@ -3,6 +3,7 @@
 pub mod history;
 pub mod import;
 pub mod kv;
+pub mod oauth;
 pub mod palette;
 pub mod request;
 pub mod response;
