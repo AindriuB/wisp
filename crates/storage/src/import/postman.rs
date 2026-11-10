@@ -841,4 +841,40 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn odd_collection_variable_keys_get_valid_distinct_secret_refs() {
+        let long = "k".repeat(300);
+        let doc = serde_json::json!({
+            "info": {"name": "c", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "variable": [
+                {"key": "Ключ", "value": "V1"},
+                {"key": "---", "value": "V2"},
+                {"key": long, "value": "V3"}],
+            "item": []
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        let secrets = &r.environments[0].secrets;
+        assert_eq!(r.collection_vars.len(), 3);
+        let mut names = Vec::new();
+        for (v, lit) in r.collection_vars.iter().zip(["V1", "V2", "V3"]) {
+            let refs = wisp_core::template::var_refs(&v.value);
+            assert_eq!(refs.len(), 1, "{v:?}");
+            assert!(refs[0].terminated, "{v:?}");
+            assert_eq!(refs[0].range, 0..v.value.len(), "{v:?}");
+            let s = secrets
+                .iter()
+                .find(|s| s.name == refs[0].name)
+                .unwrap_or_else(|| panic!("no secret for {v:?}"));
+            assert_eq!(s.value, lit);
+            names.push(refs[0].name.clone());
+        }
+        let distinct: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(distinct.len(), 3, "{names:?}");
+        // Empty sanitised fields fall back to "value".
+        assert!(names[0].starts_with("collection_value"), "{names:?}");
+        assert!(names[1].starts_with("collection_value"), "{names:?}");
+        // "collection_" prefix plus at most 64 bytes of field.
+        assert!(names[2].len() <= "collection_".len() + 64, "{}", names[2]);
+    }
 }
