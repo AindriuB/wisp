@@ -73,6 +73,11 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 ### Follow-ups from task 105 (not 0.2.0 wave 2)
 - [P3] tests/timings.rs AC6 cancel test can't detect a leftover registry entry (second request uses a fresh port/token); add a cfg(test) registry length check.
 - [P3] h2 test asserts `accepted >= 1` (concurrent sends open extra connections before the first is established); a warm-up send would allow `== 1`.
+- [P3] 46-1 Cargo.toml:38 new deps tower-layer, tower-service, http, h2, bytes omit `default-features = false` (conventions: Dependencies).
+- [P3] 46-2 tests/timings.rs:81 the concurrent test blocks on a Barrier with no timeout (hangs instead of failing); wrap in a 10 s timeout naming the accepted count.
+- [P3] 46-3 tests/timings.rs:110 keep-alive tests assume the pooled connection is idle before the next connect wins (small race).
+- [P3] 46-4 tests/timings.rs:163 the DNS-error test depends on the host resolver failing `.invalid` (NXDOMAIN rewriting breaks it); test classification with a failing test resolver.
+- [Nit] 46-5 timing.rs:24 the Timings doc doesn't say what phases mean through a proxy.
 - [NOTE] Registry MAX_ENTRIES=64 FIFO: >64 unclaimed concurrent connects could evict a real entry (reported None); unreachable today (no runner/bulk send). Intermediate redirect hops and lost-race connects are never claimed and rely on the cap.
 - [NOTE] With reqwest-followed redirects the timings describe the final connection; with the engine's own loop, the first hop that opened a connection.
 
