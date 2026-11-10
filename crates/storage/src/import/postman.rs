@@ -153,6 +153,7 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
         Some(r) => url_of(r.get("url")),
         None => (String::new(), Vec::new(), Vec::new()),
     };
+    let (url, userinfo) = super::split_userinfo(&url);
     let name = if name.is_empty() {
         request_name(method_name(method), &url)
     } else {
@@ -189,6 +190,19 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
         }
         req.body = body_of(cx, r.get("body"), &req.headers, &at);
         req.auth = auth_of(cx, r.get("auth"), &name, &at);
+    }
+    if let Some((user, pass)) = userinfo {
+        if req.auth == Auth::Inherit {
+            req.auth = Auth::Basic {
+                username: cx.sink.secret_ref(&name, "username", user),
+                password: cx.sink.secret_ref(&name, "password", pass),
+            };
+        } else {
+            cx.result.warn(
+                &at,
+                "the URL has credentials; the request's own auth is used",
+            );
+        }
     }
     script_warning(cx, &at, node);
     ImportItem::Request { name, request: req }
@@ -360,7 +374,7 @@ fn body_of(cx: &mut Ctx, body: Option<&Value>, headers: &[KeyValue], at: &str) -
                     });
                     continue;
                 }
-                let value = { PartValue::Text(text(p.get("value"))) };
+                let value = PartValue::Text(text(p.get("value")));
                 parts.push(Part {
                     name,
                     value,
@@ -627,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_file_parts_are_dropped() {
+    fn file_paths_are_never_imported() {
         for bad in [
             "/etc/passwd",
             "~/.ssh/id_rsa",
@@ -681,5 +695,35 @@ mod tests {
         let (req, _) = one_request(serde_json::json!({}), url);
         assert_eq!(req.params[0].value, "a b");
         assert_eq!(req.params[1].value, "a+b");
+    }
+
+    #[test]
+    fn url_userinfo_becomes_basic_auth_secrets() {
+        let (req, r) = one_request(
+            serde_json::json!({"mode": "raw", "raw": ""}),
+            "http://bob:pw@h/up".into(),
+        );
+        assert_eq!(req.url, "http://h/up");
+        assert!(matches!(req.auth, Auth::Basic { .. }));
+        let env = &r.environments[0];
+        assert!(env.secrets.iter().any(|v| v.value == "pw"));
+        assert!(!format!("{req:?}").contains("pw"));
+    }
+
+    #[test]
+    fn explicit_auth_beats_url_userinfo() {
+        let doc = serde_json::json!({
+            "info": {"name": "c", "_postman_id": "x",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [{"name": "r", "request": {"method": "GET",
+                "url": {"raw": "http://bob:pw@h/up"},
+                "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "tok"}]}}}]
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        let req = find(&r.items, "r");
+        assert_eq!(req.url, "http://h/up");
+        assert!(matches!(req.auth, Auth::Bearer { .. }));
+        assert!(r.environments[0].secrets.iter().all(|v| v.value != "pw"));
+        assert!(r.warnings.iter().any(|w| w.message.contains("credentials")));
     }
 }

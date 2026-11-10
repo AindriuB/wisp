@@ -365,6 +365,10 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
         .take()
         .ok_or_else(|| ImportError::Parse("no URL in the curl command".into()))?;
     let (url, mut params) = split_query(url_raw.trim());
+    let (url, userinfo) = super::split_userinfo(&url);
+    if userinfo.is_some() && f.user.is_some() {
+        f.warn("the URL has credentials and -u was given; -u is used".into());
+    }
 
     let mut method = if f.head { Method::Head } else { Method::Get };
     let has_body = (!f.data.is_empty() && !f.get) || !f.form.is_empty();
@@ -451,8 +455,13 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
                 continue;
             } else if v.starts_with('<') {
                 f.warn(format!(
-                    "form field `{n}` reads a file as text; not imported"
+                    "form field `{n}` reads a file as text; imported disabled and empty; pick the file after import"
                 ));
+                parts.push(Part {
+                    name: n.to_string(),
+                    value: PartValue::Text(String::new()),
+                    enabled: false,
+                });
                 continue;
             } else {
                 PartValue::Text(v.to_string())
@@ -496,7 +505,13 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
                 password: sink.secret_ref(&name, "password", pass.to_string()),
             }
         }
-        None => Auth::Inherit,
+        None => match userinfo {
+            Some((user, pass)) => Auth::Basic {
+                username: sink.secret_ref(&name, "username", user),
+                password: sink.secret_ref(&name, "password", pass),
+            },
+            None => Auth::Inherit,
+        },
     };
 
     let request = Request {
@@ -791,7 +806,66 @@ mod tests {
 
     #[test]
     fn huge_flag_cluster_warnings_are_capped() {
+        let mut f = Flags::default();
+        for _ in 0..MAX_WARNINGS * 3 {
+            f.warn("w".into());
+        }
+        assert_eq!(f.warnings.len(), MAX_WARNINGS + 1);
         let (_, res) = req(&format!("curl -{} http://h/x", "v".repeat(2_000_000)));
         assert_eq!(res.warnings.len(), MAX_WARNINGS + 1);
+    }
+
+    #[test]
+    fn form_file_as_text_part_is_disabled_and_empty() {
+        let (r, res) = req("curl -F 'n=<secret.txt' http://h/x");
+        let Body::Multipart(parts) = r.body else {
+            panic!()
+        };
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].name, "n");
+        assert_eq!(parts[0].value, PartValue::Text(String::new()));
+        assert!(!parts[0].enabled);
+        let w = &res.warnings[0].message;
+        assert!(w.contains("`n`") && !w.contains("secret.txt"));
+    }
+
+    #[test]
+    fn url_userinfo_becomes_basic_auth_secrets() {
+        let (r, res) = req("curl 'http://bob:p%40ss@h/x'");
+        assert_eq!(res.name, "h");
+        assert_eq!(r.url, "http://h/x");
+        let Auth::Basic { username, password } = &r.auth else {
+            panic!()
+        };
+        assert!(username.starts_with("{{") && password.starts_with("{{"));
+        let env = &res.environments[0];
+        assert!(env.secrets.iter().any(|v| v.value == "p@ss"));
+        assert!(env.secrets.iter().any(|v| v.value == "bob"));
+        assert!(!format!("{r:?}{:?}", res.warnings).contains("p@ss"));
+        assert!(!format!("{:?}", res.name).contains("bob"));
+    }
+
+    #[test]
+    fn explicit_user_beats_url_userinfo() {
+        let (r, res) = req("curl -u a:b http://bob:pw@h/x");
+        assert_eq!(r.url, "http://h/x");
+        assert!(matches!(r.auth, Auth::Basic { .. }));
+        let env = &res.environments[0];
+        assert!(env.secrets.iter().all(|v| v.value != "pw"));
+        assert!(res.warnings.iter().any(|w| w.message.contains("-u")));
+    }
+
+    #[test]
+    fn many_credential_headers_with_huge_name_are_cheap() {
+        let t = std::time::Instant::now();
+        let mut cmd = format!("curl http://h/{}", "a".repeat(1024 * 1024));
+        for i in 0..2000 {
+            cmd.push_str(&format!(" -H 'Authorization: v{i}'"));
+        }
+        let r = parse(&cmd).unwrap();
+        for e in &r.environments {
+            assert!(e.secrets.iter().all(|v| v.name.len() < 100));
+        }
+        assert!(t.elapsed().as_secs() < 2);
     }
 }

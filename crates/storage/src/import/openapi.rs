@@ -639,17 +639,9 @@ mod tests {
     fn shared_ref_parameter_names_are_charged() {
         let t = std::time::Instant::now();
         let big = "n".repeat(3 * 1024 * 1024);
-        let mut paths = String::new();
-        for i in 0..200 {
-            if i > 0 {
-                paths.push(',');
-            }
-            paths.push_str(&format!(
-                r##""/p{i}":{{"get":{{"parameters":[{{"$ref":"#/components/parameters/P"}}]}}}}"##
-            ));
-        }
+        let refs = vec![r##"{"$ref":"#/components/parameters/P"}"##; 3000].join(",");
         let doc = format!(
-            r##"{{"openapi":"3.0.0","paths":{{{paths}}},"components":{{"parameters":{{"P":{{"name":"{big}","in":"query"}}}}}}}}"##
+            r##"{{"openapi":"3.0.0","paths":{{"/p":{{"get":{{"parameters":[{refs}]}}}}}},"components":{{"parameters":{{"P":{{"name":"{big}","in":"query"}}}}}}}}"##
         );
         let r = parse(doc.as_bytes());
         assert!(
@@ -657,7 +649,32 @@ mod tests {
             "{:?}",
             r.map(|r| r.warnings)
         );
-        assert!(t.elapsed().as_secs() < 5);
+        assert!(t.elapsed().as_secs() < 2);
+    }
+
+    #[test]
+    fn shared_ref_media_type_keys_are_charged() {
+        let t = std::time::Instant::now();
+        let big = "k".repeat(1024 * 1024);
+        let mut paths = String::new();
+        for i in 0..40 {
+            if i > 0 {
+                paths.push(',');
+            }
+            paths.push_str(&format!(
+                r##""/p{i}":{{"post":{{"requestBody":{{"$ref":"#/components/requestBodies/B"}}}}}}"##
+            ));
+        }
+        let doc = format!(
+            r##"{{"openapi":"3.0.0","paths":{{{paths}}},"components":{{"requestBodies":{{"B":{{"content":{{"{big}":{{}}}}}}}}}}}}"##
+        );
+        let r = parse(doc.as_bytes());
+        assert!(
+            matches!(r, Err(ImportError::TooLarge(_))),
+            "{:?}",
+            r.map(|r| r.warnings)
+        );
+        assert!(t.elapsed().as_secs() < 2);
     }
 
     #[test]

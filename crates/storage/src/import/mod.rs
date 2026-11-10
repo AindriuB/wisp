@@ -259,6 +259,29 @@ pub(crate) fn form_decode(s: &str) -> String {
     percent_decode(&s.replace('+', " "))
 }
 
+/// Longest request-name prefix used as the base of a secret name, so a huge
+/// name times many credential headers stays cheap.
+const MAX_SECRET_BASE_BYTES: usize = 64;
+
+/// Split `user:pass@` off the authority of `scheme://...`. Returns the URL
+/// without it and the percent-decoded `(user, password)`.
+pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
+    let Some(scheme_end) = url.find("://").map(|i| i + 3) else {
+        return (url.to_string(), None);
+    };
+    let rest = &url[scheme_end..];
+    let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let Some(at) = rest[..auth_end].rfind('@') else {
+        return (url.to_string(), None);
+    };
+    let info = &rest[..at];
+    let (user, pass) = info.split_once(':').unwrap_or((info, ""));
+    (
+        format!("{}{}", &url[..scheme_end], &rest[at + 1..]),
+        Some((percent_decode(user), percent_decode(pass))),
+    )
+}
+
 /// Literal credentials gathered by an importer; they go to the secrets
 /// environment and the request keeps `{{name}}` references.
 #[derive(Default)]
@@ -278,6 +301,9 @@ impl SecretSink {
         }
         let mut base = String::new();
         for c in request.chars() {
+            if base.len() >= MAX_SECRET_BASE_BYTES {
+                break;
+            }
             if c.is_ascii_alphanumeric() {
                 base.push(c.to_ascii_lowercase());
             } else if !base.ends_with('_') {
