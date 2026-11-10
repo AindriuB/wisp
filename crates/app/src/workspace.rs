@@ -13,13 +13,14 @@ use wisp_storage::collection::{CollectionId, ensure_collection_id};
 use wisp_storage::collection::{CollectionTree, open_collection};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{list_environments, load_environment};
-use wisp_storage::history::{BODY_CAP, HistoryStore, NewEntry, Outcome};
+use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
 
 use crate::draft::{self, ReloadAction};
 use crate::settings::{self, Settings};
-use crate::tab::{DiskState, Phase, RequestTab, ResponseState, TabEvent};
+use crate::tab::{DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent};
+use crate::ui::history as history_ui;
 
 /// Quiet period after the first watcher event before the batch is handled.
 const WATCH_BATCH: Duration = Duration::from_millis(50);
@@ -38,6 +39,8 @@ pub enum WorkspaceEvent {
     TabsChanged,
     ActiveTabChanged,
     Notice(SharedString),
+    /// The open collection's history gained or lost entries.
+    HistoryChanged,
 }
 
 /// What was sent, kept for the history entry written at the terminal event.
@@ -52,7 +55,32 @@ enum HistoryState {
     /// The collection id is not resolved yet; the first append resolves it.
     Unresolved,
     Ready(HistoryStore),
-    Off,
+    /// Writing is off; the reason is shown in the history panel.
+    Off(String),
+}
+
+/// Everything needed to reach the open collection's history off the UI thread.
+pub struct HistoryJob {
+    store: Option<HistoryStore>,
+    root: PathBuf,
+    data: DataDir,
+}
+
+impl HistoryJob {
+    /// Resolve the collection id when needed and open the store. Blocking.
+    pub fn open(self) -> Result<HistoryStore, String> {
+        match self.store {
+            Some(s) => Ok(s),
+            None => {
+                // Serialised so concurrent first uses agree on one id.
+                static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
+                let id: CollectionId =
+                    ensure_collection_id(&self.root).map_err(|e| e.to_string())?;
+                Ok(HistoryStore::open(&self.data, &id))
+            }
+        }
+    }
 }
 
 pub struct Workspace {
@@ -484,7 +512,7 @@ impl Workspace {
         tab: &Entity<RequestTab>,
         cx: &mut Context<Self>,
     ) -> Result<RequestId, ResolveError> {
-        let (draft, path, previous) = {
+        let (draft, path, previous, origin) = {
             let t = tab.read(cx);
             (
                 t.draft.clone(),
@@ -492,6 +520,7 @@ impl Workspace {
                 (t.response.phase == Phase::Sending)
                     .then_some(t.response.request_id)
                     .flatten(),
+                t.from_history.clone(),
             )
         };
         let prepared = resolve(&draft, &self.scope_for(path.as_deref()))?;
@@ -499,6 +528,16 @@ impl Workspace {
             self.engine.submit(Command::Cancel(old));
         }
         let id = self.engine.submit(Command::Send(prepared));
+        if let Some(origin) = origin {
+            let env = self
+                .collection
+                .as_ref()
+                .and_then(|c| c.active_env.as_ref())
+                .map(|e| e.name.as_str());
+            cx.emit(WorkspaceEvent::Notice(
+                history_ui::resend_notice(env, &origin.redacted).into(),
+            ));
+        }
         self.routes.insert(id, tab.downgrade());
         self.sent.insert(
             id,
@@ -658,17 +697,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let Some(c) = &self.collection else { return };
-        let root = c.tree.root.clone();
-        let task_root = root.clone();
-        let store = match &self.history {
-            HistoryState::Off => return,
-            HistoryState::Ready(s) => Some(s.clone()),
-            HistoryState::Unresolved => None,
+        let task_root = c.tree.root.clone();
+        let job = match self.history_job() {
+            Ok(j) => j,
+            Err(reason) => {
+                if matches!(self.history, HistoryState::Unresolved) {
+                    self.history_off(reason, cx);
+                }
+                return;
+            }
         };
-        let Some(data) = self.data_dir.clone() else {
-            self.history_off("the data directory is unknown".into(), cx);
-            return;
-        };
+        let body = history_ui::body_to_store(self.settings.history_bodies, body);
         let r = &tab.read(cx).response;
         let outcome = match event {
             Event::Completed { .. } => Outcome::Completed,
@@ -688,17 +727,7 @@ impl Workspace {
         };
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move {
-                let store = match store {
-                    Some(s) => s,
-                    None => {
-                        // Serialised so concurrent first appends agree on one id.
-                        static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-                        let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
-                        let id: CollectionId =
-                            ensure_collection_id(&root).map_err(|e| (true, e.to_string()))?;
-                        HistoryStore::open(&data, &id)
-                    }
-                };
+                let store = job.open().map_err(|e| (true, e))?;
                 store
                     .append(new, body.as_deref())
                     .map(|_| store)
@@ -715,6 +744,7 @@ impl Workspace {
                         if matches!(this.history, HistoryState::Unresolved) {
                             this.history = HistoryState::Ready(store);
                         }
+                        cx.emit(WorkspaceEvent::HistoryChanged);
                     }
                     Err((true, reason)) => this.history_off(reason, cx),
                     Err((false, reason)) => {
@@ -729,8 +759,128 @@ impl Workspace {
     }
 
     fn history_off(&mut self, reason: String, cx: &mut Context<Self>) {
-        self.history = HistoryState::Off;
+        self.history = HistoryState::Off(reason.clone());
         self.history_notice(format!("History is off: {reason}"), cx);
+    }
+
+    /// A handle to the open collection's history, or the reason there is none.
+    pub fn history_job(&self) -> Result<HistoryJob, String> {
+        let Some(c) = &self.collection else {
+            return Err("Open a collection to see its history".into());
+        };
+        let store = match &self.history {
+            HistoryState::Off(reason) => return Err(reason.clone()),
+            HistoryState::Ready(s) => Some(s.clone()),
+            HistoryState::Unresolved => None,
+        };
+        let Some(data) = self.data_dir.clone() else {
+            return Err("the data directory is unknown".into());
+        };
+        Ok(HistoryJob {
+            store,
+            root: c.tree.root.clone(),
+            data,
+        })
+    }
+
+    /// Open a history entry in a new tab. The stored files are read, and the
+    /// stored body copied into the body store, on the background executor.
+    pub fn open_history_entry(&mut self, entry: HistoryEntry, cx: &mut Context<Self>) {
+        let job = match self.history_job() {
+            Ok(j) => j,
+            Err(reason) => {
+                cx.emit(WorkspaceEvent::Notice(reason.into()));
+                return;
+            }
+        };
+        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+            return;
+        };
+        let bodies = self.engine.bodies();
+        let id = entry.id.clone();
+        cx.spawn(async move |this, cx| {
+            let work = cx.background_executor().spawn(async move {
+                let stored = job.open()?.load(&id).map_err(|e| e.to_string())?;
+                let handle = if stored.body.is_empty() {
+                    None
+                } else {
+                    let mut w = bodies.writer();
+                    w.write(&stored.body).map_err(|e| e.to_string())?;
+                    Some(w.finish().map_err(|e| e.to_string())?)
+                };
+                Ok::<_, String>((stored, handle))
+            });
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                let still_open = this.collection.as_ref().map(|c| &c.tree.root) == Some(&root);
+                match result {
+                    Ok((_, handle)) if !still_open => {
+                        if let Some(h) = handle {
+                            this.release_body(&h);
+                        }
+                    }
+                    Ok((stored, handle)) => {
+                        let response =
+                            history_ui::stored_response(&entry, stored.response_headers, handle);
+                        let origin = HistoryOrigin {
+                            at_ms: entry.at,
+                            body_stored: entry.body_stored,
+                            body_truncated: entry.body_truncated,
+                            redacted: entry.redacted.clone(),
+                        };
+                        let tab =
+                            cx.new(|_| RequestTab::from_history(stored.request, response, origin));
+                        this.tabs.push(tab);
+                        this.active = Some(this.tabs.len() - 1);
+                        cx.emit(WorkspaceEvent::TabsChanged);
+                        cx.emit(WorkspaceEvent::ActiveTabChanged);
+                        cx.notify();
+                    }
+                    Err(e) if still_open => cx.emit(WorkspaceEvent::Notice(
+                        format!("Cannot open history entry: {e}").into(),
+                    )),
+                    Err(_) => {}
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Remove the open collection's history; the store I/O runs on the background executor.
+    pub fn clear_history(&mut self, cx: &mut Context<Self>) {
+        let job = match self.history_job() {
+            Ok(j) => j,
+            Err(reason) => {
+                cx.emit(WorkspaceEvent::Notice(reason.into()));
+                return;
+            }
+        };
+        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let work = cx
+                .background_executor()
+                .spawn(async move { job.open()?.clear().map_err(|e| e.to_string()) });
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                if this.collection.as_ref().map(|c| &c.tree.root) != Some(&root) {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        cx.emit(WorkspaceEvent::Notice("History cleared".into()));
+                        cx.emit(WorkspaceEvent::HistoryChanged);
+                    }
+                    Err(e) => cx.emit(WorkspaceEvent::Notice(
+                        format!("Cannot clear history: {e}").into(),
+                    )),
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Show a history Notice, once per collection.

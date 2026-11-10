@@ -20,6 +20,9 @@ actions!(
         ToggleTheme,
         ToggleLayout,
         OpenImport,
+        ShowHistory,
+        ClearHistory,
+        ToggleHistoryBodies,
         Quit
     ]
 );

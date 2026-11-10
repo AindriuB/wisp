@@ -12,8 +12,9 @@ use gpui_component::kbd::Kbd;
 use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath, h_flex};
 
 use crate::actions::{
-    CancelRequest, CloseTab, NewRequest, OpenCollection, OpenImport, OpenPalette, ReloadFromDisk,
-    SaveRequest, SendRequest, SwitchEnvironment, ToggleLayout, ToggleTheme,
+    CancelRequest, ClearHistory, CloseTab, NewRequest, OpenCollection, OpenImport, OpenPalette,
+    ReloadFromDisk, SaveRequest, SendRequest, ShowHistory, SwitchEnvironment, ToggleHistoryBodies,
+    ToggleLayout, ToggleTheme,
 };
 use crate::palette::{self, CommandId, Match, PaletteItem, PaletteKind, PaletteMode};
 use crate::workspace::{Workspace, WorkspaceEvent};
@@ -34,6 +35,9 @@ fn action_for(id: CommandId) -> Box<dyn Action> {
         CommandId::ToggleLayout => Box::new(ToggleLayout),
         CommandId::ReloadFromDisk => Box::new(ReloadFromDisk),
         CommandId::Import => Box::new(OpenImport),
+        CommandId::ShowHistory => Box::new(ShowHistory),
+        CommandId::ClearHistory => Box::new(ClearHistory),
+        CommandId::ToggleHistoryBodies => Box::new(ToggleHistoryBodies),
     }
 }
 
