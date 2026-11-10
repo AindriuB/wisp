@@ -266,3 +266,48 @@ fn index_line_has_the_documented_fields() {
         assert!(raw.contains(f), "{f} in {raw}");
     }
 }
+
+#[test]
+fn redacts_set_cookie_values_in_response_headers() {
+    let (_d, data, store) = setup();
+    let mut n = plain("http://x");
+    n.response_headers = vec![
+        Header {
+            name: "Set-Cookie".into(),
+            value: "sid=abc123; Path=/; HttpOnly".into(),
+        },
+        Header {
+            name: "set-cookie".into(),
+            value: "theme=dark".into(),
+        },
+    ];
+    let e = store.append(n, None).unwrap();
+    let raw = fs::read_to_string(bodies_dir(&data).join(format!("{}.req.json", e.id))).unwrap();
+    assert!(!raw.contains("abc123") && !raw.contains("dark"));
+    let h = store.load(&e.id).unwrap().response_headers;
+    assert_eq!(h[0].value, "sid=; Path=/; HttpOnly");
+    assert_eq!(h[1].value, "theme=");
+    assert!(e.redacted.contains(&"Set-Cookie".to_string()));
+}
+
+#[test]
+fn concurrent_appends_leave_no_orphans() {
+    let (_d, data, store) = setup();
+    let store = store.with_caps(5, u64::MAX);
+    let mut hs = Vec::new();
+    for _ in 0..8 {
+        let s = HistoryStore::open(&data, &cid("abcdef0123456789")).with_caps(5, u64::MAX);
+        hs.push(std::thread::spawn(move || {
+            for _ in 0..10 {
+                s.append(plain("http://x"), Some(b"b")).unwrap();
+            }
+        }));
+    }
+    for h in hs {
+        h.join().unwrap();
+    }
+    let n = store.list().unwrap().len();
+    assert_eq!(n, 5);
+    let files = fs::read_dir(bodies_dir(&data)).unwrap().count();
+    assert_eq!(files, 2 * n);
+}

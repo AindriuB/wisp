@@ -26,6 +26,9 @@ pub const MAX_ENTRIES: usize = 500;
 /// Bytes kept under `bodies/` per collection.
 pub const MAX_BYTES: u64 = 100 * 1024 * 1024;
 
+/// Serialises appends: a store is opened per call site, so the lock is process-wide.
+static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const INDEX_FILE: &str = "index.jsonl";
 const BODIES_DIR: &str = "bodies";
 
@@ -185,6 +188,26 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
     (out, names)
 }
 
+/// Empty the value of every `Set-Cookie` header; true when any value changed.
+fn redact_set_cookies(headers: &mut [Header]) -> bool {
+    let mut changed = false;
+    for h in headers {
+        if !h.name.eq_ignore_ascii_case("set-cookie") {
+            continue;
+        }
+        let Some(eq) = h.value.find('=') else {
+            continue;
+        };
+        let end = h.value.find(';').unwrap_or(h.value.len());
+        if end <= eq + 1 {
+            continue;
+        }
+        h.value = format!("{}{}", &h.value[..=eq], &h.value[end..]);
+        changed = true;
+    }
+    changed
+}
+
 fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -243,9 +266,14 @@ impl HistoryStore {
 
     /// Store one finished request. `body` is cut to [`BODY_CAP`] bytes.
     pub fn append(&self, new: NewEntry, body: Option<&[u8]>) -> Result<HistoryEntry, StorageError> {
+        let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         ensure_private_dir(&self.bodies())?;
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let (request, redacted) = redact_request(&new.request);
+        let (request, mut redacted) = redact_request(&new.request);
+        let mut response_headers = new.response_headers;
+        if redact_set_cookies(&mut response_headers) {
+            redacted.push("Set-Cookie".into());
+        }
         let (bin, req) = {
             let [a, b] = self.body_files(&id);
             (a, b)
@@ -257,7 +285,7 @@ impl HistoryStore {
         }
         let file = ReqFile {
             request,
-            response_headers: new.response_headers,
+            response_headers,
         };
         let json = serde_json::to_vec(&file).map_err(|e| StorageError::History {
             message: e.to_string(),

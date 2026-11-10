@@ -691,6 +691,9 @@ impl Workspace {
                 let store = match store {
                     Some(s) => s,
                     None => {
+                        // Serialised so concurrent first appends agree on one id.
+                        static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                        let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
                         let id: CollectionId =
                             ensure_collection_id(&root).map_err(|e| (true, e.to_string()))?;
                         HistoryStore::open(&data, &id)
