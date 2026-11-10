@@ -192,7 +192,8 @@ fn plan_quit(queued: &[QuitOp], saving_now: bool, dirty: bool) -> QuitPlan {
     };
     QuitPlan {
         toggle,
-        save: quit_save_needed(saving, dirty),
+        // Enable writes the current snapshot even when clean, like CookieJob::Enable.
+        save: toggle == Some(QuitOp::Enable) || quit_save_needed(saving, dirty),
     }
 }
 
@@ -2479,6 +2480,19 @@ mod tests {
                 toggle: Some(QuitOp::Enable),
                 save: true
             }
+        );
+    }
+
+    #[test]
+    fn quit_plan_enable_forces_save_even_when_clean() {
+        let want = QuitPlan {
+            toggle: Some(QuitOp::Enable),
+            save: true,
+        };
+        assert_eq!(plan_quit(&[QuitOp::Enable], false, false), want);
+        assert_eq!(
+            plan_quit(&[QuitOp::Disable, QuitOp::Enable], false, false),
+            want
         );
     }
 
