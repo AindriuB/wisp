@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+use crate::auth::EngineAuth;
 use crate::body::BodyHandle;
 use crate::resolve::ResolveWarning;
 
@@ -51,6 +52,9 @@ pub struct PreparedRequest {
     pub timeout: Option<Duration>,
     pub client: ClientSettings,
     pub warnings: Vec<ResolveWarning>,
+    /// Auth the engine applies at send time (Digest, SigV4); `resolve` adds no header for it.
+    #[serde(default)]
+    pub auth: Option<EngineAuth>,
 }
 
 /// URL with the query replaced by `<redacted>`.
@@ -85,6 +89,7 @@ impl fmt::Debug for PreparedRequest {
             .field("timeout", &self.timeout)
             .field("client", &self.client)
             .field("warnings", &self.warnings)
+            .field("auth", &self.auth)
             .finish()
     }
 }
@@ -146,6 +151,9 @@ impl fmt::Debug for ClientSettings {
 }
 
 /// Input to the engine.
+// `Send` outgrew `Cancel` once `PreparedRequest` carried auth; commands are rare and
+// short-lived, so boxing would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     Send(PreparedRequest),
@@ -237,11 +245,43 @@ mod tests {
                 proxy: None,
             },
             warnings: vec![],
+            auth: None,
         }
     }
 
     fn both(v: &impl fmt::Debug) -> [String; 2] {
         [format!("{v:?}"), format!("{v:#?}")]
+    }
+
+    #[test]
+    fn debug_redacts_prepared_request_engine_auth() {
+        let mut p = prepared("http://x.test/", vec![], PreparedBody::None);
+        for (auth, secrets) in [
+            (
+                EngineAuth::Digest {
+                    username: "alice".into(),
+                    password: "DIGPWMARK".into(),
+                },
+                vec!["DIGPWMARK"],
+            ),
+            (
+                EngineAuth::AwsSigV4 {
+                    access_key: "AKMARK".into(),
+                    secret_key: "SKMARK".into(),
+                    session_token: "STMARK".into(),
+                    region: "us-east-1".into(),
+                    service: "s3".into(),
+                },
+                vec!["AKMARK", "SKMARK", "STMARK"],
+            ),
+        ] {
+            p.auth = Some(auth);
+            for text in both(&p) {
+                for s in &secrets {
+                    assert!(!text.contains(s), "{text}");
+                }
+            }
+        }
     }
 
     #[test]

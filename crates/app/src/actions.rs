@@ -19,6 +19,10 @@ actions!(
         KeepMine,
         ToggleTheme,
         ToggleLayout,
+        OpenImport,
+        ShowHistory,
+        ClearHistory,
+        ToggleHistoryBodies,
         Quit
     ]
 );

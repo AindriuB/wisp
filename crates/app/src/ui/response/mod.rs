@@ -214,6 +214,13 @@ impl Render for ResponsePane {
             ResponseSubTab::Cookies => self.cookies.clone().into_any_element(),
         };
         let mut root = div().flex().flex_col().size_full();
+        let origin = self.tab.read(cx).from_history.clone();
+        if let Some(origin) = origin.filter(|_| response.request_id.is_none()) {
+            let muted = cx.theme().muted_foreground;
+            root = root.child(div().px_2().text_color(muted).child(
+                crate::ui::history::origin_line(&origin, crate::ui::history::now_ms()),
+            ));
+        }
         if let Some(line) = self.status_line(&response, cx) {
             root = root.child(line);
         }

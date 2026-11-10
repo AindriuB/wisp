@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use gpui::{Context, EventEmitter, SharedString};
 use wisp_core::body::BodyHandle;
-use wisp_core::request::Request;
+use wisp_core::request::{Body, Request};
 use wisp_core::{EngineError, Header, HttpVersion, RequestId};
 
 use crate::draft;
@@ -75,6 +75,28 @@ pub enum TabEvent {
     Saved,
 }
 
+/// What a tab opened from history remembers about its entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryOrigin {
+    /// Unix milliseconds the entry was recorded.
+    pub at_ms: u64,
+    pub body_stored: bool,
+    pub body_truncated: bool,
+    /// Names whose values were not stored; never shown with a value.
+    pub redacted: Vec<String>,
+    /// What opening the entry removed, disabled or reset so no emptied
+    /// credential is sent; shown in the Resend notice.
+    pub adjustments: Vec<String>,
+    /// The entry's original request path, used only to scope Resend's resolve.
+    pub request: Option<String>,
+    /// The URL template the tab opened with; the folder scope applies only
+    /// while the draft URL still equals it.
+    pub url: String,
+    /// The body the tab opened with (after sanitising). A redacted body must
+    /// differ from it before the tab can be sent.
+    pub stored_body: Body,
+}
+
 pub struct RequestTab {
     /// Relative to the collection root; `None` is a scratch tab.
     pub path: Option<PathBuf>,
@@ -88,6 +110,8 @@ pub struct RequestTab {
     pub request_tab: RequestSubTab,
     pub response_tab: ResponseSubTab,
     pub body_view: BodyView,
+    /// Set for a tab opened from history.
+    pub from_history: Option<HistoryOrigin>,
 }
 
 impl EventEmitter<TabEvent> for RequestTab {}
@@ -104,7 +128,17 @@ impl RequestTab {
             request_tab: RequestSubTab::Params,
             response_tab: ResponseSubTab::Body,
             body_view: BodyView::Pretty,
+            from_history: None,
         }
+    }
+
+    /// A scratch tab holding a stored request and its stored response.
+    pub fn from_history(request: Request, response: ResponseState, origin: HistoryOrigin) -> Self {
+        // Saved is the stored request, so the tab is clean until edited.
+        let mut tab = Self::with(None, Some(request.clone()), request);
+        tab.response = response;
+        tab.from_history = Some(origin);
+        tab
     }
 
     pub fn new_scratch(url: String) -> Self {

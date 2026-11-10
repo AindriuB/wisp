@@ -25,6 +25,8 @@ pub struct Settings {
     pub split: SplitAxis,
     pub pretty_limit: u64,
     pub body_memory_limit: u64,
+    /// Store response bodies in history.
+    pub history_bodies: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             split: SplitAxis::Vertical,
             pretty_limit: PRETTY_LIMIT,
             body_memory_limit: wisp_core::body::DEFAULT_MEMORY_LIMIT,
+            history_bodies: true,
         }
     }
 }
@@ -125,6 +128,12 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
             _ => bad.push("split"),
         }
     }
+    if let Some(item) = doc.get("history_bodies") {
+        match item.as_bool() {
+            Some(b) => settings.history_bodies = b,
+            None => bad.push("history_bodies"),
+        }
+    }
     for (key, slot) in [
         ("pretty_limit", &mut settings.pretty_limit),
         ("body_memory_limit", &mut settings.body_memory_limit),
@@ -189,6 +198,13 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
         value(split_str(settings.split)),
         settings.split == d.split,
         |i| i.as_str() == Some(split_str(settings.split)),
+    );
+    set_if_differs(
+        &mut doc,
+        "history_bodies",
+        value(settings.history_bodies),
+        settings.history_bodies == d.history_bodies,
+        |i| i.as_bool() == Some(settings.history_bodies),
     );
     for (key, n, default) in [
         ("pretty_limit", settings.pretty_limit, d.pretty_limit),
@@ -323,6 +339,7 @@ mod tests {
             split: SplitAxis::Vertical,
             pretty_limit: 100,
             body_memory_limit: 200,
+            history_bodies: true,
         };
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();
@@ -338,5 +355,47 @@ mod tests {
         };
         save(&p, &s).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "theme = \"dark\"\n");
+    }
+
+    #[test]
+    fn history_bodies_defaults_to_true_when_absent() {
+        let p = dir("hb-absent").join("settings.toml");
+        std::fs::write(&p, "theme = \"dark\"\n").unwrap();
+        assert!(load(&p).0.history_bodies);
+    }
+
+    #[test]
+    fn history_bodies_roundtrips_keeping_comments_and_other_keys() {
+        let p = dir("hb-roundtrip").join("settings.toml");
+        let before = "# mine\ntheme = \"dark\" # keep\nextra = 1\n";
+        std::fs::write(&p, before).unwrap();
+        let s = Settings {
+            theme: ThemeMode::Dark,
+            history_bodies: false,
+            ..Settings::default()
+        };
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(after, format!("{before}history_bodies = false\n"));
+        assert_eq!(load(&p), (s, None));
+        // Back to the default flips the written key rather than dropping the file's lines.
+        save(
+            &p,
+            &Settings {
+                theme: ThemeMode::Dark,
+                ..Settings::default()
+            },
+        )
+        .unwrap();
+        assert!(load(&p).0.history_bodies);
+    }
+
+    #[test]
+    fn history_bodies_non_bool_warns_and_defaults() {
+        let p = dir("hb-bad").join("settings.toml");
+        std::fs::write(&p, "history_bodies = \"no\"\n").unwrap();
+        let (s, w) = load(&p);
+        assert!(s.history_bodies);
+        assert!(w.unwrap().contains("history_bodies"));
     }
 }

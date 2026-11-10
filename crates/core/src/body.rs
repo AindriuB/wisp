@@ -29,6 +29,9 @@ pub enum BodyError {
     Io(String),
     #[error("unknown body handle: {0:?}")]
     UnknownHandle(BodyId),
+    /// A borrowed file (a history body) no longer exists.
+    #[error("history body was removed")]
+    Removed,
 }
 
 impl From<std::io::Error> for BodyError {
@@ -43,6 +46,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 enum Entry {
     Memory(Vec<u8>),
     File(PathBuf),
+    /// A file owned by someone else; never deleted by this store.
+    Borrowed(PathBuf),
 }
 
 struct Inner {
@@ -182,7 +187,7 @@ impl BodyStore {
 
     /// Reads up to `len` bytes starting at `offset`; short or empty at the end.
     pub fn read(&self, handle: &BodyHandle, offset: u64, len: usize) -> Result<Vec<u8>, BodyError> {
-        let path = {
+        let (path, borrowed) = {
             let entries = self.inner.lock();
             match entries.get(&handle.id) {
                 None => return Err(BodyError::UnknownHandle(handle.id)),
@@ -195,7 +200,8 @@ impl BodyStore {
                     let end = start.saturating_add(len).min(data.len());
                     return Ok(data[start..end].to_vec());
                 }
-                Some(Entry::File(path)) => path.clone(),
+                Some(Entry::File(path)) => (path.clone(), false),
+                Some(Entry::Borrowed(path)) => (path.clone(), true),
             }
         };
         if offset >= handle.len {
@@ -203,6 +209,7 @@ impl BodyStore {
         }
         let mut file = File::open(&path).map_err(|e| match e.kind() {
             // Released between the lookup and the open.
+            std::io::ErrorKind::NotFound if borrowed => BodyError::Removed,
             std::io::ErrorKind::NotFound => BodyError::UnknownHandle(handle.id),
             _ => BodyError::from(e),
         })?;
@@ -215,6 +222,14 @@ impl BodyStore {
 
     pub fn is_spilled(&self, handle: &BodyHandle) -> bool {
         matches!(self.inner.lock().get(&handle.id), Some(Entry::File(_)))
+    }
+
+    /// Registers an existing file of `len` bytes as a read-only body. The store
+    /// never deletes it: not on `release`, not when the store is dropped.
+    pub fn open_file(&self, path: PathBuf, len: u64) -> BodyHandle {
+        let id = BodyId(NEXT_ID.fetch_add(1, Ordering::Relaxed));
+        self.inner.lock().insert(id, Entry::Borrowed(path));
+        BodyHandle { id, len }
     }
 
     /// Frees the body, deleting its temp file if any. Unknown handles are ignored.
@@ -316,6 +331,37 @@ mod tests {
             w.write(c).unwrap();
         }
         w.finish().unwrap()
+    }
+
+    #[test]
+    fn borrowed_file_is_readable_and_survives_release_and_drop() {
+        let base = TempBase::new();
+        let path = base.0.join("owned.bin");
+        let data = bytes(1000);
+        std::fs::write(&path, &data).unwrap();
+        let store = BodyStore::with_spill_base(10, base.0.clone());
+        let h = store.open_file(path.clone(), data.len() as u64);
+        assert_eq!(store.read(&h, 990, 100).unwrap(), data[990..]);
+        assert!(!store.is_spilled(&h));
+        store.release(&h);
+        assert!(path.exists());
+        let h2 = store.open_file(path.clone(), data.len() as u64);
+        drop(store);
+        assert!(path.exists());
+        let _ = h2;
+    }
+
+    #[test]
+    fn borrowed_file_deleted_underneath_reads_as_removed() {
+        let base = TempBase::new();
+        let path = base.0.join("gone.bin");
+        std::fs::write(&path, b"hello").unwrap();
+        let store = BodyStore::with_spill_base(10, base.0.clone());
+        let h = store.open_file(path.clone(), 5);
+        std::fs::remove_file(&path).unwrap();
+        let err = store.read(&h, 0, 10).unwrap_err();
+        assert!(matches!(err, BodyError::Removed), "{err:?}");
+        assert_eq!(err.to_string(), "history body was removed");
     }
 
     /// Test-owned base directory, removed on drop.

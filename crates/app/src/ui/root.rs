@@ -13,13 +13,16 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 
 use crate::actions::{
-    CancelRequest, CloseTab, KeepMine, NewRequest, NextTab, OpenCollection, OpenPalette, PrevTab,
-    ReloadFromDisk, SaveRequest, SendRequest, SwitchEnvironment, ToggleLayout, ToggleTheme,
+    CancelRequest, ClearHistory, CloseTab, KeepMine, NewRequest, NextTab, OpenCollection,
+    OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest, ShowHistory,
+    SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
 use crate::settings::{SplitAxis, ThemeMode};
 use crate::tab::{DiskState, RequestTab};
 use crate::theme;
+use crate::ui::history::HistoryView;
+use crate::ui::import::ImportView;
 use crate::ui::palette::PaletteView;
 use crate::ui::request::RequestPane;
 use crate::ui::response::ResponsePane;
@@ -80,6 +83,8 @@ pub struct WorkspaceView {
     sidebar: Entity<Sidebar>,
     views: HashMap<EntityId, TabViews>,
     palette: Option<(Entity<PaletteView>, Subscription)>,
+    import: Option<(Entity<ImportView>, Subscription)>,
+    history: Option<(Entity<HistoryView>, Subscription)>,
     notice: Option<SharedString>,
     focus: FocusHandle,
     _workspace_sub: Subscription,
@@ -143,6 +148,8 @@ impl WorkspaceView {
             sidebar,
             views: HashMap::new(),
             palette: None,
+            import: None,
+            history: None,
             notice: None,
             focus,
             _workspace_sub,
@@ -160,6 +167,66 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = cx.new(|cx| ImportView::new(self.workspace.clone(), window, cx));
+        let sub = cx.subscribe(&dialog, |this, _, _: &DismissEvent, cx| {
+            this.import = None;
+            cx.notify();
+        });
+        self.import = Some((dialog, sub));
+        cx.notify();
+    }
+
+    fn toggle_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history.take().is_none() {
+            let panel = cx.new(|cx| HistoryView::new(self.workspace.clone(), window, cx));
+            let sub = cx.subscribe(&panel, |this, _, _: &DismissEvent, cx| {
+                this.history = None;
+                cx.notify();
+            });
+            self.history = Some((panel, sub));
+        }
+        cx.notify();
+    }
+
+    fn on_clear_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.workspace.read(cx).collection.as_ref().map(|c| {
+            c.tree.root.file_name().map_or_else(
+                || c.tree.root.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        }) else {
+            self.workspace.update(cx, |_, cx| {
+                cx.emit(WorkspaceEvent::Notice("Open a collection first".into()))
+            });
+            return;
+        };
+        if window.has_active_prompt() || self.workspace.read(cx).prompt_up {
+            return;
+        }
+        self.workspace.update(cx, |w, _| w.prompt_up = true);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Clear history?",
+            Some(&format!(
+                "This removes all history for \"{name}\". It cannot be undone."
+            )),
+            &["Clear", "Cancel"],
+            cx,
+        );
+        let ws = self.workspace.clone();
+        cx.spawn(async move |_, cx| {
+            let clear = matches!(answer.await, Ok(0));
+            ws.update(cx, |w, cx| {
+                w.prompt_up = false;
+                if clear {
+                    w.clear_history(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     fn with_active(
         &self,
         cx: &mut Context<Self>,
@@ -174,8 +241,11 @@ impl WorkspaceView {
 
     fn on_send(&mut self, _: &SendRequest, _: &mut Window, cx: &mut Context<Self>) {
         self.with_active(cx, |w, tab, cx| {
-            if let Err(e) = w.send(tab, cx) {
-                cx.emit(WorkspaceEvent::Notice(format!("Cannot send: {e:?}").into()));
+            if let Err(e) = w.send(tab, cx)
+                && crate::workspace::refused_body_message(&e).is_none()
+            {
+                let text = format!("Cannot send: {}", crate::workspace::describe_problems(&e));
+                cx.emit(WorkspaceEvent::Notice(text.into()));
             }
         });
     }
@@ -447,6 +517,30 @@ impl Render for WorkspaceView {
                 .child(p.clone())
         });
 
+        let import_overlay = self.import.as_ref().map(|(d, _)| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .justify_center()
+                .pt(px(60.))
+                .child(d.clone())
+        });
+
+        let history_overlay = self.history.as_ref().map(|(d, _)| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .justify_center()
+                .pt(px(60.))
+                .child(d.clone())
+        });
+
         div()
             .id("wisp-root")
             .track_focus(&self.focus)
@@ -496,6 +590,29 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
                 this.open_palette(PaletteMode::All, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenImport, window, cx| {
+                if this.import.is_none() {
+                    this.open_import(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowHistory, window, cx| {
+                this.toggle_history(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClearHistory, window, cx| {
+                this.on_clear_history(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleHistoryBodies, _, cx| {
+                this.workspace.update(cx, |w, cx| {
+                    let on = !w.settings.history_bodies;
+                    w.update_settings(|s| s.history_bodies = on, cx);
+                    let text = if on {
+                        "Response bodies will be stored in history"
+                    } else {
+                        "Response bodies will not be stored in history"
+                    };
+                    cx.emit(WorkspaceEvent::Notice(text.into()));
+                });
+            }))
             .on_action(cx.listener(|this, _: &SwitchEnvironment, window, cx| {
                 this.open_palette(PaletteMode::Environments, window, cx);
             }))
@@ -519,6 +636,8 @@ impl Render for WorkspaceView {
                     }))
             }))
             .children(overlay)
+            .children(import_overlay)
+            .children(history_overlay)
     }
 }
 

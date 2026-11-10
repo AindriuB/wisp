@@ -1,5 +1,7 @@
 //! Views. Each file is a placeholder until its owning task fills it in.
 
+pub mod history;
+pub mod import;
 pub mod kv;
 pub mod palette;
 pub mod request;
