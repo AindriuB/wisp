@@ -564,3 +564,64 @@ fn plain_json_body_without_credentials_is_unchanged() {
     assert!(raw_req(&data, &e.id).contains(r#"{\"a\": 1,  \"b\":[true]}"#));
     assert!(!e.redacted.contains(&"body".to_string()));
 }
+
+fn stored_text(req_body: Body) -> (String, Vec<String>) {
+    let (_d, data, store) = setup();
+    let e = store
+        .append(
+            new_entry(Request {
+                body: req_body,
+                ..Request::default()
+            }),
+            None,
+        )
+        .unwrap();
+    (raw_files(&data), e.redacted)
+}
+
+fn text_body(s: &str) -> TextBody {
+    TextBody {
+        content: s.into(),
+        sidecar: None,
+    }
+}
+
+#[test]
+fn unclosed_ref_in_json_body_fails_closed() {
+    let (raw, redacted) = stored_text(Body::Json(text_body(
+        r#"{"a":{{x,"password":"HUNTER2","b":"}}"}"#,
+    )));
+    assert!(!raw.contains("HUNTER2"));
+    assert!(redacted.contains(&"body".to_string()));
+}
+
+#[test]
+fn text_and_xml_bodies_with_secret_words_are_dropped() {
+    let (raw, redacted) = stored_text(Body::Text(text_body("password=HUNTER2")));
+    assert!(!raw.contains("HUNTER2") && redacted.contains(&"body".to_string()));
+    let (raw, redacted) = stored_text(Body::Xml(text_body("<token>HUNTER2</token>")));
+    assert!(!raw.contains("HUNTER2") && redacted.contains(&"body".to_string()));
+    let (raw, redacted) = stored_text(Body::Text(text_body("hello plain world")));
+    assert!(raw.contains("hello plain world") && redacted.is_empty());
+}
+
+#[test]
+fn sweep_keeps_entries_with_unparseable_index_lines() {
+    let (_d, data, store) = setup();
+    let first = store.append(plain("/1"), Some(b"keepme")).unwrap();
+    let dir = data.history_dir(&cid("abcdef0123456789"));
+    let index = dir.join("index.jsonl");
+    let line = format!("{{\"id\":\"{}\",\"method\":{{\"future\":1}}}}", first.id);
+    fs::write(&index, format!("{line}\n")).unwrap();
+    let body = fs::read_dir(dir.join("bodies"))
+        .unwrap()
+        .flatten()
+        .map(|f| f.path())
+        .collect::<Vec<_>>();
+    assert!(!body.is_empty());
+    store.append(plain("/2"), None).unwrap();
+    for p in &body {
+        assert!(p.exists(), "{p:?} swept");
+    }
+    assert!(fs::read_to_string(&index).unwrap().contains(&line));
+}

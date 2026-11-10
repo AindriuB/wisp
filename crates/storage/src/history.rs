@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use wisp_core::redact::{SECRET_FRAGMENTS, is_credential_name as is_secret_name};
 use wisp_core::request::{ApiKeyLocation, Auth, Body, PartValue, Request};
 use wisp_core::{ErrorKind, Header, Method};
 
@@ -40,26 +41,6 @@ impl Drop for DirLock {
 
 const INDEX_FILE: &str = "index.jsonl";
 const BODIES_DIR: &str = "bodies";
-
-/// Name fragments that mark a header, param, var or field as credential-bearing
-/// (matched case-insensitively anywhere in the name).
-const SECRET_FRAGMENTS: [&str; 10] = [
-    "auth",
-    "token",
-    "secret",
-    "key",
-    "session",
-    "cookie",
-    "password",
-    "passwd",
-    "credential",
-    "signature",
-];
-
-fn is_secret_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    SECRET_FRAGMENTS.iter().any(|f| lower.contains(f))
-}
 
 /// Keep only a lone `{{var}}` reference in `value`; true when it changed.
 fn scrub(value: &mut String) -> bool {
@@ -338,6 +319,13 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
             }
         }
         Body::Json(b) => redact_json_body(&mut b.content, &mut names),
+        Body::Text(b) | Body::Xml(b) => {
+            let lower = b.content.to_lowercase();
+            if SECRET_FRAGMENTS.iter().any(|f| lower.contains(f)) {
+                b.content.clear();
+                note(&mut names, "body".into());
+            }
+        }
         _ => {}
     }
     (out, names)
@@ -346,6 +334,19 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
 /// Marker for a bare `{{...}}` reference: a JSON string token that serde writes back unchanged.
 fn ref_marker(n: usize) -> String {
     format!("\u{1}wispref{n}\u{1}")
+}
+
+/// True when `inner` is a plain variable name, as `template::var_refs` would report it.
+fn is_var_grammar(inner: &str) -> bool {
+    let name = inner.trim();
+    let refs = wisp_core::template::var_refs(&format!("{{{{{inner}}}}}"));
+    refs.len() == 1
+        && refs[0].terminated
+        && refs[0].name == name
+        && !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
 /// Swap each `{{...}}` outside a JSON string for a marker string. Inside strings the text
@@ -368,6 +369,7 @@ fn mask_bare_refs(text: &str) -> (String, Vec<String>) {
             in_str = true;
         } else if rest.starts_with("{{")
             && let Some(end) = rest.find("}}")
+            && is_var_grammar(&rest[2..end])
         {
             // The marker holds raw control characters, so escape it by hand.
             out.push_str(&format!("\"\\u0001wispref{}\\u0001\"", refs.len()));
@@ -599,6 +601,28 @@ impl HistoryStore {
             .collect())
     }
 
+    /// Index lines this build can attribute to an entry: full parses and lines with only a
+    /// valid `id` (a newer build's shape). Each is `(id, raw line)`, in file order.
+    fn read_index_lines(&self) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
+        #[derive(Deserialize)]
+        struct IdOnly {
+            id: String,
+        }
+        let index = self.index();
+        let bytes = match fs::read(&index) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io(&index, e)),
+        };
+        Ok(bytes
+            .split(|&b| b == b'\n')
+            .filter_map(|l| {
+                let id = serde_json::from_slice::<IdOnly>(l).ok()?.id;
+                valid_id(&id).then(|| (id, l.to_vec()))
+            })
+            .collect())
+    }
+
     fn entry_bytes(&self, id: &str) -> u64 {
         self.body_files(id)
             .iter()
@@ -611,9 +635,9 @@ impl HistoryStore {
     /// The index is rewritten before any file is deleted, so a failure leaves orphans, not
     /// dangling index lines.
     fn evict(&self) -> Result<(), StorageError> {
-        let mut entries = self.read_index()?;
+        let mut entries = self.read_index_lines()?;
         let known: std::collections::HashSet<&str> =
-            entries.iter().map(|e| e.id.as_str()).collect();
+            entries.iter().map(|(id, _)| id.as_str()).collect();
         let mut orphans: Vec<PathBuf> = Vec::new();
         let mut orphan_bytes: u64 = 0;
         if let Ok(rd) = fs::read_dir(self.bodies()) {
@@ -626,7 +650,7 @@ impl HistoryStore {
                 }
             }
         }
-        let sizes: Vec<u64> = entries.iter().map(|e| self.entry_bytes(&e.id)).collect();
+        let sizes: Vec<u64> = entries.iter().map(|(id, _)| self.entry_bytes(id)).collect();
         let mut total: u64 = sizes.iter().sum::<u64>() + orphan_bytes;
         let mut drop_n = entries.len().saturating_sub(self.max_entries);
         for s in sizes.iter().take(drop_n) {
@@ -638,23 +662,19 @@ impl HistoryStore {
             total -= sizes[drop_n];
             drop_n += 1;
         }
-        let dropped: Vec<HistoryEntry> = entries.drain(..drop_n).collect();
+        let dropped: Vec<(String, Vec<u8>)> = entries.drain(..drop_n).collect();
         if drop_n > 0 {
-            let mut text = String::new();
-            for e in &entries {
-                text.push_str(
-                    &serde_json::to_string(e).map_err(|e| StorageError::History {
-                        message: e.to_string(),
-                    })?,
-                );
-                text.push('\n');
+            let mut text = Vec::new();
+            for (_, line) in &entries {
+                text.extend_from_slice(line);
+                text.push(b'\n');
             }
-            atomic_write_private(&self.index(), text.as_bytes())?;
+            atomic_write_private(&self.index(), &text)?;
         }
         let mut first_err = None;
         let doomed = dropped
             .iter()
-            .flat_map(|e| self.body_files(&e.id))
+            .flat_map(|(id, _)| self.body_files(id))
             .chain(orphans);
         for p in doomed {
             match fs::remove_file(&p) {
