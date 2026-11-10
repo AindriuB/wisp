@@ -70,6 +70,10 @@ User decisions 2026-11-10. These add AC8–AC10; earlier ACs keep their IDs.
 - **Resend scope.** A tab opened from history carries the entry's original request path (`HistoryEntry.request`) in its history origin. Resend uses it only as the scope path for resolving inherited defaults (folder auth, headers, vars). The tab stays pathless, so Save still creates a new request. If that path no longer exists, Resend falls back to collection defaults plus the environment and says so in the Resend notice.
 - **Body display.** An opened entry's response body is shown read-only through a file-backed `BodyHandle` on the stored body file (spec `docs/plan/specs/2026-11-09-wisp-0-2-0.md:52`), not copied through `BodyStore::writer()`. This supersedes the Context line for `crates/core/src/body.rs:152-280`. Releasing the tab must not delete the history body file.
 - **No id on read-only use.** Opening the panel, listing, opening an entry and Clear history never mint a collection id. With no `id` in `collection.toml` the panel shows "No history yet", Clear has nothing to clear, and nothing is written. The id is still created by the first send's append.
+- **Owns widened** (orchestrator decision 2026-11-10; no other open task touches these files). Owns now also includes:
+  - `crates/core/src/body.rs` — add `BodyStore::open_file(path, len) -> BodyHandle`, backed by a borrowed-file entry that `release` and store drop never delete; a unit test asserts the file survives both.
+  - `crates/storage/src/history.rs` — a `body_path(entry_id)` accessor for the stored `.bin`.
+  For the read-only id lookup use the existing `wisp_storage::collection::read_collection_id`; `collection.rs` is not changed.
 
 Acceptance:
 - [ ] AC8 With `folder.toml` setting bearer auth `{{token}}` and a request whose auth is inherit, Resend from that request's history tab sends `Authorization: Bearer <token value>`; with the original path removed, Resend uses collection defaults plus env and the notice says the original request was not found. Test `resend_from_history_inherits_folder_auth` (plus `resend_from_history_missing_path_falls_back`).
