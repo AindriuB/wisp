@@ -417,6 +417,7 @@ mod tests {
             adjustments: Vec::new(),
             request: None,
             url: String::new(),
+            stored_body: Default::default(),
         };
         assert_eq!(origin_line(&o, 5 * 60_000), "From history, 5 min ago");
         o.body_truncated = true;

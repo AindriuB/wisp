@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use gpui::{Context, EventEmitter, SharedString};
 use wisp_core::body::BodyHandle;
-use wisp_core::request::Request;
+use wisp_core::request::{Body, Request};
 use wisp_core::{EngineError, Header, HttpVersion, RequestId};
 
 use crate::draft;
@@ -76,7 +76,7 @@ pub enum TabEvent {
 }
 
 /// What a tab opened from history remembers about its entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HistoryOrigin {
     /// Unix milliseconds the entry was recorded.
     pub at_ms: u64,
@@ -92,6 +92,9 @@ pub struct HistoryOrigin {
     /// The URL template the tab opened with; the folder scope applies only
     /// while the draft URL still equals it.
     pub url: String,
+    /// The body the tab opened with (after sanitising). A redacted body must
+    /// differ from it before the tab can be sent.
+    pub stored_body: Body,
 }
 
 pub struct RequestTab {

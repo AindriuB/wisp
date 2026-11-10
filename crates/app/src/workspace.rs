@@ -291,6 +291,47 @@ fn strip_userinfo(url: &str) -> Option<String> {
     Some(format!("{}{}", &url[..start], &url[start + at + 1..]))
 }
 
+/// Sanitise a stored request in place and describe where it came from.
+fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigin {
+    let (adjustments, redacted) = sanitize_redacted(request, &entry.redacted);
+    HistoryOrigin {
+        at_ms: entry.at,
+        body_stored: entry.body_stored,
+        body_truncated: entry.body_truncated,
+        redacted,
+        adjustments,
+        request: entry.request.clone(),
+        url: request.url.clone(),
+        stored_body: request.body.clone(),
+    }
+}
+
+/// Why a from-history tab may not be sent: its body was redacted and has not
+/// been edited since. `None` once the body differs or when none was redacted.
+fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option<String> {
+    if draft.body != origin.stored_body {
+        return None;
+    }
+    let mut whole = false;
+    let mut fields: Vec<&str> = Vec::new();
+    for n in &origin.redacted {
+        if n == "body" {
+            whole = true;
+        } else if let Some(f) = n.strip_prefix("body.") {
+            fields.push(f);
+        }
+    }
+    if !whole && fields.is_empty() {
+        return None;
+    }
+    let what = if whole {
+        "the body was not stored".to_string()
+    } else {
+        format!("{} was not stored", fields.join(", "))
+    };
+    Some(format!("Edit the request body before resending: {what}"))
+}
+
 /// A request ready to send, the scope path it resolved with, and the Resend
 /// notice of a from-history tab.
 struct SendPlan {
@@ -320,6 +361,14 @@ fn prepare_send(
             environment: None,
         },
     };
+    if let Some(message) = origin.and_then(|o| body_redaction_refusal(draft, o)) {
+        return Err(ResolveError {
+            problems: vec![Problem::Syntax {
+                location: Location::Body,
+                message,
+            }],
+        });
+    }
     let prepared = resolve(draft, &scope)?;
     let notice = origin.map(|o| {
         history_ui::resend_notice(
@@ -792,7 +841,20 @@ impl Workspace {
             self.collection.as_ref().map(|c| &c.tree),
             &self.empty_defaults,
             self.collection.as_ref().and_then(|c| c.active_env.as_ref()),
-        )?;
+        )
+        .inspect_err(|e| {
+            // A refused body is explained here; the callers only see a failure.
+            if let [
+                Problem::Syntax {
+                    location: Location::Body,
+                    message,
+                },
+            ] = e.problems.as_slice()
+                && message.starts_with("Edit the request body")
+            {
+                cx.emit(WorkspaceEvent::Notice(message.clone().into()));
+            }
+        })?;
         let scope_path = plan.scope_path;
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
@@ -1075,19 +1137,9 @@ impl Workspace {
                         }
                     }
                     Ok((mut stored, handle)) => {
-                        let (adjustments, redacted) =
-                            sanitize_redacted(&mut stored.request, &entry.redacted);
+                        let origin = sanitized_origin(&entry, &mut stored.request);
                         let response =
                             history_ui::stored_response(&entry, stored.response_headers, handle);
-                        let origin = HistoryOrigin {
-                            at_ms: entry.at,
-                            body_stored: entry.body_stored,
-                            body_truncated: entry.body_truncated,
-                            redacted,
-                            adjustments,
-                            request: entry.request.clone(),
-                            url: stored.request.url.clone(),
-                        };
                         let tab =
                             cx.new(|_| RequestTab::from_history(stored.request, response, origin));
                         this.tabs.push(tab);
@@ -1257,7 +1309,8 @@ fn describe_problems(e: &ResolveError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wisp_core::request::{KeyValue, Var};
+    use wisp_core::Method;
+    use wisp_core::request::{KeyValue, TextBody, Var};
 
     #[test]
     fn close_step_clean_closes() {
@@ -1365,6 +1418,7 @@ mod tests {
             adjustments: Vec::new(),
             request: request.map(String::from),
             url: URL.into(),
+            stored_body: Body::None,
         }
     }
 
@@ -1427,6 +1481,109 @@ mod tests {
             .iter()
             .find(|h| h.name.eq_ignore_ascii_case(name))
             .map(|h| h.value.as_str())
+    }
+
+    fn entry_with(redacted: &[&str]) -> HistoryEntry {
+        HistoryEntry {
+            id: "e1".into(),
+            at: 5,
+            request: Some("users/get.toml".into()),
+            method: Method::Get,
+            url: URL.into(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb_ms: None,
+            total_ms: None,
+            size: None,
+            body_stored: false,
+            body_truncated: false,
+            redacted: redacted.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn body_origin(body: Body, redacted: &[&str]) -> HistoryOrigin {
+        let mut o = origin(None);
+        o.stored_body = body;
+        o.redacted = redacted.iter().map(|s| s.to_string()).collect();
+        o
+    }
+
+    fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {
+        prepare_send(
+            draft,
+            None,
+            Some(o),
+            None,
+            &CollectionDefaults::default(),
+            None,
+        )
+    }
+
+    fn refusal(e: ResolveError) -> String {
+        match e.problems.as_slice() {
+            [Problem::Syntax { message, .. }] => message.clone(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn json(text: &str) -> Body {
+        Body::Json(TextBody {
+            content: text.into(),
+            ..TextBody::default()
+        })
+    }
+
+    #[test]
+    fn redacted_json_leaf_body_is_refused_until_edited() {
+        let stored = json(r#"{"name":"x","webhook_secret":""}"#);
+        let o = body_origin(stored.clone(), &["body.webhook_secret"]);
+        let mut d = draft();
+        d.body = stored;
+        let msg = refusal(try_send(&d, &o).err().expect("refused"));
+        assert_eq!(
+            msg,
+            "Edit the request body before resending: webhook_secret was not stored"
+        );
+        d.body = json(r#"{"name":"x","webhook_secret":"s"}"#);
+        assert!(try_send(&d, &o).is_ok());
+    }
+
+    #[test]
+    fn dropped_body_is_refused_until_edited() {
+        let stored = Body::Xml(TextBody::default());
+        let o = body_origin(stored.clone(), &["body"]);
+        let mut d = draft();
+        d.body = stored;
+        let msg = refusal(try_send(&d, &o).err().expect("refused"));
+        assert!(msg.ends_with("the body was not stored"));
+        d.body = Body::Xml(TextBody {
+            content: "<a/>".into(),
+            ..TextBody::default()
+        });
+        assert!(try_send(&d, &o).is_ok());
+    }
+
+    #[test]
+    fn entry_without_body_redaction_is_not_refused() {
+        let o = body_origin(Body::None, &["Authorization"]);
+        assert!(try_send(&draft(), &o).is_ok());
+    }
+
+    #[test]
+    fn opening_an_entry_sanitises_it() {
+        let mut req = draft();
+        req.headers = vec![KeyValue {
+            name: "Authorization".into(),
+            value: String::new(),
+            enabled: true,
+        }];
+        req.body = json("{}");
+        let o = sanitized_origin(&entry_with(&["Authorization", "body.k"]), &mut req);
+        assert!(!req.headers[0].enabled);
+        assert_eq!(o.adjustments, vec!["disabled header Authorization"]);
+        assert_eq!(o.redacted, vec!["body.k"]);
+        assert_eq!(o.stored_body, json("{}"));
+        assert_eq!(o.request.as_deref(), Some("users/get.toml"));
     }
 
     #[test]
