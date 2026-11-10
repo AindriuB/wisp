@@ -180,7 +180,8 @@ impl OAuth2 {
     }
 
     /// Caches a token response. A new refresh token replaces the old one; when the response
-    /// has none, `keep_refresh` says whether the old one stays.
+    /// has none, `keep_refresh` says whether the old one stays; if not, it is also forgotten in
+    /// the store when `persist_refresh` is set.
     fn put(&self, p: &Params<'_>, resp: &TokenResponse, keep_refresh: bool) {
         let expires_at = resp
             .expires_in
@@ -198,10 +199,15 @@ impl OAuth2 {
                 e.refresh = None;
             }
         }
-        if let (true, Some(rt)) = (p.persist_refresh, &resp.refresh_token)
-            && let Err(e) = self.store.save(&p.key, rt.expose())
-        {
-            tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+        if !p.persist_refresh {
+            return;
+        }
+        if let Some(rt) = &resp.refresh_token {
+            if let Err(e) = self.store.save(&p.key, rt.expose()) {
+                tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+            }
+        } else if !keep_refresh && let Err(e) = self.store.forget(&p.key) {
+            tracing::warn!(error = %e, "cannot forget the stored refresh token");
         }
     }
 

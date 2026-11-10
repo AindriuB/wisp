@@ -129,6 +129,8 @@ struct Recording {
     saves: Mutex<Vec<(TokenKey, String)>>,
     fail_load: bool,
     fail_save: bool,
+    fail_forget: bool,
+    forgets: Mutex<Vec<TokenKey>>,
 }
 
 impl RefreshTokenStore for Recording {
@@ -150,6 +152,10 @@ impl RefreshTokenStore for Recording {
         self.inner.save(key, rt)
     }
     fn forget(&self, key: &TokenKey) -> Result<(), RefreshStoreError> {
+        self.forgets.lock().unwrap().push(key.clone());
+        if self.fail_forget {
+            return Err(RefreshStoreError::new("keychain denied"));
+        }
         self.inner.forget(key)
     }
 }
@@ -722,12 +728,15 @@ async fn the_listener_answers_404_to_other_requests_and_serves_a_static_page() {
     let mut out = String::new();
     let _ = s.read_to_string(&mut out).await;
     assert!(out.starts_with("HTTP/1.1 404"), "{out}");
-    // A head over 8 KiB is refused; the listener keeps going.
+    // A head over 8 KiB is refused at once (not by the read timeout); the listener keeps going.
     let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let junk = format!("GET /callback HTTP/1.1\r\nX: {}", "a".repeat(9000));
     let _ = s.write_all(junk.as_bytes()).await;
     let mut out = String::new();
-    let _ = s.read_to_string(&mut out).await;
+    tokio::time::timeout(Duration::from_secs(1), s.read_to_string(&mut out))
+        .await
+        .expect("the server closes an oversized head well before the read timeout")
+        .ok();
     assert!(out.is_empty() || out.starts_with("HTTP/1.1 404"), "{out}");
     // A connection that stays silent does not hold up a real callback.
     let _silent = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -999,4 +1008,99 @@ async fn no_event_or_error_holds_a_secret() {
         assert!(!text.contains(marker), "{text}");
     }
     assert_eq!(auth_error(&[ev]).kind, ErrorKind::Auth);
+}
+
+#[tokio::test]
+async fn a_silent_connection_is_dropped_by_the_read_timeout() {
+    let idp = code_token_server("RT", 3600).await;
+    let (engine, rx, _) = engine();
+    let (_, url) = authorize(&engine, &rx, code_auth(&idp.uri(), 0, false), None).await;
+    let mut s = TcpStream::connect(("127.0.0.1", redirect_port(&url)))
+        .await
+        .unwrap();
+    let began = std::time::Instant::now();
+    let mut out = Vec::new();
+    // About 5 s: the listener's read timeout, with no clock seam.
+    tokio::time::timeout(Duration::from_secs(8), s.read_to_end(&mut out))
+        .await
+        .expect("the listener drops a silent connection")
+        .ok();
+    assert!(out.is_empty());
+    assert!(
+        began.elapsed() >= Duration::from_secs(3),
+        "{:?}",
+        began.elapsed()
+    );
+}
+
+/// Authorizes through the loopback and waits for `AuthCompleted`.
+async fn authorize_fully(engine: &Engine, rx: &EventReceiver, auth: EngineAuth) {
+    let (_, url) = authorize(engine, rx, auth, None).await;
+    let state = param(&url, "state").unwrap();
+    raw_get(
+        redirect_port(&url),
+        &format!("/callback?code=c&state={state}"),
+    )
+    .await;
+    assert!(matches!(
+        next_auth_event(rx).await,
+        Event::AuthCompleted { .. }
+    ));
+}
+
+#[tokio::test]
+async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
+    for fail_forget in [false, true] {
+        let idp = MockServer::start().await;
+        // First authorize answers with RT_X, the second without a refresh token.
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains("code=c"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "AT_X", "token_type": "bearer", "expires_in": 3600,
+                "refresh_token": "RT_X",
+            })))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&idp)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains("code=c"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "AT_Y", "token_type": "bearer", "expires_in": 100,
+            })))
+            .with_priority(2)
+            .mount(&idp)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains(
+                "grant_type=refresh_token",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body("AT_BAD")))
+            .expect(0)
+            .with_priority(3)
+            .mount(&idp)
+            .await;
+        let target = resource_server().await;
+        let store = Arc::new(Recording {
+            fail_forget,
+            ..Recording::default()
+        });
+        let (engine, rx, clock) = engine_with(store.clone());
+        let auth = code_auth(&idp.uri(), 0, true);
+        authorize_fully(&engine, &rx, auth.clone()).await;
+        assert_eq!(store.saves.lock().unwrap().len(), 1);
+        authorize_fully(&engine, &rx, auth.clone()).await;
+        assert_eq!(store.forgets.lock().unwrap().len(), 1);
+        if fail_forget {
+            // The failed forget leaves RT_X in the store; AuthCompleted was still emitted.
+            continue;
+        }
+        clock.advance(Duration::from_secs(200));
+        let evs = send(&engine, &rx, request(target.uri(), auth)).await;
+        assert_eq!(
+            auth_error(&evs).message,
+            "Not authorized: use Authorize first"
+        );
+        assert_eq!(store.forgets.lock().unwrap().len(), 1);
+    }
 }

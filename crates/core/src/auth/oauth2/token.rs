@@ -352,6 +352,7 @@ mod tests {
             format!("{t:?}"),
             format!("{t:#?}"),
             format!("{:?}", Secret::new("ACCESSMARK")),
+            format!("{:#?}", Secret::new("ACCESSMARK")),
             format!("{c:?}"),
             format!("{c:#?}"),
         ] {
