@@ -110,7 +110,12 @@ fn keeps_500_newest_and_removes_old_files() {
     let (_d, data, store) = setup();
     let mut ids = Vec::new();
     for i in 0..505 {
-        ids.push(store.append(plain(&format!("/{i}")), Some(b"x")).unwrap().id);
+        ids.push(
+            store
+                .append(plain(&format!("/{i}")), Some(b"x"))
+                .unwrap()
+                .id,
+        );
     }
     let list = store.list().unwrap();
     assert_eq!(list.len(), 500);
@@ -162,7 +167,9 @@ fn failed_entry_is_kept_without_a_body() {
 fn skips_garbage_and_torn_lines_and_repairs_before_append() {
     let (d, data, store) = setup();
     store.append(plain("/1"), None).unwrap();
-    let index = data.history_dir(&cid("abcdef0123456789")).join("index.jsonl");
+    let index = data
+        .history_dir(&cid("abcdef0123456789"))
+        .join("index.jsonl");
     let mut text = fs::read(&index).unwrap();
     text.extend_from_slice(b"garbage\n\xff\xfe\n{\"id\":");
     fs::write(&index, text).unwrap();

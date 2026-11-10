@@ -153,7 +153,9 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
     let mut out = req.clone();
     let mut names = Vec::new();
     out.auth = req.auth.redacted();
-    for ((n, before), (_, after)) in auth_fields(&req.auth).into_iter().zip(auth_fields(&out.auth))
+    for ((n, before), (_, after)) in auth_fields(&req.auth)
+        .into_iter()
+        .zip(auth_fields(&out.auth))
     {
         if before != after {
             names.push(format!("auth.{n}"));
@@ -233,15 +235,14 @@ impl HistoryStore {
 
     fn body_files(&self, id: &str) -> [PathBuf; 2] {
         let b = self.bodies();
-        [b.join(format!("{id}.bin")), b.join(format!("{id}.req.json"))]
+        [
+            b.join(format!("{id}.bin")),
+            b.join(format!("{id}.req.json")),
+        ]
     }
 
     /// Store one finished request. `body` is cut to [`BODY_CAP`] bytes.
-    pub fn append(
-        &self,
-        new: NewEntry,
-        body: Option<&[u8]>,
-    ) -> Result<HistoryEntry, StorageError> {
+    pub fn append(&self, new: NewEntry, body: Option<&[u8]>) -> Result<HistoryEntry, StorageError> {
         ensure_private_dir(&self.bodies())?;
         let id = uuid::Uuid::new_v4().simple().to_string();
         let (request, redacted) = redact_request(&new.request);
@@ -351,9 +352,11 @@ impl HistoryStore {
         sizes.drain(..drop_n);
         let mut text = String::new();
         for e in &entries {
-            text.push_str(&serde_json::to_string(e).map_err(|e| StorageError::History {
-                message: e.to_string(),
-            })?);
+            text.push_str(
+                &serde_json::to_string(e).map_err(|e| StorageError::History {
+                    message: e.to_string(),
+                })?,
+            );
             text.push('\n');
         }
         atomic_write_private(&self.index(), text.as_bytes())
