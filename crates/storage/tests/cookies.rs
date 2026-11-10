@@ -263,3 +263,83 @@ fn save_trims_to_4_mib_keeping_latest_expiring() {
         .unwrap();
     assert!(dropped_max < min_kept);
 }
+
+#[cfg(unix)]
+#[test]
+fn save_tightens_existing_loose_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let (t, _d, f) = setup();
+    let p = path(&t);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, r#"{"version":1,"cookies":[]}"#).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    f.enable().unwrap();
+    f.save(&[cookie("a", 100)], now()).unwrap();
+    let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[test]
+fn concurrent_saves_leave_one_writers_full_set() {
+    let (_t, d, f) = setup();
+    f.enable().unwrap();
+    let id = CollectionId::parse("abcdef0123456789").unwrap();
+    let handles: Vec<_> = (0..8)
+        .map(|w| {
+            let h = CookieFile::new(&d, &id);
+            std::thread::spawn(move || {
+                let set: Vec<_> = (0..200)
+                    .map(|i| cookie(&format!("w{w}-{i}"), 100))
+                    .collect();
+                for _ in 0..10 {
+                    h.save(&set, now()).unwrap();
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let got = f.load(now()).unwrap();
+    assert_eq!(got.len(), 200);
+    let prefix = got[0].name.split('-').next().unwrap().to_string();
+    assert!(
+        got.iter()
+            .all(|c| c.name.starts_with(&format!("{prefix}-")))
+    );
+}
+
+#[test]
+fn enable_disable_save_interleavings_end_in_last_state() {
+    let (_t, d, f) = setup();
+    let id = CollectionId::parse("abcdef0123456789").unwrap();
+    for round in 0..20 {
+        let a = CookieFile::new(&d, &id);
+        let b = CookieFile::new(&d, &id);
+        let ta = std::thread::spawn(move || {
+            for _ in 0..20 {
+                a.save(&[cookie("a", 100)], now()).unwrap();
+                a.enable().unwrap();
+            }
+        });
+        let tb = std::thread::spawn(move || {
+            for _ in 0..20 {
+                b.disable().unwrap();
+            }
+        });
+        ta.join().unwrap();
+        tb.join().unwrap();
+        // The file, if present, is always parseable.
+        f.load(now()).unwrap();
+        if round % 2 == 0 {
+            f.disable().unwrap();
+            assert!(!f.is_enabled());
+        } else {
+            f.enable().unwrap();
+            assert!(f.is_enabled());
+        }
+    }
+    f.disable().unwrap();
+    f.save(&[cookie("z", 100)], now()).unwrap();
+    assert!(!f.is_enabled(), "save after disable must not re-enable");
+}

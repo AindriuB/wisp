@@ -120,25 +120,30 @@ fn create_temp(target: &Path, start: u64) -> Result<(PathBuf, std::fs::File), St
     }
 }
 
-fn write_impl(path: &Path, bytes: &[u8], private_new: bool) -> Result<(), StorageError> {
+fn write_impl(
+    path: &Path,
+    bytes: &[u8],
+    private_new: bool,
+    force_private: bool,
+) -> Result<(), StorageError> {
     use std::io::Write;
     let target = resolve(path)?;
     let existing = std::fs::metadata(&target).ok();
     let (tmp, mut file) = create_temp(&target, 0)?;
     let result = (|| {
         match &existing {
-            Some(m) => file
+            Some(m) if !force_private => file
                 .set_permissions(m.permissions())
                 .map_err(|e| io(&tmp, e))?,
-            None => {
+            _ => {
                 #[cfg(unix)]
-                if private_new {
+                if private_new || force_private {
                     use std::os::unix::fs::PermissionsExt;
                     file.set_permissions(std::fs::Permissions::from_mode(0o600))
                         .map_err(|e| io(&tmp, e))?;
                 }
                 #[cfg(not(unix))]
-                let _ = private_new;
+                let _ = (private_new, force_private);
             }
         }
         file.write_all(bytes).map_err(|e| io(&tmp, e))?;
@@ -154,12 +159,18 @@ fn write_impl(path: &Path, bytes: &[u8], private_new: bool) -> Result<(), Storag
 /// Write `bytes` to a temp file beside the (symlink-resolved) target, then rename it over.
 /// An existing target keeps its permissions; a new file gets default permissions.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
-    write_impl(path, bytes, false)
+    write_impl(path, bytes, false, false)
 }
 
 /// Like [`atomic_write`], but a newly created file gets mode `0600` on unix.
 pub fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
-    write_impl(path, bytes, true)
+    write_impl(path, bytes, true, false)
+}
+
+/// Like [`atomic_write_private`], but the result is `0600` on unix even when the target
+/// already exists with looser permissions.
+pub fn atomic_write_force_private(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    write_impl(path, bytes, true, true)
 }
 
 #[cfg(test)]

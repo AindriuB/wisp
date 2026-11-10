@@ -5,6 +5,7 @@
 //! list counts) and off otherwise. Session cookies are never stored: `expires` is required,
 //! so the caller leaves them out. Cookie values are secrets and are never logged.
 
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::StorageError;
 use crate::collection::CollectionId;
 use crate::data_dir::{DataDir, ensure_private_dir};
-use crate::fs::atomic_write_private;
+use crate::fs::atomic_write_force_private;
 
 /// Largest cookie file `load` will read.
 pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -26,6 +27,18 @@ pub const MAX_PAIR_BYTES: usize = 4_096;
 const VERSION: u32 = 1;
 /// Slack for the `{"version":1,"cookies":[]}` wrapper.
 const HEADER_BYTES: usize = 64;
+
+/// Serialises writers in this process; the file lock covers other processes.
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Advisory cross-process lock, released when dropped.
+struct FileLock(std::fs::File);
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
 
 /// One persisted cookie. Plain data; the app maps it to and from the core jar type.
 #[derive(Clone, PartialEq, Eq)]
@@ -123,6 +136,30 @@ impl CookieFile {
         }
     }
 
+    /// Take the process-wide mutex and the advisory file lock (`<id>.lock` beside the cookie
+    /// file). Always taken in that order; never held across caller code.
+    fn lock(&self) -> Result<(std::sync::MutexGuard<'static, ()>, FileLock), StorageError> {
+        let guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = self.path.with_extension("lock");
+        if let Some(parent) = path.parent() {
+            ensure_private_dir(parent)?;
+        }
+        let mut opts = OpenOptions::new();
+        // Windows `File::lock` fails on append-only handles.
+        opts.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let f = opts.open(&path).map_err(|e| StorageError::Io {
+            path: path.clone(),
+            source: e,
+        })?;
+        f.lock().map_err(|e| StorageError::Io { path, source: e })?;
+        Ok((guard, FileLock(f)))
+    }
+
     /// Persistence is on when the file exists.
     pub fn is_enabled(&self) -> bool {
         std::fs::symlink_metadata(&self.path).is_ok()
@@ -131,6 +168,7 @@ impl CookieFile {
     /// Turn persistence on, writing an empty list if the file is absent.
     pub fn enable(&self) -> Result<(), StorageError> {
         self.refuse_symlink()?;
+        let _locks = self.lock()?;
         if self.is_enabled() {
             return Ok(());
         }
@@ -139,6 +177,10 @@ impl CookieFile {
 
     /// Turn persistence off by removing the file. Succeeds if it is already absent.
     pub fn disable(&self) -> Result<(), StorageError> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+        let _locks = self.lock()?;
         match std::fs::remove_file(&self.path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -205,6 +247,12 @@ impl CookieFile {
     /// [`load`]: CookieFile::load
     pub fn save(&self, cookies: &[StoredCookie], now: SystemTime) -> Result<(), StorageError> {
         self.refuse_symlink()?;
+        // Off: nothing to write, and no lock file or directory to create. Re-checked under
+        // the lock, since another writer may disable in between.
+        if !self.is_enabled() {
+            return Ok(());
+        }
+        let _locks = self.lock()?;
         if !self.is_enabled() {
             return Ok(());
         }
@@ -263,6 +311,6 @@ impl CookieFile {
         if let Some(parent) = self.path.parent() {
             ensure_private_dir(parent)?;
         }
-        atomic_write_private(&self.path, &bytes)
+        atomic_write_force_private(&self.path, &bytes)
     }
 }
