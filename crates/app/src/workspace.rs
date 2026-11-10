@@ -162,6 +162,12 @@ fn scope_path_for(
     }
 }
 
+/// The request path a history entry records: the scope path used to resolve,
+/// so resending a from-history entry keeps its folder defaults.
+fn recorded_request(scope_path: Option<&Path>) -> Option<String> {
+    scope_path.map(|p| p.to_string_lossy().into_owned())
+}
+
 pub struct Workspace {
     pub engine: Engine,
     pub settings: Settings,
@@ -638,7 +644,7 @@ impl Workspace {
         self.sent.insert(
             id,
             Sent {
-                request: path.map(|p| p.to_string_lossy().into_owned()),
+                request: recorded_request(scope_path.as_deref()),
                 draft,
             },
         );
@@ -1260,6 +1266,22 @@ mod tests {
         assert_eq!(own, (Some(PathBuf::from("a.toml")), false));
     }
 
+    #[test]
+    fn resend_chain_keeps_scope() {
+        let (_d, tree) = auth_collection();
+        let (path, _) = scope_path_for(&tree, None, Some(&origin(Some("users/get.toml"))));
+        let recorded = recorded_request(path.as_deref());
+        assert_eq!(recorded.as_deref(), Some("users/get.toml"));
+        let (headers, missing) = resend_headers(&tree, &origin(recorded.as_deref()));
+        assert!(!missing);
+        assert!(
+            headers
+                .iter()
+                .any(|(n, v)| n.eq_ignore_ascii_case("authorization") && v == "Bearer s3cret"),
+            "{headers:?}"
+        );
+    }
+
     fn history_fixture(body: &[u8]) -> (tempfile::TempDir, DataDir, CollectionId, HistoryEntry) {
         let d = tempfile::tempdir().unwrap();
         let data = DataDir::at(d.path().join("data"));
@@ -1301,6 +1323,9 @@ mod tests {
         assert!(!bodies.is_spilled(&handle));
         assert_eq!(bodies.read(&handle, 0, 100).unwrap(), b"hello history");
         let path = HistoryStore::open(&data, &id).body_path(&entry.id).unwrap();
+        // Borrowed, not copied: changing the file changes what the handle reads.
+        std::fs::write(&path, b"HELLO HISTORY").unwrap();
+        assert_eq!(bodies.read(&handle, 0, 100).unwrap(), b"HELLO HISTORY");
         bodies.release(&handle);
         assert!(path.exists());
     }
