@@ -45,4 +45,17 @@ under the same Lucide ISC license text reproduced below.
 
 HDR
   cat crates/app/assets/icons/NOTICE
+  cat <<'PSL'
+
+================================================================================
+Public Suffix List
+================================================================================
+
+crates/core/data/public_suffix_list.dat is embedded in the Wisp binary. It is
+the Mozilla Public Suffix List, copied unmodified from
+https://publicsuffix.org/list/public_suffix_list.dat (snapshot VERSION
+2026-11-09_13-00-17_UTC). It is licensed under the Mozilla Public License,
+v. 2.0 (https://mozilla.org/MPL/2.0/). The Source Code Form is the file itself,
+which is available at that URL and in the Wisp source repository.
+PSL
 } > "$out"

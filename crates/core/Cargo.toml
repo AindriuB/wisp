@@ -10,7 +10,8 @@ name = "wisp_core"
 
 [dependencies]
 reqwest.workspace = true
-cookie_store.workspace = true
+cookie_store = { workspace = true, features = ["public_suffix"] }
+publicsuffix = { version = "2.3", default-features = false }
 rustls.workspace = true
 webpki-root-certs.workspace = true
 tokio = { workspace = true, features = ["net"] }

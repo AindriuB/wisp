@@ -8299,6 +8299,7 @@ dependencies = [
  "hmac",
  "md-5",
  "percent-encoding",
+ "publicsuffix",
  "rcgen",
  "regex",
  "reqwest",

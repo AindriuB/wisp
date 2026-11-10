@@ -276,3 +276,34 @@ fn debug_redacts_cookie_jars() {
         assert!(s.contains("<redacted>"));
     }
 }
+
+fn set(jar: &CookieJar, from: &str, header: &str) {
+    use reqwest::cookie::CookieStore;
+    let v = reqwest::header::HeaderValue::from_str(header).unwrap();
+    jar.set_cookies(
+        &mut std::iter::once(&v),
+        &reqwest::Url::parse(from).unwrap(),
+    );
+}
+
+fn sent_to(jar: &CookieJar, url: &str) -> bool {
+    use reqwest::cookie::CookieStore;
+    jar.cookies(&reqwest::Url::parse(url).unwrap()).is_some()
+}
+
+#[test]
+fn a_domain_attribute_that_is_a_public_suffix_is_rejected() {
+    let jar = CookieJar::default();
+    set(&jar, "https://evil.com/", "x=1; Domain=com");
+    set(&jar, "https://evil.co.uk/", "x=1; Domain=co.uk");
+    assert!(jar.snapshot(SystemTime::now()).is_empty());
+    assert!(!sent_to(&jar, "https://api.bank.com/"));
+    assert!(!sent_to(&jar, "https://bank.co.uk/"));
+}
+
+#[test]
+fn a_domain_attribute_for_a_registrable_domain_still_works() {
+    let jar = CookieJar::default();
+    set(&jar, "https://www.example.com/", "x=1; Domain=example.com");
+    assert!(sent_to(&jar, "https://api.example.com/"));
+}

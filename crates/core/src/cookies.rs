@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use cookie_store::{CookieDomain, CookieExpiration, CookieStore, RawCookie};
@@ -12,6 +12,22 @@ use reqwest::header::HeaderValue;
 
 /// Longest lifetime a loaded cookie keeps, so a hostile file cannot overflow date arithmetic.
 const MAX_LOAD_LIFETIME_SECS: u64 = 1 << 31;
+
+/// Mozilla Public Suffix List (MPL-2.0), bundled so cookies cannot be scoped to `com`, `co.uk`, ...
+/// Snapshot header: `VERSION: 2026-11-09_13-00-17_UTC`. Parsed once per process.
+static PUBLIC_SUFFIXES: LazyLock<publicsuffix::List> = LazyLock::new(|| {
+    PARSE_COUNT.fetch_add(1, Ordering::SeqCst);
+    include_str!("../data/public_suffix_list.dat")
+        .parse()
+        .expect("bundled public suffix list parses")
+});
+
+/// How many times the list was parsed; a test asserts it stays at one.
+static PARSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn new_store() -> CookieStore {
+    CookieStore::new_with_public_suffix(Some(PUBLIC_SUFFIXES.clone()))
+}
 
 /// One cookie as the app sees it. `expires: None` is a session cookie.
 #[derive(Clone, PartialEq, Eq)]
@@ -42,10 +58,18 @@ impl fmt::Debug for CookieRecord {
     }
 }
 
-#[derive(Default)]
 struct JarInner {
     store: Mutex<CookieStore>,
     generation: AtomicU64,
+}
+
+impl Default for JarInner {
+    fn default() -> Self {
+        Self {
+            store: Mutex::new(new_store()),
+            generation: AtomicU64::new(0),
+        }
+    }
 }
 
 impl JarInner {
@@ -103,7 +127,7 @@ impl CookieJar {
     /// Replace the jar's contents. Expired and malformed records are dropped.
     pub fn load(&self, records: Vec<CookieRecord>) {
         let now = SystemTime::now();
-        let mut fresh = CookieStore::default();
+        let mut fresh = new_store();
         for r in records {
             let _ = insert_record(&mut fresh, r, now);
         }
@@ -222,5 +246,19 @@ impl CookieJar {
     /// Whether both handles point at the same jar.
     pub(crate) fn same_jar(&self, other: &CookieJar) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_public_suffix_list_is_parsed_once_for_every_jar() {
+        let a = CookieJar::default();
+        a.load(vec![]);
+        let _b = CookieJar::default();
+        let _c = CookieJar::default();
+        assert_eq!(PARSE_COUNT.load(Ordering::SeqCst), 1);
     }
 }
