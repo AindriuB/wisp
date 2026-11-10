@@ -74,3 +74,18 @@ cargo writes no JUnit XML here, so tests are `command` checks.
 - `client.rs`, `timing.rs`, `cookies.rs`, and any `EngineConfig` cookie field (tasks 104, 105).
 - Calling the store through `spawn_blocking` (wave 3, with the keychain store); only the doc is written here.
 - The app's Resend resetting auth to Inherit when `auth.client_secret` was redacted (`crates/app/src/workspace.rs:188`, a PLAN.md task-97 follow-up), and any other change in `crates/storage/src/history.rs`.
+
+## Amendment 1
+Orchestrator decision, 2026-11-10. No other in-flight task owns these files.
+
+**Owns** also includes:
+- crates/core/tests/engine.rs (only: remove the three tests that assert the old OAuth2 stub, `oauth2_engine_auth`, `send_with_oauth2_auth_fails_with_the_auth_kind` and `authorize_start_is_answered_with_auth_failed`; and add `.unwrap()` to `refresh_tokens.save(...)` in `debug_redacts_engine_config`)
+- crates/core/Cargo.toml (only: move `serde_json` from dev-dependencies to dependencies, and add tokio's `net` feature explicitly)
+
+Replace the hand-written JSON reader (`auth/oauth2/json.rs`) with `serde_json` parsing of token responses. `serde_json` is already in Cargo.lock via storage, so Cargo.lock gains no new `[[package]]`.
+
+- [ ] AC18 Token responses are parsed with `serde_json`; `auth/oauth2/json.rs` is gone. The body read is capped (AC3's 1 MiB); a malformed or oversized response gives an `ErrorKind::Auth` error that does not echo the body. Tested with a malformed body and an oversized body, each containing `SECRETVAL`, asserting the error holds neither.
+
+Checks: `oauth2` now covers AC18. `no-deps` is replaced by:
+- `no-deps` command — size, AC18
+  run: `git diff --exit-code main...HEAD -- Cargo.toml && ! git diff main...HEAD -- Cargo.lock | rg -q '^\+\[\[package\]\]'`
