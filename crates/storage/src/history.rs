@@ -337,23 +337,83 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
                 }
             }
         }
-        Body::Json(b) => {
-            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&b.content) {
-                let mut found = Vec::new();
-                redact_json(&mut v, false, "", &mut found);
-                if !found.is_empty()
-                    && let Ok(text) = serde_json::to_string(&v)
-                {
-                    b.content = text;
-                    for n in found {
-                        note(&mut names, n);
-                    }
-                }
-            }
-        }
+        Body::Json(b) => redact_json_body(&mut b.content, &mut names),
         _ => {}
     }
     (out, names)
+}
+
+/// Marker for a bare `{{...}}` reference: a JSON string token that serde writes back unchanged.
+fn ref_marker(n: usize) -> String {
+    format!("\u{1}wispref{n}\u{1}")
+}
+
+/// Swap each `{{...}}` outside a JSON string for a marker string. Inside strings the text
+/// is already valid JSON and is left alone. Returns the new text and the originals.
+fn mask_bare_refs(text: &str) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(text.len());
+    let mut refs = Vec::new();
+    let (mut in_str, mut esc) = (false, false);
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            in_str = true;
+        } else if rest.starts_with("{{")
+            && let Some(end) = rest.find("}}")
+        {
+            // The marker holds raw control characters, so escape it by hand.
+            out.push_str(&format!("\"\\u0001wispref{}\\u0001\"", refs.len()));
+            refs.push(rest[..end + 2].to_string());
+            rest = &rest[end + 2..];
+            continue;
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    (out, refs)
+}
+
+/// Redact credential-named keys in a JSON body template. Bodies are text templates, so
+/// `{{ref}}` in value position is masked for the parse and restored unquoted. A body that
+/// still does not parse is dropped (fail closed) and `body` is recorded.
+fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
+    if content.trim().is_empty() {
+        return;
+    }
+    let (masked, refs) = mask_bare_refs(content);
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&masked) else {
+        content.clear();
+        note(names, "body".into());
+        return;
+    };
+    let mut found = Vec::new();
+    redact_json(&mut v, false, "", &mut found);
+    if found.is_empty() {
+        return;
+    }
+    let Ok(mut text) = serde_json::to_string(&v) else {
+        content.clear();
+        note(names, "body".into());
+        return;
+    };
+    for (i, original) in refs.iter().enumerate() {
+        text = text.replace(
+            &format!("\"{}\"", ref_marker(i).replace('\u{1}', "\\u0001")),
+            original,
+        );
+    }
+    *content = text;
+    for n in found {
+        note(names, n);
+    }
 }
 
 /// Empty the value of every `Set-Cookie` header; true when any value changed.
@@ -440,7 +500,9 @@ impl HistoryStore {
             ensure_private_dir(parent)?;
         }
         let mut opts = OpenOptions::new();
-        opts.create(true).append(true);
+        // Windows `File::lock` fails on append-only handles; std wants read, read+append
+        // or write access.
+        opts.read(true).write(true).create(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;

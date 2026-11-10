@@ -480,8 +480,10 @@ fn file_lock_serialises_appends() {
     let lock_path = data
         .history_dir(&cid("abcdef0123456789"))
         .with_extension("lock");
+    // Windows `File::lock` needs read or write access, not append-only.
     let held = fs::OpenOptions::new()
-        .append(true)
+        .read(true)
+        .write(true)
         .open(&lock_path)
         .unwrap();
     held.lock().unwrap();
@@ -511,4 +513,54 @@ fn eviction_failure_still_returns_the_entry() {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
     let e = r.unwrap();
     assert!(store.list().unwrap().iter().any(|x| x.id == e.id));
+}
+
+fn json_req(content: &str) -> Request {
+    Request {
+        body: Body::Json(TextBody {
+            content: content.into(),
+            sidecar: None,
+        }),
+        ..Request::default()
+    }
+}
+
+fn raw_req(data: &DataDir, id: &str) -> String {
+    fs::read_to_string(bodies_dir(data).join(format!("{id}.req.json"))).unwrap()
+}
+
+#[test]
+fn templated_json_body_is_redacted_and_refs_survive() {
+    let (_d, data, store) = setup();
+    let e = store
+        .append(
+            new_entry(json_req(r#"{"password":"HUNTER2","n":{{n}},"s":"a{{m}}"}"#)),
+            None,
+        )
+        .unwrap();
+    let raw = raw_req(&data, &e.id);
+    assert!(!raw.contains("HUNTER2"));
+    assert!(raw.contains(r#"\"n\":{{n}},"#), "{raw}");
+    assert!(raw.contains("a{{m}}"), "{raw}");
+    assert!(e.redacted.contains(&"body.password".to_string()));
+}
+
+#[test]
+fn unparseable_json_body_is_not_stored() {
+    let (_d, data, store) = setup();
+    let e = store
+        .append(new_entry(json_req(r#"{"password": HUNTER2 oops"#)), None)
+        .unwrap();
+    assert!(!raw_req(&data, &e.id).contains("HUNTER2"));
+    assert!(e.redacted.contains(&"body".to_string()));
+}
+
+#[test]
+fn plain_json_body_without_credentials_is_unchanged() {
+    let (_d, data, store) = setup();
+    let e = store
+        .append(new_entry(json_req(r#"{"a": 1,  "b":[true]}"#)), None)
+        .unwrap();
+    assert!(raw_req(&data, &e.id).contains(r#"{\"a\": 1,  \"b\":[true]}"#));
+    assert!(!e.redacted.contains(&"body".to_string()));
 }
