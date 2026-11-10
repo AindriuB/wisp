@@ -96,6 +96,7 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] 43-17 (Nit) storage tests/history.rs:656 test name says var refs but uses literals.
 - [P3] 43-18 (Nit) manager.rs:134 per-key generation and store_locks maps never pruned.
 - [P3] loopback.rs:71 a callback with a non-matching state (e.g. a stale browser tab) gets the "You can close this tab" success page while Wisp keeps waiting and later times out; show a neutral "this sign-in link has expired, try Authorize again" page instead.
+- [P3] 43-19 manager.rs:470: an IdP error callback sent without `state` is now ignored, so the user waits the full 120 s authorize timeout with no message; show the ignored-callback count (or "a sign-in error was received without a matching state") in the timeout error.
 
 ### Follow-ups from task 102 (not 0.2.0 wave 2)
 - [P3] cookies.rs:202-203 `save` doc doesn't mention the domain/path caps or soonest-expiring trimming.
