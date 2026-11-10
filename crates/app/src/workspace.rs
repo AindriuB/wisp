@@ -1284,7 +1284,7 @@ pub(crate) fn refused_body_message(e: &ResolveError) -> Option<&str> {
     }
 }
 
-/// Names and our own syntax messages, never request values.
+/// Names only, never values or syntax messages (conventions: logging).
 pub(crate) fn describe_problems(e: &ResolveError) -> String {
     fn loc(l: &Location) -> String {
         match l {
@@ -1306,9 +1306,7 @@ pub(crate) fn describe_problems(e: &ResolveError) -> String {
             Problem::MissingPathParam { name } => {
                 format!("MissingPathParam({})", name.escape_debug())
             }
-            Problem::Syntax { location, message } => {
-                format!("Syntax({}: {})", loc(location), message.escape_debug())
-            }
+            Problem::Syntax { location, .. } => format!("Syntax({})", loc(location)),
             Problem::VarCycle { name } => format!("VarCycle({})", name.escape_debug()),
         })
         .collect::<Vec<_>>()
@@ -1356,8 +1354,9 @@ mod tests {
         let out = describe_problems(&e);
         assert_eq!(
             out,
-            "UnresolvedVar(token),MissingPathParam(id),Syntax(Url: SECRETMARK),VarCycle(a)"
+            "UnresolvedVar(token),MissingPathParam(id),Syntax(Url),VarCycle(a)"
         );
+        assert!(!out.contains("SECRETMARK"));
     }
 
     #[test]
