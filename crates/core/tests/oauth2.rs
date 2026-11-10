@@ -801,29 +801,50 @@ async fn a_matching_callback_exchanges_the_code_with_the_verifier_and_caches_the
 }
 
 #[tokio::test]
-async fn a_wrong_state_or_an_error_parameter_fails_without_an_exchange() {
-    for query in [
-        "code=c&state=WRONG",
-        "error=access_denied&state=WRONG",
-        "code=c",
-    ] {
-        let idp = code_token_server("RT", 3600).await;
-        let (engine, rx, _) = engine();
-        let (_, url) = authorize(&engine, &rx, code_auth(&idp.uri(), 0, false), None).await;
-        raw_get(redirect_port(&url), &format!("/callback?{query}")).await;
-        let ev = next_auth_event(&rx).await;
-        let e = auth_error(&[ev]);
-        assert!(!e.message.contains("WRONG"), "{e:?}");
-        assert!(seen(&idp, "/token").await.is_empty(), "{query}");
-    }
-    // A genuine error with the right state names the code and exchanges nothing.
+async fn a_callback_with_the_right_state_and_an_error_fails_without_an_exchange() {
     let idp = code_token_server("RT", 3600).await;
     let (engine, rx, _) = engine();
     let (_, url) = authorize(&engine, &rx, code_auth(&idp.uri(), 0, false), None).await;
-    raw_get(redirect_port(&url), "/callback?error=access_denied").await;
+    let state = param(&url, "state").unwrap();
+    raw_get(
+        redirect_port(&url),
+        &format!("/callback?error=access_denied&state={state}"),
+    )
+    .await;
     let e = auth_error(&[next_auth_event(&rx).await]);
     assert!(e.message.contains("access_denied"), "{e:?}");
     assert!(seen(&idp, "/token").await.is_empty());
+}
+
+#[tokio::test]
+async fn callbacks_without_the_matching_state_are_ignored_until_one_matches() {
+    let idp = code_token_server("RT", 3600).await;
+    let (engine, rx, _) = engine();
+    let (id, url) = authorize(&engine, &rx, code_auth(&idp.uri(), 0, false), None).await;
+    let port = redirect_port(&url);
+    for query in [
+        "code=c&state=WRONG",
+        "error=access_denied&state=WRONG",
+        "error=access_denied",
+        "code=c",
+    ] {
+        let page = raw_get(port, &format!("/callback?{query}")).await;
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(!page.contains("WRONG") && !page.contains("access_denied"));
+    }
+    // None of those ended the flow.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), next_auth_event(&rx))
+            .await
+            .is_err()
+    );
+    assert!(seen(&idp, "/token").await.is_empty());
+    let state = param(&url, "state").unwrap();
+    raw_get(port, &format!("/callback?code=c&state={state}")).await;
+    match next_auth_event(&rx).await {
+        Event::AuthCompleted { id: got } => assert_eq!(got, id),
+        other => panic!("unexpected {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -1111,71 +1132,144 @@ async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
     }
 }
 
+/// A token endpoint whose refresh-token responses wait for the test to release them.
+struct GatedIdp {
+    base: String,
+    /// Notified when a refresh request has arrived.
+    arrived: Arc<tokio::sync::Notify>,
+    /// One permit lets one refresh response go.
+    gate: Arc<tokio::sync::Notify>,
+    /// The form body of every request, in arrival order.
+    bodies: Arc<Mutex<Vec<String>>>,
+}
+
+impl GatedIdp {
+    fn refreshes(&self) -> Vec<String> {
+        self.bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| b.contains("grant_type=refresh_token"))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Serves `POST /token`: the n-th code exchange gets `codes[n]` (the last repeats), the n-th
+/// refresh gets `refreshes[n]` once the gate lets it go.
+async fn gated_idp(codes: Vec<serde_json::Value>, refreshes: Vec<serde_json::Value>) -> GatedIdp {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let idp = GatedIdp {
+        base,
+        arrived: Arc::default(),
+        gate: Arc::default(),
+        bodies: Arc::default(),
+    };
+    let (arrived, gate, bodies) = (idp.arrived.clone(), idp.gate.clone(), idp.bodies.clone());
+    tokio::spawn(async move {
+        let (mut code_n, mut refresh_n) = (0usize, 0usize);
+        loop {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let (head_end, len) = loop {
+                let n = sock.read(&mut chunk).await.unwrap();
+                assert!(n > 0, "the client closed early");
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..i]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .map_or(0, |v| v.trim().parse::<usize>().unwrap());
+                    break (i + 4, len);
+                }
+            };
+            while buf.len() < head_end + len {
+                let n = sock.read(&mut chunk).await.unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let body = String::from_utf8_lossy(&buf[head_end..head_end + len]).into_owned();
+            bodies.lock().unwrap().push(body.clone());
+            let reply = if body.contains("grant_type=refresh_token") {
+                let r = refreshes[refresh_n.min(refreshes.len() - 1)].clone();
+                refresh_n += 1;
+                let (arrived, gate) = (arrived.clone(), gate.clone());
+                arrived.notify_one();
+                tokio::spawn(async move {
+                    gate.notified().await;
+                    respond(&mut sock, &r).await;
+                });
+                continue;
+            } else {
+                let r = codes[code_n.min(codes.len() - 1)].clone();
+                code_n += 1;
+                r
+            };
+            tokio::spawn(async move { respond(&mut sock, &reply).await });
+        }
+    });
+    idp
+}
+
+async fn respond(sock: &mut TcpStream, body: &serde_json::Value) {
+    let body = body.to_string();
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = sock.write_all(reply.as_bytes()).await;
+    let _ = sock.shutdown().await;
+}
+
+async fn within<T>(f: impl std::future::Future<Output = T>, what: &str) -> T {
+    tokio::time::timeout(Duration::from_secs(10), f)
+        .await
+        .unwrap_or_else(|_| panic!("timed out: {what}"))
+}
+
 #[tokio::test]
 async fn a_refresh_in_flight_during_reauthorize_never_lands() {
-    let idp = MockServer::start().await;
-    let code =
-        || Mock::given(method("POST")).and(wiremock::matchers::body_string_contains("code=c"));
-    code()
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "AT_X", "token_type": "bearer", "expires_in": 100,
-            "refresh_token": "RT_X",
-        })))
-        .up_to_n_times(1)
-        .with_priority(1)
-        .mount(&idp)
-        .await;
-    code()
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "AT_Y", "token_type": "bearer", "expires_in": 3600,
-        })))
-        .with_priority(2)
-        .mount(&idp)
-        .await;
-    Mock::given(method("POST"))
-        .and(wiremock::matchers::body_string_contains(
-            "grant_type=refresh_token",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(Duration::from_millis(1500))
-                .set_body_json(json!({
-                    "access_token": "AT_X2", "token_type": "bearer", "expires_in": 3600,
-                    "refresh_token": "RT_X2",
-                })),
-        )
-        .with_priority(3)
-        .mount(&idp)
-        .await;
+    let idp = gated_idp(
+        vec![
+            json!({"access_token": "AT_X", "token_type": "bearer", "expires_in": 100,
+                   "refresh_token": "RT_X"}),
+            json!({"access_token": "AT_Y", "token_type": "bearer", "expires_in": 3600}),
+        ],
+        vec![
+            json!({"access_token": "AT_X2", "token_type": "bearer", "expires_in": 3600,
+                    "refresh_token": "RT_X2"}),
+        ],
+    )
+    .await;
     let target = resource_server().await;
     let store = Arc::new(Recording::default());
     let (engine, rx, clock) = engine_with(store.clone());
-    let auth = code_auth(&idp.uri(), 0, true);
+    let auth = code_auth(&idp.base, 0, true);
     authorize_fully(&engine, &rx, auth.clone()).await;
     clock.advance(Duration::from_secs(200));
-    engine.submit(Command::Send(request(target.uri(), auth.clone())));
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while seen(&idp, "/token")
-            .await
-            .iter()
-            .all(|(_, b)| !b.contains("grant_type=refresh_token"))
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the refresh started");
+    let send_id = engine.submit(Command::Send(request(target.uri(), auth.clone())));
+    within(idp.arrived.notified(), "the refresh started").await;
     authorize_fully(&engine, &rx, auth.clone()).await;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let ev = rx.recv().await.unwrap();
-            if matches!(ev, Event::Completed { .. } | Event::Failed { .. }) {
-                break;
+    // Only now may the IdP answer the refresh.
+    idp.gate.notify_one();
+    within(
+        async {
+            loop {
+                match rx.recv().await.unwrap() {
+                    Event::Completed { id, .. } | Event::Failed { id, .. } if id == send_id => {
+                        break;
+                    }
+                    _ => {}
+                }
             }
-        }
-    })
-    .await
-    .expect("the in-flight send finished");
+        },
+        "the in-flight send finished",
+    )
+    .await;
     send(&engine, &rx, request(target.uri(), auth.clone())).await;
     clock.advance(Duration::from_secs(4000));
     send(&engine, &rx, request(target.uri(), auth)).await;
@@ -1185,15 +1279,14 @@ async fn a_refresh_in_flight_during_reauthorize_never_lands() {
         .map(|(a, _)| a)
         .collect();
     assert!(!bearers.iter().any(|a| a.contains("AT_X2")), "{bearers:?}");
-    let posts = seen(&idp, "/token").await;
-    assert!(!posts.iter().any(|(_, b)| b.contains("RT_X2")));
-    assert_eq!(
-        posts
+    assert!(
+        !idp.bodies
+            .lock()
+            .unwrap()
             .iter()
-            .filter(|(_, b)| b.contains("grant_type=refresh_token"))
-            .count(),
-        1
+            .any(|b| b.contains("RT_X2"))
     );
+    assert_eq!(idp.refreshes().len(), 1);
     assert!(
         store
             .saves
@@ -1202,6 +1295,60 @@ async fn a_refresh_in_flight_during_reauthorize_never_lands() {
             .iter()
             .all(|(_, t)| t != "RT_X2")
     );
+}
+
+#[tokio::test]
+async fn cancelling_a_send_mid_refresh_still_keeps_the_rotated_refresh_token() {
+    let idp = gated_idp(
+        vec![
+            json!({"access_token": "AT-1", "token_type": "bearer", "expires_in": 60,
+                    "refresh_token": "RT-1"}),
+        ],
+        vec![
+            json!({"access_token": "AT-2", "token_type": "bearer", "expires_in": 60,
+                   "refresh_token": "RT-2"}),
+            json!({"access_token": "AT-3", "token_type": "bearer", "expires_in": 60}),
+        ],
+    )
+    .await;
+    let target = resource_server().await;
+    let store = Arc::new(Recording::default());
+    let (engine, rx, clock) = engine_with(store.clone());
+    let auth = code_auth(&idp.base, 0, true);
+    authorize_fully(&engine, &rx, auth.clone()).await;
+    clock.advance(Duration::from_secs(120));
+    let id = engine.submit(Command::Send(request(target.uri(), auth.clone())));
+    within(idp.arrived.notified(), "the refresh started").await;
+    engine.submit(Command::Cancel(id));
+    within(
+        async {
+            loop {
+                if matches!(rx.recv().await.unwrap(), Event::Cancelled { id: got } if got == id) {
+                    break;
+                }
+            }
+        },
+        "the send was cancelled",
+    )
+    .await;
+    // The IdP answers after the cancel and has rotated the token.
+    idp.gate.notify_one();
+    within(
+        async {
+            while !store.saves.lock().unwrap().iter().any(|(_, t)| t == "RT-2") {
+                tokio::task::yield_now().await;
+            }
+        },
+        "the rotated token was saved",
+    )
+    .await;
+    clock.advance(Duration::from_secs(120));
+    idp.gate.notify_one();
+    send(&engine, &rx, request(target.uri(), auth)).await;
+    let refreshes = idp.refreshes();
+    assert_eq!(refreshes.len(), 2, "{refreshes:?}");
+    assert!(refreshes[0].contains("refresh_token=RT-1"));
+    assert!(refreshes[1].contains("refresh_token=RT-2"), "{refreshes:?}");
 }
 
 #[tokio::test]

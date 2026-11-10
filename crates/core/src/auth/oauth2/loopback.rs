@@ -41,9 +41,10 @@ pub(crate) async fn bind(port: u16) -> std::io::Result<(TcpListener, u16)> {
     Ok((listener, port))
 }
 
-/// Serves until a `GET /callback` arrives, then returns its parameters. Takes the listener, so
-/// the port is closed when this returns or the future is dropped.
-pub(crate) async fn wait(listener: TcpListener) -> Callback {
+/// Serves until a `GET /callback` that `wanted` accepts arrives, then returns its parameters.
+/// Any other request is answered and ignored. Takes the listener, so the port is closed when
+/// this returns or the future is dropped.
+pub(crate) async fn wait(listener: TcpListener, wanted: impl Fn(&Callback) -> bool) -> Callback {
     let mut conns: JoinSet<Option<Callback>> = JoinSet::new();
     loop {
         tokio::select! {
@@ -56,7 +57,7 @@ pub(crate) async fn wait(listener: TcpListener) -> Callback {
                 }
             },
             Some(done) = conns.join_next() => {
-                if let Ok(Some(cb)) = done {
+                if let Ok(Some(cb)) = done && wanted(&cb) {
                     return cb;
                 }
             }

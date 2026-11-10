@@ -125,8 +125,20 @@ fn params<'a>(
     })
 }
 
-/// The token cache. One per engine.
+/// The token cache. One per engine. A handle to shared state, so a refresh can run in a task
+/// that outlives the send that started it.
 pub(crate) struct OAuth2 {
+    inner: Arc<Inner>,
+}
+
+impl std::ops::Deref for OAuth2 {
+    type Target = Inner;
+    fn deref(&self) -> &Inner {
+        &self.inner
+    }
+}
+
+pub(crate) struct Inner {
     cache: Mutex<HashMap<TokenKey, Entry>>,
     /// Keys whose stored refresh token is stale: a forget failed, so `bearer` must not load it.
     stale: Mutex<std::collections::HashSet<TokenKey>>,
@@ -159,15 +171,19 @@ fn same(a: &str, b: &str) -> bool {
 impl OAuth2 {
     pub(crate) fn new(store: Arc<dyn RefreshTokenStore>, clock: Arc<dyn Clock>) -> Self {
         Self {
-            cache: Mutex::default(),
-            stale: Mutex::default(),
-            generation: Mutex::default(),
-            store_locks: Mutex::default(),
-            store,
-            clock,
+            inner: Arc::new(Inner {
+                cache: Mutex::default(),
+                stale: Mutex::default(),
+                generation: Mutex::default(),
+                store_locks: Mutex::default(),
+                store,
+                clock,
+            }),
         }
     }
+}
 
+impl Inner {
     fn stale(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<TokenKey>> {
         self.stale.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -273,6 +289,38 @@ impl OAuth2 {
         true
     }
 
+    /// One refresh-token grant and the caching of its result.
+    #[allow(clippy::too_many_arguments)]
+    async fn refresh(
+        self: Arc<Self>,
+        auth: EngineAuth,
+        collection: Option<String>,
+        environment: Option<String>,
+        http: reqwest::Client,
+        url: reqwest::Url,
+        epoch: u64,
+        refresh: Secret,
+        timeout: Duration,
+    ) -> Result<(TokenKey, Secret), EngineError> {
+        let p = params(&auth, &collection, &environment)
+            .ok_or_else(|| err(ErrorKind::Auth, "not an OAuth2 auth"))?;
+        let fields = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh.expose()),
+        ];
+        let resp = post(&http, &url, &p.creds, &fields, timeout).await?;
+        if !self.put(&p, &resp, true, Some((epoch, refresh))).await {
+            // A re-authorize landed meanwhile: use its state, never this result.
+            return match self.fresh(&p.key) {
+                Some(t) => Ok((p.key, t)),
+                None => Err(not_authorized()),
+            };
+        }
+        Ok((p.key, resp.access_token))
+    }
+}
+
+impl OAuth2 {
     /// The bearer token for a send: cached, refreshed or fetched. Returns its cache key too.
     pub(crate) async fn bearer(
         &self,
@@ -326,19 +374,23 @@ impl OAuth2 {
                 let Some(refresh) = held else {
                     return Err(not_authorized());
                 };
-                let fields = [
-                    ("grant_type", "refresh_token"),
-                    ("refresh_token", refresh.expose()),
-                ];
-                let resp = post(&http, &url, &p.creds, &fields, timeout).await?;
-                if !self.put(&p, &resp, true, Some((epoch, refresh))).await {
-                    // A re-authorize landed meanwhile: use its state, never this result.
-                    return match self.fresh(&p.key) {
-                        Some(t) => Ok((p.key, t)),
-                        None => Err(not_authorized()),
-                    };
-                }
-                return Ok((p.key, resp.access_token));
+                // The POST and the save of its result run in a task of their own: dropping
+                // this future (a cancelled send) must not lose a rotated refresh token the
+                // IdP has already issued.
+                let task = tokio::spawn(self.inner.clone().refresh(
+                    auth.clone(),
+                    client.collection.clone(),
+                    environment.clone(),
+                    http,
+                    url,
+                    epoch,
+                    refresh,
+                    timeout,
+                ));
+                return match task.await {
+                    Ok(r) => r,
+                    Err(_) => Err(err(ErrorKind::Auth, "token refresh was interrupted")),
+                };
             }
         };
         self.put(&p, &resp, true, None).await;
@@ -415,7 +467,9 @@ impl OAuth2 {
         tokio::pin!(cancelled);
         // `wait` owns the listener: it is closed as soon as this select ends.
         let callback = tokio::select! {
-            cb = loopback::wait(listener) => cb,
+            cb = loopback::wait(listener, |cb| {
+                matches!(&cb.state, Some(got) if same(got.expose(), state.expose()))
+            }) => cb,
             () = &mut cancelled => return Err(err(ErrorKind::Auth, "cancelled")),
             () = tokio::time::sleep(timeout.unwrap_or(DEFAULT_AUTHORIZE_TIMEOUT)) => {
                 return Err(err(ErrorKind::Auth, "authorization timed out"));
@@ -426,15 +480,6 @@ impl OAuth2 {
                 ErrorKind::Auth,
                 format!("authorization was refused: {code}"),
             ));
-        }
-        match &callback.state {
-            Some(got) if same(got.expose(), state.expose()) => {}
-            _ => {
-                return Err(err(
-                    ErrorKind::Auth,
-                    "authorization failed: the state did not match",
-                ));
-            }
         }
         let Some(code) = &callback.code else {
             return Err(err(
