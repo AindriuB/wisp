@@ -21,6 +21,7 @@ actions!(
         ToggleLayout,
         OpenImport,
         ShowHistory,
+        ShowCookieJar,
         ClearHistory,
         ToggleHistoryBodies,
         Quit

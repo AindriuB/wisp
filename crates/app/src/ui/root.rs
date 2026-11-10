@@ -14,13 +14,14 @@ use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 
 use crate::actions::{
     CancelRequest, ClearHistory, CloseTab, KeepMine, NewRequest, NextTab, OpenCollection,
-    OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest, ShowHistory,
-    SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest, ShowCookieJar,
+    ShowHistory, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
 use crate::settings::{SplitAxis, ThemeMode};
 use crate::tab::{DiskState, RequestTab};
 use crate::theme;
+use crate::ui::cookie_jar::CookieJarView;
 use crate::ui::history::HistoryView;
 use crate::ui::import::ImportView;
 use crate::ui::palette::PaletteView;
@@ -85,6 +86,7 @@ pub struct WorkspaceView {
     palette: Option<(Entity<PaletteView>, Subscription)>,
     import: Option<(Entity<ImportView>, Subscription)>,
     history: Option<(Entity<HistoryView>, Subscription)>,
+    cookies: Option<(Entity<CookieJarView>, Subscription)>,
     notice: Option<SharedString>,
     focus: FocusHandle,
     _workspace_sub: Subscription,
@@ -150,6 +152,7 @@ impl WorkspaceView {
             palette: None,
             import: None,
             history: None,
+            cookies: None,
             notice: None,
             focus,
             _workspace_sub,
@@ -185,6 +188,18 @@ impl WorkspaceView {
                 cx.notify();
             });
             self.history = Some((panel, sub));
+        }
+        cx.notify();
+    }
+
+    fn toggle_cookies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cookies.take().is_none() {
+            let panel = cx.new(|cx| CookieJarView::new(self.workspace.clone(), window, cx));
+            let sub = cx.subscribe(&panel, |this, _, _: &DismissEvent, cx| {
+                this.cookies = None;
+                cx.notify();
+            });
+            self.cookies = Some((panel, sub));
         }
         cx.notify();
     }
@@ -541,6 +556,18 @@ impl Render for WorkspaceView {
                 .child(d.clone())
         });
 
+        let cookies_overlay = self.cookies.as_ref().map(|(d, _)| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .justify_center()
+                .pt(px(60.))
+                .child(d.clone())
+        });
+
         div()
             .id("wisp-root")
             .track_focus(&self.focus)
@@ -598,6 +625,9 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, _: &ShowHistory, window, cx| {
                 this.toggle_history(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &ShowCookieJar, window, cx| {
+                this.toggle_cookies(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ClearHistory, window, cx| {
                 this.on_clear_history(window, cx);
             }))
@@ -638,6 +668,7 @@ impl Render for WorkspaceView {
             .children(overlay)
             .children(import_overlay)
             .children(history_overlay)
+            .children(cookies_overlay)
     }
 }
 

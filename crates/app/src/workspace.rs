@@ -1,12 +1,13 @@
 //! The workspace entity: engine, collection, tabs and settings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task, WeakEntity};
 use wisp_core::auth::EngineAuth;
 use wisp_core::body::{BodyHandle, BodyStore};
+use wisp_core::cookies::{CookieJar, CookieJars};
 use wisp_core::request::{Auth, Body, CollectionDefaults, Environment, PartValue, Request};
 use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
 use wisp_core::{
@@ -14,6 +15,7 @@ use wisp_core::{
 };
 use wisp_storage::collection::{CollectionId, ensure_collection_id, read_collection_id};
 use wisp_storage::collection::{CollectionTree, Node, open_collection};
+use wisp_storage::cookies::{CookieFile, StoredCookie};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{list_environments, load_environment};
 use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry};
@@ -25,6 +27,7 @@ use crate::settings::{self, Settings};
 use crate::tab::{
     AuthorizeState, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent,
 };
+use crate::ui::cookie_jar::{self as cookie_ui, Debounce};
 use crate::ui::history as history_ui;
 
 /// Quiet period after the first watcher event before the batch is handled.
@@ -46,6 +49,8 @@ pub enum WorkspaceEvent {
     Notice(SharedString),
     /// The open collection's history gained or lost entries.
     HistoryChanged,
+    /// The open collection's cookie persistence state changed.
+    CookiesChanged,
 }
 
 /// What was sent, kept for the history entry written at the terminal event.
@@ -62,6 +67,149 @@ enum HistoryState {
     Ready(HistoryStore),
     /// Writing is off; the reason is shown in the history panel.
     Off(String),
+}
+
+/// Serialises every collection-id resolve so concurrent first uses agree on one id.
+static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read or create the collection id under the shared lock. Blocking; never on the UI thread.
+fn resolve_collection_id(root: &Path) -> Result<CollectionId, String> {
+    let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_collection_id(root).map_err(|e| e.to_string())
+}
+
+/// Read the collection id without writing, under the shared lock. Blocking.
+fn read_id_state(root: &Path) -> IdState {
+    let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
+    match read_collection_id(root) {
+        Ok(Some(id)) => IdState::Known(id.to_string()),
+        Ok(None) => IdState::Absent,
+        Err(e) => IdState::failed(root, e.to_string()),
+    }
+}
+
+/// Where the open collection's id stands. Resolved off the UI thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IdState {
+    /// The background read is in flight.
+    Reading,
+    /// The collection has no id yet; the first Send or toggle-on creates it.
+    Absent,
+    Known(String),
+    /// The id can be neither read nor created; the partition is the canonical root.
+    Failed {
+        partition: String,
+        reason: String,
+    },
+}
+
+impl IdState {
+    /// Blocking: canonicalises the root.
+    fn failed(root: &Path, reason: String) -> IdState {
+        IdState::Failed {
+            partition: cookie_ui::cookie_jar_partition(None, root),
+            reason,
+        }
+    }
+}
+
+/// The open collection's cookie persistence, as the manager shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Persistence {
+    /// No collection, no data dir or no usable id: the reason.
+    Unavailable(String),
+    /// The file's state is still being read.
+    Pending,
+    Off,
+    On,
+    /// On, but a load or save failed; saving is paused until the toggle is turned off and on.
+    Failed(String),
+}
+
+/// What the Cookies manager needs from the workspace.
+pub struct CookiePanel {
+    pub jar: Option<CookieJar>,
+    pub name: Option<String>,
+    pub persistence: Persistence,
+}
+
+/// Per-collection (by id) persistence state in this run. Present once the file was checked.
+struct CookieStatus {
+    /// The file has been checked (and loaded when it exists).
+    loaded: bool,
+    enabled: bool,
+    /// A load, save or enable error; saves are skipped while set.
+    error: Option<String>,
+    debounce: Debounce,
+}
+
+/// One cookie-file operation. Run strictly one at a time, in order.
+enum CookieJob {
+    Load {
+        id: String,
+    },
+    Save {
+        id: String,
+        cookies: Vec<StoredCookie>,
+    },
+    Enable {
+        id: String,
+        cookies: Vec<StoredCookie>,
+    },
+    Disable {
+        id: String,
+    },
+}
+
+/// What a finished cookie job reports.
+enum CookieDone {
+    Loaded(Result<Option<Vec<StoredCookie>>, String>),
+    Saved(Result<(), String>),
+    Enabled(Result<(), String>),
+    Disabled(Result<(), String>),
+}
+
+impl CookieJob {
+    fn id(&self) -> &str {
+        match self {
+            CookieJob::Load { id }
+            | CookieJob::Save { id, .. }
+            | CookieJob::Enable { id, .. }
+            | CookieJob::Disable { id } => id,
+        }
+    }
+
+    /// Blocking file work, run on the background executor.
+    fn run(self, data: &DataDir) -> CookieDone {
+        let Some(cid) = CollectionId::parse(self.id()) else {
+            let e = || "invalid collection id".to_string();
+            return match self {
+                CookieJob::Load { .. } => CookieDone::Loaded(Err(e())),
+                CookieJob::Save { .. } => CookieDone::Saved(Err(e())),
+                CookieJob::Enable { .. } => CookieDone::Enabled(Err(e())),
+                CookieJob::Disable { .. } => CookieDone::Disabled(Err(e())),
+            };
+        };
+        let file = CookieFile::new(data, &cid);
+        let now = SystemTime::now();
+        let s = |e: wisp_storage::error::StorageError| e.to_string();
+        match self {
+            CookieJob::Load { .. } => CookieDone::Loaded(if file.is_enabled() {
+                file.load(now).map(Some).map_err(s)
+            } else {
+                Ok(None)
+            }),
+            CookieJob::Save { cookies, .. } => {
+                CookieDone::Saved(file.save(&cookies, now).map_err(s))
+            }
+            CookieJob::Enable { cookies, .. } => CookieDone::Enabled(
+                file.enable()
+                    .and_then(|()| file.save(&cookies, now))
+                    .map_err(s),
+            ),
+            CookieJob::Disable { .. } => CookieDone::Disabled(file.disable().map_err(s)),
+        }
+    }
 }
 
 /// Everything needed to reach the open collection's history off the UI thread.
@@ -126,11 +274,7 @@ impl HistoryJob {
         match self.store {
             Some(s) => Ok(s),
             None => {
-                // Serialised so concurrent first uses agree on one id.
-                static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-                let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
-                let id: CollectionId =
-                    ensure_collection_id(&self.root).map_err(|e| e.to_string())?;
+                let id = resolve_collection_id(&self.root)?;
                 Ok(HistoryStore::open(&self.data, &id))
             }
         }
@@ -477,13 +621,6 @@ struct SendPlan {
     notice: Option<String>,
 }
 
-/// The cookie-jar and OAuth2-token partition for a collection: its id, or its root path when
-/// the id cannot be read or created.
-fn collection_partition(root: &Path) -> String {
-    ensure_collection_id(root)
-        .map_or_else(|_| root.to_string_lossy().into_owned(), |id| id.to_string())
-}
-
 /// The `AuthorizeStart` for a resolved request, or `None` when its auth is not authorization
 /// code. `client` is what Send would use, with `collection` set to the same partition; the
 /// environment partitions the cached token.
@@ -655,6 +792,16 @@ pub struct Workspace {
     history: HistoryState,
     /// True once a history Notice was shown for the open collection.
     history_notified: bool,
+    jars: CookieJars,
+    /// The open collection's id, read and resolved off the UI thread.
+    coll_id: IdState,
+    /// Persistence state per collection id, once its file was checked in this run.
+    cookie_files: HashMap<String, CookieStatus>,
+    cookie_queue: VecDeque<CookieJob>,
+    /// True while a cookie-file job runs: at most one at a time.
+    cookie_busy: bool,
+    cookie_ticker: Option<Task<()>>,
+    _quit_sub: Option<gpui::Subscription>,
     autosend: Option<RequestId>,
     watcher: Option<Watcher>,
     _watch_task: Option<Task<()>>,
@@ -731,8 +878,10 @@ impl Workspace {
         open: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let jars = CookieJars::default();
         let (engine, events) = Engine::start(EngineConfig {
             body_memory_limit: settings.body_memory_limit,
+            cookies: jars.clone(),
             ..EngineConfig::default()
         });
         let mut this = Self {
@@ -748,6 +897,13 @@ impl Workspace {
             data_dir: DataDir::resolve(),
             history: HistoryState::Unresolved,
             history_notified: false,
+            jars,
+            coll_id: IdState::Absent,
+            cookie_files: HashMap::new(),
+            cookie_queue: VecDeque::new(),
+            cookie_busy: false,
+            cookie_ticker: None,
+            _quit_sub: None,
             autosend: None,
             watcher: None,
             _watch_task: None,
@@ -755,6 +911,21 @@ impl Workspace {
             prompt_up: false,
         };
         this.spawn_drain(events, cx);
+        // Flush on quit: queue a final save, then wait (bounded by gpui's shutdown timeout)
+        // for the cookie-file queue to drain.
+        this._quit_sub = Some(cx.on_app_quit(|this, cx| {
+            this.flush_cookies(cx);
+            cx.spawn(async move |this, cx| {
+                for _ in 0..150 {
+                    if this.update(cx, |t, _| t.cookie_idle()).unwrap_or(true) {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(20))
+                        .await;
+                }
+            })
+        }));
         if let Some(root) = open
             && let Err(e) = this.open_collection(&root, cx)
         {
@@ -765,10 +936,11 @@ impl Workspace {
         if let Ok(url) = std::env::var("WISP_AUTOSEND_URL") {
             let tab = this.new_scratch_tab(url, cx);
             match this.send(&tab, cx) {
-                Ok(id) => {
+                Ok(Some(id)) => {
                     this.autosend = Some(id);
                     crate::trace("autosend submitted");
                 }
+                Ok(None) => {}
                 Err(e) => println!(
                     "WISP_EVENT failed kind=Resolve problems={}",
                     describe_problems(&e)
@@ -814,8 +986,12 @@ impl Workspace {
                 (None, None)
             }
         };
+        // Flush the old collection's jar before the new one is loaded; no jar is cleared.
+        self.flush_cookies(cx);
         self.history = HistoryState::Unresolved;
         self.history_notified = false;
+        self.coll_id = IdState::Reading;
+        self.start_id_read(tree.root.clone(), cx);
         self.collection = Some(OpenCollection {
             tree,
             environments,
@@ -1074,12 +1250,14 @@ impl Workspace {
         }
     }
 
+    /// Send the tab's request. `Ok(None)` means the submit waits for the collection id to be
+    /// created off the UI thread (the first Send in a collection that has none).
     pub fn send(
         &mut self,
         tab: &Entity<RequestTab>,
         cx: &mut Context<Self>,
-    ) -> Result<RequestId, ResolveError> {
-        let (draft, path, previous, origin) = {
+    ) -> Result<Option<RequestId>, ResolveError> {
+        let (draft, path, previous, origin, pending) = {
             let t = tab.read(cx);
             (
                 t.draft.clone(),
@@ -1088,9 +1266,14 @@ impl Workspace {
                     .then_some(t.response.request_id)
                     .flatten(),
                 t.from_history.clone(),
+                t.response.phase == Phase::Sending && t.response.request_id.is_none(),
             )
         };
-        let mut plan = prepare_send(
+        // A send already waiting for the collection id is not doubled.
+        if pending {
+            return Ok(None);
+        }
+        let plan = prepare_send(
             &draft,
             path.as_deref(),
             origin.as_ref(),
@@ -1104,14 +1287,34 @@ impl Workspace {
                 cx.emit(WorkspaceEvent::Notice(message.to_string().into()));
             }
         })?;
-        plan.prepared.client.collection = self
-            .collection
-            .as_ref()
-            .map(|c| collection_partition(&c.tree.root));
-        let scope_path = plan.scope_path;
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
         }
+        if let Some(partition) = self.partition_now() {
+            return Ok(Some(self.submit_plan(tab, draft, plan, partition, cx)));
+        }
+        // No id yet: create it off the UI thread, then submit.
+        self.show_sending(tab, None, cx);
+        let tab = tab.downgrade();
+        self.resolve_id_then(cx, move |this, partition, cx| {
+            let (Some(partition), Some(tab)) = (partition, tab.upgrade()) else {
+                return;
+            };
+            this.submit_plan(&tab, draft, plan, partition, cx);
+        });
+        Ok(None)
+    }
+
+    fn submit_plan(
+        &mut self,
+        tab: &Entity<RequestTab>,
+        draft: Request,
+        mut plan: SendPlan,
+        partition: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> RequestId {
+        plan.prepared.client.collection = partition;
+        let scope_path = plan.scope_path;
         let id = self.engine.submit(Command::Send(plan.prepared));
         if let Some(notice) = plan.notice {
             cx.emit(WorkspaceEvent::Notice(notice.into()));
@@ -1124,13 +1327,23 @@ impl Workspace {
                 draft,
             },
         );
-        // Start from a clean response so nothing of the previous one leaks into
-        // this one's display or history entry; the old body goes back to the store.
+        self.show_sending(tab, Some(id), cx);
+        id
+    }
+
+    /// Start the tab from a clean response so nothing of the previous one leaks into this
+    /// one's display or history entry; the old body goes back to the store.
+    fn show_sending(
+        &mut self,
+        tab: &Entity<RequestTab>,
+        id: Option<RequestId>,
+        cx: &mut Context<Self>,
+    ) {
         let old_body = tab.update(cx, |t, cx| {
             let old = t.response.body.take();
             t.response = ResponseState {
                 phase: Phase::Sending,
-                request_id: Some(id),
+                request_id: id,
                 ..ResponseState::default()
             };
             cx.emit(TabEvent::ResponseChanged);
@@ -1140,7 +1353,6 @@ impl Workspace {
         if let Some(h) = old_body {
             self.release_body(&h);
         }
-        Ok(id)
     }
 
     /// Start the interactive authorization for `tab`. Resolves like Send; an unresolved variable
@@ -1159,6 +1371,7 @@ impl Workspace {
                 t.authorize.waiting_id(),
             )
         };
+        let partition = self.partition_now();
         let command = prepare_authorize(
             &draft,
             path.as_deref(),
@@ -1166,13 +1379,21 @@ impl Workspace {
             self.collection.as_ref().map(|c| &c.tree),
             &self.empty_defaults,
             self.collection.as_ref().and_then(|c| c.active_env.as_ref()),
-            self.collection
-                .as_ref()
-                .map(|c| collection_partition(&c.tree.root)),
+            partition.clone().flatten(),
         )?;
         let Some(command) = command else {
             return Ok(());
         };
+        if partition.is_none() {
+            // No id yet: create it off the UI thread, then start the flow.
+            let tab = tab.downgrade();
+            self.resolve_id_then(cx, move |this, partition, cx| {
+                if let (Some(_), Some(tab)) = (partition, tab.upgrade()) {
+                    let _ = this.authorize(&tab, cx);
+                }
+            });
+            return Ok(());
+        }
         if let Some(old) = waiting {
             self.engine.submit(Command::AuthorizeCancel(old));
             self.auth_routes.remove(&old);
@@ -1677,6 +1898,384 @@ pub(crate) fn describe_problems(e: &ResolveError) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Cookie persistence and the collection id behind it. Every file operation is a background
+/// job and runs one at a time; the UI thread only reads the cached id and the in-memory jar.
+impl Workspace {
+    /// `Some(partition)` once known (`Some(None)`: no collection), `None` while the id still
+    /// has to be read or created.
+    fn partition_now(&self) -> Option<Option<String>> {
+        if self.collection.is_none() {
+            return Some(None);
+        }
+        match &self.coll_id {
+            IdState::Known(id) => Some(Some(id.clone())),
+            IdState::Failed { partition, .. } => Some(Some(partition.clone())),
+            IdState::Reading | IdState::Absent => None,
+        }
+    }
+
+    fn known_id(&self) -> Option<String> {
+        match (&self.collection, &self.coll_id) {
+            (Some(_), IdState::Known(id)) => Some(id.clone()),
+            _ => None,
+        }
+    }
+
+    /// The open collection's jar (or the no-collection jar); `None` while its id is unknown.
+    fn current_jar(&self) -> Option<CookieJar> {
+        Some(match self.partition_now()? {
+            None => self.jars.jar(None),
+            Some(p) => self.jars.jar(Some(&p)),
+        })
+    }
+
+    /// Why cookies cannot be saved for the open collection, if so.
+    fn cookie_unavailable(&self) -> Option<String> {
+        if self.collection.is_none() {
+            return Some("open a collection first".into());
+        }
+        if self.data_dir.is_none() {
+            return Some("the data directory is unknown".into());
+        }
+        match &self.coll_id {
+            IdState::Failed { reason, .. } => Some(reason.clone()),
+            _ => None,
+        }
+    }
+
+    /// What the Cookies manager shows.
+    pub fn cookie_panel(&self) -> CookiePanel {
+        let name = self.collection.as_ref().map(|c| {
+            c.tree.root.file_name().map_or_else(
+                || c.tree.root.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        });
+        let persistence = if let Some(reason) = self.cookie_unavailable() {
+            Persistence::Unavailable(reason)
+        } else if matches!(self.coll_id, IdState::Absent) {
+            Persistence::Off
+        } else {
+            match self.known_id().and_then(|id| self.cookie_files.get(&id)) {
+                Some(st) if st.loaded => match &st.error {
+                    Some(e) => Persistence::Failed(e.clone()),
+                    None if st.enabled => Persistence::On,
+                    None => Persistence::Off,
+                },
+                _ => Persistence::Pending,
+            }
+        };
+        CookiePanel {
+            jar: self.current_jar(),
+            name,
+            persistence,
+        }
+    }
+
+    /// Read the open collection's id on the background executor; never writes.
+    fn start_id_read(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let r = root.clone();
+            let state = cx
+                .background_executor()
+                .spawn(async move { read_id_state(&r) })
+                .await;
+            this.update(cx, |this, cx| this.apply_id(&root, state, true, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Record a resolved id for `root` if that collection is still open. A read result only
+    /// lands while the read is the latest word; a known id is never replaced.
+    fn apply_id(&mut self, root: &Path, state: IdState, from_read: bool, cx: &mut Context<Self>) {
+        if self.collection.as_ref().map(|c| c.tree.root.as_path()) != Some(root) {
+            return;
+        }
+        if matches!(self.coll_id, IdState::Known(_))
+            || (from_read && !matches!(self.coll_id, IdState::Reading))
+        {
+            return;
+        }
+        self.coll_id = state.clone();
+        match state {
+            IdState::Known(id) => self.on_id_known(id, cx),
+            IdState::Failed { reason, .. } => self.cookies_not_saved(&reason, cx),
+            IdState::Reading | IdState::Absent => {}
+        }
+        cx.emit(WorkspaceEvent::CookiesChanged);
+        cx.notify();
+    }
+
+    /// Run `then` once the open collection's partition is known, creating the id on the
+    /// background executor when there is none. `None` when the collection changed meanwhile.
+    fn resolve_id_then(
+        &mut self,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Option<Option<String>>, &mut Context<Self>) + 'static,
+    ) {
+        if let Some(p) = self.partition_now() {
+            then(self, Some(p), cx);
+            return;
+        }
+        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+            then(self, None, cx);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let r = root.clone();
+            let state = cx
+                .background_executor()
+                .spawn(async move {
+                    match resolve_collection_id(&r) {
+                        Ok(id) => IdState::Known(id.to_string()),
+                        Err(e) => IdState::failed(&r, e),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.apply_id(&root, state, false, cx);
+                let same = this.collection.as_ref().map(|c| c.tree.root.as_path()) == Some(&root);
+                let p = if same { this.partition_now() } else { None };
+                then(this, p, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The first time a collection's id is known in this run, check and load its cookie file.
+    fn on_id_known(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.data_dir.is_some() && !self.cookie_files.contains_key(&id) {
+            let generation = self.jars.jar(Some(&id)).generation();
+            self.cookie_files.insert(
+                id.clone(),
+                CookieStatus {
+                    loaded: false,
+                    enabled: false,
+                    error: None,
+                    debounce: Debounce::new(generation),
+                },
+            );
+            self.enqueue_cookie_job(CookieJob::Load { id }, cx);
+        }
+        self.ensure_cookie_ticker(cx);
+    }
+
+    fn cookies_not_saved(&mut self, reason: &str, cx: &mut Context<Self>) {
+        tracing::warn!(error = %reason, "cookies are not saved");
+        cx.emit(WorkspaceEvent::Notice(
+            format!("Cookies are not saved: {reason}").into(),
+        ));
+    }
+
+    fn enqueue_cookie_job(&mut self, job: CookieJob, cx: &mut Context<Self>) {
+        self.cookie_queue.push_back(job);
+        self.pump_cookies(cx);
+    }
+
+    /// True when no cookie-file job is queued or running.
+    fn cookie_idle(&self) -> bool {
+        !self.cookie_busy && self.cookie_queue.is_empty()
+    }
+
+    fn pump_cookies(&mut self, cx: &mut Context<Self>) {
+        if self.cookie_busy {
+            return;
+        }
+        let Some(data) = self.data_dir.clone() else {
+            self.cookie_queue.clear();
+            return;
+        };
+        let Some(job) = self.cookie_queue.pop_front() else {
+            return;
+        };
+        self.cookie_busy = true;
+        let id = job.id().to_owned();
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(async move { job.run(&data) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.cookie_busy = false;
+                this.cookie_done(&id, done, cx);
+                this.pump_cookies(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn cookie_done(&mut self, id: &str, done: CookieDone, cx: &mut Context<Self>) {
+        let mut failure: Option<String> = None;
+        let jar = self.jars.jar(Some(id));
+        if let Some(st) = self.cookie_files.get_mut(id) {
+            match done {
+                CookieDone::Loaded(Ok(None)) => {
+                    st.loaded = true;
+                    st.enabled = false;
+                }
+                CookieDone::Loaded(Ok(Some(stored))) => {
+                    st.loaded = true;
+                    st.enabled = true;
+                    // Cookies set while the load ran are newer and win.
+                    let mut records = cookie_ui::to_records(stored);
+                    records.extend(jar.snapshot(SystemTime::now()));
+                    jar.load(records);
+                }
+                CookieDone::Loaded(Err(e)) => {
+                    // The file is left alone until the toggle is turned off and on.
+                    st.loaded = true;
+                    st.enabled = true;
+                    st.error = Some(e.clone());
+                    failure = Some(e);
+                }
+                CookieDone::Saved(Err(e)) => {
+                    st.error = Some(e.clone());
+                    failure = Some(e);
+                }
+                CookieDone::Enabled(Err(e)) => {
+                    st.enabled = false;
+                    failure = Some(e);
+                }
+                CookieDone::Disabled(Err(e)) => {
+                    st.enabled = true;
+                    st.error = Some(e.clone());
+                    failure = Some(e);
+                }
+                CookieDone::Saved(Ok(()))
+                | CookieDone::Enabled(Ok(()))
+                | CookieDone::Disabled(Ok(())) => {}
+            }
+        }
+        if let Some(e) = failure {
+            self.cookies_not_saved(&e, cx);
+        }
+        self.ensure_cookie_ticker(cx);
+        cx.emit(WorkspaceEvent::CookiesChanged);
+        cx.notify();
+    }
+
+    /// Hand the jar's persistent cookies to a save job and mark this generation as saved.
+    fn queue_cookie_save(&mut self, id: &str, cx: &mut Context<Self>) {
+        let jar = self.jars.jar(Some(id));
+        let generation = jar.generation();
+        let cookies = cookie_ui::to_stored(jar.snapshot(SystemTime::now()));
+        if let Some(st) = self.cookie_files.get_mut(id) {
+            st.debounce.saved(generation);
+        }
+        self.enqueue_cookie_job(
+            CookieJob::Save {
+                id: id.to_owned(),
+                cookies,
+            },
+            cx,
+        );
+    }
+
+    /// True when the open collection's file is on and healthy, so changes are saved.
+    fn cookie_saving(&self) -> Option<String> {
+        let id = self.known_id()?;
+        let st = self.cookie_files.get(&id)?;
+        (st.loaded && st.enabled && st.error.is_none()).then_some(id)
+    }
+
+    /// Save now if the open collection's jar changed since the last save.
+    fn flush_cookies(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.cookie_saving() else {
+            return;
+        };
+        let generation = self.jars.jar(Some(&id)).generation();
+        let dirty = self.cookie_files.get_mut(&id).is_some_and(|st| {
+            st.debounce.observe(generation, Instant::now());
+            st.debounce.dirty()
+        });
+        if dirty {
+            self.queue_cookie_save(&id, cx);
+        }
+    }
+
+    /// Watch the open collection's jar while persistence is on. The timer stops itself when
+    /// there is nothing to watch.
+    fn ensure_cookie_ticker(&mut self, cx: &mut Context<Self>) {
+        if self.cookie_ticker.is_some() || self.cookie_saving().is_none() {
+            return;
+        }
+        self.cookie_ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = this.update(cx, |t, cx| {
+                    let keep = t.cookie_tick(Instant::now(), cx);
+                    if !keep {
+                        t.cookie_ticker = None;
+                    }
+                    keep
+                });
+                if !matches!(keep, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn cookie_tick(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
+        let Some(id) = self.cookie_saving() else {
+            return false;
+        };
+        let generation = self.jars.jar(Some(&id)).generation();
+        let due = self.cookie_files.get_mut(&id).is_some_and(|st| {
+            st.debounce.observe(generation, now);
+            st.debounce.due(now)
+        });
+        if due {
+            self.queue_cookie_save(&id, cx);
+        }
+        true
+    }
+
+    /// Turn "Keep cookies between sessions" on or off for the open collection. The in-memory
+    /// jar is untouched. On creates the collection id if there is none.
+    pub fn set_cookie_persistence(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(reason) = self.cookie_unavailable() {
+            self.cookies_not_saved(&reason, cx);
+            return;
+        }
+        self.resolve_id_then(cx, move |this, partition, cx| {
+            if partition.is_none() {
+                return;
+            }
+            let Some(id) = this.known_id() else {
+                if let Some(reason) = this.cookie_unavailable() {
+                    this.cookies_not_saved(&reason, cx);
+                }
+                return;
+            };
+            let jar = this.jars.jar(Some(&id));
+            let generation = jar.generation();
+            let st = this.cookie_files.entry(id.clone()).or_insert(CookieStatus {
+                loaded: false,
+                enabled: false,
+                error: None,
+                debounce: Debounce::new(generation),
+            });
+            st.error = None;
+            if on {
+                st.enabled = true;
+                st.debounce.saved(generation);
+                let cookies = cookie_ui::to_stored(jar.snapshot(SystemTime::now()));
+                this.enqueue_cookie_job(CookieJob::Enable { id, cookies }, cx);
+            } else {
+                st.enabled = false;
+                this.enqueue_cookie_job(CookieJob::Disable { id }, cx);
+            }
+            this.ensure_cookie_ticker(cx);
+            cx.emit(WorkspaceEvent::CookiesChanged);
+            cx.notify();
+        });
+    }
 }
 
 #[cfg(test)]
