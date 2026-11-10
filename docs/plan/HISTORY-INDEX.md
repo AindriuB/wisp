@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 96 | Import dialog: paste curl or choose Postman/OpenAPI file, preview with warnings, write to collection root or a new folder; secrets note | ## 2026-11-10 — Import dialog |
 | 2026-11-10 | 93 | History moved to a per-user store (index plus capped bodies, auth and Set-Cookie redacted, count and byte eviction), written off the UI thread | ## 2026-11-10 — Per-user history store |
 | 2026-11-10 | 94 | curl, Postman and OpenAPI importers in wisp-storage with hostile-input limits (10 MiB JSON, 2 MiB YAML, depth 64, 64 MiB expanded budget) and an event-level YAML pass | ## 2026-11-10 — curl, Postman and OpenAPI importers |
 | 2026-11-10 | 95 | Digest (RFC 7616) and AWS SigV4 auth with editor kinds; engine follows redirects itself for these, re-signs same-origin and drops auth cross-origin | ## 2026-11-10 — Digest and AWS SigV4 auth |

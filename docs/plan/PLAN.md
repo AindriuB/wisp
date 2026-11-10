@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
-- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth); see HISTORY.
+- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog); see HISTORY.
 - **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
@@ -70,6 +70,14 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
+### Follow-ups from task 96 (not 0.2.0 wave 1)
+- [P3] import.rs:150-156: the report's folder count omits the target folder the dialog creates (pet-store import reports 2 folders, 3 exist).
+- [P3] import.rs:153-156: if create_folder succeeds and write fails, an empty folder is left behind.
+- [P3] import.rs:131: the whole chosen file is read before the 10 MiB check; files over the cap show "Unrecognised file" instead of "too large". Check metadata size or read with take().
+- [P3] import.rs:427: the "Postman collection variables" secrets note also shows for curl and OpenAPI imports.
+- [P3] Escape only closes the dialog while focus is inside it; clicking the workspace behind the overlay sends Escape to CancelRequest.
+- [NOTE] import::write writes collection defaults and environments before requests, so a mid-import failure leaves a partial import (already tracked under task 94).
+
 ### Follow-ups from task 94 (not 0.2.0 wave 1)
 - [P3] 34-43 curl.rs:355: unknown options fail open; their argument can become the committed URL. Prefer the `://` positional, or fail with a Parse error naming the option.
 - [P3] 34-44 mod.rs:271: `split_userinfo` misses lenient forms `https:///u:p@h` and `http:/u:p@h` that reqwest accepts.
@@ -107,7 +115,7 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] postman.rs: collection-variable keys go into secret names unsanitised; a key with `}}` or trailing whitespace makes an unresolvable ref.
 - [P3] `split_userinfo`: a password containing raw `/`, `?` or `#` stays in the URL (curl does not treat it as userinfo either).
 - [STYLE] mod.rs:441 test `split_userinfo_ignores_at_after_authority` sits above `use super::*;`.
-- [NOTE] All non-empty Postman collection variables (including e.g. baseUrl) now go to the imported secrets environment and resolve only when it is selected; worth a line in the import summary (task 96).
+- [NOTE] All non-empty Postman collection variables (including e.g. baseUrl) now go to the imported secrets environment and resolve only when it is selected; the Import dialog's secrets note covers this (task 96).
 - [NOTE] User decision 2026-11-10: imported file parts become disabled empty parts (never a path); URL userinfo becomes Basic auth via secrets, explicit auth wins.
 - [NOTE] Re-review: an unsafe file part is saved as `""` and loads as the request's directory, so Send fails with a read error rather than "no file selected". On Windows, nested 80-byte folder names can exceed MAX_PATH for other tools.
 - [NOTE] `write` is not atomic; an error partway through leaves a partial import.
