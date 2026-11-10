@@ -106,6 +106,11 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [NOTE] Re-review: an unsafe file part is saved as `""` and loads as the request's directory, so Send fails with a read error rather than "no file selected". On Windows, nested 80-byte folder names can exceed MAX_PATH for other tools.
 - [NOTE] `write` is not atomic; an error partway through leaves a partial import.
 - [NOTE] saphyr-parser 0.3.3 buffers whole flow collections (scanner.rs:866-880); bounded by the 2 MiB YAML cap to about 450 MB. Accepted.
+- [P3] 34-40 curl.rs:969: the expand-options test asserts only that credentials are absent, not that they were routed to secrets/auth.
+- [P3] 34-41 (Nit) openapi.rs:251: the userinfo warning re-parses the host with `split_once` and can name the wrong host; return the authority from `split_userinfo`.
+- [P3] curl.rs:21: arg-taking options newer than curl 7.84 are still missing (`ipfs-gateway`, `keepalive-cnt`, possibly `sigalgs`, `knownhosts`, `parallel-max-host`); the list was built from local curl 7.84 `--help all`. Regenerate from a current curl.
+- [P3] curl.rs:381: `-h <category>` does not consume its argument (`curl -h all http://h/x` imports `all` as the URL); harmless.
+- [NOTE] `is_credential_header` uses a broad substring heuristic (auth, token, secret, key, session, cookie, password, passwd, credential, signature), so headers like X-Monkey move to secrets; accepted, fail-safe.
 ### Follow-ups from task 95 (not 0.2.0 wave 1)
 - [P3] `engine.rs:814-815`: the engine follows 9 redirects; reqwest follows 10.
 - [P3] `engine.rs:834-838`: `transfer-encoding` is not stripped when the body is dropped on a rewrite.
