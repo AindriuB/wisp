@@ -19,7 +19,7 @@ in the same commit.
 
 ## 2026-11-10 — Wave-2 size gate (task 108)
 Wave 2 (tasks 100-108) passed the binary size gate, measured from run 42890358687 at 8c468ff (main df81213 plus the task file). Windows is 15,136,256 B against the 15,500,000 B limit (wave 1 14,514,688, +621,568), leaving 363,744 B of headroom; macOS is 11,595,488 B (+546,384) and Linux 25,444,088 B (+644,808). All RSS figures are within budgets.json.
-**Cost:** About 586 KB of the growth is attributed to tasks 100, 103 and 104, of which roughly 364 KB is the bundled public-suffix list; the remaining ~35 KB is unsplit across 105-107. Headroom is now small for wave 3, so the keychain work needs a size check early. The known flake many_parameters_merge_in_linear_time hit once on macOS in PR #47 CI and passed on rerun.
+**Cost:** Per-task attribution is approximate. PR #45's figure (15,100,928 B, run 42867914368) predates build.rs stripping public-suffix-list comments; task 104's stripped run measured 14,951,424 B (100, 103 and 104 together +436,736 over wave 1) and task 105's 14,968,832 B, which leaves about 167 KB across 106, 107 and the merge order, not split further. Headroom is now small for wave 3, so the keychain work needs a size check early. The known flake many_parameters_merge_in_linear_time hit once on macOS in PR #47 CI and passed on rerun.
 
 ## 2026-11-10 — Phase timings (DNS, connect+TLS)
 Completed requests now report real DNS and connect+TLS phase timings, measured by a custom resolver and connector and claimed per request through a small registry, so the response panel can show them. Windows binary is 14,968,832 B of 15,500,000 (measure run 42878660363 at 02557ed, binary-identical to the merged head), up 17,408 B from task 104's 14,951,424.
