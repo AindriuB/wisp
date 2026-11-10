@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
-- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend); see HISTORY.
+- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); see HISTORY. Tasks 103 (OAuth2 engine) and 104 (cookie jar) are now unblocked.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
@@ -76,6 +76,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [NOTE] Literal OAuth2 `client_secret` is written to committed request TOML, like Digest password and SigV4 secret_key; values are normally `{{vars}}` (spec :58).
 - [NOTE] Until task 106, the auth type list doesn't offer OAuth2, so switching an OAuth2 request away can't be undone in the UI.
 - [NOTE] Task 100 added no deps; 103/104 bring serde_json/getrandom/tokio net and cookie crates and must recheck the lockfile rule and size.
+- [P3 → task 103] 42-3 core auth/oauth2.rs:26: RefreshTokenStore is sync with no Result; keychain failures would be lost and prompts would block the engine. Return Result; document spawn_blocking use.
+- [P3 → task 103] 42-7 storage history.rs:266: history empties non-secret OAuth2 fields (token/auth URLs, client id, scope), so Resend loses them; redact only client_secret.
+- [P3] 42-4 app ui/request/auth.rs:123: build_auth maps OAuth2 kinds to Inherit, guarded only by an early return elsewhere.
+- [P3] 42-5 storage codec.rs:439: redirect_port read error and stale-key removal are untested.
+- [P3] 42-6 core engine.rs:459: serde round-trip test omits AuthorizeStart and AuthorizeCancel.
+- [P3] 42-8 core cookies.rs:15: CookieJar redacting Debug has no debug_redacts test (do it in 104).
+- [P3] 42-9 (Nit) model.rs:167: AuthorizeStart timeout None has no stated meaning; document as the 120 s default.
+- [P3] 42-10 (Nit) app workspace.rs:1135: inner auth-event arm is unreachable.
+- [NOTE] Round-1 fix for PR #42: TokenKey now carries collection id and environment; each collection has its own client and CookieJar (ClientSettings.collection); EngineConfig.cookies was removed. Task 106 must pass `environment` and `client.collection` on AuthorizeStart.
 
 ### Follow-ups from task 97 (not 0.2.0 wave 1)
 - [P3] workspace.rs:1006-1018: Save on a from-history tab does not clear `from_history`, so later sends of the saved request still show the "Resent..." notice.
