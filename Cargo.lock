@@ -8272,6 +8272,7 @@ dependencies = [
  "async-channel",
  "notify",
  "saphyr",
+ "saphyr-parser",
  "serde",
  "serde_json",
  "tempfile",

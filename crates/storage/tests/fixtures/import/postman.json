@@ -1,0 +1,86 @@
+{
+  "info": {
+    "name": "Pet Store",
+    "_postman_id": "00000000-0000-0000-0000-000000000001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:9" }
+  ],
+  "item": [
+    {
+      "name": "Pets",
+      "item": [
+        {
+          "name": "Admin",
+          "item": [
+            {
+              "name": "Delete pet",
+              "request": {
+                "method": "DELETE",
+                "url": { "raw": "{{baseUrl}}/pets/:id", "variable": [{ "key": "id", "value": "1" }] }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get pet",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/pets/:id?verbose=1",
+              "query": [{ "key": "verbose", "value": "1", "disabled": true }],
+              "variable": [{ "key": "id", "value": "7" }]
+            }
+          }
+        },
+        {
+          "name": "Create pet",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.variables.set('a', 1);"] } }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "tok-123", "type": "string" }] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"name\":\"rex\"}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/pets"
+          }
+        },
+        {
+          "name": "Upload",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "caption", "value": "hi", "type": "text" },
+                { "key": "photo", "type": "file", "src": "photo.png" }
+              ]
+            },
+            "url": "{{baseUrl}}/pets/upload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Login",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            { "key": "username", "value": "alice", "type": "string" },
+            { "key": "password", "value": "s3cret-pass", "type": "string" }
+          ]
+        },
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [{ "key": "grant", "value": "password" }]
+        },
+        "url": "{{baseUrl}}/login"
+      }
+    }
+  ]
+}
