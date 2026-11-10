@@ -744,4 +744,37 @@ mod tests {
         assert!(r.environments[0].secrets.iter().all(|v| v.value != "pw"));
         assert!(r.warnings.iter().any(|w| w.message.contains("credentials")));
     }
+
+    #[test]
+    fn untrimmed_and_proxy_credential_headers_go_to_secrets() {
+        let doc = serde_json::json!({
+            "info": {"name": "c", "_postman_id": "x",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [{"name": "r", "request": {"method": "GET", "url": "http://h/",
+                "header": [{"key": "Authorization ", "value": "SECRETAU"},
+                           {"key": "Proxy-Authorization", "value": "SECRETPA"}]}}]
+        });
+        let r = parse(doc.to_string().as_bytes()).unwrap();
+        let req = find(&r.items, "r");
+        assert!(!format!("{req:?}").contains("SECRET"));
+        let secrets = &r.environments[0].secrets;
+        assert!(secrets.iter().any(|v| v.value == "SECRETAU"));
+        assert!(secrets.iter().any(|v| v.value == "SECRETPA"));
+    }
+
+    #[test]
+    fn punctuation_item_name_with_many_credential_headers_is_cheap() {
+        let t = std::time::Instant::now();
+        let headers: Vec<_> = (0..2000)
+            .map(|i| serde_json::json!({"key": "Authorization", "value": format!("v{i}")}))
+            .collect();
+        let doc = serde_json::json!({
+            "info": {"name": "c", "_postman_id": "x",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+            "item": [{"name": "-".repeat(1024 * 1024), "request": {"method": "GET",
+                "url": "http://h/", "header": headers}}]
+        });
+        parse(doc.to_string().as_bytes()).unwrap();
+        assert!(t.elapsed().as_secs() < 2);
+    }
 }

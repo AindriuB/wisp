@@ -245,6 +245,23 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
                 "server URL over {MAX_URL_BYTES} bytes"
             )));
         }
+        let (stripped, userinfo) = super::split_userinfo(&url);
+        if userinfo.is_some() {
+            url = stripped;
+            let host = url
+                .split_once("://")
+                .map_or(url.as_str(), |(_, r)| r)
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or("");
+            result.warn(
+                &root,
+                format!(
+                    "server {} (`{host}`): credentials in the URL were dropped",
+                    i + 1
+                ),
+            );
+        }
         let desc = text(s.get("description"));
         let mut name = env_name(if desc.is_empty() { &url } else { &desc });
         if name.is_empty() {
@@ -879,5 +896,22 @@ mod tests {
         let n = env_name(&"a".repeat(1000));
         assert_eq!(n.len(), MAX_NAME_BYTES);
         assert!(n.len() + ".secrets.toml".len() + 6 <= 255);
+    }
+
+    #[test]
+    fn server_userinfo_is_dropped_with_a_safe_warning() {
+        let doc = br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+            "servers":[{"url":"https://bob:SECRETPW@api.example.com/v1"}],
+            "paths":{}}"#;
+        let r = parse(doc).unwrap();
+        let env = &r.environments[0];
+        assert_eq!(env.vars[0].value, "https://api.example.com/v1");
+        let all = format!("{r:?}");
+        assert!(!all.contains("SECRETPW") && !all.contains("bob"));
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.message.contains("api.example.com"))
+        );
     }
 }

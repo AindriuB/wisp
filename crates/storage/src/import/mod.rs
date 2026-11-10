@@ -303,7 +303,8 @@ impl SecretSink {
             return value;
         }
         let mut base = String::new();
-        for c in request.chars() {
+        // Bound the input scanned too: punctuation produces no output.
+        for c in request.chars().take(MAX_SECRET_BASE_BYTES * 4) {
             if base.len() >= MAX_SECRET_BASE_BYTES {
                 break;
             }
@@ -354,7 +355,10 @@ impl SecretSink {
 
 /// Headers whose literal values are credentials.
 pub(crate) fn is_credential_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
+    let name = name.trim();
+    ["authorization", "proxy-authorization", "cookie"]
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
 }
 
 /// Percent-encode everything but unreserved characters.

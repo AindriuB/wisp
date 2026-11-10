@@ -82,6 +82,17 @@ const IGNORED_LONG_WITH_ARG: &[&str] = &[
     "socks5-hostname",
     "keepalive-time",
     "tls-max",
+    "proxy-pass",
+    "tlspassword",
+    "tlsuser",
+    "proxy-tlspassword",
+    "proxy-tlsuser",
+    "sasl-authzid",
+    "login-options",
+    "ftp-account",
+    "connect-to",
+    "proto",
+    "hostpubsha256",
 ];
 
 /// Split a shell-like command line into words.
@@ -285,7 +296,10 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                     need(&mut args, &arg)?;
                     f.warn(format!("option `{arg}` and its argument are not imported"));
                 }
-                _ => f.warn(format!("option `{arg}` is not imported")),
+                _ => {
+                    let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
+                    f.warn(format!("option `{name}` is not imported"));
+                }
             }
         } else {
             let chars: Vec<char> = arg[1..].chars().collect();
@@ -890,5 +904,63 @@ mod tests {
             assert!(e.secrets.iter().all(|v| v.name.len() < 100));
         }
         assert!(t.elapsed().as_secs() < 2);
+    }
+
+    #[test]
+    fn punctuation_name_with_many_credential_headers_is_cheap() {
+        let t = std::time::Instant::now();
+        let mut cmd = format!("curl http://h/{}", "-".repeat(1024 * 1024));
+        for i in 0..2000 {
+            cmd.push_str(&format!(" -H 'Authorization: v{i}'"));
+        }
+        parse(&cmd).unwrap();
+        assert!(t.elapsed().as_secs() < 2);
+    }
+
+    #[test]
+    fn proxy_authorization_and_spaced_names_go_to_secrets() {
+        let (r, res) = req(
+            "curl -H 'Proxy-Authorization: Basic SECRETPA' -H ' authorization : SECRETAU' http://h/x",
+        );
+        assert!(!format!("{r:?}").contains("SECRET"));
+        let secrets = &res.environments[0].secrets;
+        assert!(secrets.iter().any(|v| v.value == "Basic SECRETPA"));
+        assert!(secrets.iter().any(|v| v.value == "SECRETAU"));
+    }
+
+    #[test]
+    fn credential_long_options_consume_their_argument() {
+        for opt in [
+            "proxy-pass",
+            "proxy-user",
+            "tlspassword",
+            "tlsuser",
+            "proxy-tlspassword",
+            "proxy-tlsuser",
+            "pass",
+            "key",
+            "sasl-authzid",
+            "login-options",
+            "ftp-account",
+            "oauth2-bearer",
+            "aws-sigv4",
+            "proxy-header",
+            "connect-to",
+            "proto",
+            "hostpubsha256",
+        ] {
+            for cmd in [
+                format!("curl --{opt} SECRETVAL http://h/x"),
+                format!("curl http://h/x --{opt} SECRETVAL"),
+            ] {
+                let (r, res) = req(&cmd);
+                assert_eq!(r.url, "http://h/x", "{opt}");
+                let all = format!("{r:?}{:?}{:?}", res.name, res.warnings);
+                assert!(!all.contains("SECRETVAL"), "{opt}");
+                assert!(res.environments.iter().all(|e| e.secrets.is_empty()));
+            }
+        }
+        let (_, res) = req("curl --pass=SECRETVAL http://h/x");
+        assert!(!format!("{:?}", res.warnings).contains("SECRETVAL"));
     }
 }
