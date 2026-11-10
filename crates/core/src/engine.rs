@@ -14,6 +14,7 @@ use crate::auth::oauth2::{Clock, MemoryOnly, OAuth2, RefreshTokenStore, TokenKey
 use crate::auth::{EngineAuth, digest, sigv4};
 use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
 use crate::client::{ClientCache, HTTP1_MAX_RESPONSE_HEADERS};
+use crate::cookies::CookieJars;
 use crate::model::{
     ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
     PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
@@ -36,6 +37,8 @@ pub struct EngineConfig {
     pub body_memory_limit: u64,
     /// Where OAuth2 refresh tokens persist between runs.
     pub refresh_tokens: Arc<dyn RefreshTokenStore>,
+    /// The in-memory cookie jars, one per collection; the app keeps a clone to reach them.
+    pub cookies: CookieJars,
 }
 
 impl fmt::Debug for EngineConfig {
@@ -45,6 +48,7 @@ impl fmt::Debug for EngineConfig {
             .field("default_timeout", &self.default_timeout)
             .field("body_memory_limit", &self.body_memory_limit)
             .field("refresh_tokens", &format_args!("<redacted>"))
+            .field("cookies", &self.cookies)
             .finish()
     }
 }
@@ -56,6 +60,7 @@ impl Default for EngineConfig {
             default_timeout: Some(Duration::from_secs(30)),
             body_memory_limit: DEFAULT_MEMORY_LIMIT,
             refresh_tokens: Arc::new(MemoryOnly::default()),
+            cookies: CookieJars::default(),
         }
     }
 }
@@ -158,7 +163,7 @@ impl Engine {
         let (tx, rx) = async_channel::unbounded();
         let inner = Inner {
             runtime: Some(runtime),
-            clients: Arc::new(ClientCache::default()),
+            clients: Arc::new(ClientCache::new(config.cookies)),
             bodies: BodyStore::new(config.body_memory_limit),
             events: tx,
             next_id: AtomicU64::new(1),

@@ -1,32 +1,31 @@
 //! The reqwest client cache and TLS setup.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use crate::cookies::CookieJar;
+use crate::cookies::CookieJars;
 use crate::engine::err;
 use crate::model::{ClientSettings, EngineError, ErrorKind};
 
 /// One `reqwest::Client` per distinct `ClientSettings`.
 ///
-/// `ClientSettings` carries the collection id, so each collection has its own client and its own
-/// `CookieJar`; a request with no collection has a jar of its own too.
+/// `ClientSettings` carries the collection id; every client of one collection shares that
+/// collection's jar from `CookieJars`.
 #[derive(Default)]
 pub(crate) struct ClientCache {
     clients: Mutex<HashMap<ClientSettings, reqwest::Client>>,
-    /// One jar per collection id; unused by clients until the cookie provider lands.
-    jars: Mutex<HashMap<Option<String>, CookieJar>>,
+    jars: CookieJars,
 }
 
 impl ClientCache {
-    /// The jar for a collection, created on first use.
-    pub(crate) fn jar(&self, collection: &Option<String>) -> CookieJar {
-        let mut jars = self.jars.lock().unwrap_or_else(|e| e.into_inner());
-        jars.entry(collection.clone()).or_default().clone()
+    pub(crate) fn new(jars: CookieJars) -> Self {
+        Self {
+            clients: Mutex::default(),
+            jars,
+        }
     }
 
     pub(crate) fn get(&self, settings: &ClientSettings) -> Result<reqwest::Client, EngineError> {
-        self.jar(&settings.collection);
         let mut map = self.clients.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = map.get(settings) {
             return Ok(c.clone());
@@ -41,7 +40,8 @@ impl ClientCache {
         let mut builder = reqwest::Client::builder()
             .tls_backend_rustls()
             .tls_certs_only(roots)
-            .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS);
+            .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS)
+            .cookie_provider(Arc::new(self.jars.jar(settings.collection.as_deref())));
         if !settings.verify_tls {
             builder = builder.tls_danger_accept_invalid_certs(true);
         }
@@ -106,8 +106,9 @@ mod tests {
     }
 
     #[test]
-    fn each_collection_id_gets_its_own_client_and_jar() {
-        let cache = ClientCache::default();
+    fn each_collection_id_gets_its_own_client_and_the_shared_jar() {
+        let jars = CookieJars::default();
+        let cache = ClientCache::new(jars.clone());
         let mut a = settings(true);
         a.collection = Some("a".into());
         let mut b = settings(true);
@@ -116,14 +117,10 @@ mod tests {
         cache.get(&b).unwrap();
         cache.get(&settings(true)).unwrap();
         assert_eq!(cache.len(), 3);
-        assert!(!cache.jar(&a.collection).same_jar(&cache.jar(&b.collection)));
-        assert!(!cache.jar(&a.collection).same_jar(&cache.jar(&None)));
-        assert!(
-            cache
-                .jar(&a.collection)
-                .same_jar(&cache.jar(&Some("a".into())))
-        );
-        assert!(cache.jar(&None).same_jar(&cache.jar(&None)));
+        assert!(!jars.jar(Some("a")).same_jar(&jars.jar(Some("b"))));
+        assert!(!jars.jar(Some("a")).same_jar(&jars.jar(None)));
+        assert!(jars.jar(Some("a")).same_jar(&jars.jar(Some("a"))));
+        assert!(jars.jar(None).same_jar(&jars.jar(None)));
     }
 
     #[test]
