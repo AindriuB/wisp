@@ -3,7 +3,7 @@
 //! Pure: the time is an argument. Chunked/streaming signatures and SigV4A are not supported.
 
 use hmac::{Hmac, Mac};
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use sha2::{Digest as _, Sha256};
 
 use super::hex;
@@ -110,12 +110,18 @@ fn canonical_path(url: &reqwest::Url, service: &str) -> String {
 }
 
 fn canonical_query(url: &reqwest::Url) -> String {
+    // Decode the raw query ourselves: a literal `+` is a plus, not a space.
+    let decode = |s: &str| percent_decode_str(s).decode_utf8_lossy().into_owned();
     let mut pairs: Vec<(String, String)> = url
-        .query_pairs()
-        .map(|(k, v)| {
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
             (
-                utf8_percent_encode(&k, AWS_ENCODE).to_string(),
-                utf8_percent_encode(&v, AWS_ENCODE).to_string(),
+                utf8_percent_encode(&decode(k), AWS_ENCODE).to_string(),
+                utf8_percent_encode(&decode(v), AWS_ENCODE).to_string(),
             )
         })
         .collect();
@@ -473,5 +479,20 @@ mod tests {
                 "{d}"
             );
         }
+    }
+
+    #[test]
+    fn query_plus_is_a_plus_and_percent_20_is_a_space() {
+        let q = |u: &str| {
+            sign("GET", u, &[], EMPTY_HASH, &creds(""), TIME)
+                .unwrap()
+                .canonical_request
+                .lines()
+                .nth(2)
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(q("http://h/?a=b+c"), "a=b%2Bc");
+        assert_eq!(q("http://h/?a=b%20c"), "a=b%20c");
     }
 }

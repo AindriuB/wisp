@@ -569,21 +569,76 @@ fn body_has_file(body: &PreparedBody) -> bool {
     }
 }
 
-/// Payload hash for SigV4: the body's SHA-256 when held in memory, else `UNSIGNED-PAYLOAD`.
-fn payload_hash(pending: &Pending) -> String {
+/// Feeds a file's first `len` bytes into `hasher`, read in bounded chunks from a fresh open.
+/// Fails if the file is gone, no longer `len` long, or shrinks while read.
+async fn hash_file(
+    mut hasher: sha2::Sha256,
+    path: &Path,
+    len: u64,
+) -> Result<sha2::Sha256, EngineError> {
+    let owned = path.to_owned();
+    let hashed = tokio::task::spawn_blocking(move || {
+        use sha2::Digest as _;
+        use std::io::Read;
+        let mut file = std::fs::File::open(&owned)?;
+        if file.metadata()?.len() != len {
+            return Err(std::io::Error::other("length changed before signing"));
+        }
+        let mut buf = vec![0u8; STREAM_CHUNK];
+        let mut left = len;
+        while left > 0 {
+            let want = STREAM_CHUNK.min(usize::try_from(left).unwrap_or(STREAM_CHUNK));
+            match file.read(&mut buf[..want]) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "file shrank while signing",
+                    ));
+                }
+                Ok(got) => {
+                    hasher.update(&buf[..got]);
+                    left -= got as u64;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(hasher)
+    })
+    .await;
+    match hashed {
+        Ok(Ok(h)) => Ok(h),
+        Ok(Err(e)) => Err(body_file_error(path, &e)),
+        Err(e) => Err(err(
+            ErrorKind::BodyFile,
+            format!("cannot read {}: {e}", path.display()),
+        )),
+    }
+}
+
+/// Payload hash for SigV4. S3 signs `UNSIGNED-PAYLOAD` for files and bodies over the memory
+/// limit; other services need the real SHA-256, stream-hashed so a file is never held whole.
+async fn payload_hash(pending: &Pending, service: &str) -> Result<String, EngineError> {
     match pending {
-        Pending::None => sigv4::sha256_hex(&[]),
-        Pending::Bytes(b) => sigv4::sha256_hex(b),
+        Pending::None => Ok(sigv4::sha256_hex(&[])),
+        Pending::Bytes(b) => Ok(sigv4::sha256_hex(b)),
         Pending::Segments(segs) => {
+            use sha2::Digest as _;
             let total: u64 = segs.iter().map(Segment::len).sum();
-            let mut joined = Vec::new();
+            let has_file = segs.iter().any(|s| matches!(s, Segment::File { .. }));
+            if service == "s3" && (has_file || total > MEMORY_BODY_LIMIT) {
+                return Ok(sigv4::UNSIGNED_PAYLOAD.to_owned());
+            }
+            let mut hasher = sha2::Sha256::new();
             for seg in segs {
                 match seg {
-                    Segment::Mem(b) if total <= MEMORY_BODY_LIMIT => joined.extend_from_slice(b),
-                    _ => return sigv4::UNSIGNED_PAYLOAD.to_owned(),
+                    Segment::Mem(b) => hasher.update(b),
+                    Segment::File { path, len, .. } => {
+                        hasher = hash_file(hasher, path, *len).await?;
+                    }
                 }
             }
-            sigv4::sha256_hex(&joined)
+            Ok(crate::auth::hex(&hasher.finalize()))
         }
     }
 }
@@ -681,8 +736,10 @@ async fn perform(
         (Some(_), Pending::Segments(s)) => Replay::Specs(s.iter().map(SegmentSpec::of).collect()),
         _ => Replay::None,
     };
-    let mut signing_hash =
-        matches!(req.auth, Some(EngineAuth::AwsSigV4 { .. })).then(|| payload_hash(&pending));
+    let mut signing_hash = match &req.auth {
+        Some(EngineAuth::AwsSigV4 { service, .. }) => Some(payload_hash(&pending, service).await?),
+        _ => None,
+    };
     // reqwest cannot clone a streamed body, so it returns a 307/308 instead of following it.
     // With redirects on, the engine follows those itself, re-reading the files.
     let mut plan: Option<Vec<SegmentSpec>> = match &pending {

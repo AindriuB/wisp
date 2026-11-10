@@ -2,7 +2,7 @@
 
 use wiremock::matchers::{header_exists, method};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use wisp_core::auth::EngineAuth;
+use wisp_core::auth::{EngineAuth, sigv4 as sig};
 use wisp_core::*;
 
 fn request(url: String, auth: EngineAuth) -> PreparedRequest {
@@ -210,11 +210,73 @@ async fn signed_request(service: &str, token: &str, body: PreparedBody) -> wirem
     );
     let mut reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 1);
-    reqs.remove(0)
+    let r = reqs.remove(0);
+    assert_signature(&r, service, token);
+    r
 }
 
 fn hdr<'a>(r: &'a wiremock::Request, name: &str) -> &'a str {
     r.headers.get(name).unwrap().to_str().unwrap()
+}
+
+/// Unix seconds of an `x-amz-date` stamp (`YYYYMMDDTHHMMSSZ`).
+fn stamp_secs(stamp: &str) -> u64 {
+    let n = |r: std::ops::Range<usize>| stamp[r].parse::<i64>().unwrap();
+    let (y, m, d) = (n(0..4), n(4..6), n(6..8));
+    // Days from civil (Howard Hinnant).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + n(9..11) * 3600 + n(11..13) * 60 + n(13..15)).unwrap()
+}
+
+/// Re-signs the request the server received (method, URL, signed headers, body) with the
+/// same credentials and the time it carries, and asserts the `Authorization` matches.
+fn assert_signature(r: &wiremock::Request, service: &str, token: &str) {
+    let auth = hdr(r, "authorization");
+    let signed_names: Vec<&str> = auth
+        .split("SignedHeaders=")
+        .nth(1)
+        .unwrap()
+        .split(',')
+        .next()
+        .unwrap()
+        .split(';')
+        .collect();
+    let headers: Vec<(String, String)> = r
+        .headers
+        .iter()
+        .filter(|(n, _)| signed_names.contains(&n.as_str()))
+        .map(|(n, v)| (n.as_str().to_owned(), v.to_str().unwrap().to_owned()))
+        .collect();
+    let body_hash = sig::sha256_hex(&r.body);
+    let payload = if service == "s3" {
+        let h = hdr(r, "x-amz-content-sha256");
+        assert!(h == "UNSIGNED-PAYLOAD" || h == body_hash, "{h}");
+        h.to_owned()
+    } else {
+        body_hash
+    };
+    let creds = sig::Credentials {
+        access_key: "AKIDEXAMPLE",
+        secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+        session_token: token,
+        region: "us-east-1",
+        service,
+    };
+    let want = sig::sign(
+        r.method.as_str(),
+        r.url.as_str(),
+        &headers,
+        &payload,
+        &creds,
+        stamp_secs(hdr(r, "x-amz-date")),
+    )
+    .unwrap();
+    assert_eq!(auth, want.authorization, "{}", want.canonical_request);
 }
 
 #[tokio::test]
@@ -368,4 +430,206 @@ async fn sigv4_signs_again_on_a_same_origin_redirect() {
     assert_eq!(got[1].url.path(), "/b");
     assert!(hdr(&got[1], "authorization").starts_with("AWS4-HMAC-SHA256"));
     assert_ne!(hdr(&got[0], "authorization"), hdr(&got[1], "authorization"));
+    assert_signature(&got[0], "s3", "T");
+    assert_signature(&got[1], "s3", "T");
+}
+
+#[tokio::test]
+async fn sigv4_non_s3_signs_the_real_hash_of_a_2_mib_file() {
+    let file = std::env::temp_dir().join(format!("wisp-sigv4-big-{}.bin", std::process::id()));
+    let data: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&file, &data).unwrap();
+    // `signed_request` re-signs with SHA-256 of the received body for non-S3 services.
+    let r = signed_request("execute-api", "", PreparedBody::File(file.clone())).await;
+    let _ = std::fs::remove_file(&file);
+    assert_eq!(r.body, data);
+    assert!(r.headers.get("x-amz-content-sha256").is_none());
+}
+
+#[tokio::test]
+async fn sigv4_s3_keeps_unsigned_payload_for_a_2_mib_file() {
+    let file = std::env::temp_dir().join(format!("wisp-sigv4-s3big-{}.bin", std::process::id()));
+    std::fs::write(&file, vec![3u8; 2 * 1024 * 1024]).unwrap();
+    let r = signed_request("s3", "", PreparedBody::File(file.clone())).await;
+    let _ = std::fs::remove_file(&file);
+    assert_eq!(hdr(&r, "x-amz-content-sha256"), "UNSIGNED-PAYLOAD");
+}
+
+/// `/a` redirects with `status` to `/b`; `/b` answers 200.
+async fn redirect_a_to_b(status: u16) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/a"))
+        .respond_with(ResponseTemplate::new(status).insert_header("location", "/b"))
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::path("/b"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn a_post_redirected_with_302_or_303_becomes_a_get_and_is_re_signed_over_no_body() {
+    for status in [302u16, 303] {
+        let server = redirect_a_to_b(status).await;
+        let mut req = request(format!("{}/a", server.uri()), sigv4("execute-api", ""));
+        req.method = Method::Post;
+        req.body = PreparedBody::Bytes(b"payload".to_vec());
+        req.headers = vec![
+            Header {
+                name: "Content-Type".into(),
+                value: "text/plain".into(),
+            },
+            Header {
+                name: "Content-Encoding".into(),
+                value: "identity".into(),
+            },
+        ];
+        let evs = run(req).await;
+        assert!(
+            matches!(evs.last(), Some(Event::Completed { .. })),
+            "{evs:?}"
+        );
+        let got = server.received_requests().await.unwrap();
+        assert_eq!(got.len(), 2, "{status}");
+        assert_eq!(got[0].method.as_str(), "POST");
+        assert_eq!(got[0].body, b"payload");
+        assert_signature(&got[0], "execute-api", "");
+        let second = &got[1];
+        assert_eq!(second.method.as_str(), "GET", "{status}");
+        assert!(second.body.is_empty());
+        assert!(second.headers.get("content-type").is_none());
+        assert!(second.headers.get("content-encoding").is_none());
+        assert!(
+            second
+                .headers
+                .get("content-length")
+                .is_none_or(|v| v == "0")
+        );
+        assert!(
+            hdr(second, "authorization").contains("SignedHeaders=host;x-amz-date"),
+            "{}",
+            hdr(second, "authorization")
+        );
+        assert_signature(second, "execute-api", "");
+    }
+}
+
+#[tokio::test]
+async fn exactly_one_authorization_header_is_sent_and_a_user_one_is_dropped() {
+    let user = || {
+        vec![Header {
+            name: "Authorization".into(),
+            value: "Bearer user-token".into(),
+        }]
+    };
+    let count = |r: &wiremock::Request| r.headers.get_all("authorization").iter().count();
+
+    let server = redirect_a_to_b(302).await;
+    let mut req = request(format!("{}/a", server.uri()), sigv4("execute-api", ""));
+    req.headers = user();
+    run(req).await;
+    let got = server.received_requests().await.unwrap();
+    assert_eq!(got.len(), 2);
+    for r in &got {
+        assert_eq!(count(r), 1);
+        assert!(hdr(r, "authorization").starts_with("AWS4-HMAC-SHA256"));
+        assert_signature(r, "execute-api", "");
+    }
+
+    let server = digest_server(false).await;
+    let mut req = request(server.uri(), digest());
+    req.headers = user();
+    run(req).await;
+    let got = server.received_requests().await.unwrap();
+    assert_eq!(got.len(), 2);
+    assert!(got[0].headers.get("authorization").is_none());
+    assert_eq!(count(&got[1]), 1);
+    assert!(hdr(&got[1], "authorization").starts_with("Digest "));
+}
+
+#[tokio::test]
+async fn digest_is_challenged_again_on_a_same_origin_redirect_hop() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::path("/a"))
+        .and(header_exists("authorization"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/b"))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::path("/b"))
+        .and(header_exists("authorization"))
+        .respond_with(ResponseTemplate::new(200))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(401).insert_header("www-authenticate", CHALLENGE))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let evs = run(request(format!("{}/a", server.uri()), digest())).await;
+    assert_eq!(statuses(&evs), vec![200]);
+    let got = server.received_requests().await.unwrap();
+    let paths: Vec<&str> = got.iter().map(|r| r.url.path()).collect();
+    assert_eq!(paths, ["/a", "/a", "/b", "/b"]);
+    let has_auth: Vec<bool> = got
+        .iter()
+        .map(|r| r.headers.get("authorization").is_some())
+        .collect();
+    assert_eq!(has_auth, [false, true, false, true]);
+    assert!(hdr(&got[3], "authorization").contains("uri=\"/b\""));
+}
+
+#[tokio::test]
+async fn an_https_to_http_redirect_sends_no_engine_auth() {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    let plain = ok_server().await;
+    let location = format!("{}/x", plain.uri());
+    let ck =
+        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        ck.signing_key.serialize_der(),
+    ));
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![ck.cert.der().clone()], key)
+    .unwrap();
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((tcp, _)) = l.accept() {
+            let conn = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+            let mut s = rustls::StreamOwned::new(conn, tcp);
+            let mut buf = [0u8; 8192];
+            if s.read(&mut buf).is_err() {
+                return;
+            }
+            let r = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = s.write_all(r.as_bytes());
+            s.conn.send_close_notify();
+            let _ = s.flush();
+        }
+    });
+    let mut req = request(
+        format!("https://127.0.0.1:{port}/a"),
+        sigv4("s3", "TOKEN123"),
+    );
+    req.client.verify_tls = false;
+    let evs = run(req).await;
+    assert!(
+        matches!(evs.last(), Some(Event::Completed { .. })),
+        "{evs:?}"
+    );
+    let got = plain.received_requests().await.unwrap();
+    assert_eq!(got.len(), 1);
+    assert_no_auth(&got);
 }

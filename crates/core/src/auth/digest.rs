@@ -170,16 +170,22 @@ fn params(s: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Picks the first Digest challenge, in server order, whose algorithm is supported.
+/// Picks the first Digest challenge, in server order, that [`respond`] can answer
+/// (algorithm, qop and `-sess` all supported).
 ///
-/// `Ok(None)` when no value holds a Digest challenge.
+/// `Ok(None)` when no value holds a Digest challenge. When none is answerable the error is
+/// the first challenge's.
 pub fn select(values: &[&str]) -> Result<Option<Challenge>, DigestError> {
     let challenges: Vec<Challenge> = values.iter().filter_map(|v| parse(v)).collect();
-    if let Some(c) = challenges.iter().find(|c| Hash::of(&c.algorithm).is_some()) {
+    let answerable = |c: &Challenge| respond(c, "GET", "/", "u", "p", "c").is_ok();
+    if let Some(c) = challenges.iter().find(|c| answerable(c)) {
         return Ok(Some(c.clone()));
     }
     match challenges.first() {
-        Some(c) => Err(DigestError::UnsupportedAlgorithm(c.algorithm.clone())),
+        Some(c) => match respond(c, "GET", "/", "u", "p", "c") {
+            Err(e) => Err(e),
+            Ok(_) => Ok(Some(c.clone())),
+        },
         None => Ok(None),
     }
 }
@@ -430,5 +436,14 @@ mod tests {
         let c = parse("Digest realm=\"r\", nonce=\"n\", qop=\"auth-int\"").unwrap();
         let e = respond(&c, "GET", "/", "alice", "hunter2", "c").unwrap_err();
         assert!(!e.to_string().contains("hunter2"));
+    }
+
+    #[test]
+    fn select_skips_a_challenge_respond_cannot_answer() {
+        let first = "Digest realm=\"r\", nonce=\"n1\", qop=\"auth-int\", algorithm=SHA-256";
+        let second = "Digest realm=\"r\", nonce=\"n2\", qop=\"auth\", algorithm=MD5";
+        let c = select(&[first, second]).unwrap().unwrap();
+        assert_eq!(c.nonce, "n2");
+        assert!(matches!(select(&[first]), Err(DigestError::UnsupportedQop)));
     }
 }
