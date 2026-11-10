@@ -16,7 +16,7 @@ use gpui_component::{ActiveTheme as _, Disableable as _, v_flex};
 use wisp_storage::import::{
     self, Format, ImportError, ImportItem, ImportResult, ImportWarning, WriteReport,
 };
-use wisp_storage::ops::slug;
+use wisp_storage::ops::{self, slug};
 
 use crate::actions::CancelRequest;
 use crate::workspace::Workspace;
@@ -139,6 +139,23 @@ fn parse_file(path: &Path) -> Result<(Format, ImportResult), String> {
     Ok((format, result))
 }
 
+/// Write the import, creating the target folder first when it is missing
+/// (`import::write` requires it to exist). Runs on the background executor.
+fn write_into(
+    root: &Path,
+    rel: &Path,
+    result: &ImportResult,
+    secrets_env: &str,
+) -> Result<WriteReport, String> {
+    let rel = if rel.as_os_str().is_empty() || root.join(rel).is_dir() {
+        rel.to_path_buf()
+    } else {
+        ops::create_folder(root, Path::new(""), &rel.to_string_lossy())
+            .map_err(|e| e.to_string())?
+    };
+    import::write(root, &rel, result, secrets_env).map_err(|e| error_line(&e))
+}
+
 enum Stage {
     Source,
     Preview {
@@ -154,7 +171,7 @@ enum Stage {
 }
 
 pub struct ImportView {
-    root: Option<PathBuf>,
+    workspace: Entity<Workspace>,
     stage: Stage,
     paste: Entity<EditorState>,
     error: Option<SharedString>,
@@ -167,16 +184,11 @@ impl EventEmitter<DismissEvent> for ImportView {}
 
 impl ImportView {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let root = workspace
-            .read(cx)
-            .collection
-            .as_ref()
-            .map(|c| c.tree.root.clone());
         let focus = cx.focus_handle();
         let prev_focus = window.focused(cx);
         window.focus(&focus, cx);
         Self {
-            root,
+            workspace,
             stage: Stage::Source,
             paste: cx.new(|cx| EditorState::new(window, cx)),
             error: None,
@@ -289,7 +301,17 @@ impl ImportView {
         .detach();
     }
 
+    /// The root of the collection open right now, not when the dialog opened.
+    fn current_root(&self, cx: &gpui::App) -> Option<PathBuf> {
+        self.workspace
+            .read(cx)
+            .collection
+            .as_ref()
+            .map(|c| c.tree.root.clone())
+    }
+
     fn run_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.current_root(cx);
         let (
             Some(root),
             Stage::Preview {
@@ -298,7 +320,7 @@ impl ImportView {
                 secrets,
                 ..
             },
-        ) = (self.root.clone(), &self.stage)
+        ) = (root, &self.stage)
         else {
             return;
         };
@@ -320,9 +342,7 @@ impl ImportView {
             let warnings = result.warnings.clone();
             let outcome = cx
                 .background_executor()
-                .spawn(async move {
-                    import::write(&root, &rel, &result, &secrets_env).map_err(|e| error_line(&e))
-                })
+                .spawn(async move { write_into(&root, &rel, &result, &secrets_env) })
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.busy = false;
@@ -365,8 +385,9 @@ impl ImportView {
 
 impl Render for ImportView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_root = self.current_root(cx).is_some();
         let mut body = v_flex().gap_3().child(div().text_lg().child("Import"));
-        if self.root.is_none() {
+        if !has_root {
             body = body
                 .child("Open a collection first")
                 .child(Self::close_button(cx));
@@ -503,6 +524,26 @@ mod tests {
             environments: vec![ImportedEnv::default()],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn imports_postman_into_a_new_folder() {
+        let dir = std::env::temp_dir().join(format!("wisp-import-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../storage/tests/fixtures/import/postman.json"
+        ))
+        .unwrap();
+        let result = import::postman::parse(&bytes).unwrap();
+        let rel = folder_rel(&default_folder(&result, Format::Postman));
+        let report = write_into(&dir, &rel, &result, "imported").unwrap();
+        assert!(report.requests > 0);
+        assert!(dir.join(&rel).is_dir());
+        let files = std::fs::read_dir(dir.join(&rel)).unwrap().count();
+        assert!(files > 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
