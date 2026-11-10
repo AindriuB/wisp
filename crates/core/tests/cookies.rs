@@ -540,3 +540,127 @@ fn response_cookies_across_many_domains_stay_within_the_jar_cap() {
     }
     assert_eq!(big_snapshot(&jar).len(), 3000);
 }
+
+fn get_with_cookie(url: String, cookie: &str) -> PreparedRequest {
+    let mut r = get(url, None);
+    r.headers = vec![Header {
+        name: "Cookie".into(),
+        value: cookie.into(),
+    }];
+    r
+}
+
+async fn run(engine: &Engine, rx: &EventReceiver, req: PreparedRequest) {
+    engine.submit(Command::Send(req));
+    loop {
+        match rx.recv().await.unwrap() {
+            Event::Completed { .. } => return,
+            Event::Failed { .. } | Event::Cancelled { .. } => panic!("request did not complete"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_user_cookie_header_is_merged_with_cookies_set_by_a_redirect() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/login"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("set-cookie", "sid=S1; Path=/")
+                .insert_header("location", "/home"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(path("/home"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let jars = CookieJars::default();
+    let (engine, rx) = engine_with(&jars);
+    let mut req = get_with_cookie(format!("{}/login", server.uri()), "u=1");
+    req.method = Method::Post;
+    run(&engine, &rx, req).await;
+    let c = cookie_header(&server, 1).await.unwrap();
+    assert!(c.contains("u=1") && c.contains("sid=S1"), "got {c}");
+}
+
+#[tokio::test]
+async fn a_cross_origin_hop_gets_only_the_jar_cookies_for_the_new_host() {
+    let target = MockServer::start().await;
+    Mock::given(path("/dest"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&target)
+        .await;
+    let origin = MockServer::start().await;
+    let port = target.address().port();
+    Mock::given(path("/go"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("http://localhost:{port}/dest")),
+        )
+        .mount(&origin)
+        .await;
+    let jars = CookieJars::default();
+    jars.jar(None).load(vec![record("lh", "L", "localhost")]);
+    let (engine, rx) = engine_with(&jars);
+    run(
+        &engine,
+        &rx,
+        get_with_cookie(format!("{}/go", origin.uri()), "u=1"),
+    )
+    .await;
+    assert_eq!(cookie_header(&target, 0).await.as_deref(), Some("lh=L"));
+}
+
+async fn redirect_setting(set_cookie: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("set-cookie", set_cookie)
+                .insert_header("location", "/end"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(path("/end"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn a_redirect_replaces_a_jar_cookie_in_the_merged_header() {
+    let server = redirect_setting("sid=NEW; Path=/").await;
+    let jars = CookieJars::default();
+    jars.jar(None).load(vec![record("sid", "OLD", "127.0.0.1")]);
+    let (engine, rx) = engine_with(&jars);
+    run(
+        &engine,
+        &rx,
+        get_with_cookie(format!("{}/start", server.uri()), "a=1"),
+    )
+    .await;
+    let c = cookie_header(&server, 1).await.unwrap();
+    assert!(
+        c.contains("a=1") && c.contains("sid=NEW") && !c.contains("OLD"),
+        "got {c}"
+    );
+}
+
+#[tokio::test]
+async fn a_redirect_that_deletes_a_jar_cookie_drops_it_from_the_merged_header() {
+    let server = redirect_setting("sid=; Max-Age=0; Path=/").await;
+    let jars = CookieJars::default();
+    jars.jar(None).load(vec![record("sid", "OLD", "127.0.0.1")]);
+    let (engine, rx) = engine_with(&jars);
+    run(
+        &engine,
+        &rx,
+        get_with_cookie(format!("{}/start", server.uri()), "a=1"),
+    )
+    .await;
+    assert_eq!(cookie_header(&server, 1).await.as_deref(), Some("a=1"));
+}

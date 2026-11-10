@@ -713,7 +713,13 @@ async fn perform(
     }
     // The engine follows redirects itself for engine-applied auth (reqwest would carry the
     // x-amz-* headers across origins and could not sign again), so reqwest's following is off.
-    let own_redirects = req.client.follow_redirects && req.auth.is_some();
+    // A user Cookie header gets the same treatment: reqwest would keep the header merged for
+    // the first hop, so a cookie set by a redirect would not reach the next hop.
+    let has_user_cookie = req
+        .headers
+        .iter()
+        .any(|h| h.name.eq_ignore_ascii_case("cookie"));
+    let own_redirects = req.client.follow_redirects && (req.auth.is_some() || has_user_cookie);
     let client = if own_redirects {
         clients.get(&ClientSettings {
             follow_redirects: false,
