@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); see HISTORY. Tasks 103 (OAuth2 engine) and 104 (cookie jar) are now unblocked.
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); see HISTORY. Tasks 104 (cookie jar) and 106 (OAuth2 UI) are now unblocked.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -69,6 +69,18 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 103 (not 0.2.0 wave 2)
+- [ACCEPTED residual, pending user] After a re-authorize, a send that read the old refresh token just before it can still POST that RT to the IdP once; the result is discarded (generation check) and nothing old is used or persisted. Closing it means holding the store lock across the token POST.
+- [P2 -> wave 3 keychain] Store calls run synchronously on engine workers (default 1 worker, max 2); a blocking keychain call (access prompt) stalls all engine I/O. Run store calls via spawn_blocking with the tokio store lock held across the await before a keychain store ships.
+- [P3] Failed save during re-authorize -> forget path has no test (needs a store whose save can fail after the first authorize).
+- [P3] The stale marker is in-memory only: a failed forget/save leaves the old RT in the store after restart (wave 3).
+- [P3] engine.rs:972-975 a 401 for a send that started with AT_X, arriving after a re-authorize, invalidates the new AT_Y; invalidate only when the cached token equals the one sent.
+- [P3] No single-flight on refresh; concurrent refreshes may get a rotating RT family revoked.
+- [P3] Token fetch uses the full request timeout before `began`, so a send can take about 2x timeout.
+- [P3] tests/oauth2.rs:1348 orders the paused-save test with a 700 ms sleep, not a state wait.
+- [NOTE] TokenKey excludes client_secret: after editing the secret, a cached client-credentials token is reused until expiry.
+- [NOTE] Public `Clock` trait and `Engine::start_with_clock` were added for expiry tests.
 
 ### Follow-ups from task 102 (not 0.2.0 wave 2)
 - [P3] cookies.rs:202-203 `save` doc doesn't mention the domain/path caps or soonest-expiring trimming.
