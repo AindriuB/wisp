@@ -306,13 +306,16 @@ fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigi
     }
 }
 
-/// Dotted paths of the JSON string leaves that are `""`, or `None` when the
-/// text does not scan as JSON. Bare `{{ref}}` values are skipped, as history
+/// Whether any of `fields` (dotted paths) names a JSON string leaf that is
+/// `""`, or `None` when the text does not scan as JSON or nests past 128. Bare `{{ref}}` values are skipped, as history
 /// masks them; arrays do not add to the path.
-fn empty_json_leaves(text: &str) -> Option<Vec<String>> {
+fn empty_json_leaves(text: &str, fields: &[&str]) -> Option<bool> {
+    const MAX_DEPTH: usize = 128;
     struct Scan<'a> {
         b: &'a [u8],
         i: usize,
+        fields: &'a [&'a str],
+        found: bool,
     }
     impl Scan<'_> {
         fn ws(&mut self) {
@@ -340,7 +343,10 @@ fn empty_json_leaves(text: &str) -> Option<Vec<String>> {
             }
             None
         }
-        fn value(&mut self, path: &str, out: &mut Vec<String>) -> Option<()> {
+        fn value(&mut self, path: &mut String, depth: usize) -> Option<()> {
+            if depth > MAX_DEPTH {
+                return None;
+            }
             self.ws();
             match *self.b.get(self.i)? {
                 b'{' if self.b[self.i..].starts_with(b"{{") => {
@@ -355,12 +361,13 @@ fn empty_json_leaves(text: &str) -> Option<Vec<String>> {
                     loop {
                         let key = self.string()?;
                         self.eat(b':')?;
-                        let p = if path.is_empty() {
-                            key
-                        } else {
-                            format!("{path}.{key}")
-                        };
-                        self.value(&p, out)?;
+                        let keep = path.len();
+                        if !path.is_empty() {
+                            path.push('.');
+                        }
+                        path.push_str(&key);
+                        self.value(path, depth + 1)?;
+                        path.truncate(keep);
                         if self.eat(b',').is_none() {
                             return self.eat(b'}');
                         }
@@ -372,7 +379,7 @@ fn empty_json_leaves(text: &str) -> Option<Vec<String>> {
                         return Some(());
                     }
                     loop {
-                        self.value(path, out)?;
+                        self.value(path, depth + 1)?;
                         if self.eat(b',').is_none() {
                             return self.eat(b']');
                         }
@@ -380,7 +387,7 @@ fn empty_json_leaves(text: &str) -> Option<Vec<String>> {
                 }
                 b'"' => {
                     if self.string()?.is_empty() {
-                        out.push(path.to_string());
+                        self.found |= self.fields.contains(&path.as_str());
                     }
                 }
                 _ => {
@@ -403,11 +410,12 @@ fn empty_json_leaves(text: &str) -> Option<Vec<String>> {
     let mut s = Scan {
         b: text.as_bytes(),
         i: 0,
+        fields,
+        found: false,
     };
-    let mut out = Vec::new();
-    s.value("", &mut out)?;
+    s.value(&mut String::new(), 0)?;
     s.ws();
-    (s.i == s.b.len()).then_some(out)
+    (s.i == s.b.len()).then_some(s.found)
 }
 
 /// Why a from-history tab may not be sent: a redacted body value has not been
@@ -439,8 +447,8 @@ fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option<Str
                 Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
             )
     } else {
-        match text.map(empty_json_leaves) {
-            Some(Some(empty)) => fields.iter().any(|f| empty.iter().any(|e| e == f)),
+        match text.map(|t| empty_json_leaves(t, &fields)) {
+            Some(Some(found)) => found,
             Some(None) => true,
             None => false,
         }
@@ -1698,6 +1706,31 @@ mod tests {
         );
         d.body = json(r#"{"name":"x","webhook_secret":"s"}"#);
         assert!(try_send(&d, &o).is_ok());
+    }
+
+    #[test]
+    fn deeply_nested_body_is_refused_without_overflow() {
+        let o = body_origin(json("{}"), &["body.s"]);
+        let mut d = draft();
+        d.body = json(&format!("{}1{}", "[".repeat(200), "]".repeat(200)));
+        assert!(try_send(&d, &o).is_err());
+        d.body = json(&"{\"a\":".repeat(50_000));
+        assert!(try_send(&d, &o).is_err());
+    }
+
+    #[test]
+    fn long_key_with_many_empty_leaves_is_fast() {
+        let o = body_origin(json("{}"), &["body.s"]);
+        let mut d = draft();
+        let mut t = format!("{{\"{}\":{{", "k".repeat(400_000));
+        for i in 0..100_000 {
+            t.push_str(&format!("\"{i}\":\"\","));
+        }
+        t.push_str("\"z\":\"\"}}");
+        d.body = json(&t);
+        let start = std::time::Instant::now();
+        assert!(try_send(&d, &o).is_ok());
+        assert!(start.elapsed().as_secs_f32() < 1.0);
     }
 
     #[test]
