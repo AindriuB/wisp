@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-09 | 92 | Per-user data dir location rule (WISP_DATA_DIR, portable, OS dir) and random collection id in collection.toml, in wisp-storage; not yet used | ## 2026-11-09 — Per-user data dir and collection ID |
 | 2026-11-09 | 91 | Wave-1 0.2.0 dependencies (sha2, hmac, md-5 in core; saphyr, uuid in storage) and empty data_dir/import stubs; no behaviour | ## 2026-11-09 — Wave-1 dependencies and storage stubs for 0.2.0 |
 | 2026-11-09 | 89 | Workspace version 0.1.0 to 0.1.1 (Cargo.toml and three lock lines only); README, architecture.md and about.toml name 0.1.1 | ## 2026-11-09 — Workspace version 0.1.1 |
 | 2026-11-09 | 87 | Linux X11 window icon and app id; release tar ships .desktop file and hicolor icons for the launcher (Wayland); Linux hand checks added to checklist | ## 2026-11-09 — Linux window icon, app id and desktop launcher |

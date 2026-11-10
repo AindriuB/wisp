@@ -106,6 +106,9 @@ Rules:
   Headers merge down the chain; nearer wins.
 - **Identity = file path.** No UUIDs in files. Order via `order = [...]` in
   `folder.toml`; unlisted items sort alphabetically.
+  *Note 2026-11-09: from 0.2.0 `collection.toml` carries a random collection
+  `id` (user decision; see `2026-11-09-wisp-0-2-0.md`). Requests and folders
+  keep the file path as identity.*
 - **Query params:** `[[params]]` is the single source of truth; the URL bar
   displays and edits them live.
 - **Versioning:** `collection.toml` carries `format = 1`.

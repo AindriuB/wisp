@@ -194,6 +194,68 @@ pub fn save_collection_defaults(
     fs::atomic_write(&path, doc.to_string().as_bytes())
 }
 
+/// Random per-collection ID that keys its per-user data. Always a safe path component.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CollectionId(String);
+
+impl CollectionId {
+    /// Accepts `^[A-Za-z0-9_-]{8,64}$`.
+    pub fn parse(s: &str) -> Option<CollectionId> {
+        let ok = (8..=64).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        ok.then(|| CollectionId(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CollectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+fn id_from_doc(doc: &DocumentMut, path: &Path) -> Result<Option<CollectionId>, StorageError> {
+    let Some(item) = doc.get("id") else {
+        return Ok(None);
+    };
+    let s = item
+        .as_str()
+        .ok_or_else(|| invalid(path, "id", "expected a string"))?;
+    CollectionId::parse(s)
+        .map(Some)
+        .ok_or_else(|| invalid(path, "id", "expected 8 to 64 characters of A-Z a-z 0-9 _ -"))
+}
+
+/// Read the top-level `id` of `collection.toml`. A missing file or key is `Ok(None)`.
+pub fn read_collection_id(root: &Path) -> Result<Option<CollectionId>, StorageError> {
+    let path = root.join(COLLECTION_FILE);
+    match read_doc(&path)? {
+        Some(doc) => id_from_doc(&doc, &path),
+        None => Ok(None),
+    }
+}
+
+/// Return the collection's ID, writing a new one into `collection.toml` if it has none.
+pub fn ensure_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
+    let path = root.join(COLLECTION_FILE);
+    let mut doc = read_doc(&path)?.unwrap_or_else(|| {
+        let mut d = DocumentMut::new();
+        d.insert("format", toml_edit::value(1));
+        d
+    });
+    if let Some(id) = id_from_doc(&doc, &path)? {
+        return Ok(id);
+    }
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    doc.insert("id", toml_edit::value(id.as_str()));
+    fs::atomic_write(&path, doc.to_string().as_bytes())?;
+    Ok(CollectionId(id))
+}
+
 /// Load `folder.toml` from a directory. A missing file reads as the default.
 pub fn load_folder_defaults(dir: &Path) -> Result<FolderDefaults, StorageError> {
     let path = dir.join(FOLDER_FILE);
@@ -676,5 +738,136 @@ mod tests {
         assert!(t.folders.contains_key(Path::new("a")));
         assert!(t.folders.contains_key(Path::new("b")));
         assert_eq!(t.nodes.len(), 2);
+    }
+
+    #[test]
+    fn collection_id_added_once_keeping_comments() {
+        let d = tempfile::tempdir().unwrap();
+        let text = "# my collection\nformat = 1 # v\n\n[vars]\na = \"b\"\n";
+        w(d.path(), "collection.toml", text);
+        let id = ensure_collection_id(d.path()).unwrap();
+        let after = stdfs::read_to_string(d.path().join("collection.toml")).unwrap();
+        assert_eq!(after.matches("id = ").count(), 1);
+        assert!(after.contains("# my collection\nformat = 1 # v"));
+        assert!(after.contains("[vars]\na = \"b\""));
+        assert_eq!(id.as_str().len(), 32);
+        let m = stdfs::metadata(d.path().join("collection.toml"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let id2 = ensure_collection_id(d.path()).unwrap();
+        assert_eq!(id, id2);
+        assert_eq!(
+            stdfs::read_to_string(d.path().join("collection.toml")).unwrap(),
+            after
+        );
+        assert_eq!(
+            stdfs::metadata(d.path().join("collection.toml"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            m
+        );
+    }
+
+    #[test]
+    fn collection_id_read_cases() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(read_collection_id(d.path()).unwrap(), None);
+        w(d.path(), "collection.toml", "format = 1\n");
+        assert_eq!(read_collection_id(d.path()).unwrap(), None);
+        w(
+            d.path(),
+            "collection.toml",
+            "format = 1\nid = \"abcd_efgh-12\"\n",
+        );
+        assert_eq!(
+            read_collection_id(d.path()).unwrap().unwrap().as_str(),
+            "abcd_efgh-12"
+        );
+        for bad in ["id = 5", "id = \"../x\"", "id = \"short\""] {
+            w(d.path(), "collection.toml", &format!("format = 1\n{bad}\n"));
+            assert!(
+                matches!(
+                    read_collection_id(d.path()),
+                    Err(StorageError::Invalid { ref key, .. }) if key == "id"
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_id_survives_save_and_load() {
+        let d = tempfile::tempdir().unwrap();
+        w(d.path(), "collection.toml", "format = 1\n");
+        let id = ensure_collection_id(d.path()).unwrap();
+        let mut c = load_collection_defaults(d.path()).unwrap();
+        c.vars.push(wisp_core::request::Var {
+            name: "k".into(),
+            value: "v".into(),
+        });
+        save_collection_defaults(d.path(), &c).unwrap();
+        assert_eq!(read_collection_id(d.path()).unwrap(), Some(id));
+        assert_eq!(load_collection_defaults(d.path()).unwrap().vars.len(), 1);
+    }
+
+    #[test]
+    fn collection_id_creates_missing_file() {
+        let d = tempfile::tempdir().unwrap();
+        let id = ensure_collection_id(d.path()).unwrap();
+        let text = stdfs::read_to_string(d.path().join("collection.toml")).unwrap();
+        assert_eq!(text, format!("format = 1\nid = \"{id}\"\n"));
+    }
+
+    #[test]
+    fn collection_id_parse_bounds() {
+        assert!(CollectionId::parse("1234567").is_none());
+        assert!(CollectionId::parse("12345678").is_some());
+        assert!(CollectionId::parse(&"a".repeat(64)).is_some());
+        assert!(CollectionId::parse(&"a".repeat(65)).is_none());
+        assert!(CollectionId::parse("abcd efgh").is_none());
+    }
+
+    #[test]
+    fn collection_id_display_matches_as_str() {
+        let id = CollectionId::parse("abcd_efgh").unwrap();
+        assert_eq!(id.to_string(), id.as_str());
+    }
+
+    #[test]
+    fn collection_id_generated_is_lowercase_hex() {
+        let d = tempfile::tempdir().unwrap();
+        let id = ensure_collection_id(d.path()).unwrap();
+        assert!(
+            id.as_str()
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+    }
+
+    #[test]
+    fn collection_id_keeps_existing_value() {
+        let d = tempfile::tempdir().unwrap();
+        w(
+            d.path(),
+            "collection.toml",
+            "format = 1\nid = \"keep_this_id\"\n",
+        );
+        assert_eq!(
+            ensure_collection_id(d.path()).unwrap().as_str(),
+            "keep_this_id"
+        );
+    }
+
+    #[test]
+    fn collection_id_invalid_existing_is_not_replaced() {
+        let d = tempfile::tempdir().unwrap();
+        w(d.path(), "collection.toml", "format = 1\nid = 5\n");
+        assert!(ensure_collection_id(d.path()).is_err());
+        assert_eq!(
+            stdfs::read_to_string(d.path().join("collection.toml")).unwrap(),
+            "format = 1\nid = 5\n"
+        );
     }
 }
