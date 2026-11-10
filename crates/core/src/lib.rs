@@ -5,6 +5,7 @@ mod model;
 
 pub mod auth;
 pub mod body;
+pub mod redact;
 pub mod request;
 pub mod resolve;
 pub mod template;
