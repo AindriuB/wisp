@@ -593,6 +593,11 @@ fn unclosed_ref_in_json_body_fails_closed() {
     )));
     assert!(!raw.contains("HUNTER2"));
     assert!(redacted.contains(&"body".to_string()));
+    let (raw, redacted) = stored_text(Body::Json(text_body(
+        r#"{"a":{{x,"password":"HUNTER2"}},"b":1}"#,
+    )));
+    assert!(!raw.contains("HUNTER2"));
+    assert!(redacted.contains(&"body".to_string()));
 }
 
 #[test]
