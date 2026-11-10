@@ -84,3 +84,24 @@ Reviewed HEAD: 9da374f. Inputs below were reproduced by the reviewer in a scratc
 - [P3] An environment name that is a reserved device name (e.g. server description "con") aborts the import partway through.
 - [P3] curl `-u` passwords, literal Authorization headers and Postman collection-variable values land in committed TOML. This matches the spec, which covers only Postman auth, but it's worth extending.
 - [NOTE] `write` is not atomic; an error partway through leaves a partial import.
+
+## Amendment 2 — orchestrator (2026-11-10)
+
+- Owns gains `crates/storage/Cargo.toml` (one line: a direct `saphyr-parser` dependency, version-matched to the saphyr-parser 0.3.3 already in Cargo.lock) and the matching Cargo.lock dependency edge. No new package may enter the lock. THIRD-PARTY-NOTICES may change only if `generate.sh --check` requires it.
+- YAML safety moves from the line-based pre-scan to an exact event-level pass. Loop over `saphyr_parser::Parser::next_event()` (iteratively, with no recursion). Track container depth (fail TooDeep at the existing cap) and each anchor's expanded byte size (scalar bytes plus nested alias sizes), with a running total of the expanded bytes (fail TooLarge past the existing 64 MiB budget). Feed each event to the loader, or build the value yourself. Remove the line-based `check_depth`/alias estimate once the event pass covers them.
+- `curl --json`: revert to the Contract. It takes its argument (so it can't swallow the URL) but is not imported; it gets the standard "option and its argument are not imported" warning.
+
+## Review round 2 — findings
+
+Reviewed HEAD: e958e3b. FIXED: the OpenAPI example budget, the Postman secret naming, the OpenAPI parameter merge, the secrets-file collision, and the curl options named in round 1.
+
+- [P1, NOT FIXED from round 1] yaml.rs:119-148: the depth check is still bypassed, because any `[` that the scanner counts but YAML doesn't leaves `flow > 0` for the rest of the file. Inputs that abort on an 8 MiB stack: `x: a [\ny:\n` + `"- "×100000` + `1`; `description: Ranges like [0, 10)\ny:\n` + `"- "×100000`; `x: |\n  [\ny:\n` + `"- "×100000`; `x: "a\n  [ b"\ny:\n` + `"- "×100000`. route: implementer, per Amendment 2.
+- [P1, NOT FIXED from round 1] yaml.rs:69-88: the alias-byte estimate is bypassable. Inputs: `x: [&b "<1 MiB>", *b, *b, …×700]` on one line → 2.2 GB RSS; aliases hidden between multi-line quoted spans (`list: ["s` / `  ", *b, …, "s` …) → about 70 MiB expanded, over budget. route: implementer, per Amendment 2.
+- [P1] openapi.rs:148-152: server-variable substitution runs once per variable over a growing URL, so a default containing the next placeholder multiplies the size. Input: `servers:[{"url":"{a}"×1000,"variables":{"a":{"default":"{b}"×1000},"b":{"default":"x"×200}}}]` (6.3 KB) → 200 MB URL. route: implementer. Substitute in a single pass over the original URL, and cap the result length (TooLarge).
+- [P2] openapi.rs:158-163: unique server-environment naming is cubic (`while … environments.iter().any`); write.rs:94-97 is a quadratic sibling. Input: 3,000 × `{"url":"a"}` (42 KB) → 6.4 s. route: implementer. Use a HashSet plus a per-base counter, as in postman.rs:463-473.
+- [P2] yaml.rs:343-353: `unbalanced_bracket_in_scalar_keeps_depth_check` passes without check_depth (to_value rejects it later). route: implementer. Replace it with tests that would overflow without the event-level check (the inputs above), run on a 2 MiB stack.
+- [DRIFT] curl `--json` imported as a body: settled by Amendment 2 (revert to a warning).
+
+## Residual (round 2 additions)
+- [P3] openapi.rs:344-347: the example budget is charged after `to_string_pretty`, so a deep example briefly allocates about 60 times its size (728 MB peak for 9.8 MiB).
+- [P3] curl.rs:18-86: long options still missing from the arg list swallow the URL (`--tlspassword`, `--proxy-pass`, `--connect-to`, `--proto`, `--tlsuser`, `--sasl-authzid`, `--login-options`, `--ftp-account`, `--hostpubsha256`). Build the list from `curl --help all`.
