@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-10 — Wave-2 size gate (task 108)
+Wave 2 (tasks 100-108) passed the binary size gate, measured from run 42890358687 at 8c468ff (main df81213 plus the task file). Windows is 15,136,256 B against the 15,500,000 B limit (wave 1 14,514,688, +621,568), leaving 363,744 B of headroom; macOS is 11,595,488 B (+546,384) and Linux 25,444,088 B (+644,808). All RSS figures are within budgets.json.
+**Cost:** About 586 KB of the growth is attributed to tasks 100, 103 and 104, of which roughly 364 KB is the bundled public-suffix list; the remaining ~35 KB is unsplit across 105-107. Headroom is now small for wave 3, so the keychain work needs a size check early. The known flake many_parameters_merge_in_linear_time hit once on macOS in PR #47 CI and passed on rerun.
+
 ## 2026-11-10 — Phase timings (DNS, connect+TLS)
 Completed requests now report real DNS and connect+TLS phase timings, measured by a custom resolver and connector and claimed per request through a small registry, so the response panel can show them. Windows binary is 14,968,832 B of 15,500,000 (measure run 42878660363 at 02557ed, binary-identical to the merged head), up 17,408 B from task 104's 14,951,424.
 **Cost:** Review round 1 found a race in claiming the registry entry; a claim-token test was added and fails 3/3 with the token check removed. The first race test used a 300 ms sleep, replaced by a state-driven wait on pool state (12/12 runs). New dev-dependencies went into [workspace.dependencies]. Owns was widened to crates/core/tests/engine.rs for the timings test rewrite and rename only. With reqwest-followed redirects the timings describe the final connection; with the engine's own redirect loop, the first hop that opened a connection. The optional AC8 hand check was not done.
