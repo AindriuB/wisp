@@ -75,7 +75,16 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] workspace.rs:553 Authorize on a history tab with a redacted body shows "Cannot authorize: Syntax(Body)" without Send's explanation; reuse `refused_body_message`.
 - [P3] workspace.rs:490 vs :1074 the collection partition is set in two places (`authorize_command` and `send`); use one helper.
 - [P3] The Authorize button and status strip sit at the bottom of the scrolling auth form, below the response split on a normal window, so "Authorized"/"Failed" can be off-screen; keep the strip visible.
-- [NOTE] The tab keeps showing "Authorized" after the user edits client id, scope or URLs.
+- [P3 -> task 99] 44-1 auth.rs:329 a literal client_secret can be saved into committed request TOML with no hint; offer placeholder `{{client_secret}}` or a muted hint when no `{{` is present.
+- [P3 -> task 99] 44-4 tab.rs:82 AuthorizeState derives Debug over the URL holding OAuth state; hand-write a redacting Debug, add a `debug_redacts` test, fix the doc comment.
+- [P3] 44-2 auth.rs:603 changing auth type while Waiting hides Cancel; the listener stays bound until timeout.
+- [P3] 44-3 auth.rs:772 tests: the secret-slot test doesn't check masking; round-trip tests duplicate each other and skip the client_auth label mapping.
+- [P3] 44-5 workspace.rs:568 "Cancelled" is detected by matching the engine message string; use a shared const or ErrorKind::Cancelled.
+- [P3] 44-6 workspace.rs:873 "Authorized" survives an environment switch though tokens are keyed by environment; also survives edits to client id, scope or URLs (earlier NOTE). Clear or recheck on change.
+- [P3] 44-7 workspace.rs:1189 Cancel leaves the tab Waiting, so a queued AuthUrl can still open the browser.
+- [P3] 44-8 workspace.rs:2357 AC8 test builds the expected Send without tree or env, so collection client settings aren't compared.
+- [P3] 44-9 (Nit) auth.rs:332 the shown authorization URL is editable but never read back; make it read-only.
+- [P3] 44-10 (Nit) workspace.rs:1176 the re-authorize cancel branch is unreachable from the UI and untested.
 - [NOTE] Authorize resolves the whole request (same path as Send), so an unresolved variable in the URL or body also blocks it; the button appears only for the request's own auth-code auth, not inherited auth.
 
 ### Follow-ups from task 103 (not 0.2.0 wave 2)
