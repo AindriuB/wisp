@@ -91,3 +91,19 @@ Reviewed HEAD: c4cb704.
 - [P3, fixed by the Amendment] a same-origin redirect followed by reqwest is not signed again (AWS answers SignatureDoesNotMatch).
 - [P3, follow-up, not this round] sigv4.rs:142-146: a user-supplied x-amz-date, x-amz-content-sha256 or x-amz-security-token is sent alongside the added one, so the request carries duplicate values.
 - [NOTE, follow-up] the S3 canonical URI leaves some reserved characters raw; a raw `+` in the query is decoded as a space. Not proven against AWS.
+
+## Review round 2 — findings
+
+Reviewed HEAD: 7cfc6cf. Both P2s are FIXED.
+- [STYLE, NOT FIXED from round 1] auth/sigv4.rs:35-50 and :233-246: the new `Signed` Debug still prints `canonical_request`, which contains `x-amz-security-token:<token>` (sigv4.rs:154-156, 176, 189-195). The test uses an empty canonical_request and checks only `{:?}`. Input: `format!("{:?}", sign("GET", "https://h/", &[], &sha256_hex(&[]), &Credentials{ session_token: "TOK", .. }, 0).unwrap())` contains `x-amz-security-token:TOK`. route: implementer. Redact or drop `canonical_request`; build the test value with `sign()` and a real token; check `{:?}` and `{:#?}` (the pattern of the `both` helper at request.rs:304-330); move the test below `use super::*;`.
+- [comment only] engine.rs:794-800 says 301/302/303 are handled "like reqwest". They aren't: the engine keeps PUT/PATCH/DELETE and the body on 301/302, which RFC 9110 allows. route: implementer. Fix the comment to describe the actual behaviour; don't change the behaviour.
+
+## Residual (follow-ups)
+- [P3] engine.rs:814-815: the engine follows 9 redirects; reqwest follows 10.
+- [P3] engine.rs:834-838: `transfer-encoding` is not stripped when the body is dropped on a rewrite.
+- [P3] the 301/302 method-rewrite behaviour differs from reqwest's for SigV4/Digest requests (allowed by RFC 9110).
+- [P3] sigv4.rs:142-146: a user-supplied x-amz-* header is sent alongside the added one, so values are duplicated.
+- [NOTE] `replay` copies the body for every SigV4 request; it could be limited to `own_redirects || digest`.
+- [NOTE] no test covers A→B→A; the code is correct.
+- [NOTE] the S3 canonical URI and the `+` handling in queries are unproven against AWS.
+- Notes line (Amendment): other auth types (Basic, Bearer, ApiKey) keep reqwest's redirect path.
