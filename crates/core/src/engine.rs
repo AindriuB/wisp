@@ -14,6 +14,7 @@ use crate::auth::oauth2::{Clock, MemoryOnly, OAuth2, RefreshTokenStore, TokenKey
 use crate::auth::{EngineAuth, digest, sigv4};
 use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
 use crate::client::{ClientCache, HTTP1_MAX_RESPONSE_HEADERS};
+use crate::cookies::CookieJars;
 use crate::model::{
     ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
     PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
@@ -36,6 +37,8 @@ pub struct EngineConfig {
     pub body_memory_limit: u64,
     /// Where OAuth2 refresh tokens persist between runs.
     pub refresh_tokens: Arc<dyn RefreshTokenStore>,
+    /// The in-memory cookie jars, one per collection; the app keeps a clone to reach them.
+    pub cookies: CookieJars,
 }
 
 impl fmt::Debug for EngineConfig {
@@ -45,6 +48,7 @@ impl fmt::Debug for EngineConfig {
             .field("default_timeout", &self.default_timeout)
             .field("body_memory_limit", &self.body_memory_limit)
             .field("refresh_tokens", &format_args!("<redacted>"))
+            .field("cookies", &self.cookies)
             .finish()
     }
 }
@@ -56,6 +60,7 @@ impl Default for EngineConfig {
             default_timeout: Some(Duration::from_secs(30)),
             body_memory_limit: DEFAULT_MEMORY_LIMIT,
             refresh_tokens: Arc::new(MemoryOnly::default()),
+            cookies: CookieJars::default(),
         }
     }
 }
@@ -158,7 +163,7 @@ impl Engine {
         let (tx, rx) = async_channel::unbounded();
         let inner = Inner {
             runtime: Some(runtime),
-            clients: Arc::new(ClientCache::default()),
+            clients: Arc::new(ClientCache::new(config.cookies)),
             bodies: BodyStore::new(config.body_memory_limit),
             events: tx,
             next_id: AtomicU64::new(1),
@@ -708,7 +713,13 @@ async fn perform(
     }
     // The engine follows redirects itself for engine-applied auth (reqwest would carry the
     // x-amz-* headers across origins and could not sign again), so reqwest's following is off.
-    let own_redirects = req.client.follow_redirects && req.auth.is_some();
+    // A user Cookie header gets the same treatment: reqwest would keep the header merged for
+    // the first hop, so a cookie set by a redirect would not reach the next hop.
+    let has_user_cookie = req
+        .headers
+        .iter()
+        .any(|h| h.name.eq_ignore_ascii_case("cookie"));
+    let own_redirects = req.client.follow_redirects && (req.auth.is_some() || has_user_cookie);
     let client = if own_redirects {
         clients.get(&ClientSettings {
             follow_redirects: false,
@@ -806,7 +817,28 @@ async fn perform(
     let mut auth_live = true;
     let mut resp = loop {
         let mut rb = client.request(method.clone(), url.clone());
-        for (n, v) in &header_list {
+        // reqwest skips its jar when a Cookie header is set, so merge the jar in here.
+        let user_cookies: Vec<&str> = header_list
+            .iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case("cookie"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let merged_cookie = if user_cookies.is_empty() {
+            None
+        } else {
+            let jar = clients.jar(req.client.collection.as_deref());
+            crate::cookies::merge_cookie_header(&jar, &url, &user_cookies)
+        };
+        let hop_headers: Vec<(String, String)> = match &merged_cookie {
+            Some(m) => header_list
+                .iter()
+                .filter(|(n, _)| !n.eq_ignore_ascii_case("cookie"))
+                .cloned()
+                .chain(std::iter::once(("cookie".to_owned(), m.clone())))
+                .collect(),
+            None => header_list.clone(),
+        };
+        for (n, v) in &hop_headers {
             rb = rb.header(n.as_str(), v.as_str());
         }
         if let (true, Some(h)) = (auth_live, &digest_header) {
@@ -847,7 +879,7 @@ async fn perform(
             let signed = sigv4::sign(
                 method.as_str(),
                 url.as_str(),
-                &header_list,
+                &hop_headers,
                 hash,
                 &creds,
                 now,

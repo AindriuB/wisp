@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); see HISTORY. Task 104 (cookie jar) is unblocked.
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); see HISTORY. Next: 105 (phase timings) and 107 (cookie manager UI), with about 399 KB of Windows headroom left (15,100,928 B of 15,500,000, run 42867914368).
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -69,6 +69,24 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 104 (not 0.2.0 wave 2)
+- [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.
+- [P3] The generation bumps on unchanged load/clear and on a rejected Set-Cookie; task 107 may save more often than needed.
+- [P3] `load` truncates remaining lifetime to whole seconds; a record expiring less than 1 s after now is stored expired.
+- [P3] Each jar clones the parsed public-suffix list (a hash-map clone per jar/load).
+- [NOTE] cookie_store logs non-Secure cookie values via `log::debug!`; no log backend exists today, so it would leak if a log/tracing-log bridge is ever added at debug level.
+- [NOTE] Loopback hosts count as a secure context (Secure cookies are sent over http://localhost), matching browsers.
+- [P2 -> task 108 / release] The public-suffix list snapshot (crates/core/data/public_suffix_list.dat, 2026-11-09) ages; refresh it before each release.
+- [P3 -> task 99] 45-9 cookies.rs `load()` accepts ';', CR/LF and userinfo hosts in records; reject invalid cookie-octets and host mismatch.
+- [P3 -> task 99] 45-10 plain-http responses can set or overwrite Secure cookies; `__Host-`/`__Secure-` prefixes are not enforced.
+- [P3 -> task 99] 45-11 unlisted single-label suffixes (test, local) are accepted as Domain from responses (load rejects them); apply `is_registrable` to responses too.
+- [P3] 45-6 `publicsuffix` is declared outside workspace deps; IDN suffix rejection relies on punycode enabled only via reqwest; add an IDN suffix test.
+- [P3] 45-8 the PSL parse `expect()` has no invariant comment; a bad refresh aborts on first send; add a dedicated parse test.
+- [P3] 45-12 Cookie header order is arbitrary, not longest path first.
+- [P3] 45-13 generate.sh notice URL serves the latest list, not this snapshot; version is hard-coded twice; read VERSION/COMMIT from the file and add a permalink.
+- [P3] 45-16 every Set-Cookie response scans the whole jar under the mutex (`needs_eviction`); keep running counts; the "no allocation" doc comment is wrong; the 3100-domain test takes about 5-7 s in debug.
+- [P3] 45-14 (Nit) `PARSE_COUNT` ships in release (`cfg(test)` it); sync tests are marked async. Item 42-8 (jar `debug_redacts` test) was done in task 104 and is retired.
 
 ### Follow-ups from task 106 (not 0.2.0 wave 2)
 - [P3] auth.rs:156 `parse_port` silently turns an invalid redirect port (81234, 8l23) into 0 ("any free port"); reject or show a notice.
@@ -139,7 +157,6 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] 42-4 app ui/request/auth.rs:123: build_auth maps OAuth2 kinds to Inherit, guarded only by an early return elsewhere.
 - [P3] 42-5 storage codec.rs:439: redirect_port read error and stale-key removal are untested.
 - [P3] 42-6 core engine.rs:459: serde round-trip test omits AuthorizeStart and AuthorizeCancel.
-- [P3] 42-8 core cookies.rs:15: CookieJar redacting Debug has no debug_redacts test (do it in 104).
 - [P3] 42-9 (Nit) model.rs:167: AuthorizeStart timeout None has no stated meaning; document as the 120 s default.
 - [P3] 42-10 (Nit) app workspace.rs:1135: inner auth-event arm is unreachable.
 - [NOTE] Round-1 fix for PR #42: TokenKey now carries collection id and environment; each collection has its own client and CookieJar (ClientSettings.collection); EngineConfig.cookies was removed. Task 106 must pass `environment` and `client.collection` on AuthorizeStart.
