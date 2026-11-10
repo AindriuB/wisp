@@ -6,7 +6,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::request::ClientAuth;
+
 pub mod digest;
+pub mod oauth2;
 pub mod sigv4;
 
 /// Resolved credentials for a scheme the engine applies at send time.
@@ -23,6 +26,26 @@ pub enum EngineAuth {
         session_token: String,
         region: String,
         service: String,
+    },
+    OAuth2ClientCredentials {
+        token_url: String,
+        client_id: String,
+        /// Empty means a public client.
+        client_secret: String,
+        scope: String,
+        client_auth: ClientAuth,
+    },
+    OAuth2AuthCode {
+        auth_url: String,
+        token_url: String,
+        client_id: String,
+        /// Empty means a public client.
+        client_secret: String,
+        scope: String,
+        client_auth: ClientAuth,
+        redirect_port: u16,
+        /// Whether the refresh token goes to the keychain-backed store; set by `resolve`.
+        persist_refresh: bool,
     },
 }
 
@@ -43,6 +66,40 @@ impl fmt::Debug for EngineAuth {
                 .field("session_token", &format_args!("\"<redacted>\""))
                 .field("region", region)
                 .field("service", service)
+                .finish(),
+            EngineAuth::OAuth2ClientCredentials {
+                token_url,
+                client_id,
+                scope,
+                client_auth,
+                ..
+            } => f
+                .debug_struct("OAuth2ClientCredentials")
+                .field("token_url", token_url)
+                .field("client_id", client_id)
+                .field("client_secret", &format_args!("\"<redacted>\""))
+                .field("scope", scope)
+                .field("client_auth", client_auth)
+                .finish(),
+            EngineAuth::OAuth2AuthCode {
+                auth_url,
+                token_url,
+                client_id,
+                scope,
+                client_auth,
+                redirect_port,
+                persist_refresh,
+                ..
+            } => f
+                .debug_struct("OAuth2AuthCode")
+                .field("auth_url", auth_url)
+                .field("token_url", token_url)
+                .field("client_id", client_id)
+                .field("client_secret", &format_args!("\"<redacted>\""))
+                .field("scope", scope)
+                .field("client_auth", client_auth)
+                .field("redirect_port", redirect_port)
+                .field("persist_refresh", persist_refresh)
                 .finish(),
         }
     }
@@ -85,6 +142,29 @@ mod tests {
         for (auth, secrets) in [
             (digest(), vec!["s3cret-pw"]),
             (sigv4(), vec!["AKIDSECRET", "secretkey-value", "tokenvalue"]),
+            (
+                EngineAuth::OAuth2ClientCredentials {
+                    token_url: "https://idp.test/token".into(),
+                    client_id: "cid".into(),
+                    client_secret: "CSECRETMARK".into(),
+                    scope: "read".into(),
+                    client_auth: ClientAuth::Basic,
+                },
+                vec!["CSECRETMARK"],
+            ),
+            (
+                EngineAuth::OAuth2AuthCode {
+                    auth_url: "https://idp.test/auth".into(),
+                    token_url: "https://idp.test/token".into(),
+                    client_id: "cid".into(),
+                    client_secret: "CSECRETMARK".into(),
+                    scope: "read".into(),
+                    client_auth: ClientAuth::Body,
+                    redirect_port: 0,
+                    persist_refresh: false,
+                },
+                vec!["CSECRETMARK"],
+            ),
         ] {
             for text in [format!("{auth:?}"), format!("{auth:#?}")] {
                 assert!(text.contains("<redacted>"));

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::EngineAuth;
 use crate::body::BodyHandle;
 use crate::resolve::ResolveWarning;
+use crate::timing::Timings;
 
 /// Identifier of one request, allocated monotonically by the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -158,6 +159,14 @@ impl fmt::Debug for ClientSettings {
 pub enum Command {
     Send(PreparedRequest),
     Cancel(RequestId),
+    /// Run an interactive OAuth2 authorization; answered with `AuthUrl` then
+    /// `AuthCompleted` or `AuthFailed`. No token, code or verifier ever crosses this boundary.
+    AuthorizeStart {
+        auth: EngineAuth,
+        client: ClientSettings,
+        timeout: Option<Duration>,
+    },
+    AuthorizeCancel(RequestId),
 }
 
 /// Classification of a failure.
@@ -170,6 +179,8 @@ pub enum ErrorKind {
     Timeout,
     Body,
     BodyFile,
+    /// OAuth2 authorization or token exchange failed.
+    Auth,
     Other,
 }
 
@@ -218,6 +229,7 @@ pub enum Event {
         total: Duration,
         size: u64,
         body: BodyHandle,
+        timings: Timings,
     },
     Failed {
         id: RequestId,
@@ -225,6 +237,18 @@ pub enum Event {
     },
     Cancelled {
         id: RequestId,
+    },
+    /// The URL the user must open to authorize.
+    AuthUrl {
+        id: RequestId,
+        url: String,
+    },
+    AuthCompleted {
+        id: RequestId,
+    },
+    AuthFailed {
+        id: RequestId,
+        error: EngineError,
     },
 }
 

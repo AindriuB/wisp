@@ -483,6 +483,22 @@ fn commands_and_events_round_trip_through_serde_json() {
                 id: wisp_core::body::BodyId(9),
                 len: 1,
             },
+            timings: Timings {
+                dns: Some(Duration::from_millis(1)),
+                connect: None,
+            },
+        },
+        Event::AuthUrl {
+            id,
+            url: "https://idp.test/auth".into(),
+        },
+        Event::AuthCompleted { id },
+        Event::AuthFailed {
+            id,
+            error: EngineError {
+                kind: ErrorKind::Auth,
+                message: "m".into(),
+            },
         },
         Event::Failed {
             id,
@@ -950,4 +966,78 @@ async fn follow_redirects_false_surfaces_a_307_for_a_streamed_body() {
         "{evs:?}"
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+fn oauth2_engine_auth() -> wisp_core::auth::EngineAuth {
+    wisp_core::auth::EngineAuth::OAuth2ClientCredentials {
+        token_url: "https://idp.test/token".into(),
+        client_id: "cid".into(),
+        client_secret: "SECRET".into(),
+        scope: String::new(),
+        client_auth: wisp_core::request::ClientAuth::Basic,
+    }
+}
+
+#[tokio::test]
+async fn send_with_oauth2_auth_fails_with_the_auth_kind() {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    let mut req = get("http://127.0.0.1:1/".into());
+    req.auth = Some(oauth2_engine_auth());
+    engine.submit(Command::Send(req));
+    let evs = collect_until_terminal(&rx).await;
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => {
+            assert_eq!(error.kind, ErrorKind::Auth);
+            assert_eq!(error.message, "OAuth2 is not available in this build yet");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn authorize_start_is_answered_with_auth_failed() {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    let id = engine.submit(Command::AuthorizeStart {
+        auth: oauth2_engine_auth(),
+        client: get(String::new()).client,
+        timeout: None,
+    });
+    match rx.recv().await.unwrap() {
+        Event::AuthFailed { id: got, error } => {
+            assert_eq!(got, id);
+            assert_eq!(error.kind, ErrorKind::Auth);
+            assert_eq!(error.message, "OAuth2 is not available in this build yet");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn completed_carries_empty_timings() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(get(format!("{}/t", server.uri()))));
+    match collect_until_terminal(&rx).await.last().unwrap() {
+        Event::Completed { timings, .. } => assert_eq!(
+            *timings,
+            Timings {
+                dns: None,
+                connect: None
+            }
+        ),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn debug_redacts_engine_config() {
+    let text = format!("{:?}", EngineConfig::default());
+    assert!(text.contains("EngineConfig"));
+    assert!(text.contains("<redacted>"));
+    let pretty = format!("{:#?}", EngineConfig::default());
+    assert!(pretty.contains("<redacted>"));
 }
