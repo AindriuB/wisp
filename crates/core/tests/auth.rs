@@ -16,9 +16,11 @@ fn request(url: String, auth: EngineAuth) -> PreparedRequest {
             verify_tls: true,
             follow_redirects: true,
             proxy: None,
+            collection: None,
         },
         warnings: vec![],
         auth: Some(auth),
+        environment: None,
     }
 }
 

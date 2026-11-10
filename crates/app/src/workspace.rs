@@ -472,6 +472,13 @@ struct SendPlan {
     notice: Option<String>,
 }
 
+/// The cookie-jar and OAuth2-token partition for a collection: its id, or its root path when
+/// the id cannot be read or created.
+fn collection_partition(root: &Path) -> String {
+    ensure_collection_id(root)
+        .map_or_else(|_| root.to_string_lossy().into_owned(), |id| id.to_string())
+}
+
 /// Resolve a draft for sending. Pure: everything it reads is passed in.
 fn prepare_send(
     draft: &Request,
@@ -966,7 +973,7 @@ impl Workspace {
                 t.from_history.clone(),
             )
         };
-        let plan = prepare_send(
+        let mut plan = prepare_send(
             &draft,
             path.as_deref(),
             origin.as_ref(),
@@ -980,6 +987,10 @@ impl Workspace {
                 cx.emit(WorkspaceEvent::Notice(message.to_string().into()));
             }
         })?;
+        plan.prepared.client.collection = self
+            .collection
+            .as_ref()
+            .map(|c| collection_partition(&c.tree.root));
         let scope_path = plan.scope_path;
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
@@ -1042,6 +1053,10 @@ impl Workspace {
             | Event::Completed { id, .. }
             | Event::Failed { id, .. }
             | Event::Cancelled { id } => *id,
+            // Interactive authorization is not driven from the app yet.
+            Event::AuthUrl { .. } | Event::AuthCompleted { .. } | Event::AuthFailed { .. } => {
+                return;
+            }
         };
         let terminal = matches!(
             event,
@@ -1089,18 +1104,26 @@ impl Workspace {
                     t.response.headers = headers.clone();
                     t.response.ttfb = Some(*ttfb);
                     t.response.total = None;
+                    t.response.dns = None;
+                    t.response.connect = None;
                     t.response.size = None;
                     t.response.error = None;
                 }
                 Event::Progress { bytes, .. } => t.response.received = *bytes,
                 Event::Completed {
-                    total, size, body, ..
+                    total,
+                    size,
+                    body,
+                    timings,
+                    ..
                 } => {
                     old_body = t.response.body.take();
                     // Read now: the handle is released when the next request replaces it.
                     stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
                     t.response.phase = Phase::Done;
                     t.response.total = Some(*total);
+                    t.response.dns = timings.dns;
+                    t.response.connect = timings.connect;
                     t.response.size = Some(*size);
                     t.response.received = *size;
                     t.response.body = Some(*body);
@@ -1120,6 +1143,7 @@ impl Workspace {
                     }
                 }
                 Event::Cancelled { .. } => t.response.phase = Phase::Cancelled,
+                Event::AuthUrl { .. } | Event::AuthCompleted { .. } | Event::AuthFailed { .. } => {}
             }
             cx.emit(TabEvent::ResponseChanged);
             cx.notify();
@@ -1172,6 +1196,8 @@ impl Workspace {
             status: r.status,
             ttfb: r.ttfb,
             total: r.total,
+            dns: r.dns,
+            connect: r.connect,
             size: r.size,
             response_headers: r.headers.clone(),
         };
@@ -1654,6 +1680,8 @@ mod tests {
             status: Some(200),
             ttfb_ms: None,
             total_ms: None,
+            dns_ms: None,
+            connect_ms: None,
             size: None,
             body_stored: false,
             body_truncated: false,
@@ -1956,6 +1984,8 @@ mod tests {
             status: Some(200),
             ttfb: None,
             total: None,
+            dns: None,
+            connect: None,
             size: Some(body.len() as u64),
             response_headers: Vec::new(),
         };

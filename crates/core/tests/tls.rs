@@ -15,9 +15,11 @@ fn request(url: String, verify_tls: bool) -> PreparedRequest {
             verify_tls,
             follow_redirects: true,
             proxy: None,
+            collection: None,
         },
         warnings: vec![],
         auth: None,
+        environment: None,
     }
 }
 

@@ -62,6 +62,37 @@ pub enum Auth {
         region: String,
         service: String,
     },
+    /// OAuth2 client-credentials grant; the engine fetches the token (task 103).
+    OAuth2ClientCredentials {
+        token_url: String,
+        client_id: String,
+        /// Empty means a public client.
+        client_secret: String,
+        scope: String,
+        client_auth: ClientAuth,
+    },
+    /// OAuth2 authorization-code grant with PKCE; the engine fetches the token (task 103).
+    OAuth2AuthCode {
+        auth_url: String,
+        token_url: String,
+        client_id: String,
+        /// Empty means a public client.
+        client_secret: String,
+        scope: String,
+        client_auth: ClientAuth,
+        /// Loopback redirect port; 0 means ephemeral.
+        redirect_port: u16,
+    },
+}
+
+/// How an OAuth2 client authenticates itself to the token endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ClientAuth {
+    /// HTTP Basic with the client id and secret.
+    #[default]
+    Basic,
+    /// `client_id` and `client_secret` in the form body.
+    Body,
 }
 
 /// `s` unchanged when it is exactly one `{{var}}` reference (whitespace allowed around it
@@ -113,6 +144,36 @@ impl Auth {
                 region: k(region),
                 service: k(service),
             },
+            Auth::OAuth2ClientCredentials {
+                token_url,
+                client_id,
+                client_secret,
+                scope,
+                client_auth,
+            } => Auth::OAuth2ClientCredentials {
+                token_url: k(token_url),
+                client_id: k(client_id),
+                client_secret: k(client_secret),
+                scope: k(scope),
+                client_auth: *client_auth,
+            },
+            Auth::OAuth2AuthCode {
+                auth_url,
+                token_url,
+                client_id,
+                client_secret,
+                scope,
+                client_auth,
+                redirect_port,
+            } => Auth::OAuth2AuthCode {
+                auth_url: k(auth_url),
+                token_url: k(token_url),
+                client_id: k(client_id),
+                client_secret: k(client_secret),
+                scope: k(scope),
+                client_auth: *client_auth,
+                redirect_port: *redirect_port,
+            },
         }
     }
 }
@@ -151,6 +212,38 @@ impl fmt::Debug for Auth {
                 .field("session_token", &format_args!("\"<redacted>\""))
                 .field("region", region)
                 .field("service", service)
+                .finish(),
+            Auth::OAuth2ClientCredentials {
+                token_url,
+                client_id,
+                scope,
+                client_auth,
+                ..
+            } => f
+                .debug_struct("OAuth2ClientCredentials")
+                .field("token_url", token_url)
+                .field("client_id", client_id)
+                .field("client_secret", &format_args!("\"<redacted>\""))
+                .field("scope", scope)
+                .field("client_auth", client_auth)
+                .finish(),
+            Auth::OAuth2AuthCode {
+                auth_url,
+                token_url,
+                client_id,
+                scope,
+                client_auth,
+                redirect_port,
+                ..
+            } => f
+                .debug_struct("OAuth2AuthCode")
+                .field("auth_url", auth_url)
+                .field("token_url", token_url)
+                .field("client_id", client_id)
+                .field("client_secret", &format_args!("\"<redacted>\""))
+                .field("scope", scope)
+                .field("client_auth", client_auth)
+                .field("redirect_port", redirect_port)
                 .finish(),
         }
     }
@@ -298,6 +391,60 @@ mod tests {
 
     fn both(v: &impl fmt::Debug) -> [String; 2] {
         [format!("{v:?}"), format!("{v:#?}")]
+    }
+
+    fn oauth2_pair(secret: &str) -> [Auth; 2] {
+        [
+            Auth::OAuth2ClientCredentials {
+                token_url: "https://idp.test/token".into(),
+                client_id: "cid".into(),
+                client_secret: secret.into(),
+                scope: "read".into(),
+                client_auth: ClientAuth::Basic,
+            },
+            Auth::OAuth2AuthCode {
+                auth_url: "https://idp.test/auth".into(),
+                token_url: "https://idp.test/token".into(),
+                client_id: "cid".into(),
+                client_secret: secret.into(),
+                scope: "read".into(),
+                client_auth: ClientAuth::Body,
+                redirect_port: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn debug_redacts_oauth2_client_secret() {
+        for a in oauth2_pair("CSECRETMARK") {
+            for text in both(&a) {
+                assert!(text.contains("cid"));
+                assert!(text.contains("<redacted>"));
+                assert!(!text.contains("CSECRETMARK"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn redacted_oauth2_empties_literals_and_keeps_var_refs() {
+        for (a, kept) in oauth2_pair("SECRETVAL")
+            .into_iter()
+            .zip(oauth2_pair("{{secret}}"))
+        {
+            let r = a.redacted();
+            let (Auth::OAuth2ClientCredentials { client_secret, .. }
+            | Auth::OAuth2AuthCode { client_secret, .. }) = &r
+            else {
+                panic!("variant changed");
+            };
+            assert_eq!(client_secret, "");
+            let (Auth::OAuth2ClientCredentials { client_secret, .. }
+            | Auth::OAuth2AuthCode { client_secret, .. }) = kept.redacted()
+            else {
+                panic!("variant changed");
+            };
+            assert_eq!(client_secret, "{{secret}}");
+        }
     }
 
     #[test]

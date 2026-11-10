@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::EngineAuth;
 use crate::body::BodyHandle;
 use crate::resolve::ResolveWarning;
+use crate::timing::Timings;
 
 /// Identifier of one request, allocated monotonically by the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -55,6 +56,9 @@ pub struct PreparedRequest {
     /// Auth the engine applies at send time (Digest, SigV4); `resolve` adds no header for it.
     #[serde(default)]
     pub auth: Option<EngineAuth>,
+    /// Name of the active environment (not secret); partitions cached OAuth2 tokens.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 /// URL with the query replaced by `<redacted>`.
@@ -137,6 +141,10 @@ pub struct ClientSettings {
     pub verify_tls: bool,
     pub follow_redirects: bool,
     pub proxy: Option<String>,
+    /// Collection id (not secret). Each collection gets its own client and cookie jar;
+    /// `None` is a scratch request with no collection.
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 impl fmt::Debug for ClientSettings {
@@ -146,6 +154,7 @@ impl fmt::Debug for ClientSettings {
             .field("verify_tls", &self.verify_tls)
             .field("follow_redirects", &self.follow_redirects)
             .field("proxy", &proxy)
+            .field("collection", &self.collection)
             .finish()
     }
 }
@@ -158,6 +167,17 @@ impl fmt::Debug for ClientSettings {
 pub enum Command {
     Send(PreparedRequest),
     Cancel(RequestId),
+    /// Run an interactive OAuth2 authorization; answered with `AuthUrl` then
+    /// `AuthCompleted` or `AuthFailed`. No token, code or verifier ever crosses this boundary.
+    AuthorizeStart {
+        auth: EngineAuth,
+        client: ClientSettings,
+        /// Active environment name; partitions the cached token.
+        #[serde(default)]
+        environment: Option<String>,
+        timeout: Option<Duration>,
+    },
+    AuthorizeCancel(RequestId),
 }
 
 /// Classification of a failure.
@@ -170,6 +190,8 @@ pub enum ErrorKind {
     Timeout,
     Body,
     BodyFile,
+    /// OAuth2 authorization or token exchange failed.
+    Auth,
     Other,
 }
 
@@ -218,6 +240,7 @@ pub enum Event {
         total: Duration,
         size: u64,
         body: BodyHandle,
+        timings: Timings,
     },
     Failed {
         id: RequestId,
@@ -225,6 +248,18 @@ pub enum Event {
     },
     Cancelled {
         id: RequestId,
+    },
+    /// The URL the user must open to authorize.
+    AuthUrl {
+        id: RequestId,
+        url: String,
+    },
+    AuthCompleted {
+        id: RequestId,
+    },
+    AuthFailed {
+        id: RequestId,
+        error: EngineError,
     },
 }
 
@@ -243,9 +278,11 @@ mod tests {
                 verify_tls: true,
                 follow_redirects: true,
                 proxy: None,
+                collection: None,
             },
             warnings: vec![],
             auth: None,
+            environment: None,
         }
     }
 
@@ -296,6 +333,7 @@ mod tests {
                 verify_tls: true,
                 follow_redirects: false,
                 proxy: Some(proxy.into()),
+                collection: None,
             };
             for s in both(&c) {
                 assert!(!s.contains("PROXYMARK"));
@@ -307,6 +345,7 @@ mod tests {
             verify_tls: true,
             follow_redirects: true,
             proxy: Some("http://proxy.example:8080".into()),
+            collection: None,
         };
         assert!(format!("{plain:?}").contains("http://proxy.example:8080"));
     }

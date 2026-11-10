@@ -322,9 +322,11 @@ impl Resolver<'_> {
                 verify_tls: s.verify_tls,
                 follow_redirects: s.follow_redirects,
                 proxy: None,
+                collection: None,
             },
             warnings: std::mem::take(&mut self.warnings),
             auth,
+            environment: self.scope.environment.map(|e| e.name.clone()),
         }
     }
 
@@ -513,6 +515,37 @@ impl Resolver<'_> {
                 session_token: self.subst(&session_token, &Location::Auth),
                 region: self.subst(&region, &Location::Auth),
                 service: self.subst(&service, &Location::Auth),
+            }),
+            Auth::OAuth2ClientCredentials {
+                token_url,
+                client_id,
+                client_secret,
+                scope,
+                client_auth,
+            } => Some(EngineAuth::OAuth2ClientCredentials {
+                token_url: self.subst(&token_url, &Location::Auth),
+                client_id: self.subst(&client_id, &Location::Auth),
+                client_secret: self.subst(&client_secret, &Location::Auth),
+                scope: self.subst(&scope, &Location::Auth),
+                client_auth,
+            }),
+            Auth::OAuth2AuthCode {
+                auth_url,
+                token_url,
+                client_id,
+                client_secret,
+                scope,
+                client_auth,
+                redirect_port,
+            } => Some(EngineAuth::OAuth2AuthCode {
+                auth_url: self.subst(&auth_url, &Location::Auth),
+                token_url: self.subst(&token_url, &Location::Auth),
+                client_id: self.subst(&client_id, &Location::Auth),
+                client_secret: self.subst(&client_secret, &Location::Auth),
+                scope: self.subst(&scope, &Location::Auth),
+                client_auth,
+                redirect_port,
+                persist_refresh: false,
             }),
         }
     }

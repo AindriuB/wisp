@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-10 — Wave-2 surface types and seams
+OAuth2 client credentials and auth code now exist as `Auth` variants that round-trip through the TOML codec, `resolve` and history redaction, with matching `EngineAuth` variants and redacting Debug. `Event::Completed`, the tab state and history entries carry phase timings (all `None` until task 105), and `EngineConfig` has a cookie-jar handle unused until task 104. `ClientCache` moved to `client.rs`. The engine refuses OAuth2 with a clear error until task 103, and the auth editor shows OAuth2 read-only. No dependencies or lockfile entries were added.
+**Cost:** Code review took one round: `OAuth2AuthCode` `redirect_port` did not round-trip byte for byte through the codec, and the Debug redaction test lacked a marker. No app test covers timings through `on_event`/`append_history` or the ignored auth events; follow-ups are in PLAN under task 100.
+PR #42 review round 1: TokenKey carries collection id and environment, each collection has its own client and CookieJar, EngineConfig.cookies removed; remaining review items are in PLAN under task 100.
+
 ## 2026-11-10 — Wave 1 size gate passed
 Measure run 42823763145 (https://github.com/AindriuB/wisp/actions/runs/42823763145) on main 71f9e1a, with tasks 91-97 merged, succeeded. Windows 14,514,688 B against the 15,500,000 B gate (PASS, +884,224 over task 77's 13,630,464); macOS aarch64 11,049,104 B; Linux x86_64 24,799,280 B. All three are within `scripts/measure/budgets.json`.
 **Cost:** The task first told the implementer to merge branches 91-97 into the measuring branch; the amendment replaced that with measuring main after the PRs merged, so no code was merged on branch 98. The macOS and Linux deltas (-8.1 MB, -13.2 MB) are against task 63's CI figures and probably reflect a different build profile, not wave 1 shrinking anything; only the Windows delta is like-for-like. Wave 1 used about 0.88 MB of the roughly 1.9 MB of Windows headroom, so waves 2 and 3 have about 1 MB left.
