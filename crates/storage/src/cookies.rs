@@ -24,6 +24,8 @@ pub const MAX_COOKIES: usize = 3_000;
 pub const MAX_PAIR_BYTES: usize = 4_096;
 
 const VERSION: u32 = 1;
+/// Slack for the `{"version":1,"cookies":[]}` wrapper.
+const HEADER_BYTES: usize = 64;
 
 /// One persisted cookie. Plain data; the app maps it to and from the core jar type.
 #[derive(Clone, PartialEq, Eq)]
@@ -79,6 +81,11 @@ fn secs(t: SystemTime) -> u64 {
 fn acceptable(name: &str, value: &str, domain: &str) -> bool {
     !domain.is_empty() && name.len().saturating_add(value.len()) <= MAX_PAIR_BYTES
 }
+
+/// Largest `domain` (bytes) `save` writes.
+pub const MAX_DOMAIN_BYTES: usize = 253;
+/// Largest `path` (bytes) `save` writes.
+pub const MAX_PATH_BYTES: usize = 1_024;
 
 /// The persisted cookie file of one collection.
 #[derive(Debug, Clone)]
@@ -174,8 +181,12 @@ impl CookieFile {
             .cookies
             .into_iter()
             .filter(|e| e.expires > now_s && acceptable(&e.name, &e.value, &e.domain))
+            .filter_map(|e| {
+                let expires = UNIX_EPOCH.checked_add(Duration::from_secs(e.expires))?;
+                Some((e, expires))
+            })
             .take(MAX_COOKIES)
-            .map(|e| StoredCookie {
+            .map(|(e, expires)| StoredCookie {
                 name: e.name,
                 value: e.value,
                 domain: e.domain,
@@ -183,7 +194,7 @@ impl CookieFile {
                 path: e.path,
                 secure: e.secure,
                 http_only: e.http_only,
-                expires: UNIX_EPOCH + Duration::from_secs(e.expires),
+                expires,
             })
             .collect())
     }
@@ -202,23 +213,51 @@ impl CookieFile {
 
     fn write(&self, cookies: &[StoredCookie], now: SystemTime) -> Result<(), StorageError> {
         let now_s = secs(now);
+        let mut entries: Vec<Entry> = cookies
+            .iter()
+            .filter(|c| {
+                secs(c.expires) > now_s
+                    && acceptable(&c.name, &c.value, &c.domain)
+                    && c.domain.len() <= MAX_DOMAIN_BYTES
+                    && c.path.len() <= MAX_PATH_BYTES
+            })
+            .take(MAX_COOKIES)
+            .map(|c| Entry {
+                name: c.name.clone(),
+                value: c.value.clone(),
+                domain: c.domain.clone(),
+                host_only: c.host_only,
+                path: c.path.clone(),
+                secure: c.secure,
+                http_only: c.http_only,
+                expires: secs(c.expires),
+            })
+            .collect();
+        // Keep the file within what `load` accepts: drop the soonest-expiring cookies first.
+        let sizes = entries
+            .iter()
+            .map(|e| serde_json::to_vec(e).map(|v| v.len() + 1))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| self.invalid(&e.to_string()))?;
+        let budget = (MAX_FILE_BYTES as usize).saturating_sub(HEADER_BYTES);
+        if sizes.iter().sum::<usize>() > budget {
+            let mut order: Vec<usize> = (0..entries.len()).collect();
+            order.sort_by_key(|&i| std::cmp::Reverse(entries[i].expires));
+            let mut keep = vec![false; entries.len()];
+            let mut used = 0usize;
+            for i in order {
+                if used + sizes[i] > budget {
+                    break;
+                }
+                used += sizes[i];
+                keep[i] = true;
+            }
+            let mut it = keep.into_iter();
+            entries.retain(|_| it.next().unwrap_or(false));
+        }
         let doc = FileDoc {
             version: VERSION,
-            cookies: cookies
-                .iter()
-                .filter(|c| secs(c.expires) > now_s && acceptable(&c.name, &c.value, &c.domain))
-                .take(MAX_COOKIES)
-                .map(|c| Entry {
-                    name: c.name.clone(),
-                    value: c.value.clone(),
-                    domain: c.domain.clone(),
-                    host_only: c.host_only,
-                    path: c.path.clone(),
-                    secure: c.secure,
-                    http_only: c.http_only,
-                    expires: secs(c.expires),
-                })
-                .collect(),
+            cookies: entries,
         };
         let bytes = serde_json::to_vec(&doc).map_err(|e| self.invalid(&e.to_string()))?;
         if let Some(parent) = self.path.parent() {

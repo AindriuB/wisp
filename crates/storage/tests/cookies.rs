@@ -182,3 +182,84 @@ fn debug_redacts_stored_cookie() {
         assert!(s.contains("<redacted>"));
     }
 }
+
+fn entry_json(n: &str, v: &str, expires: u64) -> String {
+    format!(
+        r#"{{"name":"{n}","value":"{v}","domain":"a.com","host_only":true,"path":"/","secure":false,"http_only":false,"expires":{expires}}}"#
+    )
+}
+
+#[test]
+fn huge_expires_is_skipped_not_a_panic() {
+    let (t, _d, f) = setup();
+    f.enable().unwrap();
+    let body = [
+        entry_json("max", "v", u64::MAX),
+        entry_json("big", "v", 10_000_000_000_000),
+        entry_json("ok", "v", 2_000_000),
+    ]
+    .join(",");
+    std::fs::write(path(&t), format!(r#"{{"version":1,"cookies":[{body}]}}"#)).unwrap();
+    let got = f.load(now()).unwrap();
+    assert!(got.iter().any(|c| c.name == "ok"));
+    assert!(got.iter().all(|c| c.name != "max"));
+}
+
+#[test]
+fn name_value_boundary_is_4096() {
+    let (t, _d, f) = setup();
+    f.enable().unwrap();
+    let body = [
+        entry_json("n", &"x".repeat(4_095), 2_000_000),
+        entry_json("m", &"x".repeat(4_096), 2_000_001),
+    ]
+    .join(",");
+    std::fs::write(path(&t), format!(r#"{{"version":1,"cookies":[{body}]}}"#)).unwrap();
+    let got = f.load(now()).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].name, "n");
+}
+
+#[test]
+fn save_skips_oversize_domain_and_path() {
+    let (_t, _d, f) = setup();
+    f.enable().unwrap();
+    let mut long_domain = cookie("d", 10);
+    long_domain.domain = "a".repeat(254);
+    let mut long_path = cookie("p", 10);
+    long_path.path = "/".repeat(1_025);
+    let mut edge = cookie("e", 10);
+    edge.domain = "a".repeat(253);
+    edge.path = "/".repeat(1_024);
+    f.save(&[long_domain, long_path, edge], now()).unwrap();
+    let got = f.load(now()).unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].name, "e");
+}
+
+#[test]
+fn save_trims_to_4_mib_keeping_latest_expiring() {
+    let (t, _d, f) = setup();
+    f.enable().unwrap();
+    let cookies: Vec<StoredCookie> = (0..1_200)
+        .map(|i| {
+            let mut c = cookie(&format!("c{i}"), 100 + i);
+            c.value = "v".repeat(4_000);
+            c
+        })
+        .collect();
+    f.save(&cookies, now()).unwrap();
+    assert!(std::fs::metadata(path(&t)).unwrap().len() <= 4 * 1024 * 1024);
+    let got = f.load(now()).unwrap();
+    assert!(got.len() < 1_200 && !got.is_empty());
+    assert!(got.iter().any(|c| c.name == "c1199"));
+    assert!(got.iter().all(|c| c.name != "c0"));
+    let min_kept = got.iter().map(|c| c.expires).min().unwrap();
+    let dropped_max = cookies
+        .iter()
+        .filter(|c| !got.iter().any(|g| g.name == c.name))
+        .map(|c| c.expires)
+        .max()
+        .unwrap();
+    assert!(dropped_max < min_kept);
+}
