@@ -89,6 +89,13 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] workspace.rs empty_json_leaves: keys compared in raw escaped form vs decoded names stored by the redactor (escaped keys never match); the `{{` branch skips to the first `}}` regardless of content.
 - [P3] workspace.rs test `long_key_with_many_empty_leaves_is_fast` asserts < 1 s wall-clock; may flake on slow CI.
 - [IDEA] Export storage's `mask_bare_refs` and use serde_json in the app for the redacted-body check instead of the hand-rolled scanner.
+- [P3] r2 38-1 storage history.rs:752: clear ignores every delete error and reports success; bodies may stay on disk; lock-file comment wrong. Tolerate only in-use/pending-delete errors, report leftovers, fix comment. (→ task 99 when split)
+- [P3] r2 38-2 tab.rs:95: `stored_body` is unused by the refusal and its doc describes a rule no longer implemented; remove or use it and fix the doc.
+- [P3] r2 38-3 url_bar.rs:279: URL bar previews the collection scope while Send uses the original folder scope, so it shows false problems; share scope_path_for with refresh.
+- [P3] r2 38-4 workspace.rs:162: the scope guard compares only the URL template; a request var override can send folder credentials to a new host; also treat changed vars as edited, or compare the resolved host. (→ task 99 when split)
+- [P3] r2 38-5 workspace.rs:452: a non-JSON Text/Xml body is refused for good; Body::None handled inconsistently; refuse a failed scan only for Body::Json.
+- [P3] r2 38-6 workspace.rs:1414: body refusal is a Syntax problem detected by message prefix; use a dedicated SendError variant.
+- [P3] r2 38-7 (Nit) workspace.rs:238: with both userinfo parts redacted, url.password is reported as unhandled.
 
 ### Follow-ups from task 96 (not 0.2.0 wave 1)
 - [P3] 37-5 import.rs:435: warnings are shown verbatim; a malformed curl header can echo its token (fix at source, task 99 AC19).
