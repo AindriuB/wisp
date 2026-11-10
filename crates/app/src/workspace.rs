@@ -4,7 +4,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use gpui::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task, WeakEntity};
+use gpui::{
+    AppContext as _, Context, Entity, EntityId, EventEmitter, SharedString, Task, WeakEntity,
+};
 use wisp_core::auth::EngineAuth;
 use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::cookies::{CookieJar, CookieJars};
@@ -138,9 +140,37 @@ struct CookieStatus {
     /// The file has been checked (and loaded when it exists).
     loaded: bool,
     enabled: bool,
+    /// The toggle was pressed in this run after the entry was created.
+    toggled: bool,
     /// A load, save or enable error; saves are skipped while set.
     error: Option<String>,
     debounce: Debounce,
+}
+
+/// True when the id-wait `token` is still the tab's current one (and ends the wait).
+fn claim_id_wait<K: std::hash::Hash + Eq>(waits: &mut HashMap<K, u64>, tab: K, token: u64) -> bool {
+    if waits.get(&tab) == Some(&token) {
+        waits.remove(&tab);
+        true
+    } else {
+        false
+    }
+}
+
+/// The quit-time save runs only when persistence is on and the jar changed since the last save.
+fn quit_save_needed(saving: bool, dirty: bool) -> bool {
+    saving && dirty
+}
+
+impl CookieStatus {
+    /// Apply a finished load; `file_on` is whether the file was found enabled. A toggle
+    /// pressed since the load was queued wins, so `enabled` is left to it.
+    fn apply_loaded(&mut self, file_on: bool) {
+        self.loaded = true;
+        if !self.toggled {
+            self.enabled = file_on;
+        }
+    }
 }
 
 /// One cookie-file operation. Run strictly one at a time, in order.
@@ -800,6 +830,9 @@ pub struct Workspace {
     cookie_queue: VecDeque<CookieJob>,
     /// True while a cookie-file job runs: at most one at a time.
     cookie_busy: bool,
+    /// Sends waiting for a collection id to be created, by tab, with their token.
+    id_waits: HashMap<EntityId, u64>,
+    next_wait: u64,
     cookie_ticker: Option<Task<()>>,
     _quit_sub: Option<gpui::Subscription>,
     autosend: Option<RequestId>,
@@ -902,6 +935,8 @@ impl Workspace {
             cookie_files: HashMap::new(),
             cookie_queue: VecDeque::new(),
             cookie_busy: false,
+            id_waits: HashMap::new(),
+            next_wait: 0,
             cookie_ticker: None,
             _quit_sub: None,
             autosend: None,
@@ -911,20 +946,16 @@ impl Workspace {
             prompt_up: false,
         };
         this.spawn_drain(events, cx);
-        // Flush on quit: queue a final save, then wait (bounded by gpui's shutdown timeout)
-        // for the cookie-file queue to drain.
-        this._quit_sub = Some(cx.on_app_quit(|this, cx| {
-            this.flush_cookies(cx);
-            cx.spawn(async move |this, cx| {
-                for _ in 0..150 {
-                    if this.update(cx, |t, _| t.cookie_idle()).unwrap_or(true) {
-                        break;
-                    }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(20))
-                        .await;
+        // Flush on quit. gpui's shutdown blocks the main thread, so nothing spawned on the
+        // foreground runs: take the snapshot here and save it on a worker thread.
+        this._quit_sub = Some(cx.on_app_quit(|this, cx| match this.take_quit_save() {
+            Some((id, cookies, data)) => cx.background_executor().spawn(async move {
+                if let Some(cid) = CollectionId::parse(&id) {
+                    // `save` re-checks the enabled flag under the file lock.
+                    let _ = CookieFile::new(&data, &cid).save(&cookies, SystemTime::now());
                 }
-            })
+            }),
+            None => Task::ready(()),
         }));
         if let Some(root) = open
             && let Err(e) = this.open_collection(&root, cx)
@@ -1295,9 +1326,19 @@ impl Workspace {
         }
         // No id yet: create it off the UI thread, then submit.
         self.show_sending(tab, None, cx);
+        self.next_wait += 1;
+        let token = self.next_wait;
+        self.id_waits.insert(tab.entity_id(), token);
         let tab = tab.downgrade();
         self.resolve_id_then(cx, move |this, partition, cx| {
-            let (Some(partition), Some(tab)) = (partition, tab.upgrade()) else {
+            let Some(tab) = tab.upgrade() else {
+                return;
+            };
+            // Cancelled (or replaced) while the id was created: the send is dropped.
+            if !claim_id_wait(&mut this.id_waits, tab.entity_id(), token) {
+                return;
+            }
+            let Some(partition) = partition else {
                 return;
             };
             this.submit_plan(&tab, draft, plan, partition, cx);
@@ -1457,10 +1498,22 @@ impl Workspace {
 
     pub fn cancel(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
         let t = tab.read(cx);
-        if t.response.phase == Phase::Sending
-            && let Some(id) = t.response.request_id
-        {
-            self.engine.submit(Command::Cancel(id));
+        if t.response.phase == Phase::Sending {
+            match t.response.request_id {
+                Some(id) => {
+                    self.engine.submit(Command::Cancel(id));
+                }
+                None => {
+                    // Still waiting for the collection id: drop the pending submit.
+                    if self.id_waits.remove(&tab.entity_id()).is_some() {
+                        tab.update(cx, |t, cx| {
+                            t.response.phase = Phase::Cancelled;
+                            cx.emit(TabEvent::ResponseChanged);
+                            cx.notify();
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -2055,6 +2108,7 @@ impl Workspace {
                 CookieStatus {
                     loaded: false,
                     enabled: false,
+                    toggled: false,
                     error: None,
                     debounce: Debounce::new(generation),
                 },
@@ -2076,9 +2130,21 @@ impl Workspace {
         self.pump_cookies(cx);
     }
 
-    /// True when no cookie-file job is queued or running.
-    fn cookie_idle(&self) -> bool {
-        !self.cookie_busy && self.cookie_queue.is_empty()
+    /// The final save for quit: the open collection's snapshot when saving is on and the jar
+    /// changed since the last save. Marks the generation saved.
+    fn take_quit_save(&mut self) -> Option<(String, Vec<StoredCookie>, DataDir)> {
+        let data = self.data_dir.clone()?;
+        let id = self.cookie_saving()?;
+        let jar = self.jars.jar(Some(&id));
+        let generation = jar.generation();
+        let st = self.cookie_files.get_mut(&id)?;
+        st.debounce.observe(generation, Instant::now());
+        if !quit_save_needed(true, st.debounce.dirty()) {
+            return None;
+        }
+        st.debounce.saved(generation);
+        let cookies = cookie_ui::to_stored(jar.snapshot(SystemTime::now()));
+        Some((id, cookies, data))
     }
 
     fn pump_cookies(&mut self, cx: &mut Context<Self>) {
@@ -2114,13 +2180,9 @@ impl Workspace {
         let jar = self.jars.jar(Some(id));
         if let Some(st) = self.cookie_files.get_mut(id) {
             match done {
-                CookieDone::Loaded(Ok(None)) => {
-                    st.loaded = true;
-                    st.enabled = false;
-                }
+                CookieDone::Loaded(Ok(None)) => st.apply_loaded(false),
                 CookieDone::Loaded(Ok(Some(stored))) => {
-                    st.loaded = true;
-                    st.enabled = true;
+                    st.apply_loaded(true);
                     // Cookies set while the load ran are newer and win.
                     let mut records = cookie_ui::to_records(stored);
                     records.extend(jar.snapshot(SystemTime::now()));
@@ -2128,8 +2190,7 @@ impl Workspace {
                 }
                 CookieDone::Loaded(Err(e)) => {
                     // The file is left alone until the toggle is turned off and on.
-                    st.loaded = true;
-                    st.enabled = true;
+                    st.apply_loaded(true);
                     st.error = Some(e.clone());
                     failure = Some(e);
                 }
@@ -2258,10 +2319,12 @@ impl Workspace {
             let st = this.cookie_files.entry(id.clone()).or_insert(CookieStatus {
                 loaded: false,
                 enabled: false,
+                toggled: false,
                 error: None,
                 debounce: Debounce::new(generation),
             });
             st.error = None;
+            st.toggled = true;
             if on {
                 st.enabled = true;
                 st.debounce.saved(generation);
@@ -2283,6 +2346,59 @@ mod tests {
     use super::*;
     use wisp_core::Method;
     use wisp_core::request::{KeyValue, TextBody, Var};
+
+    #[test]
+    fn quit_save_only_when_saving_and_dirty() {
+        assert!(quit_save_needed(true, true));
+        assert!(!quit_save_needed(true, false));
+        assert!(!quit_save_needed(false, true));
+        assert!(!quit_save_needed(false, false));
+    }
+
+    fn status() -> CookieStatus {
+        CookieStatus {
+            loaded: false,
+            enabled: false,
+            toggled: false,
+            error: None,
+            debounce: Debounce::new(0),
+        }
+    }
+
+    #[test]
+    fn toggle_on_wins_over_a_load_that_found_no_file() {
+        let mut st = status();
+        // Entry created by the toggle, which then turned persistence on.
+        st.toggled = true;
+        st.enabled = true;
+        st.apply_loaded(false);
+        assert!(st.loaded && st.enabled);
+        st.debounce.observe(1, Instant::now());
+        assert!(st.debounce.dirty());
+    }
+
+    #[test]
+    fn load_decides_enabled_when_not_toggled() {
+        let mut st = status();
+        st.apply_loaded(false);
+        assert!(!st.enabled);
+        st.apply_loaded(true);
+        assert!(st.enabled);
+    }
+
+    #[test]
+    fn cancel_drops_a_send_waiting_for_the_id() {
+        let mut waits: HashMap<u32, u64> = HashMap::new();
+        waits.insert(1, 7);
+        // Cancel removes it; the late resolve then submits nothing.
+        waits.remove(&1);
+        assert!(!claim_id_wait(&mut waits, 1, 7));
+        // A replaced wait is also stale; the current one claims once.
+        waits.insert(1, 8);
+        assert!(!claim_id_wait(&mut waits, 1, 7));
+        assert!(claim_id_wait(&mut waits, 1, 8));
+        assert!(!claim_id_wait(&mut waits, 1, 8));
+    }
 
     #[test]
     fn auth_event_for_the_starting_tab_is_routed() {
