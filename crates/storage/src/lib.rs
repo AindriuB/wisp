@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod collection;
+pub mod cookies;
 pub mod data_dir;
 pub mod environment;
 pub mod error;

@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-10 — Persisted cookie file store
+`wisp-storage` has a `CookieFile` that loads, saves, enables and disables one collection's cookie file at `cookies/<collection-id>.json` in the per-user data dir. Persistence is off by default and is on exactly when the file exists. Saves are atomic and 0600 in a 0700 directory, drop expired cookies, and refuse a symlinked file. Loads refuse a file over 4 MiB, keep at most 3,000 cookies, skip oversized or domainless entries, and fail cleanly on a corrupt or wrong-version file. `StoredCookie` redacts its value in Debug. The app wiring is task 107.
+**Cost:** Code review took one round: a huge `expires` panicked on load, and `save` could write a file that `load` then refused. Amendment 1 (user decision) caps domain at 253 B and path at 1 KiB and makes `save` drop the soonest-expiring cookies first to stay within 4 MiB. Follow-ups are in PLAN under task 102.
+PR #41 review rounds 1-2: the fixes added `atomic_write_force_private` in crates/storage/src/fs.rs (outside the original Owns, orchestrator-approved), and AC2 now writes via it.
+
 ## 2026-11-10 — Wave-2 surface types and seams
 OAuth2 client credentials and auth code now exist as `Auth` variants that round-trip through the TOML codec, `resolve` and history redaction, with matching `EngineAuth` variants and redacting Debug. `Event::Completed`, the tab state and history entries carry phase timings (all `None` until task 105), and `EngineConfig` has a cookie-jar handle unused until task 104. `ClientCache` moved to `client.rs`. The engine refuses OAuth2 with a clear error until task 103, and the auth editor shows OAuth2 read-only. No dependencies or lockfile entries were added.
 **Cost:** Code review took one round: `OAuth2AuthCode` `redirect_port` did not round-trip byte for byte through the codec, and the Debug redaction test lacked a marker. No app test covers timings through `on_event`/`append_history` or the ignored auth events; follow-ups are in PLAN under task 100.

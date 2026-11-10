@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); see HISTORY. Tasks 103 (OAuth2 engine) and 104 (cookie jar) are now unblocked.
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); see HISTORY. Tasks 103 (OAuth2 engine) and 104 (cookie jar) are now unblocked.
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -69,6 +69,19 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 102 (not 0.2.0 wave 2)
+- [P3] cookies.rs:202-203 `save` doc doesn't mention the domain/path caps or soonest-expiring trimming.
+- [P3] cookies.rs:85-88 MAX_DOMAIN_BYTES/MAX_PATH_BYTES are declared after `acceptable`; group them with the limits at :20-24.
+- [P3] cookies.rs:171 Parse error uses serde_json's message, which can echo a mistyped scalar from a hand-edited file (array-form entry); use a fixed message.
+- [P3] cookies.rs:224 with more than 3,000 input cookies, the first 3,000 in input order are kept before expiry trimming; keep the latest-expiring.
+- [NOTE for task 107] `save` checks `is_enabled` then writes with no lock, so a concurrent `disable` can re-enable persistence; `load` checks the symlink then opens (race) and does not refuse a symlinked `cookies/` parent.
+- [P3 → task 99] 41-3 cookies.rs:207: symlink check then write through a path that follows symlinks; use a non-following write path.
+- [P3 → task 107] 41-4 cookies.rs:183: load accepts any domain scope and control characters from the file; validate here or in the jar.
+- [ACCEPTED, user 2026-11-10] 41-5 / 42-12: copies or clones of a collection (same id) share history, OAuth2 tokens, the in-memory jar and the cookie file.
+- [P3] 41-6 cookies.rs:266: no fsync before rename; a crash can leave a truncated file; sync_all before rename and define recovery on Parse.
+- [P3] 41-7 tests: no test that enable keeps cookies or refuses a symlink; error test only checks is_err.
+- [P3] The in-process WRITE_LOCK mutex is not covered by a deterministic test (the file lock is).
 
 ### Follow-ups from task 100 (not 0.2.0 wave 2)
 - [P3] No app test drives `Event::Completed` with non-empty timings through on_event/append_history, or the ignored auth events; add when task 105 makes timings real.
