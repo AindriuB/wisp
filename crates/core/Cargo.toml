@@ -36,6 +36,6 @@ http.workspace = true
 wiremock.workspace = true
 tokio.workspace = true
 rcgen.workspace = true
-h2 = "0.4"
-tokio-rustls = { version = "0.26", default-features = false }
-bytes = "1"
+h2.workspace = true
+tokio-rustls.workspace = true
+bytes.workspace = true

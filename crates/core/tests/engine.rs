@@ -975,7 +975,7 @@ async fn follow_redirects_false_surfaces_a_307_for_a_streamed_body() {
 }
 
 #[tokio::test]
-async fn completed_carries_empty_timings() {
+async fn fresh_then_reused_connection_timings() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200))

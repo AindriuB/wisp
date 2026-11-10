@@ -35,6 +35,9 @@ serde_json = { version = "1.0.154", default-features = false, features = ["std"]
 anyhow = { version = "1", default-features = false, features = ["std"] }
 wiremock = { version = "0.6", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+h2 = "0.4"
+tokio-rustls = { version = "0.26", default-features = false }
+bytes = "1"
 # Features unify across members: Linux backends (wayland, x11) are enabled on the platform crate only.
 gpui = { package = "gpui-pre", version = "=0.3.10", default-features = false }
 gpui-component = { version = "=0.8.1", default-features = false }

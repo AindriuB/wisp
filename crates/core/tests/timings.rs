@@ -225,11 +225,11 @@ async fn ten_concurrent_http2_sends_report_one_connect() {
         engine.submit(Command::Send(request(format!("https://localhost:{port}/"))));
     }
     let all = terminals(&rx, 10).await;
-    let versions: Vec<_> = all
+    let ok: Vec<_> = all
         .iter()
         .map(|e| matches!(e, Event::Completed { .. }))
         .collect();
-    assert!(versions.iter().all(|v| *v), "{all:?}");
+    assert!(ok.iter().all(|v| *v), "{all:?}");
     assert!(accepted.load(Ordering::SeqCst) >= 1);
     assert_eq!(some_connects(&all), 1, "{all:?}");
     // DNS belongs to the same request as the connect.
@@ -271,4 +271,124 @@ async fn cancelling_a_stalled_connect_leaves_nothing_for_the_next_request() {
     let (total, t) = completed(&ev[0]);
     assert!(t.connect.is_some_and(|c| c <= total), "{t:?}");
     assert_eq!(t.dns, None);
+}
+
+/// A TLS HTTP/1.1 server whose second connection is held at the handshake until released, and
+/// whose first connection holds its first response until released.
+struct Raced {
+    port: u16,
+    /// Per accepted connection (in accept order), the number of requests it answered.
+    served: Arc<[AtomicUsize; 3]>,
+    first_request: std::sync::mpsc::Receiver<()>,
+    second_accepted: std::sync::mpsc::Receiver<()>,
+    release_first: std::sync::mpsc::Sender<()>,
+    release_second: std::sync::mpsc::Sender<()>,
+}
+
+fn serve_raced() -> Raced {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let served: Arc<[AtomicUsize; 3]> = Arc::new(Default::default());
+    let (first_tx, first_request) = std::sync::mpsc::channel::<()>();
+    let (second_tx, second_accepted) = std::sync::mpsc::channel::<()>();
+    let (release_first, mut rel_first) = {
+        let (t, r) = std::sync::mpsc::channel::<()>();
+        (t, Some(r))
+    };
+    let (release_second, mut rel_second) = {
+        let (t, r) = std::sync::mpsc::channel::<()>();
+        (t, Some(r))
+    };
+    let config = tls_config(&[b"http/1.1"]);
+    let counts = served.clone();
+    std::thread::spawn(move || {
+        for (idx, tcp) in l.incoming().flatten().enumerate().take(3) {
+            let (first_tx, second_tx) = (first_tx.clone(), second_tx.clone());
+            let hold = match idx {
+                0 => rel_first.take(),
+                1 => rel_second.take(),
+                _ => None,
+            };
+            let (config, counts) = (config.clone(), counts.clone());
+            std::thread::spawn(move || {
+                if idx == 1 {
+                    let _ = second_tx.send(());
+                    // Hold the handshake: the client's connect cannot finish.
+                    let _ = hold.as_ref().unwrap().recv();
+                }
+                let conn = rustls::ServerConnection::new(config).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match tls.read(&mut chunk) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    buf.clear();
+                    if idx == 0 && counts[0].load(Ordering::SeqCst) == 0 {
+                        let _ = first_tx.send(());
+                        let _ = hold.as_ref().unwrap().recv();
+                    }
+                    counts[idx].fetch_add(1, Ordering::SeqCst);
+                    let r = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                    if tls.write_all(r.as_bytes()).is_err() || tls.flush().is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    Raced {
+        port,
+        served,
+        first_request,
+        second_accepted,
+        release_first,
+        release_second,
+    }
+}
+
+/// A connect that loses the race to a pooled connection still finishes and is pooled. A later
+/// request that reuses it did not open it, so it must not inherit that connect's timings.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pooled_connection_whose_connect_lost_a_race_is_not_claimed_by_a_later_request() {
+    let Raced {
+        port,
+        served,
+        first_request,
+        second_accepted,
+        release_first,
+        release_second,
+    } = serve_raced();
+    let url = format!("https://127.0.0.1:{port}/");
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    // B opens connection 0 and is held at the server.
+    engine.submit(Command::Send(request(url.clone())));
+    tokio::task::spawn_blocking(move || first_request.recv().unwrap())
+        .await
+        .unwrap();
+    // A finds nothing idle and starts connecting; the server holds that handshake.
+    engine.submit(Command::Send(request(url.clone())));
+    tokio::task::spawn_blocking(move || second_accepted.recv().unwrap())
+        .await
+        .unwrap();
+    // B finishes, its connection goes idle, and A takes it instead of waiting for its own.
+    release_first.send(()).unwrap();
+    let both = terminals(&rx, 2).await;
+    assert_eq!(some_connects(&both), 1, "{both:?}");
+    assert_eq!(served[0].load(Ordering::SeqCst), 2, "A rode connection 0");
+    // A's own connect now finishes and is pooled behind connection 0.
+    release_second.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    engine.submit(Command::Send(request(url)));
+    let z = terminals(&rx, 1).await;
+    assert_eq!(
+        served[1].load(Ordering::SeqCst),
+        1,
+        "Z reused A's connection"
+    );
+    assert_eq!(completed(&z[0]).1, Timings::default(), "{z:?}");
 }
