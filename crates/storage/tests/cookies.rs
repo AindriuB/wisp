@@ -343,3 +343,60 @@ fn enable_disable_save_interleavings_end_in_last_state() {
     f.save(&[cookie("z", 100)], now()).unwrap();
     assert!(!f.is_enabled(), "save after disable must not re-enable");
 }
+
+#[test]
+fn writers_block_on_the_advisory_file_lock() {
+    use std::sync::mpsc;
+
+    let (t, d, f) = setup();
+    f.enable().unwrap();
+    let p = path(&t);
+    let lock_path = p.with_extension("lock");
+    assert!(lock_path.exists(), "enable must create the lock file");
+    let before = std::fs::read(&p).unwrap();
+
+    // Another holder (as another process would) takes the lock first.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    held.lock().unwrap();
+
+    let id = CollectionId::parse("abcdef0123456789").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let saver = CookieFile::new(&d, &id);
+    let tx_save = tx.clone();
+    let ts = std::thread::spawn(move || {
+        saver.save(&[cookie("new", 100)], now()).unwrap();
+        tx_save.send("save").unwrap();
+    });
+    let disabler = CookieFile::new(&d, &id);
+    let td = std::thread::spawn(move || {
+        disabler.disable().unwrap();
+        tx.send("disable").unwrap();
+    });
+
+    // Neither may complete or touch the file while the lock is held.
+    assert!(
+        rx.recv_timeout(Duration::from_millis(500)).is_err(),
+        "a writer ran while the file lock was held"
+    );
+    assert_eq!(std::fs::read(&p).unwrap(), before);
+
+    held.unlock().unwrap();
+    drop(held);
+    let deadline = Duration::from_secs(20);
+    let first = rx.recv_timeout(deadline).expect("first writer completes");
+    let second = rx.recv_timeout(deadline).expect("second writer completes");
+    assert_ne!(first, second);
+    ts.join().unwrap();
+    td.join().unwrap();
+
+    // Final state matches whichever ran last.
+    if second == "disable" {
+        assert!(!p.exists());
+    } else {
+        assert_eq!(f.load(now()).unwrap(), vec![cookie("new", 100)]);
+    }
+}
