@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 102 | Persisted cookie file store in wisp-storage: off by default, atomic 0600 save, expired dropped, load limits (4 MiB, 3,000 cookies), value redacted in Debug | ## 2026-11-10 — Persisted cookie file store |
 | 2026-11-10 | 97 | History panel (newest first, status and relative time), open an entry read-only, Resend with the current environment and folder defaults, Clear history with confirm, `history_bodies` setting | ## 2026-11-10 — History panel, Clear and Resend |
 | 2026-11-10 | 96 | Import dialog: paste curl or choose Postman/OpenAPI file, preview with warnings, write to collection root or a new folder; secrets note | ## 2026-11-10 — Import dialog |
 | 2026-11-10 | 93 | History moved to a per-user store (index plus capped bodies, auth and Set-Cookie redacted, count and byte eviction), written off the UI thread | ## 2026-11-10 — Per-user history store |

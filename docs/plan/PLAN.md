@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. Tasks 91-98. Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend); see HISTORY.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings.
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 102 (persisted cookie file store in storage; app wiring is 107).
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -69,6 +69,13 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 102 (not 0.2.0 wave 2)
+- [P3] cookies.rs:202-203 `save` doc doesn't mention the domain/path caps or soonest-expiring trimming.
+- [P3] cookies.rs:85-88 MAX_DOMAIN_BYTES/MAX_PATH_BYTES are declared after `acceptable`; group them with the limits at :20-24.
+- [P3] cookies.rs:171 Parse error uses serde_json's message, which can echo a mistyped scalar from a hand-edited file (array-form entry); use a fixed message.
+- [P3] cookies.rs:224 with more than 3,000 input cookies, the first 3,000 in input order are kept before expiry trimming; keep the latest-expiring.
+- [NOTE for task 107] `save` checks `is_enabled` then writes with no lock, so a concurrent `disable` can re-enable persistence; `load` checks the symlink then opens (race) and does not refuse a symlinked `cookies/` parent.
 
 ### Follow-ups from task 97 (not 0.2.0 wave 1)
 - [P3] workspace.rs:1006-1018: Save on a from-history tab does not clear `from_history`, so later sends of the saved request still show the "Resent..." notice.
