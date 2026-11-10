@@ -307,3 +307,236 @@ fn a_domain_attribute_for_a_registrable_domain_still_works() {
     set(&jar, "https://www.example.com/", "x=1; Domain=example.com");
     assert!(sent_to(&jar, "https://api.example.com/"));
 }
+
+fn with_header(mut req: PreparedRequest, name: &str, value: &str) -> PreparedRequest {
+    req.headers.push(Header {
+        name: name.into(),
+        value: value.into(),
+    });
+    req
+}
+
+async fn send_req(engine: &Engine, rx: &EventReceiver, req: PreparedRequest) {
+    engine.submit(Command::Send(req));
+    loop {
+        match rx.recv().await.unwrap() {
+            Event::Completed { .. } => return,
+            Event::Failed { .. } | Event::Cancelled { .. } => panic!("request did not complete"),
+            _ => {}
+        }
+    }
+}
+
+fn digest_auth(mut req: PreparedRequest) -> PreparedRequest {
+    req.auth = Some(wisp_core::auth::EngineAuth::Digest {
+        username: "u".into(),
+        password: "p".into(),
+    });
+    req
+}
+
+fn set_many(jar: &CookieJar, from: &str, headers: Vec<String>) {
+    use reqwest::cookie::CookieStore;
+    let values: Vec<_> = headers
+        .iter()
+        .map(|h| reqwest::header::HeaderValue::from_str(h).unwrap())
+        .collect();
+    jar.set_cookies(&mut values.iter(), &reqwest::Url::parse(from).unwrap());
+}
+
+fn big_snapshot(jar: &CookieJar) -> Vec<CookieRecord> {
+    jar.snapshot(SystemTime::now())
+}
+
+#[test]
+fn many_cookies_for_one_domain_stay_within_fifty() {
+    let jar = CookieJar::default();
+    set_many(
+        &jar,
+        "https://example.com/",
+        (0..2000).map(|i| format!("c{i}=v; Path=/")).collect(),
+    );
+    let snap = big_snapshot(&jar);
+    assert_eq!(snap.len(), 50);
+    // The newest survive.
+    assert!(snap.iter().any(|c| c.name == "c1999"));
+    assert!(!snap.iter().any(|c| c.name == "c0"));
+}
+
+#[test]
+fn many_domains_stay_within_the_jar_cap() {
+    let jar = CookieJar::default();
+    jar.load(
+        (0..4000)
+            .map(|i| record("a", "1", &format!("h{i}.example.com")))
+            .collect(),
+    );
+    assert_eq!(big_snapshot(&jar).len(), 3000);
+}
+
+#[test]
+fn an_oversized_cookie_is_dropped_and_the_limit_itself_is_kept() {
+    let jar = CookieJar::default();
+    let big = "v".repeat(4096);
+    set(&jar, "https://example.com/", &format!("big={big}"));
+    assert!(big_snapshot(&jar).is_empty());
+    let ok = "v".repeat(4096 - 2);
+    set(&jar, "https://example.com/", &format!("ok={ok}"));
+    assert_eq!(big_snapshot(&jar).len(), 1);
+}
+
+#[test]
+fn max_age_zero_deletes_the_cookie() {
+    let jar = CookieJar::default();
+    set(&jar, "https://example.com/", "sid=1; Path=/");
+    assert_eq!(big_snapshot(&jar).len(), 1);
+    set(&jar, "https://example.com/", "sid=; Path=/; Max-Age=0");
+    assert!(big_snapshot(&jar).is_empty());
+    assert!(!sent_to(&jar, "https://example.com/"));
+}
+
+#[test]
+fn load_rejects_a_suffix_domain_record_and_an_unparseable_one() {
+    let jar = CookieJar::default();
+    let mut suffix = record("a", "1", "co.uk");
+    suffix.host_only = false;
+    let mut private = record("b", "1", "github.io");
+    private.host_only = false;
+    let mut junk = record("c", "1", "bad host!");
+    junk.host_only = false;
+    let mut ok = record("d", "1", "example.com");
+    ok.host_only = false;
+    jar.load(vec![suffix, private, junk, ok]);
+    let snap = big_snapshot(&jar);
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].name, "d");
+}
+
+#[test]
+fn a_private_section_suffix_is_rejected_as_a_cookie_domain() {
+    let jar = CookieJar::default();
+    set(&jar, "https://evil.github.io/", "x=1; Domain=github.io");
+    assert!(!sent_to(&jar, "https://other.github.io/"));
+}
+
+async fn login_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/login"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("set-cookie", "session=abc; Path=/")
+                .insert_header("location", "/home"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/home"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn post_login(server: &MockServer) -> PreparedRequest {
+    let mut req = get(format!("{}/login", server.uri()), None);
+    req.method = Method::Post;
+    req
+}
+
+#[tokio::test]
+async fn a_302_login_sets_the_cookie_for_the_redirect_target() {
+    let server = login_server().await;
+    let jars = CookieJars::default();
+    let (engine, rx) = engine_with(&jars);
+    send_req(&engine, &rx, post_login(&server)).await;
+    assert_eq!(
+        cookie_header(&server, 1).await.as_deref(),
+        Some("session=abc")
+    );
+}
+
+#[tokio::test]
+async fn a_302_login_sets_the_cookie_on_the_engines_own_redirect_path() {
+    let server = login_server().await;
+    let jars = CookieJars::default();
+    let (engine, rx) = engine_with(&jars);
+    send_req(&engine, &rx, digest_auth(post_login(&server))).await;
+    assert_eq!(
+        cookie_header(&server, 1).await.as_deref(),
+        Some("session=abc")
+    );
+}
+
+#[tokio::test]
+async fn a_user_cookie_header_and_the_jar_cookie_both_arrive() {
+    let server = server_setting("sid=JAR; Path=/").await;
+    let jars = CookieJars::default();
+    let (engine, rx) = engine_with(&jars);
+    send(&engine, &rx, format!("{}/set", server.uri()), None).await;
+    let req = with_header(get(format!("{}/echo", server.uri()), None), "Cookie", "a=1");
+    send_req(&engine, &rx, req).await;
+    assert_eq!(
+        cookie_header(&server, 1).await.as_deref(),
+        Some("a=1; sid=JAR")
+    );
+}
+
+#[tokio::test]
+async fn on_a_name_clash_the_user_value_wins() {
+    let server = server_setting("sid=JAR; Path=/").await;
+    let jars = CookieJars::default();
+    let (engine, rx) = engine_with(&jars);
+    send(&engine, &rx, format!("{}/set", server.uri()), None).await;
+    let req = with_header(
+        get(format!("{}/echo", server.uri()), None),
+        "Cookie",
+        "sid=USER; a=1",
+    );
+    send_req(&engine, &rx, req).await;
+    assert_eq!(
+        cookie_header(&server, 1).await.as_deref(),
+        Some("sid=USER; a=1")
+    );
+}
+
+#[tokio::test]
+async fn the_merge_holds_on_an_own_redirect_hop() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("set-cookie", "sid=JAR; Path=/")
+                .insert_header("location", "/end"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/end"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let jars = CookieJars::default();
+    let (engine, rx) = engine_with(&jars);
+    let req = digest_auth(with_header(
+        get(format!("{}/start", server.uri()), None),
+        "Cookie",
+        "a=1",
+    ));
+    send_req(&engine, &rx, req).await;
+    assert_eq!(cookie_header(&server, 0).await.as_deref(), Some("a=1"));
+    assert_eq!(
+        cookie_header(&server, 1).await.as_deref(),
+        Some("a=1; sid=JAR")
+    );
+}
+
+#[test]
+fn response_cookies_across_many_domains_stay_within_the_jar_cap() {
+    let jar = CookieJar::default();
+    for i in 0..3100 {
+        set(&jar, &format!("https://h{i}.example.com/"), "a=1; Path=/");
+    }
+    assert_eq!(big_snapshot(&jar).len(), 3000);
+}

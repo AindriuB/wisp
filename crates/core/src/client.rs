@@ -25,6 +25,11 @@ impl ClientCache {
         }
     }
 
+    /// The cookie jar of a collection.
+    pub(crate) fn jar(&self, collection: Option<&str>) -> crate::cookies::CookieJar {
+        self.jars.jar(collection)
+    }
+
     pub(crate) fn get(&self, settings: &ClientSettings) -> Result<reqwest::Client, EngineError> {
         let mut map = self.clients.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = map.get(settings) {

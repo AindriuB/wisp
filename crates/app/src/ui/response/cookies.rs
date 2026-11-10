@@ -11,8 +11,7 @@ use crate::cookies::{ResponseCookie, parse_set_cookies};
 use crate::tab::{RequestTab, TabEvent};
 use crate::workspace::Workspace;
 
-pub const NOTE: &str =
-    "Cookies from this response only; Wisp does not store or send cookies in this version.";
+pub const NOTE: &str = "Cookies from this response only. Cookies set by responses are kept for this session, per collection, and sent on later requests; saving them comes with the collection setting.";
 
 fn expiry(c: &ResponseCookie) -> String {
     match (&c.expires, c.max_age) {

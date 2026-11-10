@@ -17,10 +17,112 @@ const MAX_LOAD_LIFETIME_SECS: u64 = 1 << 31;
 /// Snapshot header: `VERSION: 2026-11-09_13-00-17_UTC`. Parsed once per process.
 static PUBLIC_SUFFIXES: LazyLock<publicsuffix::List> = LazyLock::new(|| {
     PARSE_COUNT.fetch_add(1, Ordering::SeqCst);
-    include_str!("../data/public_suffix_list.dat")
+    // Comments are stripped by build.rs; the committed data file is unmodified.
+    include_str!(concat!(env!("OUT_DIR"), "/psl.dat"))
         .parse()
         .expect("bundled public suffix list parses")
 });
+
+/// Browser-like limits: one cookie's name plus value, cookies per domain, cookies per jar.
+const MAX_COOKIE_BYTES: usize = 4096;
+const MAX_PER_DOMAIN: usize = 50;
+const MAX_PER_JAR: usize = 3000;
+
+type Key = (String, String, String);
+
+/// The store plus the order cookies were set in, which the library does not keep.
+struct State {
+    store: CookieStore,
+    order: HashMap<Key, u64>,
+    next: u64,
+}
+
+impl State {
+    fn new() -> Self {
+        Self {
+            store: new_store(),
+            order: HashMap::new(),
+            next: 0,
+        }
+    }
+
+    /// Cheap check, with no allocation, that any entry is expired or a cap is exceeded.
+    fn needs_eviction(&self) -> bool {
+        let mut total = 0usize;
+        let mut per_domain: HashMap<&str, usize> = HashMap::new();
+        for c in self.store.iter_any() {
+            if c.is_expired() {
+                return true;
+            }
+            total += 1;
+            let (CookieDomain::HostOnly(d) | CookieDomain::Suffix(d)) = &c.domain else {
+                continue;
+            };
+            let n = per_domain.entry(d.as_str()).or_default();
+            *n += 1;
+            if *n > MAX_PER_DOMAIN {
+                return true;
+            }
+        }
+        total > MAX_PER_JAR
+    }
+
+    fn touch(&mut self, key: Key) {
+        self.next += 1;
+        self.order.insert(key, self.next);
+    }
+
+    /// Drop expired and deleted entries, then evict the oldest beyond the per-domain and
+    /// per-jar caps.
+    fn enforce_caps(&mut self) {
+        if !self.needs_eviction() {
+            return;
+        }
+        let mut live: Vec<(Key, u64)> = Vec::new();
+        let mut dead: Vec<Key> = Vec::new();
+        for c in self.store.iter_any() {
+            let Some(d) = domain_of(c) else { continue };
+            let key = (d, String::from(&c.path), c.name().to_owned());
+            if c.is_expired() {
+                dead.push(key);
+            } else {
+                let seq = self.order.get(&key).copied().unwrap_or(0);
+                live.push((key, seq));
+            }
+        }
+        live.sort_by_key(|(_, seq)| *seq);
+        let mut per_domain: HashMap<&str, usize> = HashMap::new();
+        for (k, _) in &live {
+            *per_domain.entry(k.0.as_str()).or_default() += 1;
+        }
+        let mut kept: Vec<&(Key, u64)> = Vec::new();
+        for entry in &live {
+            let n = per_domain.get_mut(entry.0.0.as_str()).expect("counted");
+            if *n > MAX_PER_DOMAIN {
+                *n -= 1;
+                dead.push(entry.0.clone());
+            } else {
+                kept.push(entry);
+            }
+        }
+        let over = kept.len().saturating_sub(MAX_PER_JAR);
+        dead.extend(kept.iter().take(over).map(|e| e.0.clone()));
+        for (d, p, n) in dead {
+            self.store.remove(&d, &p, &n);
+            self.order.remove(&(d, p, n));
+        }
+        let store = &self.store;
+        self.order
+            .retain(|(d, p, n), _| store.contains_any(d, p, n));
+    }
+}
+
+fn domain_of(c: &cookie_store::Cookie<'_>) -> Option<String> {
+    match &c.domain {
+        CookieDomain::HostOnly(d) | CookieDomain::Suffix(d) => Some(d.clone()),
+        CookieDomain::NotPresent | CookieDomain::Empty => None,
+    }
+}
 
 /// How many times the list was parsed; a test asserts it stays at one.
 static PARSE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -59,21 +161,21 @@ impl fmt::Debug for CookieRecord {
 }
 
 struct JarInner {
-    store: Mutex<CookieStore>,
+    store: Mutex<State>,
     generation: AtomicU64,
 }
 
 impl Default for JarInner {
     fn default() -> Self {
         Self {
-            store: Mutex::new(new_store()),
+            store: Mutex::new(State::new()),
             generation: AtomicU64::new(0),
         }
     }
 }
 
 impl JarInner {
-    fn store(&self) -> std::sync::MutexGuard<'_, CookieStore> {
+    fn store(&self) -> std::sync::MutexGuard<'_, State> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -91,8 +193,9 @@ pub struct CookieJar {
 impl CookieJar {
     /// Unexpired cookies as of `now`, session cookies included (with `expires: None`).
     pub fn snapshot(&self, now: SystemTime) -> Vec<CookieRecord> {
-        let store = self.inner.store();
-        store
+        let state = self.inner.store();
+        state
+            .store
             .iter_any()
             .filter_map(|c| {
                 let expires = match &c.expires {
@@ -127,17 +230,24 @@ impl CookieJar {
     /// Replace the jar's contents. Expired and malformed records are dropped.
     pub fn load(&self, records: Vec<CookieRecord>) {
         let now = SystemTime::now();
-        let mut fresh = new_store();
+        let mut fresh = State::new();
         for r in records {
             let _ = insert_record(&mut fresh, r, now);
         }
+        fresh.enforce_caps();
         *self.inner.store() = fresh;
         self.inner.bump();
     }
 
     /// Delete one cookie; whether it existed.
     pub fn remove(&self, domain: &str, path: &str, name: &str) -> bool {
-        let removed = self.inner.store().remove(domain, path, name).is_some();
+        let removed = {
+            let mut state = self.inner.store();
+            state
+                .order
+                .remove(&(domain.to_owned(), path.to_owned(), name.to_owned()));
+            state.store.remove(domain, path, name).is_some()
+        };
         if removed {
             self.inner.bump();
         }
@@ -146,7 +256,11 @@ impl CookieJar {
 
     /// Delete every cookie.
     pub fn clear(&self) {
-        self.inner.store().clear();
+        {
+            let mut state = self.inner.store();
+            state.store.clear();
+            state.order.clear();
+        }
         self.inner.bump();
     }
 
@@ -156,8 +270,20 @@ impl CookieJar {
     }
 }
 
-fn insert_record(store: &mut CookieStore, r: CookieRecord, now: SystemTime) -> Option<()> {
+/// Whether `host` is a registrable name, so a `Domain` attribute may scope a cookie to it.
+fn is_registrable(host: &str) -> bool {
+    use publicsuffix::Psl as _;
+    PUBLIC_SUFFIXES.domain(host.as_bytes()).is_some()
+}
+
+fn insert_record(state: &mut State, r: CookieRecord, now: SystemTime) -> Option<()> {
     let host = r.domain.trim_start_matches('.');
+    if !r.host_only && !is_registrable(host) {
+        return None;
+    }
+    if r.name.len() + r.value.len() > MAX_COOKIE_BYTES {
+        return None;
+    }
     let url = Url::parse(&format!("https://{host}/")).ok()?;
     let mut raw = RawCookie::new(r.name, r.value);
     raw.set_path(r.path);
@@ -175,7 +301,15 @@ fn insert_record(store: &mut CookieStore, r: CookieRecord, now: SystemTime) -> O
         let left = t.duration_since(now).ok().filter(|d| !d.is_zero())?;
         cookie.expires = CookieExpiration::from(left.as_secs().min(MAX_LOAD_LIFETIME_SECS));
     }
-    store.insert(cookie.into_owned(), &url).ok().map(|_| ())
+    let cookie = cookie.into_owned();
+    let key = (
+        domain_of(&cookie)?,
+        String::from(&cookie.path),
+        cookie.name().to_owned(),
+    );
+    state.store.insert(cookie, &url).ok()?;
+    state.touch(key);
+    Some(())
 }
 
 impl reqwest::cookie::CookieStore for CookieJar {
@@ -187,9 +321,26 @@ impl reqwest::cookie::CookieStore for CookieJar {
         if cookies.is_empty() {
             return;
         }
-        self.inner
-            .store()
-            .store_response_cookies(cookies.into_iter(), url);
+        {
+            let mut state = self.inner.store();
+            for raw in cookies {
+                if raw.name().len() + raw.value().len() > MAX_COOKIE_BYTES {
+                    continue;
+                }
+                let Ok(cookie) = cookie_store::Cookie::try_from_raw_cookie(&raw, url) else {
+                    continue;
+                };
+                let cookie = cookie.into_owned();
+                let Some(domain) = domain_of(&cookie) else {
+                    continue;
+                };
+                let key = (domain, String::from(&cookie.path), cookie.name().to_owned());
+                if state.store.insert(cookie, url).is_ok() {
+                    state.touch(key);
+                }
+            }
+            state.enforce_caps();
+        }
         self.inner.bump();
     }
 
@@ -197,6 +348,7 @@ impl reqwest::cookie::CookieStore for CookieJar {
         let s = self
             .inner
             .store()
+            .store
             .get_request_values(url)
             .map(|(name, value)| format!("{name}={value}"))
             .collect::<Vec<_>>()
@@ -206,6 +358,36 @@ impl reqwest::cookie::CookieStore for CookieJar {
         }
         HeaderValue::from_str(&s).ok()
     }
+}
+
+/// The `Cookie` header for a request that carries a user-set one: the user's pairs, then the
+/// jar's cookies for `url` whose names are not among them (the user's value wins a clash).
+/// `None` when the jar adds nothing, so the user's header goes out unchanged.
+pub(crate) fn merge_cookie_header(
+    jar: &CookieJar,
+    url: &Url,
+    user_values: &[&str],
+) -> Option<String> {
+    let jar_header = reqwest::cookie::CookieStore::cookies(jar, url)?;
+    let jar_header = jar_header.to_str().ok()?;
+    let user_pairs: Vec<&str> = user_values
+        .iter()
+        .flat_map(|v| v.split(';'))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let name = |p: &str| p.split_once('=').map_or(p, |(n, _)| n).trim().to_owned();
+    let taken: std::collections::HashSet<String> = user_pairs.iter().map(|p| name(p)).collect();
+    let extra: Vec<&str> = jar_header
+        .split("; ")
+        .filter(|p| !taken.contains(&name(p)))
+        .collect();
+    if extra.is_empty() {
+        return None;
+    }
+    let mut all = user_pairs;
+    all.extend(extra);
+    Some(all.join("; "))
 }
 
 impl fmt::Debug for CookieJar {

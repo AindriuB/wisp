@@ -811,7 +811,28 @@ async fn perform(
     let mut auth_live = true;
     let mut resp = loop {
         let mut rb = client.request(method.clone(), url.clone());
-        for (n, v) in &header_list {
+        // reqwest skips its jar when a Cookie header is set, so merge the jar in here.
+        let user_cookies: Vec<&str> = header_list
+            .iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case("cookie"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let merged_cookie = if user_cookies.is_empty() {
+            None
+        } else {
+            let jar = clients.jar(req.client.collection.as_deref());
+            crate::cookies::merge_cookie_header(&jar, &url, &user_cookies)
+        };
+        let hop_headers: Vec<(String, String)> = match &merged_cookie {
+            Some(m) => header_list
+                .iter()
+                .filter(|(n, _)| !n.eq_ignore_ascii_case("cookie"))
+                .cloned()
+                .chain(std::iter::once(("cookie".to_owned(), m.clone())))
+                .collect(),
+            None => header_list.clone(),
+        };
+        for (n, v) in &hop_headers {
             rb = rb.header(n.as_str(), v.as_str());
         }
         if let (true, Some(h)) = (auth_live, &digest_header) {
@@ -852,7 +873,7 @@ async fn perform(
             let signed = sigv4::sign(
                 method.as_str(),
                 url.as_str(),
-                &header_list,
+                &hop_headers,
                 hash,
                 &creds,
                 now,
