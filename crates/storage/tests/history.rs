@@ -658,8 +658,8 @@ fn redacts_oauth2_client_secret_but_keeps_var_refs() {
     let req = Request {
         auth: Auth::OAuth2AuthCode {
             auth_url: "https://idp.test/auth".into(),
-            token_url: "{{token_url}}".into(),
-            client_id: "{{cid}}".into(),
+            token_url: "https://idp.test/token".into(),
+            client_id: "cid-literal".into(),
             client_secret: "SECRETVAL".into(),
             scope: "read".into(),
             client_auth: ClientAuth::Basic,
@@ -684,10 +684,13 @@ fn redacts_oauth2_client_secret_but_keeps_var_refs() {
         Auth::OAuth2AuthCode {
             client_secret,
             token_url,
+            client_id,
             ..
         } => {
             assert_eq!(client_secret, "");
-            assert_eq!(token_url, "{{token_url}}");
+            assert_eq!(token_url, "https://idp.test/token");
+            assert_eq!(client_id, "cid-literal");
+            assert_eq!(e.redacted, vec!["auth.client_secret".to_string()]);
         }
         other => panic!("unexpected {other:?}"),
     }
