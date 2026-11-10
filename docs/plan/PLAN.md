@@ -76,6 +76,9 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] 37-7 import.rs:156: the folder count omits the created target; a failed write leaves it behind and the error does not say the import is partial.
 - [P3] 37-8 import.rs:431: each render re-walks the result and rebuilds warnings; Import deep-clones the result on the UI thread.
 - [P3] 37-9 root.rs:464: the overlay does not block clicks behind it; switching collection behind it retargets the import.
+- [P3] 37-11 import.rs:407: collection switched or closed mid-write hides the Done report or misattributes it; keep the write root and render Done from it, or block switching while writing.
+- [P3] 37-12 import.rs:208: missing-folder branch can import into a renamed folder (api-2) with no mention; refuse or report when create_folder returns a different name.
+- [P3] 37-13 (Nit) import.rs:206: reserved target gives two different error messages; inputs stay editable while writing.
 - [P3] import.rs:141-148: read_capped checks metadata then opens by path (TOCTOU to a FIFO); open first, then call file.metadata().
 - [P3] import.rs:194-205: the probe ignores remove_dir's result; a stray empty probe folder can remain.
 - [P3] import.rs:704-710: `write_failure_returns_an_error` only reaches the not-a-folder refusal, not a failure inside import::write.
