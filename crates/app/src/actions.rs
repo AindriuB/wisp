@@ -19,6 +19,7 @@ actions!(
         KeepMine,
         ToggleTheme,
         ToggleLayout,
+        OpenImport,
         Quit
     ]
 );

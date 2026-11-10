@@ -13,13 +13,15 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 
 use crate::actions::{
-    CancelRequest, CloseTab, KeepMine, NewRequest, NextTab, OpenCollection, OpenPalette, PrevTab,
-    ReloadFromDisk, SaveRequest, SendRequest, SwitchEnvironment, ToggleLayout, ToggleTheme,
+    CancelRequest, CloseTab, KeepMine, NewRequest, NextTab, OpenCollection, OpenImport,
+    OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest, SwitchEnvironment,
+    ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
 use crate::settings::{SplitAxis, ThemeMode};
 use crate::tab::{DiskState, RequestTab};
 use crate::theme;
+use crate::ui::import::ImportView;
 use crate::ui::palette::PaletteView;
 use crate::ui::request::RequestPane;
 use crate::ui::response::ResponsePane;
@@ -80,6 +82,7 @@ pub struct WorkspaceView {
     sidebar: Entity<Sidebar>,
     views: HashMap<EntityId, TabViews>,
     palette: Option<(Entity<PaletteView>, Subscription)>,
+    import: Option<(Entity<ImportView>, Subscription)>,
     notice: Option<SharedString>,
     focus: FocusHandle,
     _workspace_sub: Subscription,
@@ -143,6 +146,7 @@ impl WorkspaceView {
             sidebar,
             views: HashMap::new(),
             palette: None,
+            import: None,
             notice: None,
             focus,
             _workspace_sub,
@@ -157,6 +161,16 @@ impl WorkspaceView {
             cx.notify();
         });
         self.palette = Some((palette, sub));
+        cx.notify();
+    }
+
+    fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = cx.new(|cx| ImportView::new(self.workspace.clone(), window, cx));
+        let sub = cx.subscribe(&dialog, |this, _, _: &DismissEvent, cx| {
+            this.import = None;
+            cx.notify();
+        });
+        self.import = Some((dialog, sub));
         cx.notify();
     }
 
@@ -447,6 +461,18 @@ impl Render for WorkspaceView {
                 .child(p.clone())
         });
 
+        let import_overlay = self.import.as_ref().map(|(d, _)| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .justify_center()
+                .pt(px(60.))
+                .child(d.clone())
+        });
+
         div()
             .id("wisp-root")
             .track_focus(&self.focus)
@@ -496,6 +522,11 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
                 this.open_palette(PaletteMode::All, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenImport, window, cx| {
+                if this.import.is_none() {
+                    this.open_import(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &SwitchEnvironment, window, cx| {
                 this.open_palette(PaletteMode::Environments, window, cx);
             }))
@@ -519,6 +550,7 @@ impl Render for WorkspaceView {
                     }))
             }))
             .children(overlay)
+            .children(import_overlay)
     }
 }
 

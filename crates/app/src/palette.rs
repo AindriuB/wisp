@@ -15,6 +15,7 @@ pub enum CommandId {
     ToggleTheme,
     ToggleLayout,
     ReloadFromDisk,
+    Import,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +46,7 @@ pub struct Match {
 }
 
 impl CommandId {
-    pub const ALL: [CommandId; 9] = [
+    pub const ALL: [CommandId; 10] = [
         CommandId::Send,
         CommandId::Save,
         CommandId::NewRequest,
@@ -55,6 +56,7 @@ impl CommandId {
         CommandId::ToggleTheme,
         CommandId::ToggleLayout,
         CommandId::ReloadFromDisk,
+        CommandId::Import,
     ];
 
     pub fn label(self) -> &'static str {
@@ -68,6 +70,7 @@ impl CommandId {
             CommandId::ToggleTheme => "Toggle theme",
             CommandId::ToggleLayout => "Toggle layout",
             CommandId::ReloadFromDisk => "Reload from disk",
+            CommandId::Import => "Import...",
         }
     }
 }
@@ -274,12 +277,12 @@ mod tests {
             ],
         };
         let all = items(Some(&tree), &[], None, PaletteMode::All);
-        assert_eq!(all.len(), 2 + 9);
+        assert_eq!(all.len(), 2 + 10);
         assert_eq!(all[0].label, "Get user");
         assert_eq!(all[0].detail, "users/get.toml");
         assert_eq!(all[0].kind, PaletteKind::Request("users/get.toml".into()));
         assert_eq!(all[2].label, "Send request");
-        assert_eq!(items(None, &[], None, PaletteMode::All).len(), 9);
+        assert_eq!(items(None, &[], None, PaletteMode::All).len(), 10);
 
         let envs = vec!["dev".to_string(), "prod".to_string()];
         let e = items(None, &envs, Some("prod"), PaletteMode::Environments);
