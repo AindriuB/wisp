@@ -975,24 +975,31 @@ async fn follow_redirects_false_surfaces_a_307_for_a_streamed_body() {
 }
 
 #[tokio::test]
-async fn completed_carries_empty_timings() {
+async fn fresh_then_reused_connection_timings() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
     let (engine, rx) = Engine::start(EngineConfig::default());
-    engine.submit(Command::Send(get(format!("{}/t", server.uri()))));
-    match collect_until_terminal(&rx).await.last().unwrap() {
-        Event::Completed { timings, .. } => assert_eq!(
-            *timings,
-            Timings {
-                dns: None,
-                connect: None
-            }
-        ),
-        other => panic!("unexpected {other:?}"),
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        engine.submit(Command::Send(get(format!("{}/t", server.uri()))));
+        match collect_until_terminal(&rx).await.last().unwrap() {
+            Event::Completed { timings, .. } => seen.push(*timings),
+            other => panic!("unexpected {other:?}"),
+        }
     }
+    // IP-literal host: no lookup. The first send opens the connection; the second reuses it.
+    assert_eq!(seen[0].dns, None);
+    assert!(seen[0].connect.is_some());
+    assert_eq!(
+        seen[1],
+        Timings {
+            dns: None,
+            connect: None
+        }
+    );
 }
 
 #[test]

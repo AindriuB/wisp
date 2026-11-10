@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-10 | 105 | Real DNS and connect+TLS phase timings via custom resolver/connector and claim registry; Windows 14,968,832 B of 15,500,000 (+17,408 B) | ## 2026-11-10 — Phase timings (DNS, connect+TLS) |
 | 2026-11-10 | 104 | In-memory cookie jar per collection with bundled public-suffix list (parsed once, shared); Windows 15,100,928 B of 15,500,000, ~399 KB headroom left | ## 2026-11-10 — In-memory cookie jar and public-suffix list |
 | 2026-11-10 | 106 | OAuth2 editor, Authorize via the system browser with Waiting/Authorized/Failed strip, cancel on tab close; hand-checked against a stub IdP | ## 2026-11-10 — OAuth2 UI |
 | 2026-11-10 | 100 | OAuth2 auth types through model, resolve, codec and history redaction; timings and cookie-jar types and seams; engine refuses OAuth2 until 103 | ## 2026-11-10 — Wave-2 surface types and seams |

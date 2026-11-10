@@ -256,12 +256,12 @@ impl Engine {
                     let terminal = tokio::select! {
                         r = perform(id, &clients, &oauth, &bodies, &events, req, timeout, start) => {
                             Some(match r {
-                                Ok((size, body)) => Event::Completed {
+                                Ok((size, body, timings)) => Event::Completed {
                                     id,
                                     total: start.elapsed(),
                                     size,
                                     body,
-                                    timings: Timings::default(),
+                                    timings,
                                 },
                                 Err(error) => Event::Failed { id, error },
                             })
@@ -692,7 +692,7 @@ async fn perform(
     req: PreparedRequest,
     timeout: Option<Duration>,
     start: Instant,
-) -> Result<(u64, BodyHandle), EngineError> {
+) -> Result<(u64, BodyHandle, Timings), EngineError> {
     let url =
         reqwest::Url::parse(&req.url).map_err(|e| err(ErrorKind::InvalidUrl, e.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -815,6 +815,7 @@ async fn perform(
     let mut digest_header: Option<String> = None;
     // False once a redirect has left the original origin: no more SigV4 or Digest.
     let mut auth_live = true;
+    let mut timings = Timings::default();
     let mut resp = loop {
         let mut rb = client.request(method.clone(), url.clone());
         // reqwest skips its jar when a Cookie header is set, so merge the jar in here.
@@ -901,7 +902,16 @@ async fn perform(
             }
             rb = rb.timeout(left);
         }
-        let resp = rb.send().await.map_err(|e| classify(&e, false))?;
+        let token = clients.timings().new_token();
+        let resp = clients
+            .timings()
+            .scope(token, rb.send())
+            .await
+            .map_err(|e| classify(&e, false))?;
+        let hop = clients.timings().claim(token, &resp);
+        if timings == Timings::default() {
+            timings = hop;
+        }
         if let (true, Some((username, password)), None, 401) = (
             auth_live,
             &digest_creds,
@@ -1045,7 +1055,7 @@ async fn perform(
     // Same reason as the write above: `finish` flushes the spill file.
     let handle = tokio::task::block_in_place(|| writer.finish())
         .map_err(|e| err(ErrorKind::Body, e.to_string()))?;
-    Ok((received, handle))
+    Ok((received, handle, timings))
 }
 
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {

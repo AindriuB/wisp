@@ -21,7 +21,7 @@ than no plan.
 ### v0.2.0
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); see HISTORY. Next: 105 (phase timings) and 107 (cookie manager UI), with about 399 KB of Windows headroom left (15,100,928 B of 15,500,000, run 42867914368).
+- **Wave 2:** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); see HISTORY. Next: 107 (cookie manager UI), with about 531 KB of Windows headroom left (14,968,832 B of 15,500,000, run 42878660363).
 - **Wave 3:** multiple collections; keychain (Linux spike first).
 
 ### v0.1.0 is tagged
@@ -69,6 +69,17 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
 - `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
+
+### Follow-ups from task 105 (not 0.2.0 wave 2)
+- [P3] tests/timings.rs AC6 cancel test can't detect a leftover registry entry (second request uses a fresh port/token); add a cfg(test) registry length check.
+- [P3] h2 test asserts `accepted >= 1` (concurrent sends open extra connections before the first is established); a warm-up send would allow `== 1`.
+- [P3] 46-1 Cargo.toml:38 new deps tower-layer, tower-service, http, h2, bytes omit `default-features = false` (conventions: Dependencies).
+- [P3] 46-2 tests/timings.rs:81 the concurrent test blocks on a Barrier with no timeout (hangs instead of failing); wrap in a 10 s timeout naming the accepted count.
+- [P3] 46-3 tests/timings.rs:110 keep-alive tests assume the pooled connection is idle before the next connect wins (small race).
+- [P3] 46-4 tests/timings.rs:163 the DNS-error test depends on the host resolver failing `.invalid` (NXDOMAIN rewriting breaks it); test classification with a failing test resolver.
+- [Nit] 46-5 timing.rs:24 the Timings doc doesn't say what phases mean through a proxy.
+- [NOTE] Registry MAX_ENTRIES=64 FIFO: >64 unclaimed concurrent connects could evict a real entry (reported None); unreachable today (no runner/bulk send). Intermediate redirect hops and lost-race connects are never claimed and rely on the cap.
+- [NOTE] With reqwest-followed redirects the timings describe the final connection; with the engine's own loop, the first hop that opened a connection.
 
 ### Follow-ups from task 104 (not 0.2.0 wave 2)
 - [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.
@@ -147,7 +158,7 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] The in-process WRITE_LOCK mutex is not covered by a deterministic test (the file lock is).
 
 ### Follow-ups from task 100 (not 0.2.0 wave 2)
-- [P3] No app test drives `Event::Completed` with non-empty timings through on_event/append_history, or the ignored auth events; add when task 105 makes timings real.
+- [P3] No app test drives `Event::Completed` with non-empty timings through on_event/append_history, or the ignored auth events; task 105 has made timings real.
 - [P3] No test that commit/save leave an OAuth2 draft untouched in the auth editor; add before task 106 reworks it.
 - [NOTE] Literal OAuth2 `client_secret` is written to committed request TOML, like Digest password and SigV4 secret_key; values are normally `{{vars}}` (spec :58).
 - [NOTE] Until task 106, the auth type list doesn't offer OAuth2, so switching an OAuth2 request away can't be undone in the UI.
