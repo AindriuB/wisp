@@ -6,12 +6,14 @@ use std::time::{Duration, SystemTime};
 
 use gpui::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task, WeakEntity};
 use wisp_core::body::{BodyHandle, BodyStore};
-use wisp_core::request::{CollectionDefaults, Environment};
+use wisp_core::request::{CollectionDefaults, Environment, Request};
 use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
-use wisp_core::{Command, Engine, EngineConfig, Event, EventReceiver, Method, RequestId};
+use wisp_core::{Command, Engine, EngineConfig, Event, EventReceiver, RequestId};
+use wisp_storage::collection::{CollectionId, ensure_collection_id};
 use wisp_storage::collection::{CollectionTree, open_collection};
+use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{list_environments, load_environment};
-use wisp_storage::history::{HistoryEntry, HistoryLog, Outcome};
+use wisp_storage::history::{BODY_CAP, HistoryStore, NewEntry, Outcome};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
 
@@ -40,9 +42,17 @@ pub enum WorkspaceEvent {
 
 /// What was sent, kept for the history entry written at the terminal event.
 struct Sent {
-    method: Method,
-    url: String,
+    /// The unresolved draft; the store redacts it.
+    draft: Request,
     request: Option<String>,
+}
+
+/// Where history writing stands for the open collection.
+enum HistoryState {
+    /// The collection id is not resolved yet; the first append resolves it.
+    Unresolved,
+    Ready(HistoryStore),
+    Off,
 }
 
 pub struct Workspace {
@@ -54,6 +64,10 @@ pub struct Workspace {
     pub active: Option<usize>,
     routes: HashMap<RequestId, WeakEntity<RequestTab>>,
     sent: HashMap<RequestId, Sent>,
+    data_dir: Option<DataDir>,
+    history: HistoryState,
+    /// True once a history Notice was shown for the open collection.
+    history_notified: bool,
     autosend: Option<RequestId>,
     watcher: Option<Watcher>,
     _watch_task: Option<Task<()>>,
@@ -143,6 +157,9 @@ impl Workspace {
             active: None,
             routes: HashMap::new(),
             sent: HashMap::new(),
+            data_dir: DataDir::resolve(),
+            history: HistoryState::Unresolved,
+            history_notified: false,
             autosend: None,
             watcher: None,
             _watch_task: None,
@@ -209,6 +226,8 @@ impl Workspace {
                 (None, None)
             }
         };
+        self.history = HistoryState::Unresolved;
+        self.history_notified = false;
         self.collection = Some(OpenCollection {
             tree,
             environments,
@@ -484,9 +503,8 @@ impl Workspace {
         self.sent.insert(
             id,
             Sent {
-                method: draft.method,
-                url: draft.url.clone(),
                 request: path.map(|p| p.to_string_lossy().into_owned()),
+                draft,
             },
         );
         // Start from a clean response so nothing of the previous one leaks into
@@ -561,7 +579,7 @@ impl Workspace {
         };
         let bodies = self.engine.bodies();
         let mut old_body = None;
-        let mut preview = String::new();
+        let mut stored_body: Option<Vec<u8>> = None;
         let autosend_line = tab.update(cx, |t, cx| {
             let mut line = None;
             let is_auto = self.autosend == Some(id);
@@ -590,9 +608,8 @@ impl Workspace {
                     total, size, body, ..
                 } => {
                     old_body = t.response.body.take();
-                    if let Ok(bytes) = bodies.read(body, 0, wisp_storage::history::PREVIEW_LIMIT) {
-                        preview = HistoryEntry::preview_from(&bytes);
-                    }
+                    // Read now: the handle is released when the next request replaces it.
+                    stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
                     t.response.phase = Phase::Done;
                     t.response.total = Some(*total);
                     t.response.size = Some(*size);
@@ -626,40 +643,100 @@ impl Workspace {
             println!("{line}");
         }
         if terminal && let Some(sent) = sent {
-            self.append_history(&tab, sent, &event, preview, cx);
+            self.append_history(&tab, sent, &event, stored_body, cx);
         }
     }
 
-    /// One entry per terminal event, only while a collection is open.
+    /// One entry per terminal event, only while a collection is open. The store I/O runs on
+    /// the background executor.
     fn append_history(
-        &self,
+        &mut self,
         tab: &Entity<RequestTab>,
         sent: Sent,
         event: &Event,
-        preview: String,
-        cx: &Context<Self>,
+        body: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
     ) {
         let Some(c) = &self.collection else { return };
+        let root = c.tree.root.clone();
+        let task_root = root.clone();
+        let store = match &self.history {
+            HistoryState::Off => return,
+            HistoryState::Ready(s) => Some(s.clone()),
+            HistoryState::Unresolved => None,
+        };
+        let Some(data) = self.data_dir.clone() else {
+            self.history_off("the data directory is unknown".into(), cx);
+            return;
+        };
         let r = &tab.read(cx).response;
         let outcome = match event {
             Event::Completed { .. } => Outcome::Completed,
             Event::Failed { error, .. } => Outcome::Failed { kind: error.kind },
             _ => Outcome::Cancelled,
         };
-        let entry = HistoryEntry {
+        let new = NewEntry {
             at: SystemTime::now(),
-            request: sent.request,
-            method: sent.method,
-            url: sent.url,
+            request_path: sent.request,
+            request: sent.draft,
             outcome,
             status: r.status,
             ttfb: r.ttfb,
             total: r.total,
             size: r.size,
-            preview,
+            response_headers: r.headers.clone(),
         };
-        if let Err(e) = HistoryLog::open(&c.tree.root).append(&entry) {
-            tracing::warn!(error = %e, "history append failed");
+        cx.spawn(async move |this, cx| {
+            let work = cx.background_executor().spawn(async move {
+                let store = match store {
+                    Some(s) => s,
+                    None => {
+                        // Serialised so concurrent first appends agree on one id.
+                        static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                        let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
+                        let id: CollectionId =
+                            ensure_collection_id(&root).map_err(|e| (true, e.to_string()))?;
+                        HistoryStore::open(&data, &id)
+                    }
+                };
+                store
+                    .append(new, body.as_deref())
+                    .map(|_| store)
+                    .map_err(|e| (false, e.to_string()))
+            });
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                // The collection changed while this was in flight: its result is stale.
+                if this.collection.as_ref().map(|c| &c.tree.root) != Some(&task_root) {
+                    return;
+                }
+                match result {
+                    Ok(store) => {
+                        if matches!(this.history, HistoryState::Unresolved) {
+                            this.history = HistoryState::Ready(store);
+                        }
+                    }
+                    Err((true, reason)) => this.history_off(reason, cx),
+                    Err((false, reason)) => {
+                        tracing::warn!(error = %reason, "history append failed");
+                        this.history_notice(format!("History entry dropped: {reason}"), cx);
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn history_off(&mut self, reason: String, cx: &mut Context<Self>) {
+        self.history = HistoryState::Off;
+        self.history_notice(format!("History is off: {reason}"), cx);
+    }
+
+    /// Show a history Notice, once per collection.
+    fn history_notice(&mut self, text: String, cx: &mut Context<Self>) {
+        if !std::mem::replace(&mut self.history_notified, true) {
+            cx.emit(WorkspaceEvent::Notice(text.into()));
         }
     }
 

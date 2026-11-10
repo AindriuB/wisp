@@ -368,22 +368,7 @@ impl SecretSink {
 
 /// Headers whose literal values are credentials.
 pub(crate) fn is_credential_header(name: &str) -> bool {
-    let name = name.trim();
-    let lower = name.to_ascii_lowercase();
-    [
-        "auth",
-        "token",
-        "secret",
-        "key",
-        "session",
-        "cookie",
-        "password",
-        "passwd",
-        "credential",
-        "signature",
-    ]
-    .iter()
-    .any(|h| lower.contains(h))
+    wisp_core::redact::is_credential_name(name)
 }
 
 /// Percent-encode everything but unreserved characters.
