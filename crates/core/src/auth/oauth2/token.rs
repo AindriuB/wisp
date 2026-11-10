@@ -222,9 +222,11 @@ pub(crate) fn parse(status: u16, body: &[u8]) -> Result<TokenResponse, EngineErr
         Some(serde_json::Value::String(s)) => s.trim().parse::<f64>().ok(),
         _ => None,
     };
-    let expires_in = expires_in
-        .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(Duration::from_secs_f64);
+    let expires_in = expires_in.filter(|s| s.is_finite() && *s >= 0.0).map(|s| {
+        Duration::try_from_secs_f64(s)
+            .unwrap_or(MAX_EXPIRES_IN)
+            .min(MAX_EXPIRES_IN)
+    });
     let refresh_token = text("refresh_token")
         .filter(|s| !s.is_empty())
         .map(Secret::new);
@@ -234,6 +236,9 @@ pub(crate) fn parse(status: u16, body: &[u8]) -> Result<TokenResponse, EngineErr
         expires_in,
     })
 }
+
+/// Longest `expires_in` honoured: a huge value means "long-lived", never a panic or overflow.
+const MAX_EXPIRES_IN: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
 
 /// A response body fit for an error message: token values removed, at most 2 KiB.
 fn quote_body(body: &[u8]) -> String {
@@ -373,6 +378,23 @@ mod tests {
         assert_eq!(r.expires_in, Some(Duration::from_secs(60)));
         let e = parse(200, br#"{"access_token":"a","token_type":"mac"}"#).unwrap_err();
         assert_eq!(e.kind, ErrorKind::Auth);
+    }
+
+    #[test]
+    fn huge_expires_in_is_clamped_not_a_panic() {
+        let max = Duration::from_secs(10 * 365 * 24 * 3600);
+        for v in [
+            "1e20",
+            "\"1e20\"",
+            "1e308",
+            "\"1e308\"",
+            "18446744073709551615",
+            "18446744073709551616",
+        ] {
+            let body = format!(r#"{{"access_token":"a","token_type":"bearer","expires_in":{v}}}"#);
+            let r = parse(200, body.as_bytes()).unwrap();
+            assert_eq!(r.expires_in, Some(max), "{v}");
+        }
     }
 
     #[test]
