@@ -89,3 +89,20 @@ Replace the hand-written JSON reader (`auth/oauth2/json.rs`) with `serde_json` p
 Checks: `oauth2` now covers AC18. `no-deps` is replaced by:
 - `no-deps` command — size, AC18
   run: `git diff --exit-code main...HEAD -- Cargo.toml && ! git diff main...HEAD -- Cargo.lock | rg -q '^\+\[\[package\]\]'`
+
+## Amendment 2
+User decision, 2026-11-10.
+
+Every successful Authorize replaces the stored refresh token for its `TokenKey`. When the token response has no `refresh_token`: the in-memory refresh token for that key is cleared, and if `persist_refresh` is true the engine calls `RefreshTokenStore::forget` for that key. A `forget` error is handled like a `save` error (AC16): tokens stay in memory, `AuthCompleted` is still emitted, and a warning is logged with the error and no token.
+
+- [ ] AC19 Authorize as X (the response carries `RT_X`, which is saved), then authorize again for the same `TokenKey` as Y with a response that has no `refresh_token`. After `AT_Y` expires (injectable clock), a send fails with `ErrorKind::Auth` "Not authorized: use Authorize first" rather than refreshing, and the token endpoint never receives `grant_type=refresh_token` with `RT_X` (wiremock matcher, `expect(0)`). With `persist_refresh` true the recording store sees one `forget` for that key; a failing `forget` still emits `AuthCompleted`.
+
+Checks: `oauth2` now covers AC19.
+
+## Review round 1 — findings
+Reviewed HEAD bbf5fa6.
+- [P2] `manager.rs:184-205` re-authorize leaves the stored refresh token — resolved by Amendment 2 (AC19).
+- [P2] `tests/oauth2.rs:725-731` the 8 KiB head cap test (AC10) passes with the cap removed: the 5 s read timeout yields the empty reply anyway, and the read timeout is not tested alone. Fix: the oversized-head connection sends 9000+ bytes and asserts the server closes well before 5 s (`tokio::time::timeout` of about 1 s, server-side close as the signal). Add a separate test that a silent connection is dropped by the read timeout — without a long sleep if a clock or config seam allows, otherwise one ~5 s test is accepted.
+- [STYLE] `token.rs:351-356` `Secret`'s Debug is checked only with `{:?}`; also check `{:#?}` (`docs/conventions.md:66-68`).
+- [P3, optional] `manager.rs:228-262` no single-flight on refresh; with rotating refresh tokens, concurrent refreshes may get the token revoked.
+- [P3, optional] `engine.rs:720-731` the token fetch uses the full request timeout before `began`, so a send can take about twice the timeout.
