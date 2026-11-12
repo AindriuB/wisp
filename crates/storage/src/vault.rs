@@ -363,6 +363,12 @@ impl<'a> Bounded<'a> {
         self.store.set(a, v)?;
         self.check()
     }
+
+    fn delete(&self, a: &str) -> Result<(), SecretStoreError> {
+        self.check()?;
+        self.store.delete(a)?;
+        self.check()
+    }
 }
 
 /// Why a store-mode load produced no secrets.
@@ -375,6 +381,9 @@ pub enum FailReason {
     IdBoundElsewhere {
         bound_root: PathBuf,
     },
+    /// The collection id has no binding on this machine; nothing was read.
+    /// See [`bind`].
+    Unbound,
 }
 
 /// Where a loaded environment's secrets came from.
@@ -489,6 +498,7 @@ pub fn load_environment_with(
         Err(BindError::BoundElsewhere { bound_root }) => {
             return Ok(failed(FailReason::IdBoundElsewhere { bound_root }));
         }
+        Err(BindError::Unbound) => return Ok(failed(FailReason::Unbound)),
         Err(BindError::Storage(e)) => return Err(e),
     }
     let mut secrets = Vec::new();
@@ -522,6 +532,10 @@ pub enum SecretsError {
     /// written. See [`rebind`].
     #[error("collection id is bound to another collection root: {}", bound_root.display())]
     IdBoundElsewhere { bound_root: PathBuf },
+    /// The collection id has no binding on this machine and the operation may
+    /// not create one; nothing was read or written. See [`bind`].
+    #[error("collection id is not bound to this collection root")]
+    Unbound,
     /// `migrate_to_file` found names with no value in the store; nothing was
     /// changed. Pass `allow_drop_unresolved` to drop them.
     #[error("secret names without a value in the store: {}", names.join(", "))]
@@ -551,11 +565,29 @@ fn invalid(path: &Path, key: &str, message: &str) -> SecretsError {
     })
 }
 
-fn bind(ctx: &VaultCtx, id: &CollectionId, root: &Path, write: bool) -> Result<(), SecretsError> {
-    binding::check(&ctx.data, id, root, write).map_err(|e| match e {
+fn map_bind(e: BindError) -> SecretsError {
+    match e {
         BindError::Storage(e) => SecretsError::Storage(e),
         BindError::BoundElsewhere { bound_root } => SecretsError::IdBoundElsewhere { bound_root },
-    })
+        BindError::Unbound => SecretsError::Unbound,
+    }
+}
+
+/// Check the binding; `create` lets a first-time setup bind an unbound id.
+fn check_bind(
+    ctx: &VaultCtx,
+    id: &CollectionId,
+    root: &Path,
+    create: bool,
+) -> Result<(), SecretsError> {
+    binding::check(&ctx.data, id, root, create).map_err(map_bind)
+}
+
+/// Bind `id` to `root` after the user confirmed "use keychain secrets for this
+/// collection at <path>". Fine if already bound to `root`; errors with
+/// [`SecretsError::IdBoundElsewhere`] if bound to another root (see [`rebind`]).
+pub fn bind(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), SecretsError> {
+    binding::bind_confirmed(data, id, root).map_err(map_bind)
 }
 
 fn read_plain(root: &Path, name: &str) -> Result<(PathBuf, DocumentMut), StorageError> {
@@ -653,7 +685,7 @@ pub fn migrate_to_store(
     } else {
         Vec::new()
     };
-    bind(ctx, id, root, true)?;
+    check_bind(ctx, id, root, true)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
     let touched = copy_into_store(store, &bounded, id, name, &secrets)?;
@@ -699,7 +731,7 @@ pub fn import_secrets_file(
     }
     let secrets = crate::environment::load_vars(&sp)?;
     let mut names = read_names(&doc, &pp)?;
-    bind(ctx, id, root, true)?;
+    check_bind(ctx, id, root, names.is_empty())?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
     let touched = copy_into_store(store, &bounded, id, name, &secrets)?;
@@ -739,7 +771,7 @@ pub fn migrate_to_file(
         return Err(invalid(&pp, "secrets", "environment is not in store mode"));
     }
     let names = read_names(&doc, &pp)?;
-    bind(ctx, id, root, false)?;
+    check_bind(ctx, id, root, false)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
     let mut secrets = Vec::new();
@@ -796,7 +828,7 @@ pub fn migrate_to_file(
 
     let mut warnings = Vec::new();
     for n in &names {
-        if let Err(error) = store.delete(&secret_account(id, name, n)) {
+        if let Err(error) = bounded.delete(&secret_account(id, name, n)) {
             warnings.push(DeleteWarning {
                 name: n.clone(),
                 error,
@@ -825,7 +857,7 @@ fn store_mode_doc(
 
 /// Set one secret in a store-mode environment: the store first, then
 /// `secret_names`. Never writes a secrets file. Binds an unbound collection
-/// id to `root`. The read-modify-write of `<env>.toml` is locked.
+/// id to `root` only for a first-time setup (no `secret_names` yet). The read-modify-write of `<env>.toml` is locked.
 pub fn set_secret(
     root: &Path,
     name: &str,
@@ -838,7 +870,7 @@ pub fn set_secret(
     check_name(root, name)?;
     let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc, mut names) = store_mode_doc(root, name)?;
-    bind(ctx, id, root, true)?;
+    check_bind(ctx, id, root, names.is_empty())?;
     store.set(&secret_account(id, name, var), value)?;
     if !names.iter().any(|n| n == var) {
         names.push(var.to_string());
@@ -849,7 +881,7 @@ pub fn set_secret(
 }
 
 /// Delete one secret from a store-mode environment: the store first, then
-/// `secret_names`. Never writes a secrets file. Does not bind an unbound id.
+/// `secret_names`. Never writes a secrets file. An unbound id is refused.
 pub fn delete_secret(
     root: &Path,
     name: &str,
@@ -861,7 +893,7 @@ pub fn delete_secret(
     check_name(root, name)?;
     let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc, mut names) = store_mode_doc(root, name)?;
-    bind(ctx, id, root, false)?;
+    check_bind(ctx, id, root, false)?;
     store.delete(&secret_account(id, name, var))?;
     if names.iter().any(|n| n == var) {
         names.retain(|n| n != var);

@@ -7,9 +7,10 @@
 //! collection), maps `id -> canonical root`, holds no secret values and is
 //! written `0600`. A corrupt or unreadable registry fails closed.
 //!
-//! Policy: a store write (set, migrate-to-store, import) binds an unbound id
-//! to the calling root. Reads and deletes of an unbound id proceed without
-//! binding it. An id bound to a different canonical root fails closed for
+//! Policy: an unbound id fails closed for reads and deletes. A store write
+//! (set, migrate-to-store, import) binds an unbound id only when the
+//! environment has no secret names yet (first-time setup); otherwise the user
+//! must confirm with [`crate::vault::bind`]. An id bound to a different canonical root fails closed for
 //! every operation until [`rebind`] is called.
 
 use std::collections::{BTreeMap, HashMap};
@@ -29,7 +30,11 @@ const VERSION: i64 = 1;
 #[derive(Debug)]
 pub(crate) enum BindError {
     Storage(StorageError),
-    BoundElsewhere { bound_root: PathBuf },
+    BoundElsewhere {
+        bound_root: PathBuf,
+    },
+    /// No registry row for the id and the caller may not create one.
+    Unbound,
 }
 
 impl From<StorageError> for BindError {
@@ -143,10 +148,22 @@ pub(crate) fn check(
             if bind {
                 map.insert(id.as_str().to_string(), key(&canon));
                 write_registry(&path, &map)?;
+                Ok(())
+            } else {
+                Err(BindError::Unbound)
             }
-            Ok(())
         }
     }
+}
+
+/// Bind an unbound `id` to `root` after the user confirmed it. Already bound
+/// to `root` is fine; bound elsewhere is an error (use [`rebind`] to move).
+pub(crate) fn bind_confirmed(
+    data: &DataDir,
+    id: &CollectionId,
+    root: &Path,
+) -> Result<(), BindError> {
+    check(data, id, root, true)
 }
 
 /// The canonical root `id` is bound to, if any.
