@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-12 — Collection switcher in the sidebar (task 113)
+The sidebar header now shows the active collection's name with a dropdown listing every open collection, a check mark on the active one, the path as a tooltip, and a × that closes it through root.rs's shared close_collection_at, so the dirty-tab prompt is the same as the palette's. Hand-checked on a macOS release build with three collections: picking beta switched header, tree and the saved active_collection; with a dirty tab, × showed "Discard unsaved changes? Closing this collection closes its tabs."; Cancel left beta open and active with the tab dirty; Discard closed beta with its file on disk unchanged; after Quit and relaunch alpha and the active gamma were restored.
+**Cost:** Closing the active collection makes the last one active rather than the previous one (the 112 follow-up, still open). GPUI windows repaint and capture reliably only when frontmost, though background clicks worked. Three small follow-ups are in PLAN.md (name derivation drift, list_open stuck true, weak duplicate-name test).
+PR #53 review round 1 found 0 Medium+, 2 Lows and 1 Nit, all to follow-ups.
+
 ## 2026-11-12 — PR #50 review round 1 (task 112)
 Three Mediums were fixed in f28b1d5: import targets the collection captured when the dialog opens and refuses if it was closed; Clear history and sidebar Delete act on the collection captured before the prompt; close and clone-clash decisions were extracted into tested plans (plan_clash, plan_close, confirmed_open).
 **Cost:** The dispatch in close_collection and the clash handler stays untested (50-R1, accepted by the user) because there is no GPUI test harness; adding one is follow-up 50-R2. Lows and nits (50-4 to 50-19, 50-P3a/b) went to the task 112 follow-ups in PLAN.md, and 50-8 also to task 99 as AC52.

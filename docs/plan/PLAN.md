@@ -22,7 +22,7 @@ than no plan.
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** multiple collections; keychain (Linux spike first). Done: 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); see HISTORY. Remaining: keychain.
+- **Wave 3:** multiple collections; keychain (Linux spike first). Done: 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); see HISTORY. Remaining: keychain.
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -64,6 +64,14 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - No test fails if the symlink-to-`.toml` check in `sidecar_path` is disabled; Unix is covered by the dev/ino check.
 - The reserved-name rule also rejects display names like "CON.txt" whose file slug would be harmless (decided).
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
+
+### Follow-ups from task 113 (not 0.2.0 wave 3)
+- collections.rs:66-72 re-derives names and walks collection_root(i) instead of using OpenCollection::name() and Workspace::collections; drift risk.
+- collections.rs list_open stays true when the count drops to 1, so the list reappears expanded when a second collection opens.
+- The duplicate-name test only checks that paths pass through.
+- 53-1 collections.rs:147 row click activates by the index captured at render; if a collection closed in between (e.g. a clone refusal) another one is activated → capture the row's root and resolve with coll_ix on click, as close does
+- 53-2 collections.rs:99 the open list has no dismiss on click-away or Escape; it stays open over the tree
+- 53-3 (nit) collections.rs:126 active mark is a text ✓ with padded spaces; alignment depends on the font → icon or fixed-width slot
 
 ### Follow-ups from task 112 (not 0.2.0 wave 3)
 - Settings write on activate is now synchronous file I/O on the UI thread; move persist_collections off-thread and coalesced, or skip when unchanged.
