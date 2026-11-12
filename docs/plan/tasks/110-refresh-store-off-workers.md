@@ -55,3 +55,14 @@ Reviewed HEAD: 420154071dd229d5d5bbdc166207bd5169b6ca1a
 - [P2] crates/core/src/auth/oauth2/manager.rs:384-389 — In `bearer`, the per-key store lock is a borrowed guard inside the send future. A cancelled send drops the future and releases the lock while the `spawn_blocking` `load` keeps running, so a second store call for the same key can overlap it (breaks AC2 "run one at a time"). Input: persist_refresh on, no cached refresh token, store `load` blocks; user cancels the send (engine.rs:257-270 drops `perform`) and resends or completes an Authorize → two store calls for one key at once. Fix: take `lock_owned()` and move the owned guard into the `spawn_blocking` closure (lock still taken outside the closure, held until the store call returns), or run the load in a spawned task as `refresh` does.
 - [P2] crates/core/tests/oauth2.rs:1613-1640 — `store_calls_for_one_key_run_in_order` runs two authorizes sequentially, so it passes with the per-key lock removed (verified by replacing the guard with `()`). Make it overlap two store calls for one key (e.g. `save` blocks on a channel while a second authorize or refresh starts) and assert the order; it should fail without the lock.
 - [STYLE] crates/core/src/auth/oauth2.rs:55 — doc-comment line is 124 chars; neighbouring docs wrap at 100.
+
+## Accepted residual (user decision, 2026-11-12)
+
+`store_calls_for_one_key_run_in_order` waits 500 ms for the second call to reach the key's store lock before releasing the blocked `load`. On a very slow machine it could pass with the lock broken; it never fails falsely. No sleep-free test can prove an overlap did not happen, so the bounded window is accepted as a known residual (exception to docs/conventions.md "no sleeps to wait for state" for this test only; say so in a comment on the sleep).
+
+## Review round 2 — findings
+
+Reviewed HEAD: 82bedcd927ea76a6062acaae536ce47e70e1ebba
+
+- [P2] crates/core/tests/oauth2.rs:1613-1654 — the round-1 rewrite of `store_calls_for_one_key_run_in_order` removed the only test AC2 names as its proof: save-then-forget for one key reaches the store in that order. Restore a separate test (recording store, assert `["save", "forget"]`) alongside the overlap test; keep the overlap test.
+- [STYLE] crates/core/tests/oauth2.rs:1645-1648 — add a short comment on the 500 ms sleep citing the accepted residual above.
