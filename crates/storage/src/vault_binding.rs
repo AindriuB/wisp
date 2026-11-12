@@ -361,13 +361,67 @@ fn read_git_file(path: &Path) -> Result<Option<String>, StorageError> {
     }
 }
 
+/// True when `text` (a path read from a `.git` file) could make the OS open a
+/// network or device path: a leading double separator (UNC, `//server`), or, on
+/// Windows, any UNC/device/verbatim-UNC prefix. Checked before any I/O on it.
+fn is_remote_or_device(text: &str) -> bool {
+    if text.starts_with("//") || text.starts_with("\\\\") {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(p)) = Path::new(text).components().next() {
+            return !matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_));
+        }
+    }
+    false
+}
+
+/// Resolve `.` and `..` without touching the filesystem.
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Cheap lexical pre-check, no I/O: `gitdir` must look like
+/// `<something named like a trusted common dir>/worktrees/<name>`.
+fn plausible_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
+    let Some(parent) = gitdir.parent() else {
+        return false;
+    };
+    if parent.file_name().is_none_or(|n| n != "worktrees") {
+        return false;
+    }
+    let Some(common) = parent.parent() else {
+        return false;
+    };
+    trusted
+        .iter()
+        .any(|t| t == common || (t.file_name().is_some() && t.file_name() == common.file_name()))
+}
+
 /// The canonical git common directory of the checkout at `root`, read from
 /// files only (no git binary). A normal checkout has a `.git` directory, which
 /// is the common dir. A linked worktree has a `.git` file `gitdir: <path>`
 /// naming `<common>/worktrees/<name>`, whose `commondir` file gives the common
 /// dir and whose `gitdir` file must point back at this `.git`. `Ok(None)` when
 /// `root` is not a verifiable checkout; a symlinked `.git` is `Invalid`.
-pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageError> {
+/// The canonical git common dir of `root` (see above). With `trusted` (the common dirs of already-bound
+/// roots, computed from trusted local paths), a linked worktree's gitdir must
+/// sit under `<trusted>/worktrees`, checked lexically and then on the canonical
+/// path, before `commondir` is read; UNC/device paths are refused untouched.
+fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf>, StorageError> {
     // Canonicalise `root` once; `<canon_root>/.git` is then the identity and is
     // never followed again after the lstat below.
     let Ok(canon_root) = std::fs::canonicalize(root) else {
@@ -392,14 +446,34 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     let Some(target) = text.strip_prefix("gitdir:").map(str::trim) else {
         return Ok(None);
     };
-    let Some(gitdir) = canon(&canon_root.join(target)) else {
+    if is_remote_or_device(target) {
+        return Ok(None);
+    }
+    let joined = canon_root.join(target);
+    if let Some(t) = trusted
+        && !plausible_worktree_gitdir(&lexical(&joined), t)
+    {
+        return Ok(None);
+    }
+    let Some(gitdir) = canon(&joined) else {
         return Ok(None);
     };
+    if let Some(t) = trusted {
+        let ok = gitdir
+            .parent()
+            .is_some_and(|p| t.iter().any(|c| p == c.join("worktrees")));
+        if !ok {
+            return Ok(None);
+        }
+    }
     // A linked worktree always has a `commondir`; without one the gitdir is a
     // whole repository chosen by this folder, which proves nothing.
     let Some(common) = read_git_file(&gitdir.join("commondir"))? else {
         return Ok(None);
     };
+    if is_remote_or_device(&common) {
+        return Ok(None);
+    }
     let Some(common) = canon(&gitdir.join(common)) else {
         return Ok(None);
     };
@@ -412,6 +486,7 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     // file cannot claim someone else's repository.
     let back = read_git_file(&gitdir.join("gitdir"))?;
     let back_ok = back
+        .filter(|b| !is_remote_or_device(b))
         .and_then(|b| canon(&gitdir.join(b)))
         .is_some_and(|b| b == dot_git);
     Ok(back_ok.then_some(common))
@@ -424,19 +499,25 @@ pub(crate) fn verified_siblings(
     id: &CollectionId,
     new_root: &Path,
 ) -> Result<Vec<PathBuf>, StorageError> {
-    let Some(want) = git_common_dir(new_root)? else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
+    // Trusted first: the common dirs of the bound roots, from local paths.
+    let mut bound = Vec::new();
     for r in bound_roots(data, id)? {
         if check(data, id, &r).is_err() {
             continue;
         }
-        if matches!(git_common_dir(&r), Ok(Some(c)) if c == want) {
-            out.push(r);
+        if let Ok(Some(c)) = common_dir(&r, None) {
+            bound.push((r, c));
         }
     }
-    Ok(out)
+    let trusted: Vec<PathBuf> = bound.iter().map(|(_, c)| c.clone()).collect();
+    let Some(want) = common_dir(new_root, Some(&trusted))? else {
+        return Ok(Vec::new());
+    };
+    Ok(bound
+        .into_iter()
+        .filter(|(_, c)| *c == want)
+        .map(|(r, _)| r)
+        .collect())
 }
 
 /// Every canonical root `id` is bound to (in binding order).

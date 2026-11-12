@@ -2062,6 +2062,39 @@ fn victim_worktree_entry_with_back_pointer_to_another_folder_is_unverified() {
 }
 
 #[test]
+fn unc_style_gitdir_is_refused_without_io() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    std::fs::write(e.path().join(".git"), "gitdir: //server/share/x\n").unwrap();
+    unverified(&c, e.path());
+    std::fs::write(e.path().join(".git"), "gitdir: \\\\server\\share\\x\n").unwrap();
+    unverified(&c, e.path());
+}
+
+#[test]
+fn gitdir_outside_a_bound_common_dir_is_not_read() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    // A forged worktree whose commondir is unreadable (a directory): reading it
+    // would be an error, so Unverified proves it was never opened.
+    let fake = e.path().join("elsewhere/worktrees/w");
+    std::fs::create_dir_all(fake.join("commondir")).unwrap();
+    std::fs::write(
+        e.path().join(".git"),
+        format!("gitdir: {}\n", fake.display()),
+    )
+    .unwrap();
+    unverified(&c, e.path());
+}
+
+#[cfg(unix)]
+#[test]
 fn symlinked_dot_git_is_refused() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -2115,6 +2148,7 @@ fn file_mode_env(vars: Vec<Var>, secrets: Vec<Var>) -> Environment {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn symlinked_environments_dir_vars_only_save_names_the_directory() {
     let t = tempfile::tempdir().unwrap();
@@ -2128,6 +2162,7 @@ fn symlinked_environments_dir_vars_only_save_names_the_directory() {
     assert!(!m.contains("secrets"), "{m}");
 }
 
+#[cfg(unix)]
 #[test]
 fn vars_only_save_ignores_a_dangling_secrets_link() {
     let t = tempfile::tempdir().unwrap();
