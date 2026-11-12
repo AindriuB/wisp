@@ -22,7 +22,7 @@ use crate::vault_binding::{self as binding, BindError};
 use crate::{StorageError, codec, fs};
 
 pub use crate::error::{SecretStoreError, UnavailableReason};
-pub use crate::vault_binding::bound_root;
+pub use crate::vault_binding::{bound_root, bound_roots};
 
 /// A secret string. Debug prints `<redacted>`; there is no Display.
 #[derive(Clone, PartialEq, Eq)]
@@ -594,6 +594,16 @@ pub fn bind(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), Secret
     binding::bind_confirmed(data, id, root).map_err(map_bind)
 }
 
+/// Add `root` (another checkout of the same collection) to the roots `id` is
+/// bound to, after the user confirmed it. The roots already bound stay bound.
+pub fn bind_additional_checkout(
+    data: &DataDir,
+    id: &CollectionId,
+    root: &Path,
+) -> Result<(), SecretsError> {
+    binding::bind_additional_confirmed(data, id, root).map_err(map_bind)
+}
+
 /// Move `id`'s binding to `new_root` after the user confirmed the move. Refused
 /// with [`SecretsError::LooksLikeCopy`] while the bound root still exists and
 /// still has the same id.
@@ -657,44 +667,9 @@ fn copy_into_store(
 }
 
 /// Refuse a secrets path that is, or sits behind, a symlink, or that resolves
-/// outside the collection's `environments/` directory. A missing file is fine.
+/// outside the collection. A missing file is fine.
 fn check_secrets_path(root: &Path, sp: &Path) -> Result<(), StorageError> {
-    let refuse = |path: &Path| StorageError::Invalid {
-        path: path.to_path_buf(),
-        key: "path".into(),
-        message:
-            "secrets file must be a regular file inside the collection's environments directory"
-                .into(),
-    };
-    let dir = root.join(crate::environment::DIR);
-    let io_err = |p: &Path, e: std::io::Error| StorageError::Io {
-        path: p.to_path_buf(),
-        source: e,
-    };
-    match std::fs::symlink_metadata(&dir) {
-        Ok(m) if m.file_type().is_symlink() => return Err(refuse(&dir)),
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(io_err(&dir, e)),
-    }
-    let canon_root = std::fs::canonicalize(root).map_err(|e| io_err(root, e))?;
-    let canon_dir = std::fs::canonicalize(&dir).map_err(|e| io_err(&dir, e))?;
-    if !canon_dir.starts_with(&canon_root) {
-        return Err(refuse(&dir));
-    }
-    match std::fs::symlink_metadata(sp) {
-        Ok(m) if m.file_type().is_symlink() || !m.is_file() => Err(refuse(sp)),
-        Ok(_) => {
-            let canon = std::fs::canonicalize(sp).map_err(|e| io_err(sp, e))?;
-            if canon.starts_with(&canon_dir) {
-                Ok(())
-            } else {
-                Err(refuse(sp))
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(io_err(sp, e)),
-    }
+    crate::fs::confined_regular_file(root, sp, "secrets file").map(|_| ())
 }
 
 fn remove_secrets_file(name: &str, sp: &Path) -> Option<LeftoverFileWarning> {

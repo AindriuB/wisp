@@ -906,7 +906,9 @@ fn load_environment_ignores_secrets_file_in_non_file_modes() {
 // ---- review round 1 ----
 
 use std::time::{Duration, Instant};
-use wisp_storage::vault::{bound_root, import_secrets_file, rebind};
+use wisp_storage::vault::{
+    bind_additional_checkout, bound_root, bound_roots, import_secrets_file, rebind,
+};
 
 fn bound_err(e: &SecretsError) -> bool {
     matches!(e, SecretsError::IdBoundElsewhere { .. })
@@ -1569,7 +1571,8 @@ fn bind_writes_private_marker_and_ignores_it() {
         );
     }
     let reg = std::fs::read_to_string(_cx.data.root().join("vault-bindings.json")).unwrap();
-    assert!(reg.contains(nonce.trim()));
+    let entry = nonce.trim().split_once(' ').unwrap();
+    assert!(reg.contains(entry.0) && reg.contains(entry.1));
 }
 
 fn load_status(root: &Path, cx: &VaultCtx) -> LoadStatus {
@@ -1750,4 +1753,162 @@ fn bind_refuses_a_symlinked_environments_dir() {
     std::os::unix::fs::symlink(out.path(), t.path().join("environments")).unwrap();
     assert!(bind(&cx().data, &id(), t.path()).is_err());
     assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+}
+
+// ---- PR #52 round 3 ----
+
+#[cfg(unix)]
+#[test]
+fn symlinked_collection_toml_is_refused_for_id_writes() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let target = out.path().join("collection.toml");
+    std::fs::write(&target, "format = 1\nid = \"otherrepo12345678\"\n").unwrap();
+    std::os::unix::fs::symlink(&target, t.path().join("collection.toml")).unwrap();
+    let before = std::fs::read_to_string(&target).unwrap();
+    let e = wisp_storage::collection::assign_new_collection_id(t.path()).unwrap_err();
+    assert!(
+        matches!(e, wisp_storage::StorageError::Invalid { .. }),
+        "{e:?}"
+    );
+    let e = wisp_storage::collection::ensure_collection_id(t.path()).unwrap_err();
+    assert!(
+        matches!(e, wisp_storage::StorageError::Invalid { .. }),
+        "{e:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), before);
+}
+
+#[test]
+fn non_regular_collection_toml_is_refused() {
+    let t = tempfile::tempdir().unwrap();
+    std::fs::create_dir(t.path().join("collection.toml")).unwrap();
+    assert!(wisp_storage::collection::assign_new_collection_id(t.path()).is_err());
+    assert!(wisp_storage::collection::ensure_collection_id(t.path()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn save_environment_locked_refuses_symlinked_secrets_file() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", "[vars]\nhost = \"h\"\n");
+    let target = out.path().join("loot.toml");
+    std::fs::write(&target, "orig").unwrap();
+    std::os::unix::fs::symlink(&target, t.path().join("environments/dev.secrets.toml")).unwrap();
+    let c = cx();
+    let env = Environment {
+        name: "dev".into(),
+        vars: vec![var("host", "h")],
+        secrets: vec![var("token", "t")],
+    };
+    assert!(wisp_storage::environment::save_environment_locked(t.path(), &env, &c).is_err());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "orig");
+}
+
+#[cfg(unix)]
+#[test]
+fn save_environment_locked_makes_secrets_file_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", "[vars]\nhost = \"h\"\n");
+    write(t.path(), "dev.secrets.toml", "[vars]\ntoken = \"a\"\n");
+    let p = t.path().join("environments/dev.secrets.toml");
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let env = Environment {
+        name: "dev".into(),
+        vars: vec![var("host", "h")],
+        secrets: vec![var("token", "b")],
+    };
+    wisp_storage::environment::save_environment_locked(t.path(), &env, &cx()).unwrap();
+    assert_eq!(
+        std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn additional_checkout_binds_a_second_root() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let third = tempfile::tempdir().unwrap();
+    for r in [&a, &b, &third] {
+        write_id(r.path(), id().as_str());
+        write(r.path(), "dev.toml", STORE_TOML);
+    }
+    let c = bcx(a.path());
+    // Plain bind of another root still needs the explicit action.
+    assert!(bound_err(&bind(&c.data, &id(), b.path()).unwrap_err()));
+    bind_additional_checkout(&c.data, &id(), b.path()).unwrap();
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 2);
+    let s = MemoryStore::new();
+    for r in [&a, &b] {
+        let l = load_environment_with(r.path(), "dev", Some(&id()), &s, &c).unwrap();
+        assert!(
+            matches!(l.status, LoadStatus::Store { .. }),
+            "{:?}",
+            l.status
+        );
+    }
+    let l = load_environment_with(third.path(), "dev", Some(&id()), &s, &c).unwrap();
+    assert!(matches!(
+        l.status,
+        LoadStatus::Failed {
+            reason: FailReason::IdBoundElsewhere { .. }
+        }
+    ));
+}
+
+#[test]
+fn rebind_of_one_root_leaves_the_other_bound() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let n = tempfile::tempdir().unwrap();
+    for r in [&a, &b, &n] {
+        write_id(r.path(), id().as_str());
+        write(r.path(), "dev.toml", STORE_TOML);
+    }
+    let c = bcx(a.path());
+    bind_additional_checkout(&c.data, &id(), b.path()).unwrap();
+    // Both live: moving to n is a copy.
+    assert!(matches!(
+        rebind(&c.data, &id(), n.path()).unwrap_err(),
+        SecretsError::LooksLikeCopy { .. }
+    ));
+    // b was moved away (now another id): n replaces b, a stays.
+    write_id(b.path(), "fedcba9876543210");
+    rebind(&c.data, &id(), n.path()).unwrap();
+    let roots = bound_roots(&c.data, &id()).unwrap();
+    assert_eq!(roots.len(), 2);
+    assert!(roots.contains(&std::fs::canonicalize(a.path()).unwrap()));
+    assert!(roots.contains(&std::fs::canonicalize(n.path()).unwrap()));
+    let s = MemoryStore::new();
+    for r in [&a, &n] {
+        let l = load_environment_with(r.path(), "dev", Some(&id()), &s, &c).unwrap();
+        assert!(matches!(l.status, LoadStatus::Store { .. }));
+    }
+}
+
+#[test]
+fn two_data_dirs_bound_to_one_root_both_stay_bound() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let c1 = cx();
+    let c2 = cx();
+    bind(&c1.data, &id(), t.path()).unwrap();
+    bind(&c2.data, &id(), t.path()).unwrap();
+    assert!(!unbound_status(t.path(), &c1));
+    assert!(!unbound_status(t.path(), &c2));
+    // Re-binding the first keeps the second.
+    std::fs::remove_file(c1.data.root().join("vault-bindings.json")).unwrap();
+    bind(&c1.data, &id(), t.path()).unwrap();
+    assert!(!unbound_status(t.path(), &c1));
+    assert!(!unbound_status(t.path(), &c2));
+}
+
+fn unbound_status(root: &Path, c: &VaultCtx) -> bool {
+    load_status(root, c)
+        == LoadStatus::Failed {
+            reason: FailReason::Unbound,
+        }
 }

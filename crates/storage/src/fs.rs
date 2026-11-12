@@ -156,6 +156,51 @@ fn write_impl(
     result
 }
 
+/// Confinement check for a file a collection controls (marker, secrets file,
+/// `collection.toml`): every component of `file` below `root` must be a real
+/// directory (final component a regular file), none a symlink, and the result
+/// must resolve inside `root`. `Ok(false)` when any component is absent,
+/// `Ok(true)` when the file exists and is safe, `Invalid` on any refusal.
+pub(crate) fn confined_regular_file(
+    root: &Path,
+    file: &Path,
+    what: &str,
+) -> Result<bool, StorageError> {
+    let refuse = |path: &Path| StorageError::Invalid {
+        path: path.to_path_buf(),
+        key: "path".into(),
+        message: format!(
+            "{what} must be a regular file inside the collection, with no symbolic links"
+        ),
+    };
+    let Ok(rel) = file.strip_prefix(root) else {
+        return Err(refuse(file));
+    };
+    let count = rel.components().count();
+    let mut cur = root.to_path_buf();
+    for (i, comp) in rel.components().enumerate() {
+        if !matches!(comp, std::path::Component::Normal(_)) {
+            return Err(refuse(file));
+        }
+        cur.push(comp);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => return Err(refuse(&cur)),
+            Ok(m) if i + 1 < count && !m.is_dir() => return Err(refuse(&cur)),
+            Ok(m) if i + 1 == count && !m.is_file() => return Err(refuse(&cur)),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(io(&cur, e)),
+        }
+    }
+    let canon_root = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
+    let canon = std::fs::canonicalize(file).map_err(|e| io(file, e))?;
+    if canon.starts_with(&canon_root) {
+        Ok(true)
+    } else {
+        Err(refuse(file))
+    }
+}
+
 /// Write `bytes` to a temp file beside the (symlink-resolved) target, then rename it over.
 /// An existing target keeps its permissions; a new file gets default permissions.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {

@@ -7,10 +7,14 @@
 //! collection), maps `id -> canonical root`, holds no secret values and is
 //! written `0600`. A corrupt or unreadable registry fails closed.
 //!
-//! Each row also holds a random nonce, mirrored in a git-ignored marker file
-//! `environments/.wisp-binding` inside the collection. A binding check needs
-//! the marker's nonce to match the row, so a folder recreated at a bound path
-//! (no marker) is `Unbound` and needs the bind prompt again.
+//! A row is the set of roots bound to an id (several checkouts of one
+//! collection), each with a random nonce, mirrored in a git-ignored marker file
+//! `environments/.wisp-binding` inside that root. The marker holds one entry
+//! per registry (each data dir's registry has a random id), so two data dirs
+//! bound to one root do not overwrite each other. A binding check needs the
+//! marker's entry for this registry to match the root's nonce, so a folder
+//! recreated at a bound path (no marker) is `Unbound` and needs the bind
+//! prompt again.
 //!
 //! Policy: an unbound id fails closed for every operation; nothing binds
 //! implicitly. Only the user's explicit confirmation, [`crate::vault::bind`],
@@ -28,7 +32,7 @@ use crate::data_dir::{DataDir, ensure_private_dir};
 use crate::fs;
 
 const REGISTRY_FILE: &str = "vault-bindings.json";
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 /// Why a binding check failed.
 #[derive(Debug)]
@@ -105,10 +109,22 @@ fn registry_path(data: &DataDir) -> PathBuf {
     data.root().join(REGISTRY_FILE)
 }
 
-fn read_registry(path: &Path) -> Result<BTreeMap<String, Row>, StorageError> {
+/// The registry: a random id for this data dir (its entry key in every
+/// collection marker) and, per collection id, the set of bound roots.
+struct Registry {
+    id: String,
+    rows: BTreeMap<String, Vec<Row>>,
+}
+
+fn read_registry(path: &Path) -> Result<Registry, StorageError> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Registry {
+                id: new_nonce(),
+                rows: BTreeMap::new(),
+            });
+        }
         Err(e) => return Err(io(path, e)),
     };
     let bad = || StorageError::Parse {
@@ -119,36 +135,51 @@ fn read_registry(path: &Path) -> Result<BTreeMap<String, Row>, StorageError> {
     if v.get("version").and_then(|x| x.as_i64()) != Some(VERSION) {
         return Err(bad());
     }
+    let id = v
+        .get("registry_id")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .ok_or_else(bad)?
+        .to_string();
     let map = v
         .get("bindings")
         .and_then(|b| b.as_object())
         .ok_or_else(bad)?;
-    map.iter()
+    let rows = map
+        .iter()
         .map(|(k, v)| {
-            let root = v.get("root").and_then(|x| x.as_str()).ok_or_else(bad)?;
-            let nonce = v.get("nonce").and_then(|x| x.as_str()).ok_or_else(bad)?;
-            Ok((
-                k.clone(),
-                Row {
-                    root: root.to_string(),
-                    nonce: nonce.to_string(),
-                },
-            ))
+            let list = v.as_array().ok_or_else(bad)?;
+            let rows = list
+                .iter()
+                .map(|r| {
+                    let root = r.get("root").and_then(|x| x.as_str()).ok_or_else(bad)?;
+                    let nonce = r.get("nonce").and_then(|x| x.as_str()).ok_or_else(bad)?;
+                    Ok(Row {
+                        root: root.to_string(),
+                        nonce: nonce.to_string(),
+                    })
+                })
+                .collect::<Result<Vec<_>, StorageError>>()?;
+            Ok((k.clone(), rows))
         })
-        .collect()
+        .collect::<Result<_, StorageError>>()?;
+    Ok(Registry { id, rows })
 }
 
-fn write_registry(path: &Path, map: &BTreeMap<String, Row>) -> Result<(), StorageError> {
-    let rows: serde_json::Map<String, serde_json::Value> = map
+fn write_registry(path: &Path, reg: &Registry) -> Result<(), StorageError> {
+    let rows: serde_json::Map<String, serde_json::Value> = reg
+        .rows
         .iter()
-        .map(|(k, r)| {
-            (
-                k.clone(),
-                serde_json::json!({ "root": r.root, "nonce": r.nonce }),
-            )
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, rs)| {
+            let list: Vec<_> = rs
+                .iter()
+                .map(|r| serde_json::json!({ "root": r.root, "nonce": r.nonce }))
+                .collect();
+            (k.clone(), serde_json::Value::Array(list))
         })
         .collect();
-    let v = serde_json::json!({ "version": VERSION, "bindings": rows });
+    let v = serde_json::json!({ "version": VERSION, "registry_id": reg.id, "bindings": rows });
     let text = serde_json::to_string_pretty(&v).map_err(|e| StorageError::Parse {
         path: path.to_path_buf(),
         message: e.to_string(),
@@ -165,145 +196,160 @@ fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// The marker path if it is safe to touch: `environments` and the marker are
-/// not symlinks, the marker is a regular file, and both resolve inside `root`.
-/// `Ok(None)` when either is absent; `Invalid` on any refusal.
+/// The marker path if it is safe to touch (see [`fs::confined_regular_file`]).
+/// `Ok(None)` when absent; `Invalid` on any refusal.
 fn safe_marker(root: &Path) -> Result<Option<PathBuf>, StorageError> {
-    let dir = root.join(crate::environment::DIR);
     let p = marker_path(root);
-    let refuse = |path: &Path| StorageError::Invalid {
-        path: path.to_path_buf(),
-        key: "path".into(),
-        message:
-            "binding marker must be a regular file inside the collection's environments directory"
-                .into(),
-    };
-    match std::fs::symlink_metadata(&dir) {
-        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => return Err(refuse(&dir)),
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(io(&dir, e)),
-    }
-    let canon_root = canonical(root)?;
-    let canon_dir = std::fs::canonicalize(&dir).map_err(|e| io(&dir, e))?;
-    if !canon_dir.starts_with(&canon_root) {
-        return Err(refuse(&dir));
-    }
-    match std::fs::symlink_metadata(&p) {
-        Ok(m) if m.file_type().is_symlink() || !m.is_file() => Err(refuse(&p)),
-        Ok(_) => {
-            let c = std::fs::canonicalize(&p).map_err(|e| io(&p, e))?;
-            if c.starts_with(&canon_dir) {
-                Ok(Some(p))
-            } else {
-                Err(refuse(&p))
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(io(&p, e)),
-    }
+    Ok(fs::confined_regular_file(root, &p, "binding marker")?.then_some(p))
 }
 
-/// The marker's nonce; `None` when the marker is missing or refused (fail
-/// closed: a refused marker reads as no marker, so the id is `Unbound`).
-fn read_marker(root: &Path) -> Result<Option<String>, StorageError> {
+/// The marker's `registry id -> nonce` entries, one `<registry id> <nonce>`
+/// line each. Empty when the marker is missing or refused (fail closed: a
+/// refused marker reads as no marker, so the id is `Unbound`).
+fn read_marker_entries(root: &Path) -> Result<BTreeMap<String, String>, StorageError> {
     let p = match safe_marker(root) {
         Ok(Some(p)) => p,
-        Ok(None) | Err(StorageError::Invalid { .. }) => return Ok(None),
+        Ok(None) | Err(StorageError::Invalid { .. }) => return Ok(BTreeMap::new()),
         Err(e) => return Err(e),
     };
-    match std::fs::read_to_string(&p) {
-        Ok(t) => Ok(Some(t.trim().to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(io(&p, e)),
-    }
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(io(&p, e)),
+    };
+    Ok(text
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect())
 }
 
-/// Write a fresh nonce to the marker (mode `0600`, git-ignored) and return it.
-/// Refuses, writing nothing, when the directory or marker is a symlink.
-fn write_marker(root: &Path) -> Result<String, StorageError> {
+fn read_marker(root: &Path, registry_id: &str) -> Result<Option<String>, StorageError> {
+    Ok(read_marker_entries(root)?.remove(registry_id))
+}
+
+/// Write a fresh nonce for `registry_id` into the marker (mode `0600`,
+/// git-ignored), keeping other registries' entries, and return it. Refuses,
+/// writing nothing, when the directory or marker is a symlink.
+fn write_marker(root: &Path, registry_id: &str) -> Result<String, StorageError> {
     safe_marker(root)?;
     let dir = root.join(crate::environment::DIR);
     std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
     safe_marker(root)?;
     crate::environment::ensure_marker_ignored(&dir)?;
+    let mut entries = read_marker_entries(root)?;
     let nonce = new_nonce();
-    fs::atomic_write_force_private(&marker_path(root), nonce.as_bytes())?;
+    entries.insert(registry_id.to_string(), nonce.clone());
+    let text: String = entries.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
+    fs::atomic_write_force_private(&marker_path(root), text.as_bytes())?;
     Ok(nonce)
 }
 
-/// Check `id` against `root`. An unbound id, or a row whose nonce the
-/// collection's marker does not hold, is an error; only [`bind_confirmed`]
-/// creates a row.
+/// Check `id` against `root`. An unbound id, or a root whose marker entry for
+/// this registry does not hold the row's nonce, is an error; only
+/// [`bind_confirmed`] and [`bind_additional_confirmed`] create a row.
 pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), BindError> {
     let canon = canonical(root)?;
     let path = registry_path(data);
     let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_private_dir(data.root())?;
     let _f = lock_file(&path.with_extension("lock"))?;
-    let map = read_registry(&path)?;
-    match map.get(id.as_str()) {
-        Some(r) if r.root == key(&canon) => match read_marker(&canon)? {
+    let reg = read_registry(&path)?;
+    let rows = reg.rows.get(id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+    match rows.iter().find(|r| r.root == key(&canon)) {
+        Some(r) => match read_marker(&canon, &reg.id)? {
             Some(n) if n == r.nonce => Ok(()),
             _ => Err(BindError::Unbound),
         },
-        Some(r) => Err(BindError::BoundElsewhere {
-            bound_root: PathBuf::from(&r.root),
-        }),
-        None => Err(BindError::Unbound),
+        None => match rows.first() {
+            Some(r) => Err(BindError::BoundElsewhere {
+                bound_root: PathBuf::from(&r.root),
+            }),
+            None => Err(BindError::Unbound),
+        },
     }
 }
 
-/// Bind an unbound `id` to `root` after the user confirmed it: new nonce into
-/// the row and the marker. Already bound to `root` with a matching marker is
-/// fine; bound there with a missing or stale marker is re-bound; bound
-/// elsewhere is an error (use [`rebind_confirmed`] to move).
-pub(crate) fn bind_confirmed(
+fn bind_inner(
     data: &DataDir,
     id: &CollectionId,
     root: &Path,
+    additional: bool,
 ) -> Result<(), BindError> {
     let canon = canonical(root)?;
     let path = registry_path(data);
     let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_private_dir(data.root())?;
     let _f = lock_file(&path.with_extension("lock"))?;
-    let mut map = read_registry(&path)?;
-    match map.get(id.as_str()) {
-        Some(r) if r.root == key(&canon) && read_marker(&canon)?.as_deref() == Some(&r.nonce) => {
-            Ok(())
+    let mut reg = read_registry(&path)?;
+    let reg_id = reg.id.clone();
+    let rows = reg.rows.entry(id.as_str().to_string()).or_default();
+    let existing = rows.iter().position(|r| r.root == key(&canon));
+    if let Some(i) = existing {
+        if read_marker(&canon, &reg_id)?.as_deref() == Some(&rows[i].nonce) {
+            return Ok(());
         }
-        Some(r) if r.root != key(&canon) => Err(BindError::BoundElsewhere {
+    } else if !additional && let Some(r) = rows.first() {
+        return Err(BindError::BoundElsewhere {
             bound_root: PathBuf::from(&r.root),
-        }),
-        _ => {
-            let nonce = write_marker(&canon)?;
-            map.insert(
-                id.as_str().to_string(),
-                Row {
-                    root: key(&canon),
-                    nonce,
-                },
-            );
-            write_registry(&path, &map)?;
-            Ok(())
-        }
+        });
     }
+    let nonce = write_marker(&canon, &reg_id)?;
+    match existing {
+        Some(i) => rows[i].nonce = nonce,
+        None => rows.push(Row {
+            root: key(&canon),
+            nonce,
+        }),
+    }
+    write_registry(&path, &reg)?;
+    Ok(())
 }
 
-/// The canonical root `id` is bound to, if any.
-pub fn bound_root(data: &DataDir, id: &CollectionId) -> Result<Option<PathBuf>, StorageError> {
+/// Bind `id` to `root` after the user confirmed it: new nonce into the row and
+/// this registry's marker entry. Already bound to `root` with a matching marker
+/// is fine; bound there with a missing or stale marker is re-bound; bound only
+/// elsewhere is an error (use [`bind_additional_confirmed`] to add a checkout
+/// or [`rebind_confirmed`] to move).
+pub(crate) fn bind_confirmed(
+    data: &DataDir,
+    id: &CollectionId,
+    root: &Path,
+) -> Result<(), BindError> {
+    bind_inner(data, id, root, false)
+}
+
+/// Add `root` to the roots `id` is bound to (another checkout of the same
+/// collection), after the user confirmed it. Existing roots stay bound.
+pub(crate) fn bind_additional_confirmed(
+    data: &DataDir,
+    id: &CollectionId,
+    root: &Path,
+) -> Result<(), BindError> {
+    bind_inner(data, id, root, true)
+}
+
+/// Every canonical root `id` is bound to (in binding order).
+pub fn bound_roots(data: &DataDir, id: &CollectionId) -> Result<Vec<PathBuf>, StorageError> {
     let path = registry_path(data);
     let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     Ok(read_registry(&path)?
+        .rows
         .get(id.as_str())
-        .map(|r| PathBuf::from(&r.root)))
+        .map(|rs| rs.iter().map(|r| PathBuf::from(&r.root)).collect())
+        .unwrap_or_default())
 }
 
-/// Bind `id` to `new_root`, replacing an earlier binding, after the user
-/// confirmed a move. Refused with [`BindError::LooksLikeCopy`] while the
-/// currently bound root still exists and still carries the same id: that is a
-/// copy, not a move.
+/// The first canonical root `id` is bound to, if any.
+pub fn bound_root(data: &DataDir, id: &CollectionId) -> Result<Option<PathBuf>, StorageError> {
+    Ok(bound_roots(data, id)?.into_iter().next())
+}
+
+/// Bind `id` to `new_root` after the user confirmed a move: the bound roots
+/// that were moved away (gone, or no longer carrying this id) are replaced by
+/// `new_root`; roots that are still live checkouts stay bound. Refused with
+/// [`BindError::LooksLikeCopy`] when every other bound root still exists and
+/// still carries the same id: that is a copy, not a move.
 pub(crate) fn rebind_confirmed(
     data: &DataDir,
     id: &CollectionId,
@@ -314,24 +360,35 @@ pub(crate) fn rebind_confirmed(
     let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_private_dir(data.root())?;
     let _f = lock_file(&path.with_extension("lock"))?;
-    let mut map = read_registry(&path)?;
-    if let Some(r) = map.get(id.as_str())
-        && r.root != key(&canon)
-    {
+    let mut reg = read_registry(&path)?;
+    let reg_id = reg.id.clone();
+    let rows = reg.rows.entry(id.as_str().to_string()).or_default();
+    let is_new = !rows.iter().any(|r| r.root == key(&canon));
+    let mut live_other = None;
+    let mut keep = Vec::new();
+    for r in rows.iter() {
+        if r.root == key(&canon) {
+            continue;
+        }
         let old = PathBuf::from(&r.root);
         if old.exists() && crate::collection::read_collection_id(&old)?.as_ref() == Some(id) {
-            return Err(BindError::LooksLikeCopy { bound_root: old });
+            live_other.get_or_insert(old);
+            keep.push(r.clone());
         }
     }
-    let nonce = write_marker(&canon)?;
-    map.insert(
-        id.as_str().to_string(),
-        Row {
-            root: key(&canon),
-            nonce,
-        },
-    );
-    write_registry(&path, &map)?;
+    if is_new
+        && keep.len() == rows.len()
+        && let Some(old) = live_other
+    {
+        return Err(BindError::LooksLikeCopy { bound_root: old });
+    }
+    let nonce = write_marker(&canon, &reg_id)?;
+    keep.push(Row {
+        root: key(&canon),
+        nonce,
+    });
+    *rows = keep;
+    write_registry(&path, &reg)?;
     Ok(())
 }
 

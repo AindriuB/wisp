@@ -244,6 +244,7 @@ pub fn read_collection_id(root: &Path) -> Result<Option<CollectionId>, StorageEr
 /// Return the collection's ID, writing a new one into `collection.toml` if it has none.
 pub fn ensure_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
     let path = root.join(COLLECTION_FILE);
+    fs::confined_regular_file(root, &path, "collection.toml")?;
     let mut doc = read_doc(&path)?.unwrap_or_else(|| {
         let mut d = DocumentMut::new();
         d.insert("format", toml_edit::value(1));
@@ -263,6 +264,7 @@ pub fn ensure_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
 /// secrets of its own.
 pub fn assign_new_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
     let path = root.join(COLLECTION_FILE);
+    fs::confined_regular_file(root, &path, "collection.toml")?;
     let mut doc = read_doc(&path)?.unwrap_or_else(|| {
         let mut d = DocumentMut::new();
         d.insert("format", toml_edit::value(1));

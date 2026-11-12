@@ -262,6 +262,7 @@ fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), Stora
         plain_doc = Some(doc);
     }
     let sp = secrets_path(root, &env.name);
+    fs::confined_regular_file(root, &sp, "secrets file")?;
     let plain_text = match plain_doc {
         Some(doc) => render_doc(doc, &env.vars)?,
         None => render(&pp, &env.vars)?,
@@ -278,7 +279,7 @@ fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), Stora
     let write_secrets = || -> Result<(), StorageError> {
         if let Some(text) = &secrets_text {
             ensure_gitignore(dir)?;
-            fs::atomic_write_private(&sp, text.as_bytes())?;
+            fs::atomic_write_force_private(&sp, text.as_bytes())?;
         }
         Ok(())
     };
