@@ -51,7 +51,7 @@ The load never returns `Err` for a store failure or an unknown kind; only TOML a
 
 ## Acceptance
 - [ ] AC1 Every row of the load table has a test that uses `MemoryStore`.
-- [ ] AC2 `migrate_to_store(root, name, id, kind, store)` works in order: it writes each file secret to the store and reads it back to compare. It then writes `secrets = kind.as_str()` and `secret_names` with `toml_edit`, keeping comments, and only then deletes `<env>.secrets.toml`. If anything fails before the delete, the file and mode are unchanged. Entries created in this call are deleted again, and entries that existed before are left alone. Tests cover success, and a failure at each step.
+- [ ] AC2 `migrate_to_store(root, name, id, kind, store)` works in order: it writes each file secret to the store and reads it back to compare. It then writes `secrets = kind.as_str()` and `secret_names` with `toml_edit`, keeping comments, and only then deletes `<env>.secrets.toml`. If anything fails before the delete, the file and mode are unchanged. Entries created in this call are deleted again, and entries that existed before are left alone. If only the final delete of `<env>.secrets.toml` fails (store entries and mode already written), it returns Ok with a warning naming the leftover plaintext file, the same shape as `migrate_to_file`'s DeleteWarning; later loads flag the file through `file_ignored` (Amendment 2). Tests cover success, and a failure at each step, including the final delete (e.g. a read-only dir on unix, skipped where permissions are ignored).
 - [ ] AC3 `migrate_to_file` works in order: it reads every name, and any read error aborts with nothing changed. It then writes `<env>.secrets.toml` with `atomic_write_private` (0600), writes mode `file` and removes `secret_names`, and only then deletes the store entries. A delete failure after that is returned as a warning, and the file stays. Tests cover success and a read failure.
 - [ ] AC4 `set_secret` and `delete_secret` for a store-mode environment write the store first and then update `secret_names`. A store failure leaves `secret_names` unchanged. Neither ever writes a secrets file.
 - [ ] AC5 Two keys that differ only by `/` or `%` in a component produce different accounts (test). `store_state_account` output starts with `.store/` and no `secret_account` output does (test).
@@ -79,3 +79,17 @@ cargo writes no JUnit XML here, so tests are `command` checks.
 - Any KeePassXC store, pairing flow, protocol code or dependency; only the seams above.
 - The core `RefreshTokenStore` adapter. Only the account helper lives here.
 - Changing core `Environment`, `Scope` or `resolve()`.
+
+## Amendment 2 (2026-11-12)
+- **Final delete failure in `migrate_to_store` (user decision).** If `migrate_to_store` fails only at deleting the old `<env>.secrets.toml`, after the store entries and `secrets = "<kind>"` are written, it returns Ok with a warning naming the leftover plaintext file (same shape as `migrate_to_file`'s DeleteWarning). Loads keep flagging the file via `file_ignored`. AC2 is updated and requires a test for this step (e.g. a read-only dir on unix, skipped where permissions are ignored).
+- **Module rename (user decision).** The rename from `secrets` to `vault` was the user's decision. The project deny rule `Read(./**/secrets.*)` stays.
+- **`File` is a mode, not a store.** `StoreKind::File` is handled by the existing file path, not by a `SecretStore` implementation. This deliberately differs from the spec's "two implementations" (docs/plan/specs/2026-11-09-wisp-0-2-0.md:70); the scribe notes it in the spec at record time.
+
+## Review round 1 — findings
+Reviewed HEAD a19f5615219f1df86b5d21b0dfa8ec43de1e99d9.
+- [P2] vault.rs:503-507 — the final delete failure returns Err after commit, stranding plaintext with no retry. Fix: implement Amendment 2, with a test.
+- [P2] vault.rs:469-487 — rollback leaves a pre-existing store entry overwritten with the file's value; AC2 says such entries are left alone. Fix: save the old value before `set` and restore it on rollback. Strengthen `migrate_to_store_rollback_keeps_preexisting_entries` (tests/vault.rs:347) to check the value, not just `accounts()`. Input: store has `<id>/dev/token = "old"`, file `token="t1", key="k1"`, fail at `set(key)` → token must be `"old"` again.
+- [P2] environment.rs:197 — `read_mode(..).unwrap_or(Mode::File)` fails open: a non-string `secrets` (e.g. `secrets = { kind = "keepassxc" }`) makes `save_environment` write a plaintext secrets file that `load_environment_with` rejects. Fix: propagate the error or treat it as non-file mode; never write a secrets file; add a test.
+- [STYLE] vault.rs:545 — literal `"environments"` instead of the module's DIR constant (environment.rs:13).
+- [P3] vault.rs:485-487 — the read-back mismatch branch is untested. Fix: a small fake store in the test file that returns a different value.
+- [P3] vault.rs:543-554 — `migrate_to_file`: if writing `<env>.toml` fails while a secrets file already existed (`file_ignored`), that file was already replaced with store values and is not restored. Fix: restore it or write in the safe order; add a test.
