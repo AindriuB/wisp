@@ -442,12 +442,12 @@ fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
 /// dir and whose `gitdir` file must point back at this `.git`. `Ok(None)` when
 /// `root` is not a verifiable checkout; a symlinked `.git` is `Invalid`.
 ///
-/// With `trusted` (the canonical common dirs of already-bound roots, from
-/// local paths), the gitdir text is joined to the canonical `root` and
+/// `trusted` (the canonical common dirs of already-bound main checkouts, from
+/// local paths; see [`anchor_common_dir`]) is required: the gitdir text is joined to the canonical `root` and
 /// normalised lexically; it must equal `<trusted>/worktrees/<name>` exactly
 /// before anything derived from it is statted or read. UNC/device paths are
 /// refused untouched.
-fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf>, StorageError> {
+fn common_dir(root: &Path, trusted: &[PathBuf]) -> Result<Option<PathBuf>, StorageError> {
     // Canonicalise `root` once; `<canon_root>/.git` is then the identity and is
     // never followed again after the lstat below.
     let Ok(canon_root) = std::fs::canonicalize(root).map(|p| simplify_verbatim(&p)) else {
@@ -476,25 +476,18 @@ fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf
         return Ok(None);
     }
     let joined = simplify_verbatim(&lexical(&canon_root.join(target)));
-    let gitdir = if let Some(t) = trusted {
-        if !exact_worktree_gitdir(&joined, t) {
-            return Ok(None);
-        }
-        // Matched exactly: now it may be touched, but only if no symlink lies
-        // on the path.
-        match std::fs::symlink_metadata(&joined) {
-            Ok(m) if m.is_dir() => {}
-            _ => return Ok(None),
-        }
-        match canon(&joined) {
-            Some(g) if g == joined => g,
-            _ => return Ok(None),
-        }
-    } else {
-        let Some(g) = canon(&joined) else {
-            return Ok(None);
-        };
-        g
+    if !exact_worktree_gitdir(&joined, trusted) {
+        return Ok(None);
+    }
+    // Matched exactly: now it may be touched, but only if no symlink lies on
+    // the path.
+    match std::fs::symlink_metadata(&joined) {
+        Ok(m) if m.is_dir() => {}
+        _ => return Ok(None),
+    }
+    let gitdir = match canon(&joined) {
+        Some(g) if g == joined => g,
+        _ => return Ok(None),
     };
     // A linked worktree always has a `commondir`; without one the gitdir is a
     // whole repository chosen by this folder, which proves nothing.
@@ -522,8 +515,24 @@ fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf
     Ok(back_ok.then_some(common))
 }
 
+/// The common dir of a bound root that may anchor verification: only a root
+/// whose `.git` is a real directory (lstat, not a symlink), i.e. a main
+/// checkout. Its common dir is `<canonical root>/.git`; nothing else is read.
+/// A bound worktree (`.git` file) or a symlinked `.git` is never an anchor, so
+/// no gitdir/commondir of a bound root is ever followed.
+fn anchor_common_dir(root: &Path) -> Option<PathBuf> {
+    let canon_root = std::fs::canonicalize(root)
+        .map(|p| simplify_verbatim(&p))
+        .ok()?;
+    let dot_git = canon_root.join(".git");
+    let meta = std::fs::symlink_metadata(&dot_git).ok()?;
+    (!meta.file_type().is_symlink() && meta.is_dir()).then_some(dot_git)
+}
+
 /// The bound roots of `id` (that still pass the binding check) whose git
 /// common directory equals `new_root`'s. Empty means `new_root` is unverified.
+/// Only bound main checkouts (real `.git` directory) anchor: a new folder is
+/// one-click verifiable only as a worktree of a bound main checkout.
 pub(crate) fn verified_siblings(
     data: &DataDir,
     id: &CollectionId,
@@ -535,12 +544,12 @@ pub(crate) fn verified_siblings(
         if check(data, id, &r).is_err() {
             continue;
         }
-        if let Ok(Some(c)) = common_dir(&r, None) {
+        if let Some(c) = anchor_common_dir(&r) {
             bound.push((r, c));
         }
     }
     let trusted: Vec<PathBuf> = bound.iter().map(|(_, c)| c.clone()).collect();
-    let Some(want) = common_dir(new_root, Some(&trusted))? else {
+    let Some(want) = common_dir(new_root, &trusted)? else {
         return Ok(Vec::new());
     };
     Ok(bound

@@ -2185,6 +2185,72 @@ fn symlinked_dot_git_is_refused() {
     assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 1);
 }
 
+/// Bind `w` (a verified worktree of `a`) so it is a bound root, then return.
+fn bound_worktree(c: &VaultCtx, a: &Path, w: &Path) {
+    make_worktree(a, w, "w1");
+    bind_additional_checkout(&c.data, &id(), w).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn bound_worktree_with_symlinked_gitdir_is_never_read() {
+    let a = tempfile::tempdir().unwrap();
+    let w = tempfile::tempdir().unwrap();
+    let n = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), w.path(), n.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    bound_worktree(&c, a.path(), w.path());
+    // The bound worktree's .git now routes through a symlink to an outside dir
+    // whose commondir is a directory (unreadable if opened).
+    std::fs::create_dir_all(out.path().join(".git/worktrees/w/commondir")).unwrap();
+    std::os::unix::fs::symlink(out.path(), w.path().join("sub")).unwrap();
+    std::fs::write(w.path().join(".git"), "gitdir: sub/.git/worktrees/w\n").unwrap();
+    let out_canon = std::fs::canonicalize(out.path()).unwrap();
+    std::fs::write(
+        n.path().join(".git"),
+        format!("gitdir: {}\n", out_canon.join(".git/worktrees/w").display()),
+    )
+    .unwrap();
+    assert!(matches!(
+        bind_additional_checkout(&c.data, &id(), n.path()).unwrap_err(),
+        SecretsError::UnverifiedCheckout { .. }
+    ));
+}
+
+#[test]
+fn new_worktree_of_a_bound_main_checkout_still_verifies_with_a_bound_worktree() {
+    let a = tempfile::tempdir().unwrap();
+    let w = tempfile::tempdir().unwrap();
+    let n = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), w.path(), n.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    bound_worktree(&c, a.path(), w.path());
+    make_worktree(a.path(), n.path(), "w2");
+    bind_additional_checkout(&c.data, &id(), n.path()).unwrap();
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 3);
+}
+
+#[cfg(unix)]
+#[test]
+fn bound_root_with_symlinked_dot_git_is_not_an_anchor() {
+    let a = tempfile::tempdir().unwrap();
+    let real = tempfile::tempdir().unwrap();
+    let n = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), n.path()]);
+    make_repo(real.path());
+    make_repo(a.path());
+    let c = bcx(a.path());
+    // Bound root `a` swaps its .git for a symlink to a real repo that `n`
+    // is a worktree of.
+    std::fs::remove_dir_all(a.path().join(".git")).unwrap();
+    std::os::unix::fs::symlink(real.path().join(".git"), a.path().join(".git")).unwrap();
+    make_worktree(real.path(), n.path(), "w1");
+    unverified(&c, n.path());
+}
+
 #[test]
 fn share_with_folder_from_a_bound_root_works() {
     let a = tempfile::tempdir().unwrap();
