@@ -394,6 +394,30 @@ fn lexical(p: &Path) -> PathBuf {
     out
 }
 
+/// `\\?\C:\x` (VerbatimDisk) -> `C:\x` (Disk), so canonical paths compare with
+/// the `C:/...` form git writes. Everything else, notably `\\?\UNC\`, is
+/// returned unchanged. Identity off Windows.
+fn simplify_verbatim(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut it = p.components();
+        if let Some(Component::Prefix(pre)) = it.next() {
+            if let Prefix::VerbatimDisk(d) = pre.kind() {
+                let mut out = PathBuf::from(format!("{}:", d as char));
+                out.push(std::path::MAIN_SEPARATOR_STR);
+                for c in it {
+                    if !matches!(c, Component::RootDir) {
+                        out.push(c.as_os_str());
+                    }
+                }
+                return out;
+            }
+        }
+    }
+    p.to_path_buf()
+}
+
 /// Lexical, no I/O: is `gitdir` exactly `<trusted>/worktrees/<name>`, with
 /// `<trusted>` a canonical trusted common dir and `<name>` one normal component?
 fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
@@ -406,7 +430,9 @@ fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
         && parent
             .parent()
             .zip(parent.file_name())
-            .is_some_and(|(common, w)| w == "worktrees" && trusted.iter().any(|t| t == common))
+            .is_some_and(|(common, w)| {
+                w == "worktrees" && trusted.iter().any(|t| simplify_verbatim(t) == common)
+            })
 }
 
 /// The canonical git common directory of the checkout at `root`, read from
@@ -424,7 +450,7 @@ fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
 fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf>, StorageError> {
     // Canonicalise `root` once; `<canon_root>/.git` is then the identity and is
     // never followed again after the lstat below.
-    let Ok(canon_root) = std::fs::canonicalize(root) else {
+    let Ok(canon_root) = std::fs::canonicalize(root).map(|p| simplify_verbatim(&p)) else {
         return Ok(None);
     };
     let dot_git = canon_root.join(".git");
@@ -436,7 +462,7 @@ fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf
     if meta.file_type().is_symlink() {
         return Err(git_refuse(&dot_git, ".git must not be a symbolic link"));
     }
-    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let canon = |p: &Path| std::fs::canonicalize(p).ok().map(|c| simplify_verbatim(&c));
     if meta.is_dir() {
         return Ok(Some(dot_git));
     }
@@ -449,7 +475,7 @@ fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf
     if is_remote_or_device(target) {
         return Ok(None);
     }
-    let joined = lexical(&canon_root.join(target));
+    let joined = simplify_verbatim(&lexical(&canon_root.join(target)));
     let gitdir = if let Some(t) = trusted {
         if !exact_worktree_gitdir(&joined, t) {
             return Ok(None);
@@ -633,6 +659,33 @@ pub(crate) fn env_lock(data: &DataDir, plain: &Path) -> Result<EnvLock, StorageE
 #[cfg(test)]
 mod tests {
     use super::is_remote_or_device;
+
+    #[cfg(windows)]
+    #[test]
+    fn simplify_verbatim_only_touches_verbatim_disk() {
+        use super::simplify_verbatim;
+        use std::path::Path;
+        assert_eq!(
+            simplify_verbatim(Path::new(r"\\?\C:\x\y")),
+            Path::new(r"C:\x\y")
+        );
+        assert_eq!(simplify_verbatim(Path::new(r"C:\x")), Path::new(r"C:\x"));
+        let unc = Path::new(r"\\?\UNC\srv\share\x");
+        assert_eq!(simplify_verbatim(unc), unc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disk_form_gitdir_matches_verbatim_trusted_dirs() {
+        use super::{exact_worktree_gitdir, lexical, simplify_verbatim};
+        use std::path::{Path, PathBuf};
+        let trusted = vec![PathBuf::from(r"\\?\C:\repo\.git")];
+        let root = simplify_verbatim(Path::new(r"\\?\C:\wt"));
+        let joined = simplify_verbatim(&lexical(&root.join("C:/repo/.git/worktrees/w")));
+        assert!(exact_worktree_gitdir(&joined, &trusted));
+        let other = simplify_verbatim(&lexical(&root.join("C:/other/.git/worktrees/w")));
+        assert!(!exact_worktree_gitdir(&other, &trusted));
+    }
 
     #[test]
     fn remote_and_device_prefixes_are_detected() {

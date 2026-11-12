@@ -1914,12 +1914,26 @@ fn make_repo(root: &Path) {
     std::fs::create_dir_all(root.join(".git")).unwrap();
 }
 
+/// On Windows `canonicalize` yields `\\?\C:\..`; git writes `C:/...`.
+fn git_style(p: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy().into_owned();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            if !rest.starts_with("UNC") {
+                return std::path::PathBuf::from(rest.replace('\\', "/"));
+            }
+        }
+    }
+    p
+}
+
 /// A linked worktree of `main`: `.git` file -> `<main>/.git/worktrees/<name>`
 /// with `commondir` and a back-pointing `gitdir`.
 fn make_worktree(main: &Path, wt: &Path, name: &str) {
     // Like git, write canonical (realpath) paths.
-    let main = &std::fs::canonicalize(main).unwrap();
-    let wt = &std::fs::canonicalize(wt).unwrap();
+    let main = &git_style(std::fs::canonicalize(main).unwrap());
+    let wt = &git_style(std::fs::canonicalize(wt).unwrap());
     let gd = main.join(".git/worktrees").join(name);
     std::fs::create_dir_all(&gd).unwrap();
     std::fs::write(gd.join("commondir"), "../..\n").unwrap();
@@ -2106,6 +2120,35 @@ fn symlink_inside_a_plausible_gitdir_is_never_followed() {
     // would be an error, so Unverified proves it was never opened.
     std::fs::create_dir_all(out.path().join(".git/worktrees/w/commondir")).unwrap();
     std::os::unix::fs::symlink(out.path(), e.path().join("sub")).unwrap();
+    std::fs::write(e.path().join(".git"), "gitdir: sub/.git/worktrees/w\n").unwrap();
+    unverified(&c, e.path());
+}
+
+/// Legitimate worktree layout of bound repo A, reached through a symlink:
+/// `E/sub -> A`, `E/.git` = `gitdir: sub/.git/worktrees/w`, back-pointer names
+/// `E/.git`. The old code canonicalised the joined path, so it resolved to
+/// `A/.git/worktrees/w` and verified; the exact lexical match must refuse it
+/// (`E/sub/.git` is not a trusted common dir). Not observable here: that the
+/// match does no I/O before deciding (e.g. a macOS /net automount).
+#[cfg(unix)]
+#[test]
+fn symlink_reaching_a_real_worktree_layout_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    let a_canon = std::fs::canonicalize(a.path()).unwrap();
+    let e_canon = std::fs::canonicalize(e.path()).unwrap();
+    let gd = a_canon.join(".git/worktrees/w");
+    std::fs::create_dir_all(&gd).unwrap();
+    std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+    std::fs::write(
+        gd.join("gitdir"),
+        format!("{}\n", e_canon.join(".git").display()),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&a_canon, e.path().join("sub")).unwrap();
     std::fs::write(e.path().join(".git"), "gitdir: sub/.git/worktrees/w\n").unwrap();
     unverified(&c, e.path());
 }
