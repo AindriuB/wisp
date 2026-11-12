@@ -1174,6 +1174,9 @@ pub struct Workspace {
     /// True while a discard prompt is waiting for an answer.
     pub prompt_up: bool,
     stores: vault::SharedStores,
+    /// Workspace-wide, never reused: an environment load result carries the value it was given,
+    /// so a late result for a closed collection cannot land on a reopened one.
+    env_gen_counter: u64,
     refresh_store: Arc<vault::KeychainRefreshStore>,
     /// Banners for refresh tokens kept for this session only.
     pub token_banners: Vec<String>,
@@ -1360,11 +1363,10 @@ impl Workspace {
         settings: Settings,
         settings_path: Option<PathBuf>,
         open: Option<PathBuf>,
+        stores: vault::SharedStores,
         cx: &mut Context<Self>,
     ) -> Self {
         let jars = CookieJars::default();
-        let stores: vault::SharedStores =
-            Arc::new(vault::AppStores::open(vault::portable_marker()));
         let refresh_store = Arc::new(vault::KeychainRefreshStore::new(stores.clone()));
         let (engine, events) = Engine::start(EngineConfig {
             body_memory_limit: settings.body_memory_limit,
@@ -1395,6 +1397,7 @@ impl Workspace {
             empty_defaults: CollectionDefaults::default(),
             prompt_up: false,
             stores,
+            env_gen_counter: 0,
             refresh_store,
             token_banners: Vec::new(),
             keychain_probe: None,
@@ -1714,13 +1717,15 @@ impl Workspace {
         name: Option<&str>,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        self.env_gen_counter += 1;
+        let generation = self.env_gen_counter;
         let Some(c) = self.collections.get_mut(ix) else {
             return Ok(());
         };
         match name {
             Some(n) => self.load_env_at(ix, n.to_string(), true, cx),
             None => {
-                c.env_gen += 1;
+                c.env_gen = generation;
                 c.active_env = None;
                 c.env_status = None;
                 if self.active_collection == Some(ix) {
@@ -1737,11 +1742,12 @@ impl Workspace {
     /// task. `switching` shows an empty placeholder meanwhile, so no send uses the previous
     /// environment; a reload keeps the old one until the result lands.
     fn load_env_at(&mut self, ix: usize, name: String, switching: bool, cx: &mut Context<Self>) {
+        self.env_gen_counter += 1;
+        let generation = self.env_gen_counter;
         let Some(c) = self.collections.get_mut(ix) else {
             return;
         };
-        c.env_gen += 1;
-        let generation = c.env_gen;
+        c.env_gen = generation;
         let previous = (c.active_env.clone(), c.env_status.clone());
         if switching {
             c.active_env = Some(Environment {

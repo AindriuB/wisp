@@ -141,9 +141,9 @@ impl KeychainRefreshStore {
         let v = store.get(idx).map_err(|e| store_failure("read", &e))?;
         Ok(v.map(|v| {
             v.expose()
-                .lines()
+                .split('\n')
                 .filter(|l| !l.is_empty())
-                .map(str::to_string)
+                .map(unescape_entry)
                 .collect()
         })
         .unwrap_or_default())
@@ -159,7 +159,11 @@ impl KeychainRefreshStore {
         if accounts.is_empty() {
             return store.delete(idx).map_err(|e| store_failure("delete", &e));
         }
-        let text = accounts.join("\n");
+        let text = accounts
+            .iter()
+            .map(|a| escape_entry(a))
+            .collect::<Vec<_>>()
+            .join("\n");
         if text.len() > keychain::MAX_SECRET_BYTES {
             return Err(RefreshStoreError::new(format!(
                 "refresh token not stored: this environment has too many saved tokens to index \
@@ -179,8 +183,15 @@ impl KeychainRefreshStore {
             return Ok(());
         };
         let _g = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Under the lock: a later save for this environment is refused (it is moving to a file).
+        self.set_file_mode(col, env, true);
         let store = self.store()?;
-        let accounts = Self::read_index(store, &idx)?;
+        // Anything in the index that is not a refresh-token account of this environment is
+        // ignored and dropped; it is never deleted.
+        let accounts: Vec<String> = Self::read_index(store, &idx)?
+            .into_iter()
+            .filter(|a| is_refresh_account_of(a, col, env))
+            .collect();
         let mut first = None;
         let mut left = Vec::new();
         for a in accounts {
@@ -235,6 +246,42 @@ impl KeychainRefreshStore {
     }
 }
 
+/// Index entries are one per line, so a backslash and a newline inside an account name are
+/// escaped: a committed scope can never split one entry into two.
+fn escape_entry(a: &str) -> String {
+    a.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+fn unescape_entry(l: &str) -> String {
+    let mut out = String::with_capacity(l.len());
+    let mut it = l.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some(o) => out.push(o),
+            None => {}
+        }
+    }
+    out
+}
+
+/// True when `a` has the shape of a refresh-token account of `env` in collection `col`:
+/// the environment's oauth2 prefix and seven `/`-separated segments in all.
+fn is_refresh_account_of(a: &str, col: &str, env: &str) -> bool {
+    let Some(id) = CollectionId::parse(col) else {
+        return false;
+    };
+    let full = refresh_token_account(&id, env, "", "", "", "");
+    let Some(prefix) = full.strip_suffix("///") else {
+        return false;
+    };
+    a.starts_with(prefix) && a.split('/').count() == 7
+}
+
 fn store_failure(what: &str, e: &SecretStoreError) -> RefreshStoreError {
     RefreshStoreError::new(format!("keychain {what} failed: {e}"))
 }
@@ -254,18 +301,23 @@ impl RefreshTokenStore for KeychainRefreshStore {
     fn save(&self, key: &TokenKey, refresh_token: &str) -> Result<(), RefreshStoreError> {
         let (account, env) = Self::account(key)?;
         let store = self.store()?;
+        let col = key.collection.as_deref().unwrap_or_default();
+        // The lock covers the mode check, the index update and the token write, so a save cannot
+        // land after "Move to file" has forgotten the environment.
+        let _g = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.is_file_mode(col, &env) {
+            return Err(RefreshStoreError::new(
+                "refresh token not stored: this environment keeps its secrets in a file",
+            ));
+        }
         // Index first: if the listing cannot hold the account, nothing is stored.
-        {
-            let _g = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
-            let col = key.collection.as_deref().unwrap_or_default();
-            let idx = index_account(col, &env).ok_or_else(|| {
-                RefreshStoreError::new("refresh token not stored: the collection has no usable id")
-            })?;
-            let mut list = Self::read_index(store, &idx)?;
-            if !list.contains(&account) {
-                list.push(account.clone());
-                Self::write_index(store, &idx, &list)?;
-            }
+        let idx = index_account(col, &env).ok_or_else(|| {
+            RefreshStoreError::new("refresh token not stored: the collection has no usable id")
+        })?;
+        let mut list = Self::read_index(store, &idx)?;
+        if !list.contains(&account) {
+            list.push(account.clone());
+            Self::write_index(store, &idx, &list)?;
         }
         match store.set(&account, &SecretValue::new(refresh_token)) {
             Ok(()) => {
@@ -1025,11 +1077,10 @@ pub fn run(action: &EnvAction, e: &OpEnv) -> Outcome {
                 Ok(None) => return Outcome::NeedBind,
                 Err(err) => return failed("Not imported", err),
             };
-            let before = secret_names(e, &id, &ctx);
+            // Read the file's names before the import deletes it. Names only, never values.
+            let new = imported_names(e.root, e.env);
             match import_secrets_file(e.root, e.env, &id, store, &ctx) {
                 Ok(leftover) => {
-                    let after = secret_names(e, &id, &ctx);
-                    let new: Vec<&String> = after.iter().filter(|n| !before.contains(n)).collect();
                     let mut text = if new.is_empty() {
                         format!("Imported the secrets file for {}", e.env)
                     } else {
@@ -1128,15 +1179,21 @@ fn no_keychain() -> Outcome {
 }
 
 /// Every secret name of the environment, resolved or not.
-fn secret_names(e: &OpEnv, id: &CollectionId, ctx: &VaultCtx) -> Vec<String> {
-    match load_environment_with(e.root, e.env, Some(id), e.stores, ctx) {
-        Ok(l) => {
-            let mut n: Vec<String> = l.env.secrets.iter().map(|s| s.name.clone()).collect();
-            n.extend(l.unresolved);
-            n
-        }
-        Err(_) => Vec::new(),
-    }
+/// The variable names declared in `<env>.secrets.toml` (its `[vars]` table); empty when the file
+/// cannot be read. Values are never read out.
+fn imported_names(root: &Path, env: &str) -> Vec<String> {
+    let path = root
+        .join("environments")
+        .join(format!("{env}.secrets.toml"));
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| t.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|d| {
+            d.get("vars")
+                .and_then(|v| v.as_table_like())
+                .map(|t| t.iter().map(|(k, _)| k.to_string()).collect())
+        })
+        .unwrap_or_default()
 }
 
 /// "Move to keychain" hit the size cap: name the variable and its size. The environment is still
@@ -1344,6 +1401,42 @@ mod keychain_tests {
         let left = m.accounts();
         assert_eq!(left.len(), 2, "{left:?}");
         assert!(left.iter().all(|a| a.contains("/prod/")));
+    }
+
+    #[test]
+    fn keychain_forget_environment_never_deletes_an_injected_account() {
+        let m = Arc::new(MemoryStore::new());
+        let a = KeychainRefreshStore::new(m.clone());
+        // Another collection's secret, which the index must never be able to name.
+        let victim = "fedcba9876543210/prod/password";
+        m.set(victim, &SecretValue::new("v")).unwrap();
+        let mut k = key(Some("dev"), Some(ID));
+        k.scope = format!("x\n{victim}");
+        a.save(&k, SENTINEL).unwrap();
+        // The legitimate account with the odd scope is still deleted through a relaunch.
+        let fresh = KeychainRefreshStore::new(m.clone());
+        fresh.forget_environment(ID, "dev").unwrap();
+        assert_eq!(m.accounts(), vec![victim.to_string()]);
+        // A hand-planted legacy index entry naming it is ignored too.
+        let idx = index_account(ID, "dev").unwrap();
+        m.set(&idx, &SecretValue::new(victim)).unwrap();
+        fresh.forget_environment(ID, "dev").unwrap();
+        assert!(m.accounts().contains(&victim.to_string()));
+        assert!(m.accounts().iter().any(|a| a == victim));
+    }
+
+    #[test]
+    fn keychain_save_after_forget_environment_stores_nothing() {
+        let m = Arc::new(MemoryStore::new());
+        let a = KeychainRefreshStore::new(m.clone());
+        let k = key(Some("dev"), Some(ID));
+        a.save(&k, SENTINEL).unwrap();
+        a.forget_environment(ID, "dev").unwrap();
+        assert!(a.save(&k, SENTINEL).is_err());
+        assert!(m.accounts().is_empty());
+        // Back in keychain mode, saving works again.
+        a.set_file_mode(ID, "dev", false);
+        a.save(&k, SENTINEL).unwrap();
     }
 
     #[test]
@@ -1824,7 +1917,8 @@ mod keychain_tests {
         let Outcome::Done(t) = &out else {
             panic!("{out:?}")
         };
-        assert!(t.contains("extra") && !t.contains("fromfile"));
+        // `token` is declared but unresolved before the import (AC13): still named.
+        assert!(t.contains("token") && t.contains("extra") && !t.contains("fromfile"));
         assert!(!root.join("environments/dev.secrets.toml").exists());
         // File mode never offers it, even with a file.
         let f = file_coll(d.path(), "f", "11112222333344445555");
