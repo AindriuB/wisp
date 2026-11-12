@@ -18,6 +18,9 @@ panic = "abort"
 [profile.release.package."*"]
 opt-level = "z"
 
+[profile.release.package.wisp-storage]
+opt-level = "z"
+
 [workspace.dependencies]
 wisp-core = { path = "crates/core" }
 wisp-storage = { path = "crates/storage" }
