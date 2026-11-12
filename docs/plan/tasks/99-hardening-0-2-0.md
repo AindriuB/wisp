@@ -117,6 +117,10 @@ Every item that adds a test names it in the PR description.
 - [ ] AC69 [54-5, security] Keychain items are keyed by a generic service/account, so another app can plant or duplicate them (Linux Ambiguous), and `.` is unescaped in Windows target names. `open()` rejects an empty or dotted service and the Ambiguous outcome is documented; 115 uses a distinctive reverse-DNS service. Tests cover the rejected service names.
 - [ ] AC70 [54-12, security] Secret copies held on the keychain worker thread are zeroized after use. A review of the code (no test) shows no un-zeroized copy remains.
 - [ ] AC71 [54-14, security] Worktree verification's post-match I/O uses the Disk path form, so Win32 name rewriting applies: `worktrees/COM1` opens a DOS device and trailing-dot or trailing-space names reach another folder. I/O uses the verbatim form, or reserved names and trailing dots/spaces are refused; cfg(windows) tests show a `COM1` entry and a trailing-dot entry are refused.
+- [ ] AC72 [55-7, security] With no data dir, the keychain binding registry reads bindings from the shared `/tmp/wisp-no-data-dir`; refuse the keychain flows when no per-user data dir exists, or use a private location.
+- [ ] AC73 [55-9, security] A failed environment reload keeps the old secrets active while the status says not loaded; clear the active secrets on a failed reload so status and secrets agree.
+- [ ] AC74 [55-19, security] `imported_names` reads the secrets file before the confinement check, so it follows symlinks and blocks on a FIFO; run the confinement check first and open without following symlinks or blocking.
+- [ ] AC75 [55-21, security] The test `Workspace::new` resolves the real user data dir before it is swapped; resolve nothing from the real data dir under test.
 
 **K — CI and release gate**
 - [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
