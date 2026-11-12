@@ -97,6 +97,13 @@ Every item that adds a test names it in the PR description.
 **L — multi-collection routing (app)**
 - [ ] AC52 [50-8, security] `workspace.rs:527`: history appends build the `HistoryJob` from the collection id already known to the workspace (as cookies and tokens do), not by re-reading the id from disk, so an on-disk id change cannot route history into another collection's store. A test changes the id on disk after open and asserts the entry lands in the original collection's store.
 
+**M — secret store (storage, from PR #52 follow-ups)**
+- [ ] AC53 [52-18, data loss] `import_secrets_file` does not overwrite existing store values unasked: names whose values differ are returned as a typed conflict and need confirmation, and files tracked by git are refused. A test imports a file with a differing value and shows the store is unchanged until confirmed.
+- [ ] AC54 [52-19, security] The binding check reads or derives the collection id from the root's `collection.toml` instead of trusting the caller's id. A test passes a wrong id and gets a fail-closed result.
+- [ ] AC55 [52-21, security] Roots whose path is not valid UTF-8 fail closed; the registry key never uses `to_string_lossy`. A test (unix) uses two distinct non-UTF-8 roots and shows they never share a binding.
+- [ ] AC56 [52-P3e, security] The binding marker and secrets-file reads and writes open with O_NOFOLLOW (or verify the opened handle) so a symlink swapped in after the check is not followed. A test swaps a symlink in and shows the operation fails.
+- [ ] AC57 [52-P3f, security] `ensure_marker_ignored` and `ensure_gitignore` refuse a symlinked `environments/.gitignore` and never write through it. A test shows the link target is unchanged.
+
 **K — CI and release gate**
 - [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
 - [ ] AC39 Size gate: the Windows release binary from the measure run on the final merged head is at most 15,500,000 B.

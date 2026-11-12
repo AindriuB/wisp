@@ -141,8 +141,8 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - (a) A malformed `secrets` value makes `save_environment` write only plain vars and return Ok, silently dropping edited secret values; return an error.
 - (b) No test fails the first pre-set `get` (`fail_nth(0)`) or uses a malformed `<env>.secrets.toml` in `migrate_to_store`.
 - (c) Document `MemoryStore::accounts()` as test-only so 115 does not rely on enumeration.
-- (d) Until 115 wires `load_environment_with`, the app's plain `load_environment` reads `<env>.secrets.toml` regardless of mode (115 AC2 covers it).
-- (e) Two clones of one collection share keychain accounts and overwrite each other's values (follows from the committed collection id).
+- (d) CLOSED by PR #52: plain `load_environment` now ignores the secrets file in store modes (115 AC2 still covers the app wiring).
+- (e) Clones fail closed until bound/rebound; a copy is offered a new id.
 - 52-9 TooLarge during migration names no var; contract doesn't forbid truncation; read-back mismatch reported as Other -> wrap errors with the var name, require TooLarge, never truncate.
 - 52-10 restore after a failed env.toml write ignores its own errors and can leave plaintext while mode is store -> log and return the leftover path; test the no-old-file branch.
 - 52-11 secret names differing only by case collide on case-insensitive stores (Windows) -> reject case-insensitive duplicates.
@@ -152,6 +152,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - 52-P3b load probes the store before the binding check; unbound + store absent falls back to the file, unbound + locked reports Locked rather than Unbound.
 - 52-P3c a brand-new keychain environment with no names also shows the bind prompt (harmless extra click; smooth over in 115).
 - 52-P3d env_lock leaks one Mutex per environment path (bounded).
+- 52-18 (-> task 99) import_secrets_file overwrites existing store values unasked with a stale leftover or committed file -> return differing names as a typed conflict and require confirmation; refuse tracked files.
+- 52-19 (-> task 99) the binding check trusts the caller's id rather than reading it from root's collection.toml; a 115 wiring slip would pass -> read or derive the id from root in check.
+- 52-20 migrate_to_file's deletes share the read deadline: slow reads orphan every entry, late successful deletes reported TimedOut -> fresh budget for cleanup, check the deadline only before each delete.
+- 52-21 (-> task 99) to_string_lossy registry key lets distinct non-UTF-8 roots share a binding -> fail closed on non-UTF-8 roots.
+- 52-22 cross-process env_lock, symlinked-root canonicalisation and check have no tests; vault_binding has no unit tests; no test for a non-regular `.wisp-binding` (e.g. a directory).
+- 52-24 (nit) tests' cx() leaks one tempdir per test -> return the TempDir with the ctx.
+- 52-P3e (-> task 99) TOCTOU: marker and secrets-file checks run before the open, and the reads/writes follow symlinks (fs.rs resolve) -> open with O_NOFOLLOW or verify the opened handle.
+- 52-P3f (-> task 99) ensure_marker_ignored / ensure_gitignore write through a symlinked environments/.gitignore (also on main) -> refuse a symlinked .gitignore.
+- 52-P3g (for 115's prompt text) FailReason::Unbound can't tell "never bound" from "previously bound here, marker missing", so the bind prompt can't warn that confirming gives this path's existing keychain secrets to the folder now there -> consider a distinct reason.
 
 ### Follow-ups from task 104 (not 0.2.0 wave 2)
 - [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.

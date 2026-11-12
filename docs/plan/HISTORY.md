@@ -19,6 +19,7 @@ in the same commit.
 
 ## 2026-11-12 — PR #52 review rounds 1-3 (task 111)
 Round 1 fixed 2 Highs and 6 Mediums: migrate_to_file keeps other keys; a per-user id-to-folder binding registry fails closed elsewhere, with rebind; plain load ignores the file in store modes; save_environment errors on secrets in store mode; the trait contract and a whole-call deadline; import_secrets_file; unresolved names need confirmation; a per-environment lock. Round 2: an unbound id fails closed until an explicit bind. Round 3: an unbound id is never auto-bound (user decision), after a review showed a sibling environment could be read once a fresh one auto-bound. Task 115 must use the changed VaultCtx API (binding registry, explicit bind).
+User review round 2 fixed 1 High and 4 Mediums: lowercase canonical ids; a locked `save_environment_locked`; rebind refuses copies and offers `assign_new_collection_id`; a per-binding nonce marker `environments/.wisp-binding`; symlinked or outside secrets paths refused and the file forced to 0600. A follow-up fix then refused a symlinked marker. Lows went to PLAN follow-ups (52-18 to 52-24, 52-P3e to 52-P3g) and task 99 (AC53 to AC57).
 **Cost:** Auto-binding on first use looked harmless and was not: it let one environment's bind open its siblings' entries. Do not reintroduce it. Lows and Nits are in PLAN under follow-ups from task 111 (52-9 to 52-13, 52-P3a to 52-P3d).
 
 ## 2026-11-12 — Secret store abstraction (task 111)
