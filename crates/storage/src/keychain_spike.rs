@@ -12,7 +12,7 @@ const VALUE: &[u8] = b"not-a-real-secret";
 fn report(step: &str, start: Instant, res: Result<String, String>) {
     let ms = start.elapsed().as_millis();
     match res {
-        Ok(v) => println!("spike109 {step}: ok {v} ({ms} ms)"),
+        Ok(v) => println!("spike109 REBUILT {step}: ok {v} ({ms} ms)"),
         Err(e) => println!("spike109 {step}: ERR {e} ({ms} ms)"),
     }
 }
