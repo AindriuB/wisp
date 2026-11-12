@@ -413,3 +413,35 @@ fn locked_keyring_get_is_refused() {
         Err(SecretStoreError::Locked | SecretStoreError::Denied)
     ));
 }
+
+#[test]
+fn long_account_is_refused_before_the_backend_and_is_not_too_large() {
+    let (m, s) = mem_store();
+    let ok = "a".repeat(513);
+    s.set(&ok, &SecretValue::new("v")).unwrap();
+    assert_eq!(*m.calls.lock().unwrap(), 1);
+    let long = "a".repeat(514);
+    let other = SecretStoreError::Other { code: None };
+    assert_eq!(s.get(&long), Err(other.clone()));
+    assert_eq!(s.set(&long, &SecretValue::new("v")), Err(other.clone()));
+    assert_eq!(s.delete(&long), Err(other));
+    assert_eq!(*m.calls.lock().unwrap(), 1);
+}
+
+#[test]
+fn too_long_is_too_large_only_for_the_secret() {
+    for name in ["password", "password encoded as UTF-16", "secret"] {
+        assert_eq!(
+            map_error(&KErr::TooLong(name.into(), 2560)),
+            SecretStoreError::TooLarge,
+            "{name}"
+        );
+    }
+    for name in ["user", "target", "target_alias", "comment"] {
+        assert_eq!(
+            map_error(&KErr::TooLong(name.into(), 513)),
+            SecretStoreError::Other { code: None },
+            "{name}"
+        );
+    }
+}

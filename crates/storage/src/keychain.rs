@@ -20,6 +20,9 @@ use crate::vault::{SecretStore, SecretStoreError, SecretValue, UnavailableReason
 
 /// Largest value accepted, in bytes: Windows' confirmed credential blob cap.
 pub const MAX_SECRET_BYTES: usize = 2560;
+/// Longest account accepted, in bytes: Windows' target-name cap (513), applied
+/// on every platform so behaviour does not differ by OS.
+pub const MAX_ACCOUNT_BYTES: usize = 513;
 /// Bound on `probe`.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bound on `get`, `set` and `delete`. Leaves time to answer a keychain prompt.
@@ -229,6 +232,15 @@ impl fmt::Debug for KeychainStore {
     }
 }
 
+/// An account over the cap is refused before any OS call. Not `TooLarge`,
+/// which is about values.
+fn check_account(account: &str) -> Result<(), SecretStoreError> {
+    if account.len() > MAX_ACCOUNT_BYTES {
+        return Err(SecretStoreError::Other { code: None });
+    }
+    Ok(())
+}
+
 impl SecretStore for KeychainStore {
     fn probe(&self) -> Result<(), SecretStoreError> {
         match self.worker.run(self.timeouts.probe, |b| b.probe())? {
@@ -238,6 +250,7 @@ impl SecretStore for KeychainStore {
     }
 
     fn get(&self, account: &str) -> Result<Option<SecretValue>, SecretStoreError> {
+        check_account(account)?;
         let account = account.to_owned();
         match self
             .worker
@@ -254,6 +267,7 @@ impl SecretStore for KeychainStore {
     }
 
     fn set(&self, account: &str, value: &SecretValue) -> Result<(), SecretStoreError> {
+        check_account(account)?;
         let bytes = value.expose().as_bytes();
         if bytes.len() > MAX_SECRET_BYTES {
             return Err(SecretStoreError::TooLarge);
@@ -269,6 +283,7 @@ impl SecretStore for KeychainStore {
     }
 
     fn delete(&self, account: &str) -> Result<(), SecretStoreError> {
+        check_account(account)?;
         let account = account.to_owned();
         match self
             .worker
@@ -287,7 +302,16 @@ impl SecretStore for KeychainStore {
 pub fn map_error(e: &KeyringError) -> SecretStoreError {
     match e {
         KeyringError::NoDefaultStore => unavailable(UnavailableReason::NoService),
-        KeyringError::TooLong(..) => SecretStoreError::TooLarge,
+        // Only a too-long secret is `TooLarge`; keyring also reports
+        // over-long attributes (user, target, comment) this way.
+        KeyringError::TooLong(name, _) => {
+            let n = name.to_ascii_lowercase();
+            if n.starts_with("password") || n.starts_with("secret") {
+                SecretStoreError::TooLarge
+            } else {
+                SecretStoreError::Other { code: None }
+            }
+        }
         KeyringError::NoStorageAccess(p) => {
             let text = format!("{p:?}");
             // zbus-secret-service-keyring-store wraps `secret_service::Error`
