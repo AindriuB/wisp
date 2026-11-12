@@ -390,12 +390,21 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     let Some(gitdir) = canon(&root.join(target)) else {
         return Ok(None);
     };
+    // A linked worktree always has a `commondir`; without one the gitdir is a
+    // whole repository chosen by this folder, which proves nothing.
     let Some(common) = read_git_file(&gitdir.join("commondir"))? else {
-        return Ok(Some(gitdir));
+        return Ok(None);
     };
     let Some(common) = canon(&gitdir.join(common)) else {
         return Ok(None);
     };
+    // The gitdir must live directly under `<common>/worktrees/`, inside the
+    // repository's own `.git`, which this folder's author cannot have written.
+    if gitdir.parent() != Some(common.join("worktrees").as_path())
+        || canon(&common.join("worktrees")).as_deref() != gitdir.parent()
+    {
+        return Ok(None);
+    }
     // The worktree's gitdir must name this `.git` back, so a forged `.git`
     // file cannot claim someone else's repository.
     let back = read_git_file(&gitdir.join("gitdir"))?;

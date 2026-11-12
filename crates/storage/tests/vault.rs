@@ -1991,6 +1991,76 @@ fn forged_git_file_without_back_pointer_is_unverified() {
     ));
 }
 
+fn unverified(c: &VaultCtx, root: &Path) {
+    assert!(matches!(
+        bind_additional_checkout(&c.data, &id(), root).unwrap_err(),
+        SecretsError::UnverifiedCheckout { .. }
+    ));
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 1);
+}
+
+#[test]
+fn attack_a_gitdir_naming_the_bound_repo_without_commondir_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    std::fs::write(
+        e.path().join(".git"),
+        format!("gitdir: {}\n", a.path().join(".git").display()),
+    )
+    .unwrap();
+    let c = bcx(a.path());
+    unverified(&c, e.path());
+    // Relative form.
+    let rel = format!(
+        "../{}/.git",
+        a.path().file_name().unwrap().to_string_lossy()
+    );
+    std::fs::write(e.path().join(".git"), format!("gitdir: {rel}\n")).unwrap();
+    unverified(&c, e.path());
+}
+
+#[test]
+fn attack_b_attacker_written_gitdir_and_back_pointer_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let fake = e.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    std::fs::write(
+        fake.join("commondir"),
+        format!("{}\n", a.path().join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(
+        fake.join("gitdir"),
+        format!("{}\n", e.path().join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(e.path().join(".git"), "gitdir: fake\n").unwrap();
+    let c = bcx(a.path());
+    unverified(&c, e.path());
+}
+
+#[test]
+fn victim_worktree_entry_with_back_pointer_to_another_folder_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let victim = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), victim.path(), e.path()]);
+    make_repo(a.path());
+    make_worktree(a.path(), victim.path(), "w1");
+    std::fs::write(
+        e.path().join(".git"),
+        format!("gitdir: {}\n", a.path().join(".git/worktrees/w1").display()),
+    )
+    .unwrap();
+    let c = bcx(a.path());
+    unverified(&c, e.path());
+}
+
 #[test]
 fn symlinked_dot_git_is_refused() {
     let a = tempfile::tempdir().unwrap();
