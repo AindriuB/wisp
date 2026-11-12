@@ -47,3 +47,11 @@ cargo writes no JUnit XML here, so tests are `command` checks.
 - Any keychain code; the store implementation is task 115.
 - Other task-103 follow-ups: the in-memory stale marker (43-x "stale marker"), invalid_grant handling (43-9), single-flight refresh, and the 401 invalidation race.
 - Setting `persist_refresh` from resolve or from the environment.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 420154071dd229d5d5bbdc166207bd5169b6ca1a
+
+- [P2] crates/core/src/auth/oauth2/manager.rs:384-389 — In `bearer`, the per-key store lock is a borrowed guard inside the send future. A cancelled send drops the future and releases the lock while the `spawn_blocking` `load` keeps running, so a second store call for the same key can overlap it (breaks AC2 "run one at a time"). Input: persist_refresh on, no cached refresh token, store `load` blocks; user cancels the send (engine.rs:257-270 drops `perform`) and resends or completes an Authorize → two store calls for one key at once. Fix: take `lock_owned()` and move the owned guard into the `spawn_blocking` closure (lock still taken outside the closure, held until the store call returns), or run the load in a spawned task as `refresh` does.
+- [P2] crates/core/tests/oauth2.rs:1613-1640 — `store_calls_for_one_key_run_in_order` runs two authorizes sequentially, so it passes with the per-key lock removed (verified by replacing the guard with `()`). Make it overlap two store calls for one key (e.g. `save` blocks on a channel while a second authorize or refresh starts) and assert the order; it should fail without the lock.
+- [STYLE] crates/core/src/auth/oauth2.rs:55 — doc-comment line is 124 chars; neighbouring docs wrap at 100.
