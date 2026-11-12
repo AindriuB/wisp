@@ -1192,6 +1192,28 @@ fn persist_refresh_for(c: &OpenCollection) -> bool {
     }
 }
 
+/// Tell the refresh-token adapter whether the collection's active environment is keychain-backed.
+fn sync_keychain_backed(store: &vault::KeychainRefreshStore, c: &OpenCollection) {
+    if let (IdState::Known(id), Some(env)) = (&c.coll_id, &c.active_env) {
+        store.set_keychain_backed(id, &env.name, persist_refresh_for(c));
+    }
+}
+
+/// After "Give this copy its own id": replace the cached id with the one now on disk, so
+/// cookies, history and refresh tokens use it. The new id when it changed.
+fn refresh_known_id(c: &mut OpenCollection) -> Option<String> {
+    let IdState::Known(old) = &c.coll_id else {
+        return None;
+    };
+    match read_id_state(&c.tree.root) {
+        IdState::Known(new) if &new != old => {
+            c.coll_id = IdState::Known(new.clone());
+            Some(new)
+        }
+        _ => None,
+    }
+}
+
 /// Path of a tab after `old` was moved to `new`; `None` when it is not affected.
 fn moved_path(tab: &Path, old: &Path, new: &Path) -> Option<PathBuf> {
     tab.strip_prefix(old).ok().map(|rest| {
@@ -1916,8 +1938,30 @@ impl Workspace {
             cx.emit(WorkspaceEvent::Prompt(spec));
             return;
         }
+        let done = matches!(outcome, vault::Outcome::Done(_));
         if let vault::Outcome::Done(t) | vault::Outcome::Notice(t) = outcome {
             cx.emit(WorkspaceEvent::Notice(t.into()));
+        }
+        if done && let Some(ix) = self.coll_ix(&root) {
+            match action {
+                EnvAction::NewId => {
+                    if let Some(id) = refresh_known_id(&mut self.collections[ix]) {
+                        self.on_id_known(id, cx);
+                        cx.emit(WorkspaceEvent::CookiesChanged);
+                    }
+                }
+                EnvAction::MoveToFile { .. } => {
+                    if let IdState::Known(id) = &self.collections[ix].coll_id
+                        && let Err(e) = self.refresh_store.forget_environment(id, &env)
+                    {
+                        cx.emit(WorkspaceEvent::Notice(
+                            format!("Moved to file; stored refresh tokens were not deleted: {e}")
+                                .into(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
         }
         // Reload so the status and the names reflect what happened (or did not).
         if let Some(ix) = self.coll_ix(&root) {
@@ -2179,6 +2223,9 @@ impl Workspace {
         })?;
         let mut plan = plan;
         if let Some(auth) = plan.prepared.auth.as_mut() {
+            if let Some(c) = c {
+                sync_keychain_backed(&self.refresh_store, c);
+            }
             auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
         }
         if let Some(old) = previous {
@@ -2298,6 +2345,9 @@ impl Workspace {
             return Ok(());
         };
         if let Command::AuthorizeStart { auth, .. } = &mut command {
+            if let Some(c) = c {
+                sync_keychain_backed(&self.refresh_store, c);
+            }
             auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
         }
         if partition.is_none() {
@@ -3664,6 +3714,19 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("collection.toml"), "format = 1\n").unwrap();
         OpenCollection::new(open_collection(&root).unwrap(), Vec::new())
+    }
+
+    #[test]
+    fn new_id_refreshes_the_cached_collection_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = make_collection(dir.path(), "a");
+        let old = resolve_collection_id(&c.tree.root).unwrap().to_string();
+        c.coll_id = IdState::Known(old.clone());
+        assert_eq!(refresh_known_id(&mut c), None);
+        let new = assign_collection_id(&c.tree.root).unwrap().to_string();
+        assert_ne!(new, old);
+        assert_eq!(refresh_known_id(&mut c), Some(new.clone()));
+        assert_eq!(c.coll_id, IdState::Known(new));
     }
 
     #[test]
