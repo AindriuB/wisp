@@ -570,15 +570,9 @@ fn migrate_to_store_write_failure_rolls_back() {
     file_env(t.path());
     let dir = t.path().join("environments");
     let s = MemoryStore::new();
+    let c = bcx(t.path());
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let r = migrate_to_store(
-        t.path(),
-        "dev",
-        &id(),
-        StoreKind::Keychain,
-        &s,
-        &bcx(t.path()),
-    );
+    let r = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &c);
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     if r.is_ok() {
         return; // running with privileges that ignore the mode
@@ -1401,4 +1395,296 @@ fn migrate_to_file_delete_loop_has_the_deadline() {
     assert!(!w.is_empty());
     assert!(w.iter().any(|x| x.error == TIMED_OUT));
     assert!(!s.0.accounts().is_empty());
+}
+
+// ---- PR #52 round 2 ----
+
+use wisp_storage::environment::save_environment_locked;
+
+fn write_id(root: &Path, id: &str) {
+    std::fs::write(
+        root.join("collection.toml"),
+        format!("format = 1\nid = \"{id}\"\n"),
+    )
+    .unwrap();
+}
+
+fn marker(root: &Path) -> std::path::PathBuf {
+    root.join("environments").join(".wisp-binding")
+}
+
+#[test]
+fn case_variant_id_maps_to_the_same_row() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let cx = bcx(a.path());
+    let upper = CollectionId::parse("ABCDEF0123456789").unwrap();
+    assert_eq!(upper, id());
+    assert_eq!(
+        secret_account(&upper, "dev", "t"),
+        secret_account(&id(), "dev", "t")
+    );
+    write(b.path(), "dev.toml", "secrets = \"keychain\"\n");
+    let s = MemoryStore::new();
+    let e = set_secret(
+        b.path(),
+        "dev",
+        &upper,
+        &s,
+        "t",
+        &SecretValue::new("x"),
+        &cx,
+    )
+    .unwrap_err();
+    assert!(matches!(e, SecretsError::IdBoundElsewhere { .. }), "{e:?}");
+    let e = bind(&cx.data, &upper, b.path()).unwrap_err();
+    assert!(matches!(e, SecretsError::IdBoundElsewhere { .. }), "{e:?}");
+}
+
+#[test]
+fn locked_save_races_set_secret_and_keeps_names() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().to_path_buf();
+    write(
+        &root,
+        "dev.toml",
+        "secrets = \"keychain\"\n\n[vars]\nhost = \"h\"\n",
+    );
+    let cx = bcx(&root);
+    let s = MemoryStore::new();
+    std::thread::scope(|sc| {
+        sc.spawn(|| {
+            for i in 0..40 {
+                let v = SecretValue::new("x");
+                set_secret(&root, "dev", &id(), &s, &format!("n{i}"), &v, &cx).unwrap();
+            }
+        });
+        sc.spawn(|| {
+            for i in 0..40 {
+                let env = Environment {
+                    name: "dev".into(),
+                    vars: vec![var("host", &format!("h{i}"))],
+                    secrets: vec![],
+                };
+                save_environment_locked(&root, &env, &cx).unwrap();
+            }
+        });
+    });
+    let text = read(&root, "dev.toml");
+    for i in 0..40 {
+        assert!(text.contains(&format!("\"n{i}\"")), "lost n{i}");
+    }
+    assert!(text.contains("secrets = \"keychain\""));
+    assert!(!exists(&root, "dev.secrets.toml"));
+}
+
+#[test]
+fn locked_save_in_store_mode_refuses_secrets_and_writes_no_file() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let cx = bcx(t.path());
+    let env = Environment {
+        name: "dev".into(),
+        vars: vec![],
+        secrets: vec![var("a", "b")],
+    };
+    assert!(save_environment_locked(t.path(), &env, &cx).is_err());
+    assert!(!exists(t.path(), "dev.secrets.toml"));
+}
+
+#[test]
+fn rebind_refuses_a_copy_and_allows_a_move() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    write_id(a.path(), id().as_str());
+    write_id(b.path(), id().as_str());
+    let cx = bcx(a.path());
+    let e = rebind(&cx.data, &id(), b.path()).unwrap_err();
+    assert!(matches!(e, SecretsError::LooksLikeCopy { .. }), "{e:?}");
+    assert_eq!(
+        bound_root(&cx.data, &id()).unwrap(),
+        Some(std::fs::canonicalize(a.path()).unwrap())
+    );
+    // Old root now has a different id: a move.
+    write_id(a.path(), "fedcba9876543210");
+    rebind(&cx.data, &id(), b.path()).unwrap();
+    assert_eq!(
+        bound_root(&cx.data, &id()).unwrap(),
+        Some(std::fs::canonicalize(b.path()).unwrap())
+    );
+}
+
+#[test]
+fn rebind_succeeds_when_old_root_is_gone() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    write_id(a.path(), id().as_str());
+    write_id(b.path(), id().as_str());
+    let cx = bcx(a.path());
+    drop(a);
+    rebind(&cx.data, &id(), b.path()).unwrap();
+    let s = MemoryStore::new();
+    write(b.path(), "dev.toml", "secrets = \"keychain\"\n");
+    set_secret(b.path(), "dev", &id(), &s, "t", &SecretValue::new("x"), &cx).unwrap();
+}
+
+#[test]
+fn new_id_for_a_copy_starts_without_secrets() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    write_id(a.path(), id().as_str());
+    write_id(b.path(), id().as_str());
+    let cx = bcx(a.path());
+    let new = wisp_storage::collection::assign_new_collection_id(b.path()).unwrap();
+    assert_ne!(new, id());
+    assert_eq!(
+        wisp_storage::collection::read_collection_id(b.path()).unwrap(),
+        Some(new.clone())
+    );
+    let s = MemoryStore::new();
+    write(b.path(), "dev.toml", "secrets = \"keychain\"\n");
+    let e = set_secret(b.path(), "dev", &new, &s, "t", &SecretValue::new("x"), &cx).unwrap_err();
+    assert!(matches!(e, SecretsError::Unbound));
+    assert!(s.accounts().is_empty());
+}
+
+#[test]
+fn bind_writes_private_marker_and_ignores_it() {
+    let t = tempfile::tempdir().unwrap();
+    let _cx = bcx(t.path());
+    let m = marker(t.path());
+    let nonce = std::fs::read_to_string(&m).unwrap();
+    assert!(!nonce.trim().is_empty());
+    assert!(
+        read(t.path(), ".gitignore")
+            .lines()
+            .any(|l| l == ".wisp-binding")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&m).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let reg = std::fs::read_to_string(_cx.data.root().join("vault-bindings.json")).unwrap();
+    assert!(reg.contains(nonce.trim()));
+}
+
+fn load_status(root: &Path, cx: &VaultCtx) -> LoadStatus {
+    let s = MemoryStore::new();
+    load_environment_with(root, "dev", Some(&id()), &s, cx)
+        .unwrap()
+        .status
+}
+
+#[test]
+fn missing_marker_is_unbound_until_rebound() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let cx = bcx(t.path());
+    assert!(matches!(
+        load_status(t.path(), &cx),
+        LoadStatus::Store { .. }
+    ));
+    std::fs::remove_file(marker(t.path())).unwrap();
+    assert_eq!(
+        load_status(t.path(), &cx),
+        LoadStatus::Failed {
+            reason: FailReason::Unbound
+        }
+    );
+    let s = MemoryStore::new();
+    let e = set_secret(t.path(), "dev", &id(), &s, "x", &SecretValue::new("v"), &cx).unwrap_err();
+    assert!(matches!(e, SecretsError::Unbound));
+    // The bind prompt restores it.
+    bind(&cx.data, &id(), t.path()).unwrap();
+    assert!(matches!(
+        load_status(t.path(), &cx),
+        LoadStatus::Store { .. }
+    ));
+}
+
+#[test]
+fn wrong_nonce_is_unbound() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let cx = bcx(t.path());
+    std::fs::write(marker(t.path()), "not-the-nonce").unwrap();
+    assert_eq!(
+        load_status(t.path(), &cx),
+        LoadStatus::Failed {
+            reason: FailReason::Unbound
+        }
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn migrate_to_file_refuses_a_symlinked_secrets_file() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    store_env(t.path(), &s);
+    let target = out.path().join("outside.toml");
+    std::fs::write(&target, "[vars]\nkeep = \"1\"\n").unwrap();
+    std::os::unix::fs::symlink(&target, t.path().join("environments/dev.secrets.toml")).unwrap();
+    let cx = bcx(t.path());
+    let e = migrate_to_file(t.path(), "dev", &id(), &s, true, &cx).unwrap_err();
+    assert!(matches!(e, SecretsError::Storage(_)), "{e:?}");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "[vars]\nkeep = \"1\"\n"
+    );
+    assert_eq!(read(t.path(), "dev.toml"), STORE_TOML);
+    assert_eq!(s.accounts().len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn migrate_to_file_refuses_a_symlinked_environments_dir() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    store_env(t.path(), &s);
+    let cx = bcx(t.path());
+    let moved = out.path().join("environments");
+    std::fs::rename(t.path().join("environments"), &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, t.path().join("environments")).unwrap();
+    assert!(migrate_to_file(t.path(), "dev", &id(), &s, true, &cx).is_err());
+    assert!(!moved.join("dev.secrets.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn import_refuses_a_symlinked_secrets_file() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let target = out.path().join("outside.toml");
+    std::fs::write(&target, "[vars]\nstolen = \"1\"\n").unwrap();
+    std::os::unix::fs::symlink(&target, t.path().join("environments/dev.secrets.toml")).unwrap();
+    let cx = bcx(t.path());
+    let s = MemoryStore::new();
+    assert!(import_secrets_file(t.path(), "dev", &id(), &s, &cx).is_err());
+    assert!(s.accounts().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn migrate_to_file_forces_0600_on_an_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    store_env(t.path(), &s);
+    let sp = t.path().join("environments/dev.secrets.toml");
+    std::fs::write(&sp, "[vars]\nold = \"1\"\n").unwrap();
+    std::fs::set_permissions(&sp, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let cx = bcx(t.path());
+    migrate_to_file(t.path(), "dev", &id(), &s, false, &cx).unwrap();
+    assert_eq!(
+        std::fs::metadata(&sp).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }

@@ -22,7 +22,7 @@ use crate::vault_binding::{self as binding, BindError};
 use crate::{StorageError, codec, fs};
 
 pub use crate::error::{SecretStoreError, UnavailableReason};
-pub use crate::vault_binding::{bound_root, rebind};
+pub use crate::vault_binding::bound_root;
 
 /// A secret string. Debug prints `<redacted>`; there is no Display.
 #[derive(Clone, PartialEq, Eq)]
@@ -498,7 +498,10 @@ pub fn load_environment_with(
         Err(BindError::BoundElsewhere { bound_root }) => {
             return Ok(failed(FailReason::IdBoundElsewhere { bound_root }));
         }
-        Err(BindError::Unbound) => return Ok(failed(FailReason::Unbound)),
+        // `check` never returns `LooksLikeCopy`; fail closed if it ever did.
+        Err(BindError::Unbound | BindError::LooksLikeCopy { .. }) => {
+            return Ok(failed(FailReason::Unbound));
+        }
         Err(BindError::Storage(e)) => return Err(e),
     }
     let mut secrets = Vec::new();
@@ -536,6 +539,11 @@ pub enum SecretsError {
     /// read or written. See [`bind`].
     #[error("collection id is not bound to this collection root")]
     Unbound,
+    /// `rebind` refused: the bound root still exists and still has this
+    /// collection id, so this is a copy, not a move. Give the copy its own id
+    /// with `collection::assign_new_collection_id`.
+    #[error("collection id is still in use by {}; this looks like a copy", bound_root.display())]
+    LooksLikeCopy { bound_root: PathBuf },
     /// `migrate_to_file` found names with no value in the store; nothing was
     /// changed. Pass `allow_drop_unresolved` to drop them.
     #[error("secret names without a value in the store: {}", names.join(", "))]
@@ -570,6 +578,7 @@ fn map_bind(e: BindError) -> SecretsError {
         BindError::Storage(e) => SecretsError::Storage(e),
         BindError::BoundElsewhere { bound_root } => SecretsError::IdBoundElsewhere { bound_root },
         BindError::Unbound => SecretsError::Unbound,
+        BindError::LooksLikeCopy { bound_root } => SecretsError::LooksLikeCopy { bound_root },
     }
 }
 
@@ -583,6 +592,13 @@ fn check_bind(ctx: &VaultCtx, id: &CollectionId, root: &Path) -> Result<(), Secr
 /// [`SecretsError::IdBoundElsewhere`] if bound to another root (see [`rebind`]).
 pub fn bind(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), SecretsError> {
     binding::bind_confirmed(data, id, root).map_err(map_bind)
+}
+
+/// Move `id`'s binding to `new_root` after the user confirmed the move. Refused
+/// with [`SecretsError::LooksLikeCopy`] while the bound root still exists and
+/// still has the same id.
+pub fn rebind(data: &DataDir, id: &CollectionId, new_root: &Path) -> Result<(), SecretsError> {
+    binding::rebind_confirmed(data, id, new_root).map_err(map_bind)
 }
 
 fn read_plain(root: &Path, name: &str) -> Result<(PathBuf, DocumentMut), StorageError> {
@@ -637,6 +653,47 @@ fn copy_into_store(
             rollback(store, &touched);
             Err(e)
         }
+    }
+}
+
+/// Refuse a secrets path that is, or sits behind, a symlink, or that resolves
+/// outside the collection's `environments/` directory. A missing file is fine.
+fn check_secrets_path(root: &Path, sp: &Path) -> Result<(), StorageError> {
+    let refuse = |path: &Path| StorageError::Invalid {
+        path: path.to_path_buf(),
+        key: "path".into(),
+        message:
+            "secrets file must be a regular file inside the collection's environments directory"
+                .into(),
+    };
+    let dir = root.join(crate::environment::DIR);
+    let io_err = |p: &Path, e: std::io::Error| StorageError::Io {
+        path: p.to_path_buf(),
+        source: e,
+    };
+    match std::fs::symlink_metadata(&dir) {
+        Ok(m) if m.file_type().is_symlink() => return Err(refuse(&dir)),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(io_err(&dir, e)),
+    }
+    let canon_root = std::fs::canonicalize(root).map_err(|e| io_err(root, e))?;
+    let canon_dir = std::fs::canonicalize(&dir).map_err(|e| io_err(&dir, e))?;
+    if !canon_dir.starts_with(&canon_root) {
+        return Err(refuse(&dir));
+    }
+    match std::fs::symlink_metadata(sp) {
+        Ok(m) if m.file_type().is_symlink() || !m.is_file() => Err(refuse(sp)),
+        Ok(_) => {
+            let canon = std::fs::canonicalize(sp).map_err(|e| io_err(sp, e))?;
+            if canon.starts_with(&canon_dir) {
+                Ok(())
+            } else {
+                Err(refuse(sp))
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_err(sp, e)),
     }
 }
 
@@ -721,6 +778,7 @@ pub fn import_secrets_file(
         return Err(invalid(&pp, "secrets", "environment is not in store mode"));
     }
     let sp = secrets_path(root, name);
+    check_secrets_path(root, &sp)?;
     if !sp.exists() {
         return Err(invalid(&sp, "path", "no secrets file to import"));
     }
@@ -785,6 +843,7 @@ pub fn migrate_to_file(
     }
 
     let sp = secrets_path(root, name);
+    check_secrets_path(root, &sp)?;
     let old_file = if sp.exists() {
         Some(fs::read_to_string(&sp)?)
     } else {
@@ -805,14 +864,14 @@ pub fn migrate_to_file(
     let text = render(&sp, &merged)?;
     let dir = root.join(crate::environment::DIR);
     ensure_gitignore(&dir)?;
-    fs::atomic_write_private(&sp, text.as_bytes())?;
+    fs::atomic_write_force_private(&sp, text.as_bytes())?;
 
     doc["secrets"] = toml_edit::value(StoreKind::File.as_str());
     doc.remove("secret_names");
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
         match &old_file {
             Some(old) => {
-                let _ = fs::atomic_write_private(&sp, old.as_bytes());
+                let _ = fs::atomic_write_force_private(&sp, old.as_bytes());
             }
             None => {
                 let _ = std::fs::remove_file(&sp);

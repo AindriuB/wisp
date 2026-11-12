@@ -12,6 +12,8 @@ use crate::{StorageError, codec, fs};
 pub(crate) const DIR: &str = "environments";
 const SECRETS_SUFFIX: &str = ".secrets.toml";
 const IGNORE_LINE: &str = "*.secrets.toml";
+/// Per-machine binding marker inside `environments/`; git-ignored, never committed.
+pub(crate) const MARKER_FILE: &str = ".wisp-binding";
 
 pub(crate) fn plain_path(root: &Path, name: &str) -> PathBuf {
     root.join(DIR).join(format!("{name}.toml"))
@@ -128,11 +130,19 @@ pub(crate) fn render(
     path: &Path,
     vars: &[wisp_core::request::Var],
 ) -> Result<String, StorageError> {
-    let mut doc = if path.exists() {
+    let doc = if path.exists() {
         codec::parse(path, &fs::read_to_string(path)?)?
     } else {
         toml_edit::DocumentMut::new()
     };
+    render_doc(doc, vars)
+}
+
+/// [`render`] on an already-parsed document.
+fn render_doc(
+    mut doc: toml_edit::DocumentMut,
+    vars: &[wisp_core::request::Var],
+) -> Result<String, StorageError> {
     let table = doc.as_table_mut();
     if table.get("vars").is_none() {
         // Always emit `[vars]` for a new file, even when empty.
@@ -142,19 +152,29 @@ pub(crate) fn render(
     Ok(doc.to_string())
 }
 
+/// Make sure `dir/.gitignore` ignores the secrets files.
 pub(crate) fn ensure_gitignore(dir: &Path) -> Result<(), StorageError> {
+    ensure_ignore_line(dir, IGNORE_LINE)
+}
+
+/// Make sure `dir/.gitignore` ignores the binding marker.
+pub(crate) fn ensure_marker_ignored(dir: &Path) -> Result<(), StorageError> {
+    ensure_ignore_line(dir, MARKER_FILE)
+}
+
+fn ensure_ignore_line(dir: &Path, line: &str) -> Result<(), StorageError> {
     let path = dir.join(".gitignore");
     if !path.exists() {
-        return fs::atomic_write(&path, format!("{IGNORE_LINE}\n").as_bytes());
+        return fs::atomic_write(&path, format!("{line}\n").as_bytes());
     }
     let mut text = fs::read_to_string(&path)?;
-    if text.lines().any(|l| l.trim() == IGNORE_LINE) {
+    if text.lines().any(|l| l.trim() == line) {
         return Ok(());
     }
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(IGNORE_LINE);
+    text.push_str(line);
     text.push('\n');
     fs::atomic_write(&path, text.as_bytes())
 }
@@ -193,13 +213,34 @@ fn fail_point() -> Result<(), StorageError> {
     Ok(())
 }
 
-/// Save an environment, editing both files in place.
+/// Save an environment, editing both files in place. Takes no lock: it can
+/// race the vault writers, so callers that have a [`crate::vault::VaultCtx`]
+/// use [`save_environment_locked`].
 pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageError> {
     check_name(root, &env.name)?;
     let dir = root.join(DIR);
     std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
+    save_unlocked(root, env, &dir)
+}
 
+/// [`save_environment`] under the per-environment lock that the vault writers
+/// hold, so it cannot drop `secret_names` or recreate a plaintext secrets
+/// file concurrently with `set_secret` or a migration. `<env>.toml` is parsed once.
+pub fn save_environment_locked(
+    root: &Path,
+    env: &Environment,
+    ctx: &crate::vault::VaultCtx,
+) -> Result<(), StorageError> {
+    check_name(root, &env.name)?;
+    let dir = root.join(DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
+    let _l = crate::vault_binding::env_lock(&ctx.data, &plain_path(root, &env.name))?;
+    save_unlocked(root, env, &dir)
+}
+
+fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), StorageError> {
     let pp = plain_path(root, &env.name);
+    let mut plain_doc = None;
     if pp.exists() {
         let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
         // An unreadable mode (e.g. a non-string `secrets`) is not file mode:
@@ -214,13 +255,17 @@ pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageErr
             }
             // A store-mode (or unknown-kind) environment never gets a secrets
             // file; `secrets` and `secret_names` are kept verbatim by `render`.
-            fs::atomic_write(&pp, render(&pp, &env.vars)?.as_bytes())?;
+            fs::atomic_write(&pp, render_doc(doc, &env.vars)?.as_bytes())?;
             tracing::debug!(environment = %env.name, "saved environment (store mode, plain vars only)");
             return Ok(());
         }
+        plain_doc = Some(doc);
     }
     let sp = secrets_path(root, &env.name);
-    let plain_text = render(&pp, &env.vars)?;
+    let plain_text = match plain_doc {
+        Some(doc) => render_doc(doc, &env.vars)?,
+        None => render(&pp, &env.vars)?,
+    };
     let secrets_text = if !env.secrets.is_empty() || sp.exists() {
         Some(render(&sp, &env.secrets)?)
     } else {
@@ -232,7 +277,7 @@ pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageErr
     let write_plain = || fs::atomic_write(&pp, plain_text.as_bytes());
     let write_secrets = || -> Result<(), StorageError> {
         if let Some(text) = &secrets_text {
-            ensure_gitignore(&dir)?;
+            ensure_gitignore(dir)?;
             fs::atomic_write_private(&sp, text.as_bytes())?;
         }
         Ok(())
