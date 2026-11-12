@@ -209,11 +209,6 @@ impl Inner {
             .unwrap_or_else(|_| Err(RefreshStoreError::new("the refresh token store failed")))
     }
 
-    async fn load_blocking(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError> {
-        let key = key.clone();
-        self.blocking(move |s| s.load(&key)).await
-    }
-
     async fn save_blocking(&self, key: &TokenKey, token: &str) -> Result<(), RefreshStoreError> {
         let (key, token) = (key.clone(), token.to_owned());
         self.blocking(move |s| s.save(&key, &token)).await
@@ -381,12 +376,23 @@ impl OAuth2 {
                 let mut held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
                 if held.is_none() && p.persist_refresh {
                     // Serialise with a re-authorize's store writes, then look again.
-                    let lock = self.store_lock(&p.key);
-                    let _guard = lock.lock().await;
+                    let guard = self.store_lock(&p.key).lock_owned().await;
                     epoch = self.generation(&p.key);
                     held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
                     if held.is_none() && !self.stale().contains(&p.key) {
-                        held = match self.load_blocking(&p.key).await {
+                        // The owned guard moves into the blocking call: a cancelled send
+                        // must not release the lock while the store call still runs.
+                        let (store, key) = (self.inner.store.clone(), p.key.clone());
+                        let loaded = tokio::task::spawn_blocking(move || {
+                            let r = store.load(&key);
+                            drop(guard);
+                            r
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(RefreshStoreError::new("the refresh token store failed"))
+                        });
+                        held = match loaded {
                             Ok(Some(r)) => Some(Secret::new(r)),
                             Ok(None) => return Err(not_authorized()),
                             Err(e) => {

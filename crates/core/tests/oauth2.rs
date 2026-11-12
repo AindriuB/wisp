@@ -1596,7 +1596,9 @@ impl RefreshTokenStore for Ordered {
             tx.send(()).unwrap();
             let _ = rx.recv();
         }
-        self.inner.load(key)
+        let r = self.inner.load(key);
+        self.log.lock().unwrap().push("load_done");
+        r
     }
     fn save(&self, key: &TokenKey, rt: &str) -> Result<(), RefreshStoreError> {
         self.log.lock().unwrap().push("save");
@@ -1610,31 +1612,45 @@ impl RefreshTokenStore for Ordered {
 
 #[tokio::test]
 async fn store_calls_for_one_key_run_in_order() {
-    let idp = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(wiremock::matchers::body_string_contains("code=c"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "AT_X", "token_type": "bearer", "expires_in": 3600,
-            "refresh_token": "RT_X",
-        })))
-        .up_to_n_times(1)
-        .with_priority(1)
-        .mount(&idp)
-        .await;
-    Mock::given(method("POST"))
-        .and(wiremock::matchers::body_string_contains("code=c"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "access_token": "AT_Y", "token_type": "bearer", "expires_in": 3600,
-        })))
-        .with_priority(2)
-        .mount(&idp)
-        .await;
-    let store = Arc::new(Ordered::default());
+    let idp = token_server("AT").await;
+    let target = resource_server().await;
+    let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let store = Arc::new(Ordered {
+        load_reached: Mutex::new(Some(reached_tx)),
+        load_release: Mutex::new(Some(release_rx)),
+        ..Ordered::default()
+    });
     let (engine, rx, _) = engine_with(store.clone());
     let auth = code_auth(&idp.uri(), 0, true);
-    authorize_fully(&engine, &rx, auth.clone()).await;
-    authorize_fully(&engine, &rx, auth).await;
-    assert_eq!(*store.log.lock().unwrap(), vec!["save", "forget"]);
+    // A send blocks in `load`; cancelling it must not release the key's lock.
+    let id = engine.submit(Command::Send(request(target.uri(), auth.clone())));
+    tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .expect("the load was reached");
+    engine.submit(Command::Cancel(id));
+    within(
+        async {
+            loop {
+                if matches!(rx.recv().await.unwrap(), Event::Cancelled { id: got } if got == id) {
+                    break;
+                }
+            }
+        },
+        "the send was cancelled",
+    )
+    .await;
+    // An authorize now wants to `save` the same key while the load still runs.
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        release_tx.send(()).unwrap();
+    };
+    tokio::join!(authorize_fully(&engine, &rx, auth), release);
+    assert_eq!(
+        *store.log.lock().unwrap(),
+        vec!["load", "load_done", "forget"]
+    );
 }
 
 #[tokio::test]
