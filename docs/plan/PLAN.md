@@ -22,7 +22,7 @@ than no plan.
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); see HISTORY. Open: 114 (keychain backend), 115 (keychain wiring), 116 (wave-3 size gate).
+- **Wave 3:** multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); 114 (OS keychain secret store on `keyring` 4, module keychain in wisp-storage; not yet linked into the app; Windows 15,256,576 B, 243,424 B headroom); see HISTORY. Open: 115 (keychain wiring), 116 (wave-3 size gate).
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -64,6 +64,39 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - No test fails if the symlink-to-`.toml` check in `sidecar_path` is disabled; Unix is covered by the dev/ino check.
 - The reserved-name rule also rejects display names like "CON.txt" whose file slug would be harmless (decided).
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
+
+### Follow-ups from task 114 (not 0.2.0 wave 3)
+- (a) keyring 4's platform errors are opaque, so `map_error` classifies by Debug text; real Windows errors are still unseen (Windows CI has no test job).
+- (b) Linux `Locked`/`Prompt` raised by create_item, and PromptDisconnected/Unavailable, arrive as PlatformFailure and map to Other (fails closed).
+- (c) The Windows TooLarge row (0x800706F7) is defensive only: the store returns TooLong above 2560 B before any OS call, and a real OS failure would be 1783.
+- (d) `extract_code` tries the first "0x" anywhere before "code: ", so a macOS message containing "0x" could override the OSStatus.
+- (e) keyring's store init is process-wide: with no bus at first call the store stays NoService until restart.
+- (f) The test seam (Backend, open_with, map_error) is `#[doc(hidden)]` but public, exposing keyring::Error in wisp-storage's API.
+- (g) After a backend panic the next one or two calls return Other before the worker respawns (dev/test only; release is panic=abort).
+- (h) macOS signed-release keychain behaviour is untested; 115's hand check covers the dev build.
+
+PR #54 round 1 (54-1 fixed in the PR: TooLong maps to TooLarge only for the secret, plus a 513-byte account guard):
+- 54-2 macOS -61, -25244 and -25292 (access refusals) map to Unavailable{NoService} instead of Denied -> add them to classify's Denied arm.
+- 54-3 a TimedOut set/delete may still land later, so callers (111 rollback, 115) must not assume nothing was written -> document TimedOut as outcome-unknown on set/delete and in the trait contract.
+- 54-4 (-> task 99, AC68) Windows credentials default to Enterprise (roaming) persistence -> use Local, or record roaming as accepted.
+- 54-5 (-> task 99, AC69) items are keyed by a generic service/account, so other apps can plant or duplicate them (Linux Ambiguous), and '.' is unescaped in Windows target names -> distinctive reverse-DNS service in 115, reject empty/dotted service in open(), document Ambiguous.
+- 54-6 (tests) the timeout test uses equal probe/call bounds and only blocks the probe.
+- 54-7 (tests) the mapping test misses Windows 1312 and Linux NoResult rows; the NO_SERVICE keywords are mostly untested.
+- 54-8 (tests) the probe test cannot see the account read.
+- 54-9 the PR #54 body misses block-padding, cbc, hkdf, secret-service and the 109 figures/stat note.
+- 54-10 (nit) tests poll with thread::sleep -> use a channel signal.
+- 54-11 (nit) the in-crate store-Debug test never inserts ACCOUNT/SECRET sentinels before formatting.
+- 54-12 (nit, -> task 99, AC70) secret copies on the worker are not zeroized.
+
+PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real `.git` directory, anchor worktree verification; the untrusted-read branch of `common_dir` is removed; orchestrator decision):
+- 54-14 (-> task 99, AC71) post-match I/O uses the Disk path form, so Win32 name rewriting returns: `worktrees/COM1` opens a DOS device, and trailing-dot or trailing-space names reach another folder -> do I/O on the verbatim form, or refuse reserved names and trailing dots/spaces; cfg(windows) tests.
+- 54-15 `tests/vault.rs` ~2222 `file_mode_env` is dead code on Windows after the cfg(unix) gating, so clippy -D warnings fails there -> cfg(unix).
+- 54-16 `vault_binding.rs` ~405 nested if-let in Windows-only code may trip collapsible_if -> let-chains; run clippy for the msvc target.
+- 54-17 (nit) the lexical check runs before simplify_verbatim, so a verbatim gitdir text keeps `..` inside one component -> refuse verbatim prefixes in gitdir text.
+- 54-18 (nit, tests) the lexically plausible UNC test never matches the trusted dir, so it passes without the guard.
+- 54-N1 the 54-13 regression test passed before the fix (old code swallowed the read error); no test proves a bound worktree's gitdir/commondir is never opened.
+- 54-D1 document on `vault::bind_additional_checkout`: a new folder is one-click verifiable only as a worktree of a bound main checkout (bound worktrees do not anchor).
+- 54-CI add a Windows `cargo test` + clippy job to CI: Windows-only code in vault_binding/keychain has never been compiled under test or linted (54-15 and 54-16 were found by reading).
 
 ### Follow-ups from task 113 (not 0.2.0 wave 3)
 - collections.rs:66-72 re-derives names and walks collection_root(i) instead of using OpenCollection::name() and Workspace::collections; drift risk.
@@ -161,6 +194,16 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - 52-P3e (-> task 99) TOCTOU: marker and secrets-file checks run before the open, and the reads/writes follow symlinks (fs.rs resolve) -> open with O_NOFOLLOW or verify the opened handle.
 - 52-P3f (-> task 99) ensure_marker_ignored / ensure_gitignore write through a symlinked environments/.gitignore (also on main) -> refuse a symlinked .gitignore.
 - 52-P3g (for 115's prompt text) FailReason::Unbound can't tell "never bound" from "previously bound here, marker missing", so the bind prompt can't warn that confirming gives this path's existing keychain secrets to the folder now there -> consider a distinct reason.
+
+PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/device gitdir refused before I/O, exact lexical match against `<canonical trusted common>/worktrees/<name>` before any I/O, Windows verbatim paths compared in Disk form; cfg(unix) on the symlink tests):
+- 52-54 (-> task 99, AC65) worktree verification trusts the bound root's own .git as anchor; if that root arrived by zip/sync its .git is attacker content -> require the common dir outside every collection root, or document the trust assumption.
+- 52-55 (-> task 99, AC66) environment.rs:280 evaluates sp.exists() twice; a file appearing between them is written unchecked.
+- 52-56 (-> task 99, folded into AC64) the back-pointer is canonicalised through symlinks; a retargeted component of a real entry's path verifies another folder.
+- 52-57 (-> task 99, AC67) verify and bind resolve new_root separately under separate locks, and so does share_with_folder -> canonicalise once, check and bind under one lock.
+- 52-58..52-60 (nits, tests) symlinked_dot_git_is_refused asserts only is_err; the dangling-link test doesn't assert the target stayed absent; missing tests for an in-folder symlink gitdir, worktree-to-worktree, relative paths and a mismatched id.
+- 52-61 (nit) non-top-level collections, separate-git-dir and submodules never verify as additional checkouts -> document.
+- 52-62 (nit) HISTORY reads as if vars-only saves through a symlinked environments/ now work; they still fail, with a clearer message.
+- 52-W Windows code paths in vault_binding (simplify_verbatim, cfg(windows) tests, make_worktree git_style) are uncompiled and unrun; CI has no Windows test job (task 99 AC38).
 - 52-29 (-> task 99) migrate_to_store (and file-mode load) read the secrets file without check_secrets_path, storing a symlink target's values.
 - 52-30 (-> task 99, fold into AC53) migrate_to_file still merges store secrets into a git-tracked regular secrets file -> refuse or warn on tracked files.
 - 52-31 (-> task 99) copy check uses exists() (metadata errors read as gone, fails open); a read error blocks a real move; relies on the committed id rather than the old root's marker -> try_exists, fail closed except NotFound, use the marker nonce.

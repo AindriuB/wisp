@@ -361,16 +361,96 @@ fn read_git_file(path: &Path) -> Result<Option<String>, StorageError> {
     }
 }
 
+/// True when `text` (a path read from a `.git` file) could make the OS open a
+/// network or device path: a leading double separator (UNC, `//server`), or, on
+/// Windows, any UNC/device/verbatim-UNC prefix. Checked before any I/O on it.
+fn is_remote_or_device(text: &str) -> bool {
+    if text.starts_with("//") || text.starts_with("\\\\") {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if let Some(Component::Prefix(p)) = Path::new(text).components().next() {
+            return !matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_));
+        }
+    }
+    false
+}
+
+/// Resolve `.` and `..` without touching the filesystem.
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `\\?\C:\x` (VerbatimDisk) -> `C:\x` (Disk), so canonical paths compare with
+/// the `C:/...` form git writes. Everything else, notably `\\?\UNC\`, is
+/// returned unchanged. Identity off Windows.
+fn simplify_verbatim(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut it = p.components();
+        if let Some(Component::Prefix(pre)) = it.next() {
+            if let Prefix::VerbatimDisk(d) = pre.kind() {
+                let mut out = PathBuf::from(format!("{}:", d as char));
+                out.push(std::path::MAIN_SEPARATOR_STR);
+                for c in it {
+                    if !matches!(c, Component::RootDir) {
+                        out.push(c.as_os_str());
+                    }
+                }
+                return out;
+            }
+        }
+    }
+    p.to_path_buf()
+}
+
+/// Lexical, no I/O: is `gitdir` exactly `<trusted>/worktrees/<name>`, with
+/// `<trusted>` a canonical trusted common dir and `<name>` one normal component?
+fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
+    use std::path::Component;
+    let Some(parent) = gitdir.parent() else {
+        return false;
+    };
+    let name_ok = matches!(gitdir.components().next_back(), Some(Component::Normal(_)));
+    name_ok
+        && parent
+            .parent()
+            .zip(parent.file_name())
+            .is_some_and(|(common, w)| {
+                w == "worktrees" && trusted.iter().any(|t| simplify_verbatim(t) == common)
+            })
+}
+
 /// The canonical git common directory of the checkout at `root`, read from
 /// files only (no git binary). A normal checkout has a `.git` directory, which
 /// is the common dir. A linked worktree has a `.git` file `gitdir: <path>`
 /// naming `<common>/worktrees/<name>`, whose `commondir` file gives the common
 /// dir and whose `gitdir` file must point back at this `.git`. `Ok(None)` when
 /// `root` is not a verifiable checkout; a symlinked `.git` is `Invalid`.
-pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageError> {
+///
+/// `trusted` (the canonical common dirs of already-bound main checkouts, from
+/// local paths; see [`anchor_common_dir`]) is required: the gitdir text is joined to the canonical `root` and
+/// normalised lexically; it must equal `<trusted>/worktrees/<name>` exactly
+/// before anything derived from it is statted or read. UNC/device paths are
+/// refused untouched.
+fn common_dir(root: &Path, trusted: &[PathBuf]) -> Result<Option<PathBuf>, StorageError> {
     // Canonicalise `root` once; `<canon_root>/.git` is then the identity and is
     // never followed again after the lstat below.
-    let Ok(canon_root) = std::fs::canonicalize(root) else {
+    let Ok(canon_root) = std::fs::canonicalize(root).map(|p| simplify_verbatim(&p)) else {
         return Ok(None);
     };
     let dot_git = canon_root.join(".git");
@@ -382,7 +462,7 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     if meta.file_type().is_symlink() {
         return Err(git_refuse(&dot_git, ".git must not be a symbolic link"));
     }
-    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let canon = |p: &Path| std::fs::canonicalize(p).ok().map(|c| simplify_verbatim(&c));
     if meta.is_dir() {
         return Ok(Some(dot_git));
     }
@@ -392,14 +472,31 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     let Some(target) = text.strip_prefix("gitdir:").map(str::trim) else {
         return Ok(None);
     };
-    let Some(gitdir) = canon(&canon_root.join(target)) else {
+    if is_remote_or_device(target) {
         return Ok(None);
+    }
+    let joined = simplify_verbatim(&lexical(&canon_root.join(target)));
+    if !exact_worktree_gitdir(&joined, trusted) {
+        return Ok(None);
+    }
+    // Matched exactly: now it may be touched, but only if no symlink lies on
+    // the path.
+    match std::fs::symlink_metadata(&joined) {
+        Ok(m) if m.is_dir() => {}
+        _ => return Ok(None),
+    }
+    let gitdir = match canon(&joined) {
+        Some(g) if g == joined => g,
+        _ => return Ok(None),
     };
     // A linked worktree always has a `commondir`; without one the gitdir is a
     // whole repository chosen by this folder, which proves nothing.
     let Some(common) = read_git_file(&gitdir.join("commondir"))? else {
         return Ok(None);
     };
+    if is_remote_or_device(&common) {
+        return Ok(None);
+    }
     let Some(common) = canon(&gitdir.join(common)) else {
         return Ok(None);
     };
@@ -412,31 +509,54 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     // file cannot claim someone else's repository.
     let back = read_git_file(&gitdir.join("gitdir"))?;
     let back_ok = back
+        .filter(|b| !is_remote_or_device(b))
         .and_then(|b| canon(&gitdir.join(b)))
         .is_some_and(|b| b == dot_git);
     Ok(back_ok.then_some(common))
 }
 
+/// The common dir of a bound root that may anchor verification: only a root
+/// whose `.git` is a real directory (lstat, not a symlink), i.e. a main
+/// checkout. Its common dir is `<canonical root>/.git`; nothing else is read.
+/// A bound worktree (`.git` file) or a symlinked `.git` is never an anchor, so
+/// no gitdir/commondir of a bound root is ever followed.
+fn anchor_common_dir(root: &Path) -> Option<PathBuf> {
+    let canon_root = std::fs::canonicalize(root)
+        .map(|p| simplify_verbatim(&p))
+        .ok()?;
+    let dot_git = canon_root.join(".git");
+    let meta = std::fs::symlink_metadata(&dot_git).ok()?;
+    (!meta.file_type().is_symlink() && meta.is_dir()).then_some(dot_git)
+}
+
 /// The bound roots of `id` (that still pass the binding check) whose git
 /// common directory equals `new_root`'s. Empty means `new_root` is unverified.
+/// Only bound main checkouts (real `.git` directory) anchor: a new folder is
+/// one-click verifiable only as a worktree of a bound main checkout.
 pub(crate) fn verified_siblings(
     data: &DataDir,
     id: &CollectionId,
     new_root: &Path,
 ) -> Result<Vec<PathBuf>, StorageError> {
-    let Some(want) = git_common_dir(new_root)? else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
+    // Trusted first: the common dirs of the bound roots, from local paths.
+    let mut bound = Vec::new();
     for r in bound_roots(data, id)? {
         if check(data, id, &r).is_err() {
             continue;
         }
-        if matches!(git_common_dir(&r), Ok(Some(c)) if c == want) {
-            out.push(r);
+        if let Some(c) = anchor_common_dir(&r) {
+            bound.push((r, c));
         }
     }
-    Ok(out)
+    let trusted: Vec<PathBuf> = bound.iter().map(|(_, c)| c.clone()).collect();
+    let Some(want) = common_dir(new_root, &trusted)? else {
+        return Ok(Vec::new());
+    };
+    Ok(bound
+        .into_iter()
+        .filter(|(_, c)| *c == want)
+        .map(|(r, _)| r)
+        .collect())
 }
 
 /// Every canonical root `id` is bound to (in binding order).
@@ -543,4 +663,54 @@ pub(crate) fn env_lock(data: &DataDir, plain: &Path) -> Result<EnvLock, StorageE
         _mutex: guard,
         _file: f,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_remote_or_device;
+
+    #[cfg(windows)]
+    #[test]
+    fn simplify_verbatim_only_touches_verbatim_disk() {
+        use super::simplify_verbatim;
+        use std::path::Path;
+        assert_eq!(
+            simplify_verbatim(Path::new(r"\\?\C:\x\y")),
+            Path::new(r"C:\x\y")
+        );
+        assert_eq!(simplify_verbatim(Path::new(r"C:\x")), Path::new(r"C:\x"));
+        let unc = Path::new(r"\\?\UNC\srv\share\x");
+        assert_eq!(simplify_verbatim(unc), unc);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disk_form_gitdir_matches_verbatim_trusted_dirs() {
+        use super::{exact_worktree_gitdir, lexical, simplify_verbatim};
+        use std::path::{Path, PathBuf};
+        let trusted = vec![PathBuf::from(r"\\?\C:\repo\.git")];
+        let root = simplify_verbatim(Path::new(r"\\?\C:\wt"));
+        let joined = simplify_verbatim(&lexical(&root.join("C:/repo/.git/worktrees/w")));
+        assert!(exact_worktree_gitdir(&joined, &trusted));
+        let other = simplify_verbatim(&lexical(&root.join("C:/other/.git/worktrees/w")));
+        assert!(!exact_worktree_gitdir(&other, &trusted));
+    }
+
+    #[test]
+    fn remote_and_device_prefixes_are_detected() {
+        for t in [
+            "//server/share/x",
+            "\\\\server\\share\\x",
+            "\\\\?\\UNC\\server\\share",
+            "//?/UNC/server/share",
+            "//?/C:/x",
+            "\\\\.\\pipe\\x",
+            "//./pipe/x",
+        ] {
+            assert!(is_remote_or_device(t), "{t}");
+        }
+        for t in ["sub/.git/worktrees/w", "/home/a/.git", "../x"] {
+            assert!(!is_remote_or_device(t), "{t}");
+        }
+    }
 }

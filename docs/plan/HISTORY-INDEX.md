@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-12 | 114 | keyring 4 keychain SecretStore, fail-closed error mapping, headless results, sizes | ## 2026-11-12 — OS keychain secret store (task 114) |
 | 2026-11-12 | 111 | PR #52 review rounds 1-3: binding registry, never auto-bind, whole-call deadline, import_secrets_file; VaultCtx API change for 115 | ## 2026-11-12 — PR #52 review rounds 1-3 (task 111) |
 | 2026-11-12 | 111 | SecretStore trait, MemoryStore, extensible StoreKind, fail-closed loader, migration both ways (vault) | ## 2026-11-12 — Secret store abstraction (task 111) |
 | 2026-11-12 | 109 | Keychain spike: keyring 4.x chosen; Windows +26,112 B, Linux +290,960 B; PR #51 closed unmerged | ## 2026-11-12 — Keychain spike (task 109) |

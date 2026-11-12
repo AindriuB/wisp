@@ -20,6 +20,7 @@ tracing.workspace = true
 saphyr.workspace = true
 saphyr-parser.workspace = true
 uuid.workspace = true
+keyring.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

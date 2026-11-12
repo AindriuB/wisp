@@ -1914,9 +1914,26 @@ fn make_repo(root: &Path) {
     std::fs::create_dir_all(root.join(".git")).unwrap();
 }
 
+/// On Windows `canonicalize` yields `\\?\C:\..`; git writes `C:/...`.
+fn git_style(p: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy().into_owned();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            if !rest.starts_with("UNC") {
+                return std::path::PathBuf::from(rest.replace('\\', "/"));
+            }
+        }
+    }
+    p
+}
+
 /// A linked worktree of `main`: `.git` file -> `<main>/.git/worktrees/<name>`
 /// with `commondir` and a back-pointing `gitdir`.
 fn make_worktree(main: &Path, wt: &Path, name: &str) {
+    // Like git, write canonical (realpath) paths.
+    let main = &git_style(std::fs::canonicalize(main).unwrap());
+    let wt = &git_style(std::fs::canonicalize(wt).unwrap());
     let gd = main.join(".git/worktrees").join(name);
     std::fs::create_dir_all(&gd).unwrap();
     std::fs::write(gd.join("commondir"), "../..\n").unwrap();
@@ -2062,6 +2079,101 @@ fn victim_worktree_entry_with_back_pointer_to_another_folder_is_unverified() {
 }
 
 #[test]
+fn unc_style_gitdir_is_refused_without_io() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    std::fs::write(e.path().join(".git"), "gitdir: //server/share/x\n").unwrap();
+    unverified(&c, e.path());
+    std::fs::write(e.path().join(".git"), "gitdir: \\\\server\\share\\x\n").unwrap();
+    unverified(&c, e.path());
+}
+
+#[test]
+fn lexically_plausible_unc_gitdir_is_refused() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    let name = a.path().join(".git").file_name().unwrap().to_owned();
+    let text = format!(
+        "gitdir: //server/share/{}/worktrees/w\n",
+        name.to_string_lossy()
+    );
+    std::fs::write(e.path().join(".git"), text).unwrap();
+    unverified(&c, e.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_inside_a_plausible_gitdir_is_never_followed() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    // Outside the tempdir, with a commondir that is a directory: reading it
+    // would be an error, so Unverified proves it was never opened.
+    std::fs::create_dir_all(out.path().join(".git/worktrees/w/commondir")).unwrap();
+    std::os::unix::fs::symlink(out.path(), e.path().join("sub")).unwrap();
+    std::fs::write(e.path().join(".git"), "gitdir: sub/.git/worktrees/w\n").unwrap();
+    unverified(&c, e.path());
+}
+
+/// Legitimate worktree layout of bound repo A, reached through a symlink:
+/// `E/sub -> A`, `E/.git` = `gitdir: sub/.git/worktrees/w`, back-pointer names
+/// `E/.git`. The old code canonicalised the joined path, so it resolved to
+/// `A/.git/worktrees/w` and verified; the exact lexical match must refuse it
+/// (`E/sub/.git` is not a trusted common dir). Not observable here: that the
+/// match does no I/O before deciding (e.g. a macOS /net automount).
+#[cfg(unix)]
+#[test]
+fn symlink_reaching_a_real_worktree_layout_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    let a_canon = std::fs::canonicalize(a.path()).unwrap();
+    let e_canon = std::fs::canonicalize(e.path()).unwrap();
+    let gd = a_canon.join(".git/worktrees/w");
+    std::fs::create_dir_all(&gd).unwrap();
+    std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+    std::fs::write(
+        gd.join("gitdir"),
+        format!("{}\n", e_canon.join(".git").display()),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&a_canon, e.path().join("sub")).unwrap();
+    std::fs::write(e.path().join(".git"), "gitdir: sub/.git/worktrees/w\n").unwrap();
+    unverified(&c, e.path());
+}
+
+#[test]
+fn gitdir_outside_a_bound_common_dir_is_not_read() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    // A forged worktree whose commondir is unreadable (a directory): reading it
+    // would be an error, so Unverified proves it was never opened.
+    let fake = e.path().join("elsewhere/worktrees/w");
+    std::fs::create_dir_all(fake.join("commondir")).unwrap();
+    std::fs::write(
+        e.path().join(".git"),
+        format!("gitdir: {}\n", fake.display()),
+    )
+    .unwrap();
+    unverified(&c, e.path());
+}
+
+#[cfg(unix)]
+#[test]
 fn symlinked_dot_git_is_refused() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -2071,6 +2183,72 @@ fn symlinked_dot_git_is_refused() {
     let c = bcx(a.path());
     assert!(bind_additional_checkout(&c.data, &id(), b.path()).is_err());
     assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 1);
+}
+
+/// Bind `w` (a verified worktree of `a`) so it is a bound root, then return.
+fn bound_worktree(c: &VaultCtx, a: &Path, w: &Path) {
+    make_worktree(a, w, "w1");
+    bind_additional_checkout(&c.data, &id(), w).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn bound_worktree_with_symlinked_gitdir_is_never_read() {
+    let a = tempfile::tempdir().unwrap();
+    let w = tempfile::tempdir().unwrap();
+    let n = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), w.path(), n.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    bound_worktree(&c, a.path(), w.path());
+    // The bound worktree's .git now routes through a symlink to an outside dir
+    // whose commondir is a directory (unreadable if opened).
+    std::fs::create_dir_all(out.path().join(".git/worktrees/w/commondir")).unwrap();
+    std::os::unix::fs::symlink(out.path(), w.path().join("sub")).unwrap();
+    std::fs::write(w.path().join(".git"), "gitdir: sub/.git/worktrees/w\n").unwrap();
+    let out_canon = std::fs::canonicalize(out.path()).unwrap();
+    std::fs::write(
+        n.path().join(".git"),
+        format!("gitdir: {}\n", out_canon.join(".git/worktrees/w").display()),
+    )
+    .unwrap();
+    assert!(matches!(
+        bind_additional_checkout(&c.data, &id(), n.path()).unwrap_err(),
+        SecretsError::UnverifiedCheckout { .. }
+    ));
+}
+
+#[test]
+fn new_worktree_of_a_bound_main_checkout_still_verifies_with_a_bound_worktree() {
+    let a = tempfile::tempdir().unwrap();
+    let w = tempfile::tempdir().unwrap();
+    let n = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), w.path(), n.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    bound_worktree(&c, a.path(), w.path());
+    make_worktree(a.path(), n.path(), "w2");
+    bind_additional_checkout(&c.data, &id(), n.path()).unwrap();
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 3);
+}
+
+#[cfg(unix)]
+#[test]
+fn bound_root_with_symlinked_dot_git_is_not_an_anchor() {
+    let a = tempfile::tempdir().unwrap();
+    let real = tempfile::tempdir().unwrap();
+    let n = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), n.path()]);
+    make_repo(real.path());
+    make_repo(a.path());
+    let c = bcx(a.path());
+    // Bound root `a` swaps its .git for a symlink to a real repo that `n`
+    // is a worktree of.
+    std::fs::remove_dir_all(a.path().join(".git")).unwrap();
+    std::os::unix::fs::symlink(real.path().join(".git"), a.path().join(".git")).unwrap();
+    make_worktree(real.path(), n.path(), "w1");
+    unverified(&c, n.path());
 }
 
 #[test]
@@ -2115,6 +2293,7 @@ fn file_mode_env(vars: Vec<Var>, secrets: Vec<Var>) -> Environment {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn symlinked_environments_dir_vars_only_save_names_the_directory() {
     let t = tempfile::tempdir().unwrap();
@@ -2128,6 +2307,7 @@ fn symlinked_environments_dir_vars_only_save_names_the_directory() {
     assert!(!m.contains("secrets"), "{m}");
 }
 
+#[cfg(unix)]
 #[test]
 fn vars_only_save_ignores_a_dangling_secrets_link() {
     let t = tempfile::tempdir().unwrap();
