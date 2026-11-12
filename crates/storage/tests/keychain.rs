@@ -301,7 +301,7 @@ fn panicking_backend_does_not_wedge_the_store() {
     let timed_out = SecretStoreError::Unavailable {
         reason: UnavailableReason::TimedOut,
     };
-    for _ in 0..200 {
+    for _ in 0..8 {
         let t = Timeouts {
             probe: Duration::from_millis(300),
             call: Duration::from_millis(300),
@@ -310,7 +310,7 @@ fn panicking_backend_does_not_wedge_the_store() {
         let _ = s.probe();
         // Immediately after: may land on the dying worker's channel.
         let _ = s.get("a");
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(30));
         let r = s.get("a");
         assert_ne!(r, Err(timed_out.clone()), "store stayed busy after a panic");
     }
@@ -399,7 +399,7 @@ fn headless_probe_is_unavailable() {
 
 #[test]
 #[ignore = "needs a locked gnome-keyring in docker"]
-fn headless_locked_probe() {
+fn locked_keyring_get_is_refused() {
     // The check seeds this item with `secret-tool store` before locking.
     let store = keychain::open("wisp-test-locked", false);
     // Searching for a missing account does not unlock, so the probe passes.

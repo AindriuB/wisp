@@ -376,3 +376,57 @@ fn extract_code(text: &str) -> Option<i64> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SERVICE: &str = "svc-sentinel-1";
+    const ACCOUNT: &str = "acct-sentinel-2";
+    const SECRET: &str = "secret-sentinel-3";
+
+    struct Fake;
+    impl Backend for Fake {
+        fn probe(&self) -> Result<(), KeyringError> {
+            Ok(())
+        }
+        fn get(&self, _: &str) -> Result<Vec<u8>, KeyringError> {
+            Ok(SECRET.as_bytes().to_vec())
+        }
+        fn set(&self, _: &str, _: &[u8]) -> Result<(), KeyringError> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> Result<(), KeyringError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn debug_of_stores_has_no_sentinels() {
+        let concrete = [
+            format!("{:?}", PortableStore),
+            format!("{:#?}", PortableStore),
+            format!(
+                "{:?}",
+                KeychainStore {
+                    worker: Worker::new(Arc::new(Fake)),
+                    timeouts: Timeouts::default()
+                }
+            ),
+            format!(
+                "{:#?}",
+                KeychainStore {
+                    worker: Worker::new(Arc::new(OsBackend {
+                        service: SERVICE.to_owned()
+                    })),
+                    timeouts: Timeouts::default()
+                }
+            ),
+        ];
+        for text in &concrete {
+            for needle in [SERVICE, ACCOUNT, SECRET] {
+                assert!(!text.contains(needle), "{text}");
+            }
+        }
+    }
+}
