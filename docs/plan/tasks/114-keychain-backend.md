@@ -121,3 +121,12 @@ Reviewed HEAD: b3bc086d4b09a300312194be28c7e28e53b39eb3
 
 - [P2] crates/storage/src/keychain.rs:186-217 — after a backend panic, an immediate next call can claim `busy`, send into the dying worker's still-open channel, and have its job dropped unrun; its `Idle` was never built, so `busy` stays set and every later call returns `TimedOut` for the life of the store (reviewer reproduced 2972/3000). Build `Idle(busy)` before `Box::new` and move it into the job closure so a dropped job still clears `busy`. Add a test: backend whose probe panics; probe, immediate get, short wait, get again → not TimedOut (recovers).
 - [DRIFT → Amendment 2] crates/storage/tests/keychain.rs:364-376 `headless_locked_probe` checks `set` on a new account; per Amendment 2 seed an item and check `get`.
+
+## Attempt 1 — failed (/verify, 2026-11-12)
+
+Tester at 4e15c69: unit, lint, deps (incl. notices) and the workspace suite pass. `headless` fails as written: the filter `headless` also matches `headless_locked_probe`, which has no keyring in that container. Results to record in the PR: no-bus probe → `Err(Unavailable { reason: NoService })` in ~0.8 ms; headless-locked (seeded item, locked, no display so gcr-prompter can't show) → probe `Ok(())`, `get` → `Err(Denied)`.
+Reviewer: AC1–AC6 met; AC10 `debug_redacts_stores` never formats either store type.
+Fix only these:
+1. Rename `headless_locked_probe` so the `headless` check's filter no longer matches it (e.g. `locked_keyring_get_is_refused`) and update the `headless-locked` command filter to the new name.
+2. AC10: add an in-crate `#[cfg(test)]` test in keychain.rs that formats `KeychainStore` and `PortableStore` with `{:?}` and `{:#?}` and asserts no service/account/secret sentinel appears.
+3. `panicking_backend_does_not_wedge_the_store`: cut iterations so the test's total sleep stays under 1 s (AC5 "no test sleeps longer than 3 s").
