@@ -29,7 +29,7 @@ use crate::ui::request::RequestPane;
 use crate::ui::response::ResponsePane;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::url_bar::UrlBar;
-use crate::workspace::{CloseStep, Workspace, WorkspaceEvent, close_step};
+use crate::workspace::{CloseStep, Workspace, WorkspaceEvent, close_step, confirmed_open};
 
 /// Close `tab`, asking first when it holds unsaved changes. After the answer
 /// the tab is looked up by entity: its index may have moved or it may be gone.
@@ -205,10 +205,13 @@ impl WorkspaceView {
     }
 
     fn on_clear_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(name) = self.workspace.read(cx).active_collection().map(|c| {
-            c.tree.root.file_name().map_or_else(
-                || c.tree.root.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
+        let Some((root, name)) = self.workspace.read(cx).active_collection().map(|c| {
+            (
+                c.tree.root.clone(),
+                c.tree.root.file_name().map_or_else(
+                    || c.tree.root.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                ),
             )
         }) else {
             self.workspace.update(cx, |_, cx| {
@@ -234,8 +237,9 @@ impl WorkspaceView {
             let clear = matches!(answer.await, Ok(0));
             ws.update(cx, |w, cx| {
                 w.prompt_up = false;
-                if clear {
-                    w.clear_history(cx);
+                // The collection captured before the prompt, if it is still open.
+                if confirmed_open(clear, w.coll_ix(&root)).is_some() {
+                    w.clear_history(root, cx);
                 }
             });
         })
@@ -335,7 +339,7 @@ impl WorkspaceView {
             ws.update(cx, |w, cx| {
                 w.prompt_up = false;
                 // Indices may have shifted while the prompt was up: resolve by root.
-                if close && let Some(ix) = w.coll_ix(&root) {
+                if let Some(ix) = confirmed_open(close, w.coll_ix(&root)) {
                     w.close_collection(ix, cx);
                 }
             });

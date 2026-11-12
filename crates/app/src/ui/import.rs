@@ -225,6 +225,27 @@ enum Stage {
     },
 }
 
+/// A collection's display name: its folder name.
+fn collection_label(root: &Path) -> String {
+    root.file_name().map_or_else(
+        || root.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// The collection to write into: the one captured when the dialog opened, and only while it
+/// is still open (`open_ix` is its index now). Never another collection.
+fn resolve_target(target: Option<&Path>, open_ix: Option<usize>) -> Result<PathBuf, String> {
+    match (target, open_ix) {
+        (Some(t), Some(_)) => Ok(t.to_path_buf()),
+        (Some(t), None) => Err(format!(
+            "The collection \"{}\" was closed; nothing was imported.",
+            collection_label(t)
+        )),
+        (None, _) => Err("Open a collection first".to_string()),
+    }
+}
+
 /// The dialog may close unless an import is mid-write.
 fn can_dismiss(writing: bool) -> bool {
     !writing
@@ -232,6 +253,8 @@ fn can_dismiss(writing: bool) -> bool {
 
 pub struct ImportView {
     workspace: Entity<Workspace>,
+    /// The collection the dialog was opened for. Import writes there or nowhere.
+    target: Option<PathBuf>,
     stage: Stage,
     paste: Entity<EditorState>,
     error: Option<SharedString>,
@@ -249,8 +272,13 @@ impl ImportView {
         let focus = cx.focus_handle();
         let prev_focus = window.focused(cx);
         window.focus(&focus, cx);
+        let target = workspace
+            .read(cx)
+            .active_collection()
+            .map(|c| c.tree.root.clone());
         Self {
             workspace,
+            target,
             stage: Stage::Source,
             paste: cx.new(|cx| EditorState::new(window, cx)),
             error: None,
@@ -367,16 +395,19 @@ impl ImportView {
         .detach();
     }
 
-    /// The root of the collection open right now, not when the dialog opened.
-    fn current_root(&self, cx: &gpui::App) -> Option<PathBuf> {
-        self.workspace
-            .read(cx)
-            .active_collection()
-            .map(|c| c.tree.root.clone())
-    }
-
     fn run_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.current_root(cx);
+        let ix = self
+            .target
+            .as_deref()
+            .and_then(|r| self.workspace.read(cx).coll_ix(r));
+        let root = match resolve_target(self.target.as_deref(), ix) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                self.error = Some(e.into());
+                cx.notify();
+                return;
+            }
+        };
         let (
             Some(root),
             Stage::Preview {
@@ -457,8 +488,16 @@ impl ImportView {
 
 impl Render for ImportView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_root = self.current_root(cx).is_some();
+        let has_root = self.target.is_some();
         let mut body = v_flex().gap_3().child(div().text_lg().child("Import"));
+        if let Some(t) = &self.target {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Into collection \"{}\"", collection_label(t))),
+            );
+        }
         if !has_root {
             body = body
                 .child("Open a collection first")
@@ -567,6 +606,16 @@ impl Render for ImportView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_target_is_the_captured_collection_or_a_refusal() {
+        let t = Path::new("/work/alpha");
+        assert_eq!(resolve_target(Some(t), Some(3)), Ok(t.to_path_buf()));
+        let e = resolve_target(Some(t), None).unwrap_err();
+        assert!(e.contains("alpha") && e.contains("closed"), "{e}");
+        assert!(resolve_target(None, Some(0)).is_err());
+    }
+
     use wisp_core::request::{Request, Var};
     use wisp_storage::import::ImportedEnv;
 

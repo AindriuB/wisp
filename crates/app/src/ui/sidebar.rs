@@ -21,7 +21,7 @@ use wisp_storage::collection::Node;
 use wisp_storage::ops;
 
 use crate::actions::{OpenCollection, OpenPalette, palette_hint};
-use crate::workspace::{Workspace, WorkspaceEvent};
+use crate::workspace::{Workspace, WorkspaceEvent, confirmed_open};
 
 const NO_ENV: &str = "No environment";
 const METHOD_WIDTH: f32 = 46.0;
@@ -518,13 +518,12 @@ impl Sidebar {
         cx.notify();
     }
 
-    fn delete(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(root) = self.root(cx) else { return };
-        match ops::delete_node(&root, path) {
+    fn delete(&mut self, root: &Path, path: &Path, cx: &mut Context<Self>) {
+        match ops::delete_node(root, path) {
             Ok(()) => {
                 self.workspace.update(cx, |w, cx| {
-                    w.on_node_deleted(path, cx);
-                    w.reload_tree(cx);
+                    w.on_node_deleted(root, path, cx);
+                    w.reload_tree_of(root, cx);
                 });
                 self.collapsed.retain(|c| !c.starts_with(path));
                 if self
@@ -717,10 +716,18 @@ impl Sidebar {
             cx,
         );
         let path = path.to_path_buf();
+        // The collection the prompt was raised for, not whichever is active after it.
+        let root = self.root(cx);
         cx.spawn(async move |this, cx| {
-            if matches!(answer.await, Ok(0)) {
-                let _ = this.update(cx, |this, cx| this.delete(&path, cx));
-            }
+            let confirmed = matches!(answer.await, Ok(0));
+            let _ = this.update(cx, |this, cx| {
+                let ix = root
+                    .as_deref()
+                    .and_then(|r| this.workspace.read(cx).coll_ix(r));
+                if let (Some(_), Some(root)) = (confirmed_open(confirmed, ix), root) {
+                    this.delete(&root, &path, cx);
+                }
+            });
         })
         .detach();
     }

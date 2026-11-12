@@ -118,6 +118,57 @@ fn id_clash(ids: &[Option<&str>], ix: usize) -> Option<(usize, usize)> {
     Some((ix.max(other), ix.min(other)))
 }
 
+/// What to do when a collection's id lands and clashes with another open one.
+#[derive(Debug, PartialEq, Eq)]
+struct ClashPlan {
+    /// The collection to close: the one opened later.
+    refused: usize,
+    /// The collection that stays.
+    kept: usize,
+    /// The landing id belongs to the older collection: record it before closing the newer one.
+    adopt_landing_first: bool,
+}
+
+fn plan_clash(ids: &[Option<&str>], landing: usize) -> Option<ClashPlan> {
+    let (refused, kept) = id_clash(ids, landing)?;
+    Some(ClashPlan {
+        refused,
+        kept,
+        adopt_landing_first: refused != landing,
+    })
+}
+
+/// What closing collection `ix` does, in order.
+#[derive(Debug, PartialEq, Eq)]
+struct ClosePlan {
+    /// Indices of the collection's tabs whose in-flight work is cancelled and released.
+    release_tabs: Vec<usize>,
+    /// The cookie id whose jar is flushed before the collection goes.
+    flush_id: Option<String>,
+    /// The active collection afterwards.
+    active_after: Option<usize>,
+}
+
+fn plan_close(
+    active: Option<usize>,
+    ix: usize,
+    len: usize,
+    tab_count: usize,
+    known_id: Option<&str>,
+) -> ClosePlan {
+    ClosePlan {
+        release_tabs: (0..tab_count).collect(),
+        flush_id: known_id.map(str::to_owned),
+        active_after: active_after_close(active, ix, len.saturating_sub(1)),
+    }
+}
+
+/// After a confirmation prompt: the index to act on, only when the answer was yes and the
+/// collection captured before the prompt is still open.
+pub fn confirmed_open(confirmed: bool, ix: Option<usize>) -> Option<usize> {
+    if confirmed { ix } else { None }
+}
+
 /// The active index once collection `closed` was removed, leaving `len` collections.
 fn active_after_close(active: Option<usize>, closed: usize, len: usize) -> Option<usize> {
     match active {
@@ -1520,16 +1571,35 @@ impl Workspace {
         if ix >= self.collections.len() {
             return;
         }
+        let known = match &self.collections[ix].coll_id {
+            IdState::Known(id) => Some(id.as_str()),
+            _ => None,
+        };
+        let plan = plan_close(
+            self.active_collection,
+            ix,
+            self.collections.len(),
+            self.collections[ix].group.tabs.len(),
+            known,
+        );
         let tabs = std::mem::take(&mut self.collections[ix].group.tabs);
-        for tab in &tabs {
-            self.release_tab(tab, cx);
+        for &t in &plan.release_tabs {
+            self.release_tab(&tabs[t], cx);
         }
-        self.flush_cookies_for(ix, cx);
+        if plan.flush_id.is_some() {
+            self.flush_cookies_for(ix, cx);
+        }
         self.collections.remove(ix);
-        self.active_collection =
-            active_after_close(self.active_collection, ix, self.collections.len());
+        self.active_collection = plan.active_after;
         self.persist_collections(cx);
         self.emit_view_changed(cx);
+    }
+
+    /// Re-read the tree of the collection at `root`, if it is still open.
+    pub fn reload_tree_of(&mut self, root: &Path, cx: &mut Context<Self>) {
+        if let Some(ix) = self.coll_ix(root) {
+            self.reload_tree_at(ix, cx);
+        }
     }
 
     pub fn reload_tree(&mut self, cx: &mut Context<Self>) {
@@ -2317,17 +2387,18 @@ impl Workspace {
         .detach();
     }
 
-    /// Remove the open collection's history; the store I/O runs on the background executor.
-    pub fn clear_history(&mut self, cx: &mut Context<Self>) {
-        let job = match self.history_job() {
+    /// Remove the history of the collection at `root`, if it is still open; the store I/O runs
+    /// on the background executor.
+    pub fn clear_history(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let Some(ix) = self.coll_ix(&root) else {
+            return;
+        };
+        let job = match history_job_of(&self.collections[ix], self.data_dir.as_ref()) {
             Ok(j) => j,
             Err(reason) => {
                 cx.emit(WorkspaceEvent::Notice(reason.into()));
                 return;
             }
-        };
-        let Some(root) = self.active_collection().map(|c| c.tree.root.clone()) else {
-            return;
         };
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move { job.clear() });
@@ -2427,8 +2498,11 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn on_node_deleted(&mut self, rel: &Path, cx: &mut Context<Self>) {
-        for tab in &self.group().tabs {
+    pub fn on_node_deleted(&mut self, root: &Path, rel: &Path, cx: &mut Context<Self>) {
+        let Some(ix) = self.coll_ix(root) else {
+            return;
+        };
+        for tab in &self.collections[ix].group.tabs {
             tab.update(cx, |t, cx| {
                 if t.path.as_deref().is_some_and(|p| p.starts_with(rel)) {
                     t.set_disk_state(DiskState::DeletedOnDisk, cx);
@@ -2599,7 +2673,12 @@ impl Workspace {
                 })
                 .collect();
             ids[ix] = Some(id.as_str());
-            if let Some((refused, kept)) = id_clash(&ids, ix) {
+            if let Some(ClashPlan {
+                refused,
+                kept,
+                adopt_landing_first,
+            }) = plan_clash(&ids, ix)
+            {
                 let text = format!(
                     "\"{}\" has the same collection id as the open \"{}\" ({}); not opened. \
                      Change the id in its collection.toml to open both.",
@@ -2607,7 +2686,7 @@ impl Workspace {
                     self.collections[kept].name(),
                     self.collections[kept].tree.root.display(),
                 );
-                if refused == ix {
+                if !adopt_landing_first {
                     self.close_collection(ix, cx);
                 } else {
                     // The newer one finished reading first; the older one's id just landed.
@@ -3246,6 +3325,54 @@ mod tests {
         assert_eq!(active_after_close(Some(0), 2, 2), Some(0));
         assert_eq!(active_after_close(Some(2), 2, 2), Some(1));
         assert_eq!(active_after_close(Some(0), 0, 0), None);
+    }
+
+    #[test]
+    fn collections_clash_plan_covers_both_landing_orders() {
+        // The original (0) lands first: the clone, still reading, is not yet known.
+        assert_eq!(plan_clash(&[Some("x"), None], 0), None);
+        // The clone (1) lands: it is refused, nothing to adopt first.
+        assert_eq!(
+            plan_clash(&[Some("x"), Some("x")], 1),
+            Some(ClashPlan {
+                refused: 1,
+                kept: 0,
+                adopt_landing_first: false
+            })
+        );
+        // The clone's id landed first; then the original's lands: record it, close the clone.
+        assert_eq!(
+            plan_clash(&[Some("x"), Some("x")], 0),
+            Some(ClashPlan {
+                refused: 1,
+                kept: 0,
+                adopt_landing_first: true
+            })
+        );
+        assert_eq!(plan_clash(&[Some("x"), Some("y")], 1), None);
+    }
+
+    #[test]
+    fn collections_close_plan_releases_every_tab_and_flushes_the_jar() {
+        let p = plan_close(Some(1), 1, 3, 2, Some("abc"));
+        assert_eq!(p.release_tabs, vec![0, 1]);
+        assert_eq!(p.flush_id.as_deref(), Some("abc"));
+        assert_eq!(p.active_after, Some(1));
+        // No known id: nothing to flush. Closing the only collection leaves none active.
+        let p = plan_close(Some(0), 0, 1, 0, None);
+        assert!(p.release_tabs.is_empty());
+        assert_eq!(p.flush_id, None);
+        assert_eq!(p.active_after, None);
+        // A collection before the active one shifts it down.
+        assert_eq!(plan_close(Some(2), 0, 3, 1, None).active_after, Some(1));
+    }
+
+    #[test]
+    fn collections_prompt_answer_acts_only_on_a_confirmed_open_collection() {
+        // Dirty close or delete: cancelled does nothing, confirmed acts, a closed one is skipped.
+        assert_eq!(confirmed_open(false, Some(1)), None);
+        assert_eq!(confirmed_open(true, Some(1)), Some(1));
+        assert_eq!(confirmed_open(true, None), None);
     }
 
     fn make_collection(dir: &Path, name: &str) -> OpenCollection {
