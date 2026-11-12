@@ -20,6 +20,9 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-12 | 111 | PR #52 review rounds 1-3: binding registry, never auto-bind, whole-call deadline, import_secrets_file; VaultCtx API change for 115 | ## 2026-11-12 — PR #52 review rounds 1-3 (task 111) |
+| 2026-11-12 | 111 | SecretStore trait, MemoryStore, extensible StoreKind, fail-closed loader, migration both ways (vault) | ## 2026-11-12 — Secret store abstraction (task 111) |
+| 2026-11-12 | 109 | Keychain spike: keyring 4.x chosen; Windows +26,112 B, Linux +290,960 B; PR #51 closed unmerged | ## 2026-11-12 — Keychain spike (task 109) |
 | 2026-11-12 | 110 | PR #49 review rounds 1-3: store calls bounded by 30 s, Authorize saves before caching, refreshes cache rotated token before saving; residual 49-R1 | ## 2026-11-12 — PR #49 review rounds 1-3 (task 110) |
 | 2026-11-12 | 113 | Sidebar collection switcher: active name, open list with check mark, path tooltips, × close via shared close_collection_at; hand-checked on macOS | ## 2026-11-12 — Collection switcher in the sidebar (task 113) |
 | 2026-11-12 | 112 | PR #50 review: import, Clear history and sidebar Delete bound to captured collection; close/clash plans tested | ## 2026-11-12 — PR #50 review round 1 (task 112) |

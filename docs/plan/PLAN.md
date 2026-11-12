@@ -22,7 +22,7 @@ than no plan.
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** multiple collections; keychain (Linux spike first). Done: 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); see HISTORY. Remaining: keychain.
+- **Wave 3:** multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); see HISTORY. Open: 114 (keychain backend), 115 (keychain wiring), 116 (wave-3 size gate).
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -136,6 +136,55 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [Nit] 46-5 timing.rs:24 the Timings doc doesn't say what phases mean through a proxy.
 - [NOTE] Registry MAX_ENTRIES=64 FIFO: >64 unclaimed concurrent connects could evict a real entry (reported None); unreachable today (no runner/bulk send). Intermediate redirect hops and lost-race connects are never claimed and rely on the cap.
 - [NOTE] With reqwest-followed redirects the timings describe the final connection; with the engine's own loop, the first hop that opened a connection.
+
+### Follow-ups from task 111 (not 0.2.0 wave 3)
+- (a) A malformed `secrets` value makes `save_environment` write only plain vars and return Ok, silently dropping edited secret values; return an error.
+- (b) No test fails the first pre-set `get` (`fail_nth(0)`) or uses a malformed `<env>.secrets.toml` in `migrate_to_store`.
+- (c) Document `MemoryStore::accounts()` as test-only so 115 does not rely on enumeration.
+- (d) CLOSED by PR #52: plain `load_environment` now ignores the secrets file in store modes (115 AC2 still covers the app wiring).
+- (e) Clones fail closed until bound/rebound; a copy is offered a new id.
+- 52-9 TooLarge during migration names no var; contract doesn't forbid truncation; read-back mismatch reported as Other -> wrap errors with the var name, require TooLarge, never truncate.
+- 52-10 restore after a failed env.toml write ignores its own errors and can leave plaintext while mode is store -> log and return the leftover path; test the no-old-file branch.
+- 52-11 secret names differing only by case collide on case-insensitive stores (Windows) -> reject case-insensitive duplicates.
+- 52-12 tests missing: set_secret write failure; chmod test lacks a drop guard; import_secrets_file leftover-warning case (shares the tested helper).
+- 52-13 (nit) environment.rs io widened to pub(crate) but vault.rs builds StorageError::Io by hand.
+- 52-P3a `rebind` on an id with no row creates one; decide whether rebind requires an existing row or is named as a second explicit binder (115 AC16 says only bind binds).
+- 52-P3b load probes the store before the binding check; unbound + store absent falls back to the file, unbound + locked reports Locked rather than Unbound.
+- 52-P3c a brand-new keychain environment with no names also shows the bind prompt (harmless extra click; smooth over in 115).
+- 52-P3d env_lock leaks one Mutex per environment path (bounded).
+- 52-18 (-> task 99) import_secrets_file overwrites existing store values unasked with a stale leftover or committed file -> return differing names as a typed conflict and require confirmation; refuse tracked files.
+- 52-19 (-> task 99) the binding check trusts the caller's id rather than reading it from root's collection.toml; a 115 wiring slip would pass -> read or derive the id from root in check.
+- 52-20 migrate_to_file's deletes share the read deadline: slow reads orphan every entry, late successful deletes reported TimedOut -> fresh budget for cleanup, check the deadline only before each delete.
+- 52-21 (-> task 99) to_string_lossy registry key lets distinct non-UTF-8 roots share a binding -> fail closed on non-UTF-8 roots.
+- 52-22 cross-process env_lock, symlinked-root canonicalisation and check have no tests; vault_binding has no unit tests; no test for a non-regular `.wisp-binding` (e.g. a directory).
+- 52-24 (nit) tests' cx() leaks one tempdir per test -> return the TempDir with the ctx.
+- 52-P3e (-> task 99) TOCTOU: marker and secrets-file checks run before the open, and the reads/writes follow symlinks (fs.rs resolve) -> open with O_NOFOLLOW or verify the opened handle.
+- 52-P3f (-> task 99) ensure_marker_ignored / ensure_gitignore write through a symlinked environments/.gitignore (also on main) -> refuse a symlinked .gitignore.
+- 52-P3g (for 115's prompt text) FailReason::Unbound can't tell "never bound" from "previously bound here, marker missing", so the bind prompt can't warn that confirming gives this path's existing keychain secrets to the folder now there -> consider a distinct reason.
+- 52-29 (-> task 99) migrate_to_store (and file-mode load) read the secrets file without check_secrets_path, storing a symlink target's values.
+- 52-30 (-> task 99, fold into AC53) migrate_to_file still merges store secrets into a git-tracked regular secrets file -> refuse or warn on tracked files.
+- 52-31 (-> task 99) copy check uses exists() (metadata errors read as gone, fails open); a read error blocks a real move; relies on the committed id rather than the old root's marker -> try_exists, fail closed except NotFound, use the marker nonce.
+- 52-32 lowercasing silently re-keys history, cookies and tokens of collections whose id already had uppercase (unreleased builds only) -> write the lowercase id back and move old paths, or note it.
+- 52-33 a registry from earlier dev builds (v1/v2) is rejected as corrupt and bind can't repair it -> treat old rows as Unbound or let bind replace after confirmation.
+- 52-34 (tests) the symlinked environments-dir test fails on the binding check, not check_secrets_path -> assert the specific error.
+- 52-35 unlocked save_environment is still pub (import uses it) -> pub(crate) or rename; 115 must use save_environment_locked.
+- 52-36 environments/.gitignore is written under the registry lock and under env_lock; interleaving can drop the secrets ignore line -> one per-dir lock or write both lines.
+- 52-37 (nit) broken doc link to rebind in vault_binding.rs; 52-38 (nit) save_environment_locked doc says parsed once but file mode re-reads; 52-40 (nit) first bind adds an untracked environments/.gitignore to store-only collections -> mention in the 115 prompt.
+- 52-P3h (-> task 99) once any bound root is gone, rebind's LooksLikeCopy refusal stops firing for live roots, so a copy can be bound through the "moved" prompt; decide between the current rule and refusing when any live root carries the id (which blocks moving one checkout while another is live).
+- 52-N1 marker cross-registry read-modify-write race: fails closed (extra bind prompt only).
+- 52-N2 root list per id has no size cap (grows only via user-confirmed additional checkouts) -> cheap cap later.
+- 52-N3 a collection whose collection.toml is a symlink (dotfiles setups) now errors and history turns off; intended fail-closed, user-visible.
+- 52-43 (-> task 99) read_collection_id follows a symlinked collection.toml, so a crafted sibling link takes a victim's id without knowing it -> confine the read; missing stays None.
+- 52-44 (-> task 99) one stable registry id is written into every marker; a tracked marker shows modified and leaks a linkable per-user id -> per-root key (e.g. hash of registry id and root); warn on a tracked marker.
+- 52-45 (-> task 99) the attacker-controllable marker is read whole with no size or entry cap -> cap size from lstat, fail closed; drop malformed entries on write.
+- 52-46 LooksLikeCopy / IdBoundElsewhere / rebind docs still describe one root and point worktrees at assign_new_collection_id -> point at bind_additional_checkout / share_with_folder; fix the 52-37 link.
+- 52-47 ensure_collection_id now needs canonicalize; where it fails on Windows volumes, history turns off -> note for AC38 or fall back when the component walk passed.
+- 52-48 (nit, -> task 99 AC56) collection.toml check-then-write race -> extend AC56.
+- 52-49 (nit) non_regular_collection_toml_is_refused passes without the helper (EISDIR) -> assert StorageError::Invalid.
+- 52-50 (nit) marker lines for vanished registries are never removed -> fold into the 52-N2 cap.
+- 52-51 (nit) confined_regular_file returns Ok(true) when the file equals the root -> refuse when there are no components.
+- 52-N4 (-> task 99) a stale linked-worktree entry (folder deleted by hand, not `git worktree remove`) verifies any folder later created at that path -> also require the entry not to be prunable, or check the folder's owner.
+- 52-W1 (task 115 wiring rule) share_with_folder can't prove its caller: 115 must pass the currently open, bound collection's root as from_root and take new_root from a folder picker; never fill from_root from bound_roots inside an unbound folder's prompt.
 
 ### Follow-ups from task 104 (not 0.2.0 wave 2)
 - [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.
@@ -492,3 +541,4 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 - When the Cookies table is tall, sideways scrolling works only with the pointer over the rows.
 
 ## Someday
+- KeePassXC secret store (later version; the 111 abstraction allows it).

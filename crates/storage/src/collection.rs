@@ -199,12 +199,14 @@ pub fn save_collection_defaults(
 pub struct CollectionId(String);
 
 impl CollectionId {
-    /// Accepts `^[A-Za-z0-9_-]{8,64}$`.
+    /// Accepts `^[A-Za-z0-9_-]{8,64}$` and normalises to lowercase, so ids that
+    /// differ only in case are the same id (registry keys and keychain accounts
+    /// are case-sensitive; case-insensitive stores would otherwise share them).
     pub fn parse(s: &str) -> Option<CollectionId> {
         let ok = (8..=64).contains(&s.len())
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-        ok.then(|| CollectionId(s.to_string()))
+        ok.then(|| CollectionId(s.to_ascii_lowercase()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -242,6 +244,7 @@ pub fn read_collection_id(root: &Path) -> Result<Option<CollectionId>, StorageEr
 /// Return the collection's ID, writing a new one into `collection.toml` if it has none.
 pub fn ensure_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
     let path = root.join(COLLECTION_FILE);
+    fs::confined_regular_file(root, &path, "collection.toml")?;
     let mut doc = read_doc(&path)?.unwrap_or_else(|| {
         let mut d = DocumentMut::new();
         d.insert("format", toml_edit::value(1));
@@ -250,6 +253,23 @@ pub fn ensure_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
     if let Some(id) = id_from_doc(&doc, &path)? {
         return Ok(id);
     }
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    doc.insert("id", toml_edit::value(id.as_str()));
+    fs::atomic_write(&path, doc.to_string().as_bytes())?;
+    Ok(CollectionId(id))
+}
+
+/// Give the collection at `root` a fresh random id, replacing any existing one.
+/// A copy that shares its original's id uses this to start with no keychain
+/// secrets of its own.
+pub fn assign_new_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
+    let path = root.join(COLLECTION_FILE);
+    fs::confined_regular_file(root, &path, "collection.toml")?;
+    let mut doc = read_doc(&path)?.unwrap_or_else(|| {
+        let mut d = DocumentMut::new();
+        d.insert("format", toml_edit::value(1));
+        d
+    });
     let id = uuid::Uuid::new_v4().simple().to_string();
     doc.insert("id", toml_edit::value(id.as_str()));
     fs::atomic_write(&path, doc.to_string().as_bytes())?;
@@ -827,6 +847,28 @@ mod tests {
         assert!(CollectionId::parse(&"a".repeat(64)).is_some());
         assert!(CollectionId::parse(&"a".repeat(65)).is_none());
         assert!(CollectionId::parse("abcd efgh").is_none());
+    }
+
+    #[test]
+    fn collection_id_parse_lowercases() {
+        let a = CollectionId::parse("AbCdEf0123456789").unwrap();
+        assert_eq!(a.as_str(), "abcdef0123456789");
+        assert_eq!(a, CollectionId::parse("abcdef0123456789").unwrap());
+    }
+
+    #[test]
+    fn assign_new_id_replaces_and_keeps_other_keys() {
+        let d = tempfile::tempdir().unwrap();
+        stdfs::write(
+            d.path().join("collection.toml"),
+            "format = 1\nid = \"abcdef0123456789\"\nname = \"x\"\n",
+        )
+        .unwrap();
+        let new = assign_new_collection_id(d.path()).unwrap();
+        assert_ne!(new.as_str(), "abcdef0123456789");
+        assert_eq!(read_collection_id(d.path()).unwrap(), Some(new));
+        let text = stdfs::read_to_string(d.path().join("collection.toml")).unwrap();
+        assert!(text.contains("name = \"x\""));
     }
 
     #[test]
