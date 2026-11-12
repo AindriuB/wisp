@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-12 — Refresh-token store off the async workers (task 110)
+Every refresh-token store call (load, save, forget) now runs on spawn_blocking behind a per-key lock held across the whole operation, so a blocking keychain prompt can no longer stall engine I/O. A store failure or panic fails closed, and `set_persist_refresh` was added. 831 workspace tests pass.
+**Cost:** Review round 1 found a cancelled send released the per-key lock while `load` was still running (fixed by moving an owned guard into the spawn_blocking closure) and a test that passed without the lock. Round 2 restored the save-then-forget order test. Accepted residual (user): the overlap test relies on a 500 ms window, not a state wait. `put` still holds a borrowed guard; see PLAN follow-ups from task 110.
+
 ## 2026-11-10 — Wave-2 size gate (task 108)
 Wave 2 (tasks 100-108) passed the binary size gate, measured from run 42890358687 at 8c468ff (main df81213 plus the task file). Windows is 15,136,256 B against the 15,500,000 B limit (wave 1 14,514,688, +621,568), leaving 363,744 B of headroom; macOS is 11,595,488 B (+546,384) and Linux 25,444,088 B (+644,808). All RSS figures are within budgets.json.
 **Cost:** Per-task attribution is approximate. PR #45's figure (15,100,928 B, run 42867914368) predates build.rs stripping public-suffix-list comments; task 104's stripped run measured 14,951,424 B (100, 103 and 104 together +436,736 over wave 1) and task 105's 14,968,832 B, which leaves about 167 KB across 106, 107 and the merge order, not split further. Headroom is now small for wave 3, so the keychain work needs a size check early. The known flake many_parameters_merge_in_linear_time hit once on macOS in PR #47 CI and passed on rerun.
