@@ -1642,6 +1642,9 @@ async fn store_calls_for_one_key_run_in_order() {
     )
     .await;
     // An authorize now wants to `save` the same key while the load still runs.
+    // Accepted residual (task 110): this sleep bounds the wait for the second call to
+    // reach the key's lock. It can pass with a broken lock on a very slow machine but
+    // never fails falsely; no sleep-free test can prove an overlap did not happen.
     let release = async {
         tokio::time::sleep(Duration::from_millis(500)).await;
         release_tx.send(()).unwrap();
@@ -1651,6 +1654,23 @@ async fn store_calls_for_one_key_run_in_order() {
         *store.log.lock().unwrap(),
         vec!["load", "load_done", "forget"]
     );
+}
+
+#[tokio::test]
+async fn store_save_then_forget_for_one_key_reach_the_store_in_order() {
+    let idp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT", "token_type": "bearer", "expires_in": 100,
+            "refresh_token": "RT_X",
+        })))
+        .mount(&idp)
+        .await;
+    let store = Arc::new(Ordered::default());
+    let (engine, rx, _) = engine_with(store.clone());
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, true)).await;
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, false)).await;
+    assert_eq!(*store.log.lock().unwrap(), vec!["save", "forget"]);
 }
 
 #[tokio::test]
