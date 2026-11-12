@@ -17,6 +17,14 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-12 — Secret store abstraction (task 111)
+Environments can now declare which store holds their secret values. `crates/storage/src/vault.rs` adds a `SecretStore` trait, an in-memory store, and an extensible `StoreKind`; `<env>.toml` gains `secrets` and `secret_names`. The loader fails closed on any store error including TimedOut, and values migrate between the file and a store in both directions. The OS keychain backend is task 114 and its wiring is 115.
+**Cost:** `File` is a `StoreKind` mode, not a second `SecretStore` implementation as the spec said (spec amended). The module is `vault` because the project deny rule blocks reads of `secrets.*`. Review round 1 fixed: a final delete failure is now Ok plus a LeftoverFileWarning (user decision); rollback restores a pre-existing store entry's old value; a non-string `secrets` no longer makes save write a plaintext secrets file; read-back mismatch and `migrate_to_file` restore gained tests. Known gaps are in PLAN under follow-ups from task 111.
+
+## 2026-11-12 — Keychain spike (task 109)
+The spike chose `keyring` 4.x for the OS keychain. Measured size cost: Windows +26,112 B, Linux +290,960 B. PR #51 was closed unmerged; the spike was evidence only.
+**Cost:** Wave-2 left 363,744 B of Windows headroom, so 26,112 B fits; wave 3 still needs its size gate (task 116). Do not merge the spike branch; backend work is task 114.
+
 ## 2026-11-10 — Wave-2 size gate (task 108)
 Wave 2 (tasks 100-108) passed the binary size gate, measured from run 42890358687 at 8c468ff (main df81213 plus the task file). Windows is 15,136,256 B against the 15,500,000 B limit (wave 1 14,514,688, +621,568), leaving 363,744 B of headroom; macOS is 11,595,488 B (+546,384) and Linux 25,444,088 B (+644,808). All RSS figures are within budgets.json.
 **Cost:** Per-task attribution is approximate. PR #45's figure (15,100,928 B, run 42867914368) predates build.rs stripping public-suffix-list comments; task 104's stripped run measured 14,951,424 B (100, 103 and 104 together +436,736 over wave 1) and task 105's 14,968,832 B, which leaves about 167 KB across 106, 107 and the merge order, not split further. Headroom is now small for wave 3, so the keychain work needs a size check early. The known flake many_parameters_merge_in_linear_time hit once on macOS in PR #47 CI and passed on rerun.

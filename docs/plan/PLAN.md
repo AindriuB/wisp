@@ -22,7 +22,7 @@ than no plan.
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** multiple collections; keychain (Linux spike first).
+- **Wave 3:** multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); see HISTORY. Open: 113 (collection switcher UI), 114 (keychain backend), 115 (keychain wiring), 116 (wave-3 size gate).
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -97,6 +97,13 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [Nit] 46-5 timing.rs:24 the Timings doc doesn't say what phases mean through a proxy.
 - [NOTE] Registry MAX_ENTRIES=64 FIFO: >64 unclaimed concurrent connects could evict a real entry (reported None); unreachable today (no runner/bulk send). Intermediate redirect hops and lost-race connects are never claimed and rely on the cap.
 - [NOTE] With reqwest-followed redirects the timings describe the final connection; with the engine's own loop, the first hop that opened a connection.
+
+### Follow-ups from task 111 (not 0.2.0 wave 3)
+- (a) A malformed `secrets` value makes `save_environment` write only plain vars and return Ok, silently dropping edited secret values; return an error.
+- (b) No test fails the first pre-set `get` (`fail_nth(0)`) or uses a malformed `<env>.secrets.toml` in `migrate_to_store`.
+- (c) Document `MemoryStore::accounts()` as test-only so 115 does not rely on enumeration.
+- (d) Until 115 wires `load_environment_with`, the app's plain `load_environment` reads `<env>.secrets.toml` regardless of mode (115 AC2 covers it).
+- (e) Two clones of one collection share keychain accounts and overwrite each other's values (follows from the committed collection id).
 
 ### Follow-ups from task 104 (not 0.2.0 wave 2)
 - [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.
@@ -438,3 +445,4 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 - When the Cookies table is tall, sideways scrolling works only with the pointer over the rows.
 
 ## Someday
+- KeePassXC secret store (later version; the 111 abstraction allows it).
