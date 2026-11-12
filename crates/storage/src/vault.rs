@@ -473,7 +473,7 @@ pub fn migrate_to_store(
             }
         }
     };
-    let copy = || -> Result<(), SecretStoreError> {
+    let mut copy = || -> Result<(), SecretStoreError> {
         for v in &secrets {
             let account = secret_account(id, name, &v.name);
             let existed = store.get(&account)?.is_some();
@@ -493,7 +493,7 @@ pub fn migrate_to_store(
         return Err(e.into());
     }
 
-    doc.insert("secrets", toml_edit::value(kind.as_str()));
+    doc["secrets"] = toml_edit::value(kind.as_str());
     let names: Vec<String> = secrets.iter().map(|v| v.name.clone()).collect();
     set_names(&mut doc, &names);
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
@@ -506,7 +506,11 @@ pub fn migrate_to_store(
             source: e,
         })?;
     }
-    tracing::debug!(environment = name, count = names.len(), "migrated secrets to store");
+    tracing::debug!(
+        environment = name,
+        count = names.len(),
+        "migrated secrets to store"
+    );
     Ok(())
 }
 
@@ -542,7 +546,7 @@ pub fn migrate_to_file(
     ensure_gitignore(&dir)?;
     fs::atomic_write_private(&sp, text.as_bytes())?;
 
-    doc.insert("secrets", toml_edit::value(StoreKind::File.as_str()));
+    doc["secrets"] = toml_edit::value(StoreKind::File.as_str());
     doc.remove("secret_names");
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
         if !had_file {
@@ -560,7 +564,11 @@ pub fn migrate_to_file(
             });
         }
     }
-    tracing::debug!(environment = name, count = secrets.len(), "migrated secrets to file");
+    tracing::debug!(
+        environment = name,
+        count = secrets.len(),
+        "migrated secrets to file"
+    );
     Ok(warnings)
 }
 

@@ -116,7 +116,10 @@ pub fn load_environment(root: &Path, name: &str) -> Result<Environment, StorageE
 }
 
 /// Edit (or create) a file's `[vars]` table in place and return the new text.
-pub(crate) fn render(path: &Path, vars: &[wisp_core::request::Var]) -> Result<String, StorageError> {
+pub(crate) fn render(
+    path: &Path,
+    vars: &[wisp_core::request::Var],
+) -> Result<String, StorageError> {
     let mut doc = if path.exists() {
         codec::parse(path, &fs::read_to_string(path)?)?
     } else {
@@ -191,8 +194,8 @@ pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageErr
     let pp = plain_path(root, &env.name);
     if pp.exists() {
         let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
-        let mode = crate::secrets::read_mode(&doc, &pp).unwrap_or(crate::secrets::Mode::File);
-        if mode != crate::secrets::Mode::File {
+        let mode = crate::vault::read_mode(&doc, &pp).unwrap_or(crate::vault::Mode::File);
+        if mode != crate::vault::Mode::File {
             // A store-mode (or unknown-kind) environment never gets a secrets
             // file; `secrets` and `secret_names` are kept verbatim by `render`.
             fs::atomic_write(&pp, render(&pp, &env.vars)?.as_bytes())?;

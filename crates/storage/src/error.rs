@@ -51,7 +51,7 @@ pub enum UnavailableReason {
     TimedOut,
 }
 
-/// A failure from a [`crate::secrets::SecretStore`]. Messages are fixed
+/// A failure from a [`crate::vault::SecretStore`]. Messages are fixed
 /// strings and non-secret codes; they never carry a value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
