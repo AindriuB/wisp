@@ -84,15 +84,26 @@ fn grant_name(g: Grant) -> &'static str {
 /// Persists OAuth2 refresh tokens in the keychain store, under `refresh_token_account`.
 ///
 /// A token over the keychain cap is kept in a session-only map in this adapter and nowhere else.
+/// Each environment also has one index entry in the same store listing its refresh-token account
+/// names (never values), so "Move to file" can delete tokens saved by an earlier run.
 pub struct KeychainRefreshStore {
     stores: SharedStores,
     session: Mutex<HashMap<String, String>>,
     warned: Mutex<HashSet<String>>,
     banners: Mutex<Vec<String>>,
-    /// (collection id, environment) pairs whose environment is keychain-backed right now.
-    backed: Mutex<HashSet<(String, String)>>,
-    /// Refresh-token accounts this adapter has saved or loaded, by (collection id, environment).
-    known: Mutex<HashMap<(String, String), HashSet<String>>>,
+    /// (collection id, environment) pairs configured as file-mode right now.
+    file_mode: Mutex<HashSet<(String, String)>>,
+    /// Serialises index read-modify-write cycles.
+    index_lock: Mutex<()>,
+}
+
+/// The index account of one environment. Four segments, so neither a secret account (three) nor
+/// a refresh-token account (seven) can equal it.
+fn index_account(col: &str, env: &str) -> Option<String> {
+    let id = CollectionId::parse(col)?;
+    let full = refresh_token_account(&id, env, "", "", "", "");
+    let prefix = full.strip_suffix("/oauth2////")?;
+    Some(format!("{prefix}/oauth2/index"))
 }
 
 impl KeychainRefreshStore {
@@ -102,59 +113,85 @@ impl KeychainRefreshStore {
             session: Mutex::new(HashMap::new()),
             warned: Mutex::new(HashSet::new()),
             banners: Mutex::new(Vec::new()),
-            backed: Mutex::new(HashSet::new()),
-            known: Mutex::new(HashMap::new()),
+            file_mode: Mutex::new(HashSet::new()),
+            index_lock: Mutex::new(()),
         }
     }
 
-    /// Record whether `env` of collection `col` is keychain-backed. Only a backed environment
-    /// ever has stored refresh tokens, so only then does `forget` touch the keychain.
-    pub fn set_keychain_backed(&self, col: &str, env: &str, backed: bool) {
+    /// Record whether `env` of collection `col` is configured as file-mode. Only a file-mode
+    /// environment never has stored refresh tokens, so only then does `forget` skip the keychain.
+    pub fn set_file_mode(&self, col: &str, env: &str, file_mode: bool) {
         let k = (col.to_string(), env.to_string());
-        let mut g = self.backed.lock().unwrap_or_else(|e| e.into_inner());
-        if backed {
+        let mut g = self.file_mode.lock().unwrap_or_else(|e| e.into_inner());
+        if file_mode {
             g.insert(k);
         } else {
             g.remove(&k);
         }
     }
 
-    fn is_backed(&self, col: &str, env: &str) -> bool {
-        self.backed
+    fn is_file_mode(&self, col: &str, env: &str) -> bool {
+        self.file_mode
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(&(col.to_string(), env.to_string()))
     }
 
-    fn remember(&self, key: &TokenKey, account: &str) {
-        if let (Some(c), Some(e)) = (&key.collection, &key.environment) {
-            self.known
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .entry((c.clone(), e.clone()))
-                .or_default()
-                .insert(account.to_string());
-        }
+    fn read_index(store: &dyn SecretStore, idx: &str) -> Result<Vec<String>, RefreshStoreError> {
+        let v = store.get(idx).map_err(|e| store_failure("read", &e))?;
+        Ok(v.map(|v| {
+            v.expose()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
     }
 
-    /// Delete every refresh token this adapter knows for `env` of collection `col` (used when
-    /// the environment moves to a file). Returns the first delete failure, after trying all.
+    /// Write the index, or delete it when empty. Fails closed, writing nothing, when the
+    /// listing would exceed the keychain cap.
+    fn write_index(
+        store: &dyn SecretStore,
+        idx: &str,
+        accounts: &[String],
+    ) -> Result<(), RefreshStoreError> {
+        if accounts.is_empty() {
+            return store.delete(idx).map_err(|e| store_failure("delete", &e));
+        }
+        let text = accounts.join("\n");
+        if text.len() > keychain::MAX_SECRET_BYTES {
+            return Err(RefreshStoreError::new(format!(
+                "refresh token not stored: this environment has too many saved tokens to index \
+                 (over {KEYCHAIN_LIMIT_TEXT}); use \"Move to file\" or remove old tokens"
+            )));
+        }
+        store
+            .set(idx, &SecretValue::new(text))
+            .map_err(|e| store_failure("write", &e))
+    }
+
+    /// Delete every refresh token listed for `env` of collection `col`, then the index (used
+    /// when the environment moves to a file). Blocking. Tries every delete and returns the
+    /// first failure; on a failure the index keeps the accounts that remain.
     pub fn forget_environment(&self, col: &str, env: &str) -> Result<(), RefreshStoreError> {
-        let accounts = self
-            .known
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&(col.to_string(), env.to_string()))
-            .unwrap_or_default();
+        let Some(idx) = index_account(col, env) else {
+            return Ok(());
+        };
+        let _g = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let store = self.store()?;
+        let accounts = Self::read_index(store, &idx)?;
         let mut first = None;
+        let mut left = Vec::new();
         for a in accounts {
             self.session().remove(&a);
-            if let Err(e) = self
-                .store()
-                .and_then(|s| s.delete(&a).map_err(|e| store_failure("delete", &e)))
-            {
-                first.get_or_insert(e);
+            if let Err(e) = store.delete(&a) {
+                first.get_or_insert(store_failure("delete", &e));
+                left.push(a);
             }
+        }
+        if let Err(e) = Self::write_index(store, &idx, &left) {
+            first.get_or_insert(e);
         }
         first.map_or(Ok(()), Err)
     }
@@ -205,7 +242,6 @@ fn store_failure(what: &str, e: &SecretStoreError) -> RefreshStoreError {
 impl RefreshTokenStore for KeychainRefreshStore {
     fn load(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError> {
         let (account, _) = Self::account(key)?;
-        self.remember(key, &account);
         if let Some(t) = self.session().get(&account) {
             return Ok(Some(t.clone()));
         }
@@ -217,11 +253,21 @@ impl RefreshTokenStore for KeychainRefreshStore {
 
     fn save(&self, key: &TokenKey, refresh_token: &str) -> Result<(), RefreshStoreError> {
         let (account, env) = Self::account(key)?;
-        self.remember(key, &account);
-        match self
-            .store()?
-            .set(&account, &SecretValue::new(refresh_token))
+        let store = self.store()?;
+        // Index first: if the listing cannot hold the account, nothing is stored.
         {
+            let _g = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let col = key.collection.as_deref().unwrap_or_default();
+            let idx = index_account(col, &env).ok_or_else(|| {
+                RefreshStoreError::new("refresh token not stored: the collection has no usable id")
+            })?;
+            let mut list = Self::read_index(store, &idx)?;
+            if !list.contains(&account) {
+                list.push(account.clone());
+                Self::write_index(store, &idx, &list)?;
+            }
+        }
+        match store.set(&account, &SecretValue::new(refresh_token)) {
             Ok(()) => {
                 self.session().remove(&account);
                 Ok(())
@@ -247,19 +293,30 @@ impl RefreshTokenStore for KeychainRefreshStore {
     }
 
     fn forget(&self, key: &TokenKey) -> Result<(), RefreshStoreError> {
-        // A key that can never have been stored, or an environment that is not keychain-backed,
-        // has nothing to forget: no keychain call, so an unusable keychain cannot fail it.
+        // A key that can never have been stored, or a file-mode environment (which never stores
+        // tokens), has nothing to forget: no keychain call. Every other environment deletes, so
+        // a re-authorize always replaces the old token; a delete failure fails closed.
         let Ok((account, env)) = Self::account(key) else {
             return Ok(());
         };
         let col = key.collection.as_deref().unwrap_or_default();
-        if !self.is_backed(col, &env) {
+        if self.is_file_mode(col, &env) {
             return Ok(());
         }
         self.session().remove(&account);
-        self.store()?
+        let store = self.store()?;
+        store
             .delete(&account)
-            .map_err(|e| store_failure("delete", &e))
+            .map_err(|e| store_failure("delete", &e))?;
+        let _g = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(idx) = index_account(col, &env) {
+            let mut list = Self::read_index(store, &idx)?;
+            if list.contains(&account) {
+                list.retain(|a| a != &account);
+                Self::write_index(store, &idx, &list)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -333,6 +390,19 @@ impl EnvStatus {
                         kind: StoreKind::Keychain,
                         ..
                     },
+                    ..
+                }
+            )
+    }
+
+    /// True when this status is for `active` and the environment is configured as file-mode.
+    /// Loading, error and every keychain-mode status are not.
+    pub fn is_file_mode(&self, active: &str) -> bool {
+        self.env == active
+            && matches!(
+                &self.state,
+                EnvState::Loaded {
+                    status: LoadStatus::File,
                     ..
                 }
             )
@@ -1223,11 +1293,11 @@ mod keychain_tests {
     fn keychain_refresh_store_round_trips_and_refuses_incomplete_keys() {
         let m = Arc::new(MemoryStore::new());
         let a = KeychainRefreshStore::new(m.clone());
-        a.set_keychain_backed(ID, "dev", true);
         let k = key(Some("dev"), Some(ID));
         a.save(&k, SENTINEL).unwrap();
         assert_eq!(a.load(&k).unwrap().as_deref(), Some(SENTINEL));
-        assert_eq!(m.accounts().len(), 1);
+        // The token and the environment's index.
+        assert_eq!(m.accounts().len(), 2);
         a.forget(&k).unwrap();
         assert_eq!(a.load(&k).unwrap(), None);
         for bad in [key(None, Some(ID)), key(Some("dev"), None)] {
@@ -1238,21 +1308,22 @@ mod keychain_tests {
     }
 
     #[test]
-    fn keychain_forget_touches_the_store_only_for_a_backed_environment() {
+    fn keychain_forget_skips_only_file_mode_and_incomplete_keys() {
         let m = Arc::new(MemoryStore::new());
         let a = KeychainRefreshStore::new(m.clone());
         let k = key(Some("dev"), Some(ID));
         a.save(&k, SENTINEL).unwrap();
         // File-mode environment: Ok, and the failing delete is never reached.
+        a.set_file_mode(ID, "dev", true);
         m.fail_next(SecretStoreError::Denied);
         a.forget(&k).unwrap();
         // No collection / no environment: Ok.
         a.forget(&key(Some("dev"), None)).unwrap();
         a.forget(&key(None, Some(ID))).unwrap();
-        assert_eq!(m.accounts().len(), 1);
+        assert_eq!(m.accounts().len(), 2);
         m.clear_failures();
-        // Backed: a delete failure fails.
-        a.set_keychain_backed(ID, "dev", true);
+        // Any other environment (status unknown, Failed, fell back...) deletes; a failure fails.
+        a.set_file_mode(ID, "dev", false);
         m.fail_next(SecretStoreError::Denied);
         assert!(a.forget(&k).is_err());
         a.forget(&k).unwrap();
@@ -1260,14 +1331,42 @@ mod keychain_tests {
     }
 
     #[test]
-    fn keychain_forget_environment_deletes_its_refresh_tokens() {
+    fn keychain_forget_environment_works_through_a_fresh_instance() {
+        let m = Arc::new(MemoryStore::new());
+        KeychainRefreshStore::new(m.clone())
+            .save(&key(Some("dev"), Some(ID)), SENTINEL)
+            .unwrap();
+        let other = KeychainRefreshStore::new(m.clone());
+        other.save(&key(Some("prod"), Some(ID)), SENTINEL).unwrap();
+        // A relaunch: a new adapter over the same store.
+        let fresh = KeychainRefreshStore::new(m.clone());
+        fresh.forget_environment(ID, "dev").unwrap();
+        let left = m.accounts();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(left.iter().all(|a| a.contains("/prod/")));
+    }
+
+    #[test]
+    fn keychain_forget_environment_keeps_failed_accounts_in_the_index() {
         let m = Arc::new(MemoryStore::new());
         let a = KeychainRefreshStore::new(m.clone());
         a.save(&key(Some("dev"), Some(ID)), SENTINEL).unwrap();
-        a.save(&key(Some("prod"), Some(ID)), SENTINEL).unwrap();
+        m.fail_nth(1, SecretStoreError::Denied);
+        assert!(a.forget_environment(ID, "dev").is_err());
+        assert_eq!(m.accounts().len(), 2);
         a.forget_environment(ID, "dev").unwrap();
-        assert_eq!(m.accounts().len(), 1);
-        assert!(m.accounts()[0].contains("/prod/"));
+        assert!(m.accounts().is_empty());
+    }
+
+    #[test]
+    fn keychain_save_over_the_index_cap_fails_and_stores_nothing() {
+        let m = Arc::new(MemoryStore::new());
+        let a = KeychainRefreshStore::new(m.clone());
+        let mut k = key(Some("dev"), Some(ID));
+        k.scope = "s".repeat(keychain::MAX_SECRET_BYTES);
+        let e = a.save(&k, SENTINEL).unwrap_err();
+        assert!(!e.to_string().contains(SENTINEL));
+        assert!(m.accounts().is_empty());
     }
 
     #[test]
@@ -1297,18 +1396,18 @@ mod keychain_tests {
         let (dir, _) = data();
         let m = Arc::new(MemoryStore::new());
         let a = KeychainRefreshStore::new(m.clone());
-        a.set_keychain_backed(ID, "dev", true);
         let k = key(Some("dev"), Some(ID));
-        m.fail_next(SecretStoreError::TooLarge);
+        // Let the index write through, then refuse the token itself.
+        m.fail_nth(2, SecretStoreError::TooLarge);
         a.save(&k, SENTINEL).unwrap();
         assert_eq!(a.load(&k).unwrap().as_deref(), Some(SENTINEL));
-        assert!(m.accounts().is_empty());
+        assert_eq!(m.accounts().len(), 1); // the index only
         let banners = a.take_banners();
         assert_eq!(banners.len(), 1);
         assert!(banners[0].contains("dev") && banners[0].contains("kept for this session only"));
         assert!(!banners[0].contains(SENTINEL));
-        // Once per account.
-        m.fail_next(SecretStoreError::TooLarge);
+        // Once per account (the index already lists it: one read, then the token).
+        m.fail_nth(1, SecretStoreError::TooLarge);
         a.save(&k, SENTINEL).unwrap();
         assert!(a.take_banners().is_empty());
         // A new adapter has nothing, and nothing reached a file.

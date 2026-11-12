@@ -1192,10 +1192,14 @@ fn persist_refresh_for(c: &OpenCollection) -> bool {
     }
 }
 
-/// Tell the refresh-token adapter whether the collection's active environment is keychain-backed.
-fn sync_keychain_backed(store: &vault::KeychainRefreshStore, c: &OpenCollection) {
+/// Tell the refresh-token adapter whether the collection's active environment is file-mode.
+fn sync_file_mode(store: &vault::KeychainRefreshStore, c: &OpenCollection) {
     if let (IdState::Known(id), Some(env)) = (&c.coll_id, &c.active_env) {
-        store.set_keychain_backed(id, &env.name, persist_refresh_for(c));
+        let file = c
+            .env_status
+            .as_ref()
+            .is_some_and(|s| s.is_file_mode(&env.name));
+        store.set_file_mode(id, &env.name, file);
     }
 }
 
@@ -1902,12 +1906,19 @@ impl Workspace {
     ) {
         let data = self.data_dir.clone();
         let stores = self.stores.clone();
+        let refresh_store = self.refresh_store.clone();
+        let coll_id = self
+            .coll_ix(&root)
+            .and_then(|ix| match &self.collections[ix].coll_id {
+                IdState::Known(id) => Some(id.clone()),
+                _ => None,
+            });
         cx.spawn(async move |this, cx| {
             let (r, e, a) = (root.clone(), env.clone(), action.clone());
-            let outcome = cx
+            let (outcome, forget_err) = cx
                 .background_executor()
                 .spawn(async move {
-                    vault::run(
+                    let outcome = vault::run(
                         &a,
                         &vault::OpEnv {
                             root: &r,
@@ -1915,11 +1926,19 @@ impl Workspace {
                             data: data.as_ref(),
                             stores: &*stores,
                         },
-                    )
+                    );
+                    // The moved environment's stored refresh tokens go too, off the UI thread.
+                    let forget_err = match (&a, &outcome, &coll_id) {
+                        (EnvAction::MoveToFile { .. }, vault::Outcome::Done(_), Some(id)) => {
+                            refresh_store.forget_environment(id, &e).err()
+                        }
+                        _ => None,
+                    };
+                    (outcome, forget_err)
                 })
                 .await;
             this.update(cx, |w, cx| {
-                w.finish_env_action(root, env, action, outcome, cx)
+                w.finish_env_action(root, env, action, outcome, forget_err, cx)
             })
             .ok();
         })
@@ -1932,6 +1951,7 @@ impl Workspace {
         env: String,
         action: EnvAction,
         outcome: vault::Outcome,
+        forget_err: Option<wisp_core::auth::oauth2::RefreshStoreError>,
         cx: &mut Context<Self>,
     ) {
         if let Some(spec) = vault::prompt_for(&outcome, &action, &env, &root) {
@@ -1951,9 +1971,7 @@ impl Workspace {
                     }
                 }
                 EnvAction::MoveToFile { .. } => {
-                    if let IdState::Known(id) = &self.collections[ix].coll_id
-                        && let Err(e) = self.refresh_store.forget_environment(id, &env)
-                    {
+                    if let Some(e) = &forget_err {
                         cx.emit(WorkspaceEvent::Notice(
                             format!("Moved to file; stored refresh tokens were not deleted: {e}")
                                 .into(),
@@ -2224,7 +2242,7 @@ impl Workspace {
         let mut plan = plan;
         if let Some(auth) = plan.prepared.auth.as_mut() {
             if let Some(c) = c {
-                sync_keychain_backed(&self.refresh_store, c);
+                sync_file_mode(&self.refresh_store, c);
             }
             auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
         }
@@ -2346,7 +2364,7 @@ impl Workspace {
         };
         if let Command::AuthorizeStart { auth, .. } = &mut command {
             if let Some(c) = c {
-                sync_keychain_backed(&self.refresh_store, c);
+                sync_file_mode(&self.refresh_store, c);
             }
             auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
         }
