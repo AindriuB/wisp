@@ -75,6 +75,26 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - set_cookie_persistence reads the active collection's id inside its callback, so switching while an id is being created could apply to the wrong collection.
 - measure.ps1 changes are unrun and unlinted until the first Windows measure run.
 - The refused-argv-path active fallback has no test.
+- 50-4 `quit-check.sh:53` still runs Wisp on the real data dir (now restores and rewrites the collection list); use a per-launch temp WISP_DATA_DIR as in measure.sh.
+- 50-5 Palette Switch/Close resolve-by-root is untested; add a pure helper test with shifted indices.
+- 50-6 `settings.rs:149` corrupt `open_collections`/`active_collection` is untested, and one bad element drops the whole list; keep valid strings and test each key.
+- 50-7 `settings.rs:574` restore dedup branch is untested; duplicate missing paths are reported twice.
+- 50-8 (task 99, AC52) `workspace.rs:527` history re-reads the collection id from disk while cookies and tokens use the cached id; an on-disk id change routes history into another collection's store. Build HistoryJob from the known id.
+- 50-9 Scratch tabs become unreachable once a collection opens but still count as dirty at quit.
+- 50-10 Restore silently forgets a remembered collection that exists but fails to open.
+- 50-11 A settings-save failure during restore is emitted before the window subscribes.
+- 50-12 Jar changes after the close-time flush are never persisted.
+- 50-13 Watcher batches from background collections rescan trees on the UI thread.
+- 50-14 `release_tab` leaves id waits; a closed tab can still send or authorize under the wrong partition (relates to 47-4).
+- 50-15 A clone whose id lands first is briefly live, and its refusal can save the shared jar.
+- 50-16 (nit) `measure.ps1:117` fail path kills the app without WaitForExit, so temp dir removal can fail.
+- 50-17 (nit) Palette collections mode does not preselect the active collection.
+- 50-18 (nit) SwitchCollection has no root handler.
+- 50-19 (nit) Repeated tab-to-collection lookups in send/authorize; use one helper.
+- 50-R1 Residual, accepted by the user: close-collection and clone-clash decisions are tested via plan_clash/plan_close/confirmed_open, but the dispatch in close_collection and the clash handler is not (mutations there pass every test); no GPUI test harness exists.
+- 50-R2 Add a GPUI test harness (gpui TestAppContext) so Workspace flows get end-to-end tests.
+- 50-P3a `sidebar.rs:529-535` after a confirmed delete in a non-active collection, collapsed/selected are trimmed by relative path in the shown collection (cosmetic).
+- 50-P3b `import.rs:610` new test sits before the module's use lines (idiom nit).
 
 ### Follow-ups from task 86 (not for 0.1.1)
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
