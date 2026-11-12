@@ -88,6 +88,16 @@ PR #54 round 1 (54-1 fixed in the PR: TooLong maps to TooLarge only for the secr
 - 54-11 (nit) the in-crate store-Debug test never inserts ACCOUNT/SECRET sentinels before formatting.
 - 54-12 (nit, -> task 99, AC70) secret copies on the worker are not zeroized.
 
+PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real `.git` directory, anchor worktree verification; the untrusted-read branch of `common_dir` is removed; orchestrator decision):
+- 54-14 (-> task 99, AC71) post-match I/O uses the Disk path form, so Win32 name rewriting returns: `worktrees/COM1` opens a DOS device, and trailing-dot or trailing-space names reach another folder -> do I/O on the verbatim form, or refuse reserved names and trailing dots/spaces; cfg(windows) tests.
+- 54-15 `tests/vault.rs` ~2222 `file_mode_env` is dead code on Windows after the cfg(unix) gating, so clippy -D warnings fails there -> cfg(unix).
+- 54-16 `vault_binding.rs` ~405 nested if-let in Windows-only code may trip collapsible_if -> let-chains; run clippy for the msvc target.
+- 54-17 (nit) the lexical check runs before simplify_verbatim, so a verbatim gitdir text keeps `..` inside one component -> refuse verbatim prefixes in gitdir text.
+- 54-18 (nit, tests) the lexically plausible UNC test never matches the trusted dir, so it passes without the guard.
+- 54-N1 the 54-13 regression test passed before the fix (old code swallowed the read error); no test proves a bound worktree's gitdir/commondir is never opened.
+- 54-D1 document on `vault::bind_additional_checkout`: a new folder is one-click verifiable only as a worktree of a bound main checkout (bound worktrees do not anchor).
+- 54-CI add a Windows `cargo test` + clippy job to CI: Windows-only code in vault_binding/keychain has never been compiled under test or linted (54-15 and 54-16 were found by reading).
+
 ### Follow-ups from task 113 (not 0.2.0 wave 3)
 - collections.rs:66-72 re-derives names and walks collection_root(i) instead of using OpenCollection::name() and Workspace::collections; drift risk.
 - collections.rs list_open stays true when the count drops to 1, so the list reappears expanded when a second collection opens.

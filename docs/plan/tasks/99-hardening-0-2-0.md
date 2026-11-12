@@ -116,6 +116,7 @@ Every item that adds a test names it in the PR description.
 - [ ] AC68 [54-4] Windows credentials default to Enterprise (roaming) persistence. The keychain store uses Local persistence, or the code and PLAN record roaming as accepted with the reason.
 - [ ] AC69 [54-5, security] Keychain items are keyed by a generic service/account, so another app can plant or duplicate them (Linux Ambiguous), and `.` is unescaped in Windows target names. `open()` rejects an empty or dotted service and the Ambiguous outcome is documented; 115 uses a distinctive reverse-DNS service. Tests cover the rejected service names.
 - [ ] AC70 [54-12, security] Secret copies held on the keychain worker thread are zeroized after use. A review of the code (no test) shows no un-zeroized copy remains.
+- [ ] AC71 [54-14, security] Worktree verification's post-match I/O uses the Disk path form, so Win32 name rewriting applies: `worktrees/COM1` opens a DOS device and trailing-dot or trailing-space names reach another folder. I/O uses the verbatim form, or reserved names and trailing dots/spaces are refused; cfg(windows) tests show a `COM1` entry and a trailing-dot entry are refused.
 
 **K — CI and release gate**
 - [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
