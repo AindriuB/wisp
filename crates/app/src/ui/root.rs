@@ -21,6 +21,7 @@ use crate::palette::PaletteMode;
 use crate::settings::{SplitAxis, ThemeMode};
 use crate::tab::{DiskState, RequestTab};
 use crate::theme;
+use crate::ui::collections::CloseRequested;
 use crate::ui::cookie_jar::CookieJarView;
 use crate::ui::history::HistoryView;
 use crate::ui::import::ImportView;
@@ -90,6 +91,7 @@ pub struct WorkspaceView {
     notice: Option<SharedString>,
     focus: FocusHandle,
     _workspace_sub: Subscription,
+    _sidebar_sub: Subscription,
     _appearance: Subscription,
 }
 
@@ -135,6 +137,15 @@ impl WorkspaceView {
             }
             cx.notify();
         });
+        let _sidebar_sub = cx.subscribe_in(
+            &sidebar,
+            window,
+            |this, _, ev: &CloseRequested, window, cx| {
+                if let Some(ix) = this.workspace.read(cx).coll_ix(&ev.0) {
+                    this.close_collection_at(ix, window, cx);
+                }
+            },
+        );
         let ws = workspace.clone();
         let _appearance = window.observe_window_appearance(move |window, cx| {
             let mode = ws.read(cx).settings.theme;
@@ -156,6 +167,7 @@ impl WorkspaceView {
             notice: None,
             focus,
             _workspace_sub,
+            _sidebar_sub,
             _appearance,
         }
     }
@@ -314,6 +326,12 @@ impl WorkspaceView {
             });
             return;
         };
+        self.close_collection_at(ix, window, cx);
+    }
+
+    /// Close collection `ix`, asking first when it has unsaved tabs. The palette action and
+    /// the sidebar switcher both come through here.
+    fn close_collection_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if !self.workspace.read(cx).collection_dirty(ix, cx) {
             self.workspace
                 .update(cx, |w, cx| w.close_collection(ix, cx));
