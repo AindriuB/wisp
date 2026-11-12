@@ -13,8 +13,9 @@ use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath, h_flex};
 
 use crate::actions::{
     CancelRequest, ClearHistory, CloseCollection, CloseTab, NewRequest, OpenCollection, OpenImport,
-    OpenPalette, ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory,
-    SwitchCollection, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    OpenPalette, ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar,
+    ShowEnvSecrets, ShowHistory, SwitchCollection, SwitchEnvironment, ToggleHistoryBodies,
+    ToggleLayout, ToggleTheme,
 };
 use crate::palette::{self, CommandId, Match, PaletteItem, PaletteKind, PaletteMode};
 use crate::workspace::{Workspace, WorkspaceEvent};

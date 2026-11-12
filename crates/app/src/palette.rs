@@ -294,6 +294,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn keychain_share_command_is_absent_from_an_unbound_root() {
+        let all = items(None, &[], None, PaletteMode::All);
+        let has = |v: &[PaletteItem]| {
+            v.iter()
+                .any(|i| i.kind == PaletteKind::Command(CommandId::ShareSecrets))
+        };
+        let mut hidden = all.clone();
+        retain_available(&mut hidden, false);
+        assert!(has(&all) && !has(&hidden));
+        let mut shown = all.clone();
+        retain_available(&mut shown, true);
+        assert!(has(&shown));
+        assert!(hidden.iter().any(|i| i.label == "Environment secrets…"));
+    }
+
     fn order(items: &[PaletteItem], q: &str) -> Vec<usize> {
         filter(items, q, 100).into_iter().map(|m| m.index).collect()
     }

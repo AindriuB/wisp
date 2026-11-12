@@ -1,8 +1,8 @@
 //! The workspace entity: engine, collection, tabs and settings.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
@@ -29,12 +29,12 @@ use wisp_storage::watcher::Watcher;
 
 use crate::draft::{self, ReloadAction};
 use crate::settings::{self, Settings};
-use crate::vault::{self, EnvAction, EnvState, EnvStatus, PromptSpec};
 use crate::tab::{
     AuthorizeState, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent,
 };
 use crate::ui::cookie_jar::{self as cookie_ui, Debounce};
 use crate::ui::history as history_ui;
+use crate::vault::{self, EnvAction, EnvState, EnvStatus, PromptSpec};
 
 /// Quiet period after the first watcher event before the batch is handled.
 const WATCH_BATCH: Duration = Duration::from_millis(50);
@@ -1337,7 +1337,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let jars = CookieJars::default();
-        let stores: vault::SharedStores = Arc::new(vault::AppStores::open(vault::portable_marker()));
+        let stores: vault::SharedStores =
+            Arc::new(vault::AppStores::open(vault::portable_marker()));
         let refresh_store = Arc::new(vault::KeychainRefreshStore::new(stores.clone()));
         let (engine, events) = Engine::start(EngineConfig {
             body_memory_limit: settings.body_memory_limit,
@@ -1740,7 +1741,9 @@ impl Workspace {
             let job_name = name.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { vault::load_job(&job_root, &job_name, data.as_ref(), &*stores) })
+                .spawn(
+                    async move { vault::load_job(&job_root, &job_name, data.as_ref(), &*stores) },
+                )
                 .await;
             this.update(cx, |w, cx| {
                 w.finish_env_load(&root, generation, name, switching, previous, result, cx)
@@ -1801,7 +1804,10 @@ impl Workspace {
         self.active_collection().is_some_and(|c| {
             matches!(
                 c.env_status.as_ref().map(|s| &s.state),
-                Some(EnvState::Loaded { can_share: true, .. })
+                Some(EnvState::Loaded {
+                    can_share: true,
+                    ..
+                })
             )
         })
     }
@@ -1890,8 +1896,10 @@ impl Workspace {
                     )
                 })
                 .await;
-            this.update(cx, |w, cx| w.finish_env_action(root, env, action, outcome, cx))
-                .ok();
+            this.update(cx, |w, cx| {
+                w.finish_env_action(root, env, action, outcome, cx)
+            })
+            .ok();
         })
         .detach();
     }
@@ -1913,7 +1921,10 @@ impl Workspace {
         }
         // Reload so the status and the names reflect what happened (or did not).
         if let Some(ix) = self.coll_ix(&root) {
-            let active = self.collections[ix].active_env.as_ref().map(|e| e.name.clone());
+            let active = self.collections[ix]
+                .active_env
+                .as_ref()
+                .map(|e| e.name.clone());
             if active.as_deref() == Some(env.as_str()) {
                 self.load_env_at(ix, env, false, cx);
             }

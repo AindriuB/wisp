@@ -15,7 +15,8 @@ use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 use crate::actions::{
     CancelRequest, ClearHistory, CloseCollection, CloseTab, KeepMine, NewRequest, NextTab,
     OpenCollection, OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest,
-    ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory, SwitchEnvironment,
+    ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
 use crate::settings::{SplitAxis, ThemeMode};
@@ -311,22 +312,23 @@ impl WorkspaceView {
             let mut row = strip(b.text);
             if let Some(a) = b.action {
                 let (label, action) = match a {
-                    BannerAction::UseKeychain => (
-                        "Use keychain secrets…",
-                        EnvAction::Bind { retry: None },
-                    ),
+                    BannerAction::UseKeychain => {
+                        ("Use keychain secrets…", EnvAction::Bind { retry: None })
+                    }
                     BannerAction::SameCollectionMoved => (
                         "This is the same collection, moved",
                         EnvAction::PrepareRebind,
                     ),
                 };
-                row = row.child(Button::new(("env-banner", i)).label(label).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        let action = action.clone();
-                        this.workspace
-                            .update(cx, |w, cx| w.request_env_action(action, cx));
-                    }),
-                ));
+                row = row.child(
+                    Button::new(("env-banner", i))
+                        .label(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let action = action.clone();
+                            this.workspace
+                                .update(cx, |w, cx| w.request_env_action(action, cx));
+                        })),
+                );
             }
             out.push(row);
         }

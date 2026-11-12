@@ -100,10 +100,11 @@ impl Render for EnvSecretsView {
             Some(e) => format!("Environment secrets: {e}"),
             None => "Environment secrets".to_string(),
         };
-        let mut body = v_flex()
-            .gap_2()
-            .child(div().text_lg().child(title))
-            .child(div().text_color(muted).child(format!("Mode: {}", model.mode)));
+        let mut body = v_flex().gap_2().child(div().text_lg().child(title)).child(
+            div()
+                .text_color(muted)
+                .child(format!("Mode: {}", model.mode)),
+        );
         match &probe {
             Some(Err(reason)) => {
                 body = body.child(
@@ -128,7 +129,12 @@ impl Render for EnvSecretsView {
                         .gap_2()
                         .px_2()
                         .py_1()
-                        .child(div().flex_1().truncate().child(SharedString::from(n.clone())));
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .child(SharedString::from(n.clone())),
+                        );
                     if model.set_and_delete {
                         row = row.child(
                             Button::new(("secret-delete", ix))
@@ -161,9 +167,9 @@ impl Render for EnvSecretsView {
                             Button::new("secret-set")
                                 .label("Set value")
                                 .disabled(!keychain_ok)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.set_value(window, cx)
-                                })),
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.set_value(window, cx)),
+                                ),
                         ),
                 );
             }
@@ -193,7 +199,9 @@ impl Render for EnvSecretsView {
                     Button::new("secret-import")
                         .label("Import secrets file")
                         .disabled(!keychain_ok)
-                        .on_click(cx.listener(|this, _, _, cx| this.act(EnvAction::ImportFile, cx))),
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.act(EnvAction::ImportFile, cx)),
+                        ),
                 );
             }
             if model.share {

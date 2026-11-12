@@ -399,9 +399,7 @@ pub fn load_job(
         (LoadStatus::Store { .. }, Some(id)) => bound_roots(data, id)
             .map(|roots| {
                 let canon = std::fs::canonicalize(root).ok();
-                roots
-                    .iter()
-                    .any(|r| r == root || Some(r) == canon.as_ref())
+                roots.iter().any(|r| r == root || Some(r) == canon.as_ref())
             })
             .unwrap_or(false),
         _ => false,
@@ -441,7 +439,8 @@ pub fn panel_model(env: Option<&Environment>, status: Option<&EnvStatus>) -> Pan
         };
     };
     let mut names: Vec<String> = env.secrets.iter().map(|s| s.name.clone()).collect();
-    let (mut keychain_ops, mut file_env, mut share, mut file_present) = (false, false, false, false);
+    let (mut keychain_ops, mut file_env, mut share, mut file_present) =
+        (false, false, false, false);
     if let EnvState::Loaded {
         status: s,
         unresolved,
@@ -481,18 +480,29 @@ pub fn panel_model(env: Option<&Environment>, status: Option<&EnvStatus>) -> Pan
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvAction {
     /// Bind this collection to its root, then retry `retry`.
-    Bind { retry: Option<Box<EnvAction>> },
+    Bind {
+        retry: Option<Box<EnvAction>>,
+    },
     MoveToKeychain,
-    SetValue { var: String, value: SecretValue },
-    DeleteValue { var: String },
-    MoveToFile { allow_drop: bool },
+    SetValue {
+        var: String,
+        value: SecretValue,
+    },
+    DeleteValue {
+        var: String,
+    },
+    MoveToFile {
+        allow_drop: bool,
+    },
     ImportFile,
     /// Look up the bound roots for the rebind confirmation.
     PrepareRebind,
     Rebind,
     BindAdditional,
     NewId,
-    Share { new_root: PathBuf },
+    Share {
+        new_root: PathBuf,
+    },
 }
 
 /// A confirmation: the buttons, and what each one runs (`None` changes nothing).
@@ -507,7 +517,14 @@ pub struct PromptSpec {
 }
 
 impl PromptSpec {
-    fn yes_cancel(root: &Path, env: &str, title: String, detail: String, yes: &str, a: EnvAction) -> Self {
+    fn yes_cancel(
+        root: &Path,
+        env: &str,
+        title: String,
+        detail: String,
+        yes: &str,
+        a: EnvAction,
+    ) -> Self {
         Self {
             root: root.to_path_buf(),
             env: env.to_string(),
@@ -555,7 +572,7 @@ pub fn first_prompt(action: &EnvAction, env: &str, root: &Path) -> Option<Prompt
         )),
         EnvAction::ImportFile => Some(p(
             format!("Import {env}.secrets.toml?"),
-            format!("Its values are stored in the keychain and the file is deleted."),
+            "Its values are stored in the keychain and the file is deleted.".to_string(),
             "Import",
         )),
         EnvAction::DeleteValue { var } => Some(p(
@@ -586,7 +603,10 @@ pub fn bind_prompt(root: &Path, env: &str, retry: EnvAction) -> PromptSpec {
     PromptSpec::yes_cancel(
         root,
         env,
-        format!("Use keychain secrets for this collection at {}?", root.display()),
+        format!(
+            "Use keychain secrets for this collection at {}?",
+            root.display()
+        ),
         "Secrets are kept in the keychain under this collection's id.".to_string(),
         "Use keychain secrets",
         EnvAction::Bind { retry },
@@ -623,7 +643,11 @@ fn rebind_prompt(root: &Path, env: &str, bound: &[PathBuf]) -> PromptSpec {
 }
 
 fn copy_prompt(root: &Path, env: &str, bound: &[PathBuf]) -> PromptSpec {
-    let verb = if bound.len() == 1 { "still exists" } else { "still exist" };
+    let verb = if bound.len() == 1 {
+        "still exists"
+    } else {
+        "still exist"
+    };
     PromptSpec {
         root: root.to_path_buf(),
         env: env.to_string(),
@@ -657,7 +681,12 @@ pub enum Outcome {
 }
 
 /// The confirmation an outcome calls for; `action` is what was run.
-pub fn prompt_for(outcome: &Outcome, action: &EnvAction, env: &str, root: &Path) -> Option<PromptSpec> {
+pub fn prompt_for(
+    outcome: &Outcome,
+    action: &EnvAction,
+    env: &str,
+    root: &Path,
+) -> Option<PromptSpec> {
     match outcome {
         Outcome::NeedBind => {
             let retry = match action {
@@ -667,7 +696,7 @@ pub fn prompt_for(outcome: &Outcome, action: &EnvAction, env: &str, root: &Path)
             Some(bind_prompt(
                 root,
                 env,
-                retry.map_or(EnvAction::Bind { retry: None }, |r| r),
+                retry.unwrap_or(EnvAction::Bind { retry: None }),
             ))
         }
         Outcome::ConfirmDrop(names) => Some(drop_prompt(root, env, names)),
@@ -695,7 +724,9 @@ fn failed(prefix: &str, e: impl std::fmt::Display) -> Outcome {
 pub fn save_failure_notice(e: &StorageError) -> String {
     match e {
         StorageError::SecretsNeedStore { .. } => {
-            format!("Not saved (bug: secrets for a keychain environment must be set one at a time): {e}")
+            format!(
+                "Not saved (bug: secrets for a keychain environment must be set one at a time): {e}"
+            )
         }
         _ => format!("Not saved: {e}"),
     }
@@ -716,12 +747,7 @@ fn bound_elsewhere_notice(data: &DataDir, id: &CollectionId, first: &Path) -> St
 }
 
 /// Map a [`SecretsError`] from a store operation. `Unbound` is `None`: the caller asks to bind.
-fn op_error(
-    prefix: &str,
-    e: &SecretsError,
-    data: &DataDir,
-    id: &CollectionId,
-) -> Option<Outcome> {
+fn op_error(prefix: &str, e: &SecretsError, data: &DataDir, id: &CollectionId) -> Option<Outcome> {
     Some(match e {
         SecretsError::Unbound => return None,
         SecretsError::IdBoundElsewhere { bound_root } => {
@@ -736,7 +762,9 @@ fn op_error(
 /// nothing written.
 pub fn run(action: &EnvAction, e: &OpEnv) -> Outcome {
     let Some(data) = e.data else {
-        return Outcome::Notice("The data directory is unknown: keychain secrets are unavailable".into());
+        return Outcome::Notice(
+            "The data directory is unknown: keychain secrets are unavailable".into(),
+        );
     };
     let ctx = VaultCtx::new(data.clone());
     let store = e.stores.get(StoreKind::Keychain);
@@ -755,9 +783,8 @@ pub fn run(action: &EnvAction, e: &OpEnv) -> Outcome {
                         e.root.display()
                     )),
                 },
-                Err(err) => {
-                    op_error("Not enabled", &err, data, &id).unwrap_or_else(|| failed("Not enabled", err))
-                }
+                Err(err) => op_error("Not enabled", &err, data, &id)
+                    .unwrap_or_else(|| failed("Not enabled", err)),
             }
         }
         EnvAction::MoveToKeychain => {
@@ -781,8 +808,9 @@ pub fn run(action: &EnvAction, e: &OpEnv) -> Outcome {
                 Err(SecretsError::Store(SecretStoreError::TooLarge)) => {
                     Outcome::Notice(oversized_notice(e, &id, data))
                 }
-                Err(err) => op_error("Not moved to keychain", &err, data, &id)
-                    .unwrap_or(Outcome::NeedBind),
+                Err(err) => {
+                    op_error("Not moved to keychain", &err, data, &id).unwrap_or(Outcome::NeedBind)
+                }
             }
         }
         EnvAction::SetValue { var, value } => {
@@ -870,7 +898,10 @@ pub fn run(action: &EnvAction, e: &OpEnv) -> Outcome {
                         format!(
                             "Imported the secrets file for {}: {}",
                             e.env,
-                            new.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")
+                            new.iter()
+                                .map(|n| n.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         )
                     };
                     if let Some(w) = leftover {
@@ -931,7 +962,8 @@ pub fn run(action: &EnvAction, e: &OpEnv) -> Outcome {
         }
         EnvAction::NewId => match crate::workspace::assign_collection_id(e.root) {
             Ok(_) => Outcome::Done(
-                "This copy now has its own collection id; keychain secrets are not enabled for it".into(),
+                "This copy now has its own collection id; keychain secrets are not enabled for it"
+                    .into(),
             ),
             Err(r) => failed("Not changed", r),
         },
@@ -993,3 +1025,711 @@ fn oversized_notice(e: &OpEnv, id: &CollectionId, data: &DataDir) -> String {
     )
 }
 
+#[cfg(test)]
+mod keychain_tests {
+    use super::*;
+    use wisp_storage::collection::assign_new_collection_id;
+    use wisp_storage::vault::{MemoryStore, secret_account};
+
+    const SENTINEL: &str = "s3ntinel-token-xyz";
+    const ID: &str = "abcdef0123456789";
+
+    fn data() -> (tempfile::TempDir, DataDir) {
+        let d = tempfile::tempdir().unwrap();
+        let data = DataDir::at(d.path().join("data"));
+        (d, data)
+    }
+
+    /// A collection root with `id` (when given) and a keychain-mode `dev` environment.
+    fn coll(parent: &Path, name: &str, id: Option<&str>) -> PathBuf {
+        let root = parent.join(name);
+        std::fs::create_dir_all(root.join("environments")).unwrap();
+        let head = match id {
+            Some(id) => format!("format = 1\nid = \"{id}\"\n"),
+            None => "format = 1\n".to_string(),
+        };
+        std::fs::write(root.join("collection.toml"), head).unwrap();
+        std::fs::write(
+            root.join("environments/dev.toml"),
+            "secrets = \"keychain\"\nsecret_names = [\"token\"]\n[vars]\nhost = \"h\"\n",
+        )
+        .unwrap();
+        root
+    }
+
+    fn file_coll(parent: &Path, name: &str, id: &str) -> PathBuf {
+        let root = coll(parent, name, Some(id));
+        std::fs::write(root.join("environments/dev.toml"), "[vars]\nhost = \"h\"\n").unwrap();
+        std::fs::write(
+            root.join("environments/dev.secrets.toml"),
+            "[vars]\ntoken = \"t1\"\n",
+        )
+        .unwrap();
+        root
+    }
+
+    fn cid(s: &str) -> CollectionId {
+        CollectionId::parse(s).unwrap()
+    }
+
+    fn status(root: &Path, data: &DataDir, store: &MemoryStore) -> LoadStatus {
+        load_job(root, "dev", Some(data), store)
+            .loaded
+            .unwrap()
+            .status
+    }
+
+    fn env_op<'a>(root: &'a Path, data: &'a DataDir, store: &'a MemoryStore) -> OpEnv<'a> {
+        OpEnv {
+            root,
+            env: "dev",
+            data: Some(data),
+            stores: store,
+        }
+    }
+
+    fn set(var: &str, value: &str) -> EnvAction {
+        EnvAction::SetValue {
+            var: var.into(),
+            value: SecretValue::new(value),
+        }
+    }
+
+    fn key(env: Option<&str>, col: Option<&str>) -> TokenKey {
+        TokenKey {
+            grant: Grant::AuthCode,
+            token_url: "https://idp/t".into(),
+            client_id: "cid".into(),
+            scope: "r".into(),
+            collection: col.map(str::to_string),
+            environment: env.map(str::to_string),
+        }
+    }
+
+    fn files_under(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn keychain_service_is_the_variable_when_set_and_non_empty() {
+        assert_eq!(service_name(None), "wisp");
+        assert_eq!(service_name(Some("")), "wisp");
+        assert_eq!(service_name(Some("wisp-test-1")), "wisp-test-1");
+    }
+
+    #[test]
+    fn keychain_refresh_persists_only_for_a_keychain_status() {
+        let st = |state| EnvStatus {
+            env: "dev".into(),
+            state,
+        };
+        let loaded = |status| EnvState::Loaded {
+            status,
+            unresolved: vec![],
+            can_share: false,
+            secrets_file: false,
+        };
+        let kc = st(loaded(LoadStatus::Store {
+            kind: StoreKind::Keychain,
+            file_ignored: false,
+        }));
+        assert!(kc.persist_refresh("dev"));
+        assert!(!kc.persist_refresh("prod"));
+        assert!(!st(loaded(LoadStatus::File)).persist_refresh("dev"));
+        assert!(
+            !st(loaded(LoadStatus::FellBackToFile {
+                reason: UnavailableReason::NoService
+            }))
+            .persist_refresh("dev")
+        );
+        assert!(
+            !st(loaded(LoadStatus::Failed {
+                reason: FailReason::Unbound
+            }))
+            .persist_refresh("dev")
+        );
+        assert!(!st(EnvState::Loading).persist_refresh("dev"));
+    }
+
+    #[test]
+    fn keychain_refresh_store_round_trips_and_refuses_incomplete_keys() {
+        let m = Arc::new(MemoryStore::new());
+        let a = KeychainRefreshStore::new(m.clone());
+        let k = key(Some("dev"), Some(ID));
+        a.save(&k, SENTINEL).unwrap();
+        assert_eq!(a.load(&k).unwrap().as_deref(), Some(SENTINEL));
+        assert_eq!(m.accounts().len(), 1);
+        a.forget(&k).unwrap();
+        assert_eq!(a.load(&k).unwrap(), None);
+        for bad in [key(None, Some(ID)), key(Some("dev"), None)] {
+            assert!(a.save(&bad, SENTINEL).is_err());
+            assert!(a.load(&bad).is_err());
+        }
+        assert!(m.accounts().is_empty());
+    }
+
+    #[test]
+    fn keychain_refresh_save_failure_is_an_error_without_the_token() {
+        let (dir, _) = data();
+        for err in [
+            SecretStoreError::Denied,
+            SecretStoreError::Locked,
+            SecretStoreError::Other { code: Some(7) },
+            SecretStoreError::Unavailable {
+                reason: UnavailableReason::TimedOut,
+            },
+        ] {
+            let m = Arc::new(MemoryStore::new());
+            let a = KeychainRefreshStore::new(m.clone());
+            m.fail_next(err);
+            let e = a.save(&key(Some("dev"), Some(ID)), SENTINEL).unwrap_err();
+            assert!(!e.to_string().contains(SENTINEL));
+            assert!(a.take_banners().is_empty());
+            assert_eq!(a.load(&key(Some("dev"), Some(ID))).unwrap(), None);
+        }
+        assert_eq!(files_under(dir.path()), 0);
+    }
+
+    #[test]
+    fn keychain_too_large_refresh_token_lives_in_the_session_only() {
+        let (dir, _) = data();
+        let m = Arc::new(MemoryStore::new());
+        let a = KeychainRefreshStore::new(m.clone());
+        let k = key(Some("dev"), Some(ID));
+        m.fail_next(SecretStoreError::TooLarge);
+        a.save(&k, SENTINEL).unwrap();
+        assert_eq!(a.load(&k).unwrap().as_deref(), Some(SENTINEL));
+        assert!(m.accounts().is_empty());
+        let banners = a.take_banners();
+        assert_eq!(banners.len(), 1);
+        assert!(banners[0].contains("dev") && banners[0].contains("kept for this session only"));
+        assert!(!banners[0].contains(SENTINEL));
+        // Once per account.
+        m.fail_next(SecretStoreError::TooLarge);
+        a.save(&k, SENTINEL).unwrap();
+        assert!(a.take_banners().is_empty());
+        // A new adapter has nothing, and nothing reached a file.
+        let b = KeychainRefreshStore::new(m.clone());
+        assert_eq!(b.load(&k).unwrap(), None);
+        assert_eq!(files_under(dir.path()), 0);
+        // A later save that fits removes the session entry.
+        a.save(&k, "small").unwrap();
+        assert_eq!(b.load(&k).unwrap().as_deref(), Some("small"));
+        a.forget(&k).unwrap();
+        assert_eq!(a.load(&k).unwrap(), None);
+    }
+
+    #[test]
+    fn keychain_banners_for_each_status() {
+        let b = |status| {
+            EnvStatus {
+                env: "dev".into(),
+                state: EnvState::Loaded {
+                    status,
+                    unresolved: vec![],
+                    can_share: false,
+                    secrets_file: false,
+                },
+            }
+            .banners()
+        };
+        let fail = |reason| b(LoadStatus::Failed { reason });
+        assert_eq!(
+            b(LoadStatus::FellBackToFile {
+                reason: UnavailableReason::NoService
+            })[0]
+                .text,
+            "Keychain unavailable (secret store service not running): using dev.secrets.toml"
+        );
+        assert!(
+            fail(FailReason::Store(SecretStoreError::Denied))[0]
+                .text
+                .starts_with("Keychain error: secrets for dev not loaded (")
+        );
+        assert_eq!(
+            fail(FailReason::Store(SecretStoreError::Unavailable {
+                reason: UnavailableReason::TimedOut
+            }))[0]
+                .text,
+            "Keychain did not answer: secrets for dev not loaded"
+        );
+        assert_eq!(
+            fail(FailReason::UnknownStoreKind("kp".into()))[0].text,
+            "Unknown secret store \"kp\" for dev: secrets not loaded"
+        );
+        assert!(
+            b(LoadStatus::Store {
+                kind: StoreKind::Keychain,
+                file_ignored: true
+            })[0]
+                .text
+                .contains("ignored")
+        );
+        assert!(
+            b(LoadStatus::Store {
+                kind: StoreKind::Keychain,
+                file_ignored: false
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn keychain_bind_and_rebind_banners_are_distinct() {
+        let unbound = EnvStatus {
+            env: "dev".into(),
+            state: EnvState::Loaded {
+                status: LoadStatus::Failed {
+                    reason: FailReason::Unbound,
+                },
+                unresolved: vec![],
+                can_share: false,
+                secrets_file: false,
+            },
+        };
+        let b = &unbound.banners()[0];
+        assert_eq!(
+            b.text,
+            "Keychain secrets for dev are not enabled for this collection"
+        );
+        assert_eq!(b.action, Some(BannerAction::UseKeychain));
+        let elsewhere = EnvStatus {
+            state: EnvState::Loaded {
+                status: LoadStatus::Failed {
+                    reason: FailReason::IdBoundElsewhere {
+                        bound_root: PathBuf::from("/x/y"),
+                    },
+                },
+                unresolved: vec![],
+                can_share: false,
+                secrets_file: false,
+            },
+            ..unbound
+        };
+        let b = &elsewhere.banners()[0];
+        assert!(b.text.starts_with("This collection's id is bound to "));
+        assert!(b.text.ends_with(": secrets not loaded"));
+        assert_eq!(b.action, Some(BannerAction::SameCollectionMoved));
+    }
+
+    #[test]
+    fn keychain_missing_or_wrong_marker_shows_the_bind_banner() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let root = coll(d.path(), "a", Some(ID));
+        bind(&data, &cid(ID), &root).unwrap();
+        assert!(matches!(status(&root, &data, &m), LoadStatus::Store { .. }));
+        let marker = root.join("environments/.wisp-binding");
+        std::fs::write(&marker, "wrong\n").unwrap();
+        let unbound = LoadStatus::Failed {
+            reason: FailReason::Unbound,
+        };
+        assert_eq!(status(&root, &data, &m), unbound);
+        std::fs::remove_file(&marker).unwrap();
+        assert_eq!(status(&root, &data, &m), unbound);
+    }
+
+    #[test]
+    fn keychain_two_collections_load_under_their_own_ids() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let a = coll(d.path(), "a", Some(ID));
+        let b = coll(d.path(), "b", Some("fedcba9876543210"));
+        bind(&data, &cid(ID), &a).unwrap();
+        m.set(
+            &secret_account(&cid(ID), "dev", "token"),
+            &SecretValue::new("A"),
+        )
+        .unwrap();
+        let la = load_job(&a, "dev", Some(&data), &m).loaded.unwrap();
+        let lb = load_job(&b, "dev", Some(&data), &m).loaded.unwrap();
+        assert!(matches!(la.status, LoadStatus::Store { .. }));
+        assert_eq!(la.env.secrets.len(), 1);
+        // `b` is not bound and its id has no entries: nothing of `a` shows on it.
+        assert_eq!(
+            lb.status,
+            LoadStatus::Failed {
+                reason: FailReason::Unbound
+            }
+        );
+        assert!(lb.env.secrets.is_empty());
+    }
+
+    #[test]
+    fn keychain_set_value_on_an_unbound_id_cancel_changes_nothing() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let root = coll(d.path(), "a", Some(ID));
+        let out = run(&set("token", SENTINEL), &env_op(&root, &data, &m));
+        assert_eq!(out, Outcome::NeedBind);
+        let spec = prompt_for(&out, &set("token", SENTINEL), "dev", &root).unwrap();
+        assert!(
+            spec.title
+                .starts_with("Use keychain secrets for this collection at ")
+        );
+        // Cancel is the last button and runs nothing.
+        assert_eq!(spec.answer(spec.buttons.len() - 1), None);
+        assert!(m.accounts().is_empty());
+        assert_eq!(
+            status(&root, &data, &m),
+            LoadStatus::Failed {
+                reason: FailReason::Unbound
+            }
+        );
+    }
+
+    #[test]
+    fn keychain_bind_confirm_then_the_value_is_stored_and_resolves() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let root = coll(d.path(), "a", Some(ID));
+        let a = set("token", SENTINEL);
+        let out = run(&a, &env_op(&root, &data, &m));
+        let spec = prompt_for(&out, &a, "dev", &root).unwrap();
+        let confirmed = spec.answer(0).unwrap();
+        let done = run(&confirmed, &env_op(&root, &data, &m));
+        assert!(matches!(&done, Outcome::Done(t) if !t.contains(SENTINEL)));
+        let l = load_job(&root, "dev", Some(&data), &m).loaded.unwrap();
+        assert!(matches!(l.status, LoadStatus::Store { .. }));
+        assert_eq!(l.env.secrets[0].value, SENTINEL);
+    }
+
+    #[test]
+    fn keychain_banner_bind_action_binds_and_the_reload_succeeds() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let root = coll(d.path(), "a", None);
+        // No id yet: unbound, loads as such.
+        assert_eq!(
+            status(&root, &data, &m),
+            LoadStatus::Failed {
+                reason: FailReason::NoCollectionId
+            }
+        );
+        let spec = first_prompt(&EnvAction::Bind { retry: None }, "dev", &root).unwrap();
+        assert_eq!(spec.answer(1), None);
+        assert_eq!(read_collection_id(&root).unwrap(), None);
+        run(&spec.answer(0).unwrap(), &env_op(&root, &data, &m));
+        assert!(matches!(status(&root, &data, &m), LoadStatus::Store { .. }));
+    }
+
+    #[test]
+    fn keychain_rebind_cancel_leaves_binding_and_confirm_moves_it() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let old = coll(d.path(), "old", Some(ID));
+        bind(&data, &cid(ID), &old).unwrap();
+        let new = coll(d.path(), "new", Some(ID));
+        let elsewhere = LoadStatus::Failed {
+            reason: FailReason::IdBoundElsewhere {
+                bound_root: std::fs::canonicalize(&old).unwrap(),
+            },
+        };
+        // `old` still exists: the original folder is on disk, but the new one is unbound here.
+        assert_eq!(status(&new, &data, &m), elsewhere);
+        let out = run(&EnvAction::PrepareRebind, &env_op(&new, &data, &m));
+        let Outcome::ConfirmRebind(roots) = &out else {
+            panic!("{out:?}")
+        };
+        assert_eq!(roots.len(), 1);
+        let spec = prompt_for(&out, &EnvAction::PrepareRebind, "dev", &new).unwrap();
+        assert_eq!(spec.answer(1), None);
+        assert_eq!(bound_roots(&data, &cid(ID)).unwrap().len(), 1);
+        assert_eq!(status(&new, &data, &m), elsewhere);
+        // The old folder moved away: confirm rebinds and the reload resolves.
+        std::fs::remove_dir_all(&old).unwrap();
+        m.set(
+            &secret_account(&cid(ID), "dev", "token"),
+            &SecretValue::new("v"),
+        )
+        .unwrap();
+        let done = run(&spec.answer(0).unwrap(), &env_op(&new, &data, &m));
+        assert!(matches!(done, Outcome::Done(_)), "{done:?}");
+        let l = load_job(&new, "dev", Some(&data), &m).loaded.unwrap();
+        assert_eq!(l.env.secrets[0].value, "v");
+    }
+
+    #[test]
+    fn keychain_looks_like_copy_offers_three_ways_and_cancel_changes_nothing() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let a = coll(d.path(), "a", Some(ID));
+        let b = coll(d.path(), "b", Some(ID));
+        bind(&data, &cid(ID), &a).unwrap();
+        let out = run(&EnvAction::Rebind, &env_op(&b, &data, &m));
+        let Outcome::LooksLikeCopy(roots) = &out else {
+            panic!("{out:?}")
+        };
+        assert_eq!(roots, &bound_roots(&data, &cid(ID)).unwrap());
+        let spec = prompt_for(&out, &EnvAction::Rebind, "dev", &b).unwrap();
+        assert_eq!(spec.buttons.len(), 3);
+        assert_eq!(spec.answer(0), Some(EnvAction::BindAdditional));
+        assert_eq!(spec.answer(1), Some(EnvAction::NewId));
+        assert_eq!(spec.answer(2), None);
+        assert!(spec.detail.contains(&roots[0].display().to_string()));
+        assert_eq!(read_collection_id(&b).unwrap(), Some(cid(ID)));
+        assert_eq!(bound_roots(&data, &cid(ID)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn keychain_new_id_for_a_copy_leaves_the_original_and_loads_unbound() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let a = coll(d.path(), "a", Some(ID));
+        let b = coll(d.path(), "b", Some(ID));
+        bind(&data, &cid(ID), &a).unwrap();
+        m.set(
+            &secret_account(&cid(ID), "dev", "token"),
+            &SecretValue::new("v"),
+        )
+        .unwrap();
+        let out = run(&EnvAction::NewId, &env_op(&b, &data, &m));
+        assert!(matches!(out, Outcome::Done(_)));
+        assert_ne!(read_collection_id(&b).unwrap(), Some(cid(ID)));
+        assert_eq!(
+            status(&b, &data, &m),
+            LoadStatus::Failed {
+                reason: FailReason::Unbound
+            }
+        );
+        assert_eq!(m.accounts().len(), 1);
+        assert_eq!(bound_roots(&data, &cid(ID)).unwrap().len(), 1);
+        assert!(matches!(status(&a, &data, &m), LoadStatus::Store { .. }));
+    }
+
+    fn make_worktree(main: &Path, wt: &Path, name: &str) {
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        let main = std::fs::canonicalize(main).unwrap();
+        let wt = std::fs::canonicalize(wt).unwrap();
+        let gd = main.join(".git/worktrees").join(name);
+        std::fs::create_dir_all(&gd).unwrap();
+        std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+        std::fs::write(
+            gd.join("gitdir"),
+            format!("{}\n", wt.join(".git").display()),
+        )
+        .unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keychain_same_secrets_here_for_a_verified_worktree_and_not_an_unverified_folder() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let a = coll(d.path(), "a", Some(ID));
+        let w = coll(d.path(), "w", Some(ID));
+        let stray = coll(d.path(), "stray", Some(ID));
+        bind(&data, &cid(ID), &a).unwrap();
+        m.set(
+            &secret_account(&cid(ID), "dev", "token"),
+            &SecretValue::new("orig"),
+        )
+        .unwrap();
+        // Unverified: explained, every bound root listed, nothing bound.
+        let out = run(&EnvAction::BindAdditional, &env_op(&stray, &data, &m));
+        let Outcome::Notice(t) = &out else {
+            panic!("{out:?}")
+        };
+        assert!(t.contains("can't be verified"));
+        assert!(
+            t.contains(
+                &bound_roots(&data, &cid(ID)).unwrap()[0]
+                    .display()
+                    .to_string()
+            )
+        );
+        assert_eq!(bound_roots(&data, &cid(ID)).unwrap().len(), 1);
+        assert!(matches!(
+            status(&stray, &data, &m),
+            LoadStatus::Failed {
+                reason: FailReason::IdBoundElsewhere { .. }
+            }
+        ));
+        // Verified worktree: both roots bound, id unchanged, the original's value resolves.
+        make_worktree(&a, &w, "w1");
+        let out = run(&EnvAction::BindAdditional, &env_op(&w, &data, &m));
+        assert!(matches!(out, Outcome::Done(_)), "{out:?}");
+        assert_eq!(bound_roots(&data, &cid(ID)).unwrap().len(), 2);
+        assert_eq!(read_collection_id(&w).unwrap(), Some(cid(ID)));
+        let l = load_job(&w, "dev", Some(&data), &m).loaded.unwrap();
+        assert_eq!(l.env.secrets[0].value, "orig");
+    }
+
+    #[test]
+    fn keychain_share_confirm_binds_the_new_folder_and_cancel_does_not() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let a = coll(d.path(), "a", Some(ID));
+        let n = coll(d.path(), "n", Some(ID));
+        bind(&data, &cid(ID), &a).unwrap();
+        m.set(
+            &secret_account(&cid(ID), "dev", "token"),
+            &SecretValue::new("shared"),
+        )
+        .unwrap();
+        // The panel offers it from a bound root only.
+        let r = load_job(&a, "dev", Some(&data), &m);
+        assert!(r.can_share);
+        assert!(!load_job(&n, "dev", Some(&data), &m).can_share);
+        let action = EnvAction::Share {
+            new_root: n.clone(),
+        };
+        let spec = first_prompt(&action, "dev", &a).unwrap();
+        assert!(spec.detail.contains(&a.display().to_string()));
+        assert!(spec.detail.contains(&n.display().to_string()));
+        assert_eq!(spec.answer(1), None);
+        assert_eq!(bound_roots(&data, &cid(ID)).unwrap().len(), 1);
+        let out = run(&spec.answer(0).unwrap(), &env_op(&a, &data, &m));
+        assert!(matches!(&out, Outcome::Done(t) if t.contains("shared") || t.contains("Shared")));
+        assert_eq!(bound_roots(&data, &cid(ID)).unwrap().len(), 2);
+        let l = load_job(&n, "dev", Some(&data), &m).loaded.unwrap();
+        assert_eq!(l.env.secrets[0].value, "shared");
+        // Sharing from an unbound root is refused by storage too.
+        let u = coll(d.path(), "u", Some("0123456789abcdef"));
+        let out = run(
+            &EnvAction::Share {
+                new_root: a.clone(),
+            },
+            &env_op(&u, &data, &m),
+        );
+        assert!(matches!(out, Outcome::Notice(t) if t.starts_with("Not shared: ")));
+    }
+
+    #[test]
+    fn keychain_import_is_offered_only_for_store_mode_with_a_secrets_file() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let root = coll(d.path(), "a", Some(ID));
+        bind(&data, &cid(ID), &root).unwrap();
+        let model = |root: &Path| {
+            let r = load_job(root, "dev", Some(&data), &m);
+            let st = EnvStatus {
+                env: "dev".into(),
+                state: r.state(),
+            };
+            panel_model(Some(&r.loaded.as_ref().unwrap().env), Some(&st))
+        };
+        assert!(!model(&root).import);
+        std::fs::write(
+            root.join("environments/dev.secrets.toml"),
+            "[vars]\ntoken = \"fromfile\"\nextra = \"e\"\n",
+        )
+        .unwrap();
+        assert!(model(&root).import);
+        let out = run(&EnvAction::ImportFile, &env_op(&root, &data, &m));
+        let Outcome::Done(t) = &out else {
+            panic!("{out:?}")
+        };
+        assert!(t.contains("extra") && !t.contains("fromfile"));
+        assert!(!root.join("environments/dev.secrets.toml").exists());
+        // File mode never offers it, even with a file.
+        let f = file_coll(d.path(), "f", "11112222333344445555");
+        assert!(!model(&f).import);
+        assert!(model(&f).move_to_keychain);
+    }
+
+    #[test]
+    fn keychain_move_to_file_drops_unresolved_names_only_after_confirm() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let root = coll(d.path(), "a", Some(ID));
+        bind(&data, &cid(ID), &root).unwrap();
+        // `token` is listed but has no value in the store.
+        let out = run(
+            &EnvAction::MoveToFile { allow_drop: false },
+            &env_op(&root, &data, &m),
+        );
+        assert_eq!(out, Outcome::ConfirmDrop(vec!["token".into()]));
+        let spec = prompt_for(
+            &out,
+            &EnvAction::MoveToFile { allow_drop: false },
+            "dev",
+            &root,
+        )
+        .unwrap();
+        assert!(spec.detail.contains("token"));
+        assert_eq!(spec.answer(1), None);
+        // Cancelled: still keychain mode.
+        assert!(matches!(status(&root, &data, &m), LoadStatus::Store { .. }));
+        let done = run(&spec.answer(0).unwrap(), &env_op(&root, &data, &m));
+        assert!(matches!(done, Outcome::Done(_)), "{done:?}");
+        let l = load_job(&root, "dev", Some(&data), &m).loaded.unwrap();
+        assert_eq!(l.status, LoadStatus::File);
+        assert!(l.env.secrets.is_empty());
+    }
+
+    #[test]
+    fn keychain_too_large_values_are_never_stored() {
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        let root = coll(d.path(), "a", Some(ID));
+        bind(&data, &cid(ID), &root).unwrap();
+        let big = "x".repeat(keychain::MAX_SECRET_BYTES + 1);
+        let out = run(&set("token", &big), &env_op(&root, &data, &m));
+        assert_eq!(
+            out,
+            Outcome::Notice("Not stored: value is 2561 B, over the 2,560 B keychain limit".into())
+        );
+        assert!(m.accounts().is_empty());
+        // Move to keychain aborts with nothing changed and names the variable and size.
+        let f = file_coll(d.path(), "f", "11112222333344445555");
+        let fid = cid("11112222333344445555");
+        bind(&data, &fid, &f).unwrap();
+        std::fs::write(
+            f.join("environments/dev.secrets.toml"),
+            format!("[vars]\ntoken = \"{big}\"\n"),
+        )
+        .unwrap();
+        // The store refuses a value over its cap.
+        m.fail_next(SecretStoreError::TooLarge);
+        let out = run(&EnvAction::MoveToKeychain, &env_op(&f, &data, &m));
+        let Outcome::Notice(t) = &out else {
+            panic!("{out:?}")
+        };
+        assert!(t.contains("token (2561 B)"), "{t}");
+        assert!(f.join("environments/dev.secrets.toml").exists());
+        assert!(m.accounts().is_empty());
+        assert_eq!(status(&f, &data, &m), LoadStatus::File);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keychain_invalid_symlinked_targets_show_notices_and_change_nothing() {
+        use wisp_storage::environment::save_environment_locked;
+        use wisp_storage::vault::VaultCtx;
+        let (d, data) = data();
+        let m = MemoryStore::new();
+        // assign_new_collection_id on a symlinked collection.toml.
+        let root = coll(d.path(), "a", Some(ID));
+        let real = d.path().join("real.toml");
+        std::fs::rename(root.join("collection.toml"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("collection.toml")).unwrap();
+        let before = std::fs::read_to_string(&real).unwrap();
+        let out = run(&EnvAction::NewId, &env_op(&root, &data, &m));
+        assert!(
+            matches!(&out, Outcome::Notice(t) if t.starts_with("Not changed: ")),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), before);
+        assert!(assign_new_collection_id(&root).is_err());
+        // save_environment_locked on a symlinked environment file.
+        let s = coll(d.path(), "s", Some("99998888777766665555"));
+        let target = d.path().join("outside.toml");
+        std::fs::write(&target, "[vars]\n").unwrap();
+        std::fs::remove_file(s.join("environments/dev.toml")).unwrap();
+        std::os::unix::fs::symlink(&target, s.join("environments/dev.toml")).unwrap();
+        let env = Environment {
+            name: "dev".into(),
+            vars: vec![],
+            secrets: vec![],
+        };
+        let ctx = VaultCtx::new(data.clone());
+        let r = save_environment_locked(&s, &env, &ctx);
+        if let Err(e) = r {
+            let text = save_failure_notice(&e);
+            assert!(text.starts_with("Not saved"));
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "[vars]\n");
+    }
+}
