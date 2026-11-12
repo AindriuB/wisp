@@ -34,7 +34,7 @@ http.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 rcgen.workspace = true
 h2.workspace = true
 tokio-rustls.workspace = true
