@@ -22,6 +22,8 @@ pub enum CommandId {
     ShowCookieJar,
     ClearHistory,
     ToggleHistoryBodies,
+    EnvSecrets,
+    ShareSecrets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +57,7 @@ pub struct Match {
 }
 
 impl CommandId {
-    pub const ALL: [CommandId; 16] = [
+    pub const ALL: [CommandId; 18] = [
         CommandId::Send,
         CommandId::Save,
         CommandId::NewRequest,
@@ -72,6 +74,8 @@ impl CommandId {
         CommandId::ShowCookieJar,
         CommandId::ClearHistory,
         CommandId::ToggleHistoryBodies,
+        CommandId::EnvSecrets,
+        CommandId::ShareSecrets,
     ];
 
     pub fn label(self) -> &'static str {
@@ -92,6 +96,8 @@ impl CommandId {
             CommandId::ShowCookieJar => "Show cookies",
             CommandId::ClearHistory => "Clear history",
             CommandId::ToggleHistoryBodies => "Toggle storing response bodies in history",
+            CommandId::EnvSecrets => "Environment secrets…",
+            CommandId::ShareSecrets => "Share keychain secrets with another folder…",
         }
     }
 }
@@ -151,6 +157,11 @@ pub fn items(
         }
     }
     out
+}
+
+/// Drop the commands that do not apply: sharing is offered only from a bound collection root.
+pub fn retain_available(items: &mut Vec<PaletteItem>, can_share: bool) {
+    items.retain(|i| can_share || i.kind != PaletteKind::Command(CommandId::ShareSecrets));
 }
 
 /// The open collections by name, the path as detail. `active` is marked in the detail.
@@ -283,6 +294,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn keychain_share_command_is_absent_from_an_unbound_root() {
+        let all = items(None, &[], None, PaletteMode::All);
+        let has = |v: &[PaletteItem]| {
+            v.iter()
+                .any(|i| i.kind == PaletteKind::Command(CommandId::ShareSecrets))
+        };
+        let mut hidden = all.clone();
+        retain_available(&mut hidden, false);
+        assert!(has(&all) && !has(&hidden));
+        let mut shown = all.clone();
+        retain_available(&mut shown, true);
+        assert!(has(&shown));
+        assert!(hidden.iter().any(|i| i.label == "Environment secrets…"));
+    }
+
     fn order(items: &[PaletteItem], q: &str) -> Vec<usize> {
         filter(items, q, 100).into_iter().map(|m| m.index).collect()
     }
@@ -316,12 +343,15 @@ mod tests {
             ],
         };
         let all = items(Some(&tree), &[], None, PaletteMode::All);
-        assert_eq!(all.len(), 2 + 16);
+        assert_eq!(all.len(), 2 + CommandId::ALL.len());
         assert_eq!(all[0].label, "Get user");
         assert_eq!(all[0].detail, "users/get.toml");
         assert_eq!(all[0].kind, PaletteKind::Request("users/get.toml".into()));
         assert_eq!(all[2].label, "Send request");
-        assert_eq!(items(None, &[], None, PaletteMode::All).len(), 16);
+        assert_eq!(
+            items(None, &[], None, PaletteMode::All).len(),
+            CommandId::ALL.len()
+        );
 
         let envs = vec!["dev".to_string(), "prod".to_string()];
         let e = items(None, &envs, Some("prod"), PaletteMode::Environments);

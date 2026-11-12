@@ -15,7 +15,8 @@ use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 use crate::actions::{
     CancelRequest, ClearHistory, CloseCollection, CloseTab, KeepMine, NewRequest, NextTab,
     OpenCollection, OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest,
-    ShowCookieJar, ShowHistory, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory, SwitchEnvironment,
+    ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
 use crate::settings::{SplitAxis, ThemeMode};
@@ -23,6 +24,7 @@ use crate::tab::{DiskState, RequestTab};
 use crate::theme;
 use crate::ui::collections::CloseRequested;
 use crate::ui::cookie_jar::CookieJarView;
+use crate::ui::env_secrets::EnvSecretsView;
 use crate::ui::history::HistoryView;
 use crate::ui::import::ImportView;
 use crate::ui::palette::PaletteView;
@@ -30,6 +32,7 @@ use crate::ui::request::RequestPane;
 use crate::ui::response::ResponsePane;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::url_bar::UrlBar;
+use crate::vault::{BannerAction, EnvAction, PromptSpec};
 use crate::workspace::{CloseStep, Workspace, WorkspaceEvent, close_step, confirmed_open};
 
 /// Close `tab`, asking first when it holds unsaved changes. After the answer
@@ -88,6 +91,7 @@ pub struct WorkspaceView {
     import: Option<(Entity<ImportView>, Subscription)>,
     history: Option<(Entity<HistoryView>, Subscription)>,
     cookies: Option<(Entity<CookieJarView>, Subscription)>,
+    secrets: Option<(Entity<EnvSecretsView>, Subscription)>,
     notice: Option<SharedString>,
     focus: FocusHandle,
     _workspace_sub: Subscription,
@@ -131,9 +135,11 @@ fn next_theme(mode: ThemeMode) -> ThemeMode {
 impl WorkspaceView {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| Sidebar::new(workspace.clone(), window, cx));
-        let _workspace_sub = cx.subscribe(&workspace, |this, _, event, cx| {
-            if let WorkspaceEvent::Notice(text) = event {
-                this.notice = Some(text.clone());
+        let _workspace_sub = cx.subscribe_in(&workspace, window, |this, _, event, window, cx| {
+            match event {
+                WorkspaceEvent::Notice(text) => this.notice = Some(text.clone()),
+                WorkspaceEvent::Prompt(spec) => this.show_prompt(spec.clone(), window, cx),
+                _ => {}
             }
             cx.notify();
         });
@@ -164,6 +170,7 @@ impl WorkspaceView {
             import: None,
             history: None,
             cookies: None,
+            secrets: None,
             notice: None,
             focus,
             _workspace_sub,
@@ -202,6 +209,131 @@ impl WorkspaceView {
             self.history = Some((panel, sub));
         }
         cx.notify();
+    }
+
+    fn toggle_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.secrets.take().is_none() {
+            let panel = cx.new(|cx| EnvSecretsView::new(self.workspace.clone(), window, cx));
+            let sub = cx.subscribe(&panel, |this, _, _: &DismissEvent, cx| {
+                this.secrets = None;
+                cx.notify();
+            });
+            self.secrets = Some((panel, sub));
+        }
+        cx.notify();
+    }
+
+    /// Ask the user, then run the action behind the button they pressed. Cancel runs nothing.
+    fn show_prompt(&mut self, spec: PromptSpec, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_prompt() || self.workspace.read(cx).prompt_up {
+            self.workspace.update(cx, |_, cx| {
+                cx.emit(WorkspaceEvent::Notice(
+                    "Answer the open prompt first, then try again".into(),
+                ))
+            });
+            return;
+        }
+        self.workspace.update(cx, |w, _| w.prompt_up = true);
+        let buttons: Vec<&str> = spec.buttons.iter().map(String::as_str).collect();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &spec.title,
+            Some(&spec.detail),
+            &buttons,
+            cx,
+        );
+        let ws = self.workspace.clone();
+        cx.spawn(async move |_, cx| {
+            let pressed = answer.await.ok();
+            ws.update(cx, |w, cx| {
+                w.prompt_up = false;
+                if let Some(i) = pressed {
+                    w.answer_prompt(&spec, i, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// "Share keychain secrets with another folder": pick the folder, then confirm.
+    fn on_share_secrets(&mut self, cx: &mut Context<Self>) {
+        if !self.workspace.read(cx).can_share_secrets() {
+            self.workspace.update(cx, |_, cx| {
+                cx.emit(WorkspaceEvent::Notice(
+                    "Not shared: keychain secrets are not enabled for this folder".into(),
+                ))
+            });
+            return;
+        }
+        let ws = self.workspace.clone();
+        cx.spawn(async move |_, cx| {
+            let rx = cx.update(|cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: None,
+                })
+            });
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(path) = paths.first()
+            {
+                ws.update(cx, |w, cx| w.request_share(path.clone(), cx));
+            }
+        })
+        .detach();
+    }
+
+    /// The banners for the active collection's environment and kept-in-memory refresh tokens.
+    fn env_banners(&self, cx: &mut Context<Self>) -> Vec<gpui::Div> {
+        let (banners, tokens) = {
+            let w = self.workspace.read(cx);
+            let banners = w
+                .active_collection()
+                .and_then(|c| c.env_status.as_ref())
+                .map(|s| s.banners())
+                .unwrap_or_default();
+            (banners, w.token_banners.clone())
+        };
+        let strip = |text: String| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .bg(cx.theme().warning)
+                .text_color(cx.theme().warning_foreground)
+                .child(div().flex_1().child(text))
+        };
+        let mut out = Vec::new();
+        for (i, b) in banners.into_iter().enumerate() {
+            let mut row = strip(b.text);
+            if let Some(a) = b.action {
+                let (label, action) = match a {
+                    BannerAction::UseKeychain => {
+                        ("Use keychain secrets…", EnvAction::Bind { retry: None })
+                    }
+                    BannerAction::SameCollectionMoved => (
+                        "This is the same collection, moved",
+                        EnvAction::PrepareRebind,
+                    ),
+                };
+                row = row.child(
+                    Button::new(("env-banner", i))
+                        .label(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let action = action.clone();
+                            this.workspace
+                                .update(cx, |w, cx| w.request_env_action(action, cx));
+                        })),
+                );
+            }
+            out.push(row);
+        }
+        out.extend(tokens.into_iter().map(strip));
+        out
     }
 
     fn toggle_cookies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -545,6 +677,7 @@ impl Render for WorkspaceView {
         };
 
         let banner = active_tab.as_ref().and_then(|t| self.banner(t, cx));
+        let env_banners = self.env_banners(cx);
         let main = div()
             .size_full()
             .min_w_0()
@@ -552,6 +685,7 @@ impl Render for WorkspaceView {
             .flex()
             .flex_col()
             .child(tab_bar)
+            .children(env_banners)
             .children(banner)
             .child(content);
 
@@ -601,6 +735,18 @@ impl Render for WorkspaceView {
         });
 
         let cookies_overlay = self.cookies.as_ref().map(|(d, _)| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .justify_center()
+                .pt(px(60.))
+                .child(d.clone())
+        });
+
+        let secrets_overlay = self.secrets.as_ref().map(|(d, _)| {
             div()
                 .absolute()
                 .top_0()
@@ -669,6 +815,12 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, _: &ShowCookieJar, window, cx| {
                 this.toggle_cookies(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &ShowEnvSecrets, window, cx| {
+                this.toggle_secrets(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShareKeychainSecrets, _, cx| {
+                this.on_share_secrets(cx);
+            }))
             .on_action(cx.listener(|this, _: &ClearHistory, window, cx| {
                 this.on_clear_history(window, cx);
             }))
@@ -710,6 +862,7 @@ impl Render for WorkspaceView {
             .children(import_overlay)
             .children(history_overlay)
             .children(cookies_overlay)
+            .children(secrets_overlay)
     }
 }
 

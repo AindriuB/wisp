@@ -17,6 +17,7 @@ mod tab;
 mod theme;
 mod ui;
 mod url_sync;
+mod vault;
 mod workspace;
 
 use gpui::{AppContext as _, Entity, PromptLevel, Window, WindowOptions, px, size};
@@ -180,7 +181,9 @@ fn main() {
         theme::apply(loaded.theme, None, cx);
         let open = std::env::args_os().nth(1).map(std::path::PathBuf::from);
         trace("before open_window");
-        let workspace = cx.new(|cx| Workspace::new(loaded, settings_path, open, cx));
+        let stores: vault::SharedStores =
+            std::sync::Arc::new(vault::AppStores::open(vault::portable_marker()));
+        let workspace = cx.new(|cx| Workspace::new(loaded, settings_path, open, stores, cx));
         let ws_for_window = workspace.clone();
         let opened = cx.open_window(window_options(), |window, cx| {
             let workspace = ws_for_window;

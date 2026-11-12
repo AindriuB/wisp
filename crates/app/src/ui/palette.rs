@@ -13,8 +13,9 @@ use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath, h_flex};
 
 use crate::actions::{
     CancelRequest, ClearHistory, CloseCollection, CloseTab, NewRequest, OpenCollection, OpenImport,
-    OpenPalette, ReloadFromDisk, SaveRequest, SendRequest, ShowCookieJar, ShowHistory,
-    SwitchCollection, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    OpenPalette, ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar,
+    ShowEnvSecrets, ShowHistory, SwitchCollection, SwitchEnvironment, ToggleHistoryBodies,
+    ToggleLayout, ToggleTheme,
 };
 use crate::palette::{self, CommandId, Match, PaletteItem, PaletteKind, PaletteMode};
 use crate::workspace::{Workspace, WorkspaceEvent};
@@ -41,6 +42,8 @@ fn action_for(id: CommandId) -> Box<dyn Action> {
         CommandId::ShowCookieJar => Box::new(ShowCookieJar),
         CommandId::ClearHistory => Box::new(ClearHistory),
         CommandId::ToggleHistoryBodies => Box::new(ToggleHistoryBodies),
+        CommandId::EnvSecrets => Box::new(ShowEnvSecrets),
+        CommandId::ShareSecrets => Box::new(ShareKeychainSecrets),
     }
 }
 
@@ -138,6 +141,8 @@ impl PaletteView {
                 }
             }
         };
+        let mut items = items;
+        palette::retain_available(&mut items, self.workspace.read(cx).can_share_secrets());
         self.items = items;
         self.has_collection = has_collection;
         self.matches = palette::filter(&self.items, "", LIMIT);

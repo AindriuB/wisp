@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
@@ -15,11 +16,13 @@ use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
 use wisp_core::{
     Command, Engine, EngineConfig, EngineError, Event, EventReceiver, PreparedRequest, RequestId,
 };
-use wisp_storage::collection::{CollectionId, ensure_collection_id, read_collection_id};
+use wisp_storage::collection::{
+    CollectionId, assign_new_collection_id, ensure_collection_id, read_collection_id,
+};
 use wisp_storage::collection::{CollectionTree, Node, open_collection};
 use wisp_storage::cookies::{CookieFile, StoredCookie};
 use wisp_storage::data_dir::DataDir;
-use wisp_storage::environment::{list_environments, load_environment};
+use wisp_storage::environment::list_environments;
 use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
@@ -31,6 +34,7 @@ use crate::tab::{
 };
 use crate::ui::cookie_jar::{self as cookie_ui, Debounce};
 use crate::ui::history as history_ui;
+use crate::vault::{self, EnvAction, EnvState, EnvStatus, PromptSpec};
 
 /// Quiet period after the first watcher event before the batch is handled.
 const WATCH_BATCH: Duration = Duration::from_millis(50);
@@ -50,6 +54,10 @@ pub struct OpenCollection {
     pub tree: CollectionTree,
     pub environments: Vec<String>,
     pub active_env: Option<Environment>,
+    /// How the active environment's secrets loaded; never holds a value.
+    pub env_status: Option<EnvStatus>,
+    /// Bumped by every environment load so a late result is dropped.
+    env_gen: u64,
     pub error: Option<String>,
     /// The collection's tabs; a tab belongs to exactly one group.
     pub group: TabGroup,
@@ -68,6 +76,8 @@ impl OpenCollection {
             tree,
             environments,
             active_env: None,
+            env_status: None,
+            env_gen: 0,
             error: None,
             group: TabGroup::default(),
             coll_id: IdState::Reading,
@@ -198,6 +208,10 @@ pub enum WorkspaceEvent {
     HistoryChanged,
     /// The open collection's cookie persistence state changed.
     CookiesChanged,
+    /// Environment secrets state changed (load status, keychain probe).
+    SecretsChanged,
+    /// Ask the user to confirm; the view answers through `Workspace::answer_prompt`.
+    Prompt(PromptSpec),
 }
 
 /// What was sent, kept for the history entry written at the terminal event.
@@ -222,9 +236,15 @@ enum HistoryState {
 static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Read or create the collection id under the shared lock. Blocking; never on the UI thread.
-fn resolve_collection_id(root: &Path) -> Result<CollectionId, String> {
+pub(crate) fn resolve_collection_id(root: &Path) -> Result<CollectionId, String> {
     let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_collection_id(root).map_err(|e| e.to_string())
+}
+
+/// Give the collection a fresh id under the shared lock. Blocking; never on the UI thread.
+pub(crate) fn assign_collection_id(root: &Path) -> Result<CollectionId, String> {
+    let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
+    assign_new_collection_id(root).map_err(|e| e.to_string())
 }
 
 /// Read the collection id without writing, under the shared lock. Blocking.
@@ -1153,9 +1173,66 @@ pub struct Workspace {
     empty_defaults: CollectionDefaults,
     /// True while a discard prompt is waiting for an answer.
     pub prompt_up: bool,
+    stores: vault::SharedStores,
+    /// Workspace-wide, never reused: an environment load result carries the value it was given,
+    /// so a late result for a closed collection cannot land on a reopened one.
+    env_gen_counter: u64,
+    refresh_store: Arc<vault::KeychainRefreshStore>,
+    /// Banners for refresh tokens kept for this session only.
+    pub token_banners: Vec<String>,
+    /// The keychain probe: `None` until run, then `Ok(())` or the reason.
+    pub keychain_probe: Option<Result<(), String>>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
+
+/// True when the collection's active environment loaded from the keychain: the only case in which
+/// refresh tokens are persisted.
+fn persist_refresh_for(c: &OpenCollection) -> bool {
+    match (&c.active_env, &c.env_status) {
+        (Some(env), Some(status)) => status.persist_refresh(&env.name),
+        _ => false,
+    }
+}
+
+/// Tell the refresh-token adapter whether the collection's active environment is file-mode.
+fn sync_file_mode(store: &vault::KeychainRefreshStore, c: &OpenCollection) {
+    if let (IdState::Known(id), Some(env)) = (&c.coll_id, &c.active_env) {
+        let file = c
+            .env_status
+            .as_ref()
+            .is_some_and(|s| s.is_file_mode(&env.name));
+        store.set_file_mode(id, &env.name, file);
+    }
+}
+
+/// Set an outgoing auth's refresh-token persistence from the collection's environment status,
+/// and tell the adapter whether that environment is file-mode. Send and Authorize both call it.
+fn mark_persist(
+    store: &vault::KeychainRefreshStore,
+    c: Option<&OpenCollection>,
+    auth: &mut EngineAuth,
+) {
+    if let Some(c) = c {
+        sync_file_mode(store, c);
+    }
+    auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
+}
+
+/// After "Give this copy its own id": replace the cached id with the one now on disk, so
+/// cookies, history and refresh tokens use it. The new id when it changed.
+fn refresh_known_id(c: &mut OpenCollection) -> Option<String> {
+    let IdState::Known(old) = &c.coll_id else {
+        return None;
+    };
+    match read_id_state(&c.tree.root) {
+        IdState::Known(new) if &new != old => {
+            c.coll_id = IdState::Known(new.clone());
+            Some(new)
+        }
+        _ => None,
+    }
+}
 
 /// Path of a tab after `old` was moved to `new`; `None` when it is not affected.
 fn moved_path(tab: &Path, old: &Path, new: &Path) -> Option<PathBuf> {
@@ -1299,12 +1376,15 @@ impl Workspace {
         settings: Settings,
         settings_path: Option<PathBuf>,
         open: Option<PathBuf>,
+        stores: vault::SharedStores,
         cx: &mut Context<Self>,
     ) -> Self {
         let jars = CookieJars::default();
+        let refresh_store = Arc::new(vault::KeychainRefreshStore::new(stores.clone()));
         let (engine, events) = Engine::start(EngineConfig {
             body_memory_limit: settings.body_memory_limit,
             cookies: jars.clone(),
+            refresh_tokens: refresh_store.clone(),
             ..EngineConfig::default()
         });
         let mut this = Self {
@@ -1329,6 +1409,11 @@ impl Workspace {
             autosend: None,
             empty_defaults: CollectionDefaults::default(),
             prompt_up: false,
+            stores,
+            env_gen_counter: 0,
+            refresh_store,
+            token_banners: Vec::new(),
+            keychain_probe: None,
         };
         this.spawn_drain(events, cx);
         // Flush on quit. gpui's shutdown blocks the main thread, so nothing spawned on the
@@ -1503,12 +1588,20 @@ impl Workspace {
         let tree = open_collection(&root)?;
         let environments = list_environments(&tree.root).unwrap_or_default();
         let mut c = OpenCollection::new(tree, environments);
-        let rx = match Watcher::start(&c.tree.root) {
-            Ok((w, rx)) => {
+        // gpui tests run a deterministic scheduler; a real watcher thread would schedule
+        // foreground work from outside it and trip its determinism check.
+        let started = if cfg!(test) {
+            None
+        } else {
+            Some(Watcher::start(&c.tree.root))
+        };
+        let rx = match started {
+            None => None,
+            Some(Ok((w, rx))) => {
                 c.watcher = Some(w);
                 Some(rx)
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 tracing::warn!(error = %e, "watcher unavailable");
                 None
             }
@@ -1645,18 +1738,295 @@ impl Workspace {
         name: Option<&str>,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        self.env_gen_counter += 1;
+        let generation = self.env_gen_counter;
         let Some(c) = self.collections.get_mut(ix) else {
             return Ok(());
         };
-        c.active_env = match name {
-            Some(n) => Some(load_environment(&c.tree.root, n)?),
-            None => None,
+        match name {
+            Some(n) => self.load_env_at(ix, n.to_string(), true, cx),
+            None => {
+                c.env_gen = generation;
+                c.active_env = None;
+                c.env_status = None;
+                if self.active_collection == Some(ix) {
+                    cx.emit(WorkspaceEvent::EnvironmentChanged);
+                    cx.emit(WorkspaceEvent::SecretsChanged);
+                }
+                cx.notify();
+            }
+        }
+        Ok(())
+    }
+
+    /// Load environment `name` of collection `ix` through the fail-closed loader on a background
+    /// task. `switching` shows an empty placeholder meanwhile, so no send uses the previous
+    /// environment; a reload keeps the old one until the result lands.
+    fn load_env_at(&mut self, ix: usize, name: String, switching: bool, cx: &mut Context<Self>) {
+        self.env_gen_counter += 1;
+        let generation = self.env_gen_counter;
+        let Some(c) = self.collections.get_mut(ix) else {
+            return;
         };
+        c.env_gen = generation;
+        let previous = (c.active_env.clone(), c.env_status.clone());
+        if switching {
+            c.active_env = Some(Environment {
+                name: name.clone(),
+                vars: Vec::new(),
+                secrets: Vec::new(),
+            });
+        }
+        c.env_status = Some(EnvStatus {
+            env: name.clone(),
+            state: EnvState::Loading,
+        });
+        let root = c.tree.root.clone();
+        let data = self.data_dir.clone();
+        let stores = self.stores.clone();
         if self.active_collection == Some(ix) {
             cx.emit(WorkspaceEvent::EnvironmentChanged);
+            cx.emit(WorkspaceEvent::SecretsChanged);
         }
         cx.notify();
-        Ok(())
+        cx.spawn(async move |this, cx| {
+            let job_root = root.clone();
+            let job_name = name.clone();
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { vault::load_job(&job_root, &job_name, data.as_ref(), &*stores) },
+                )
+                .await;
+            this.update(cx, |w, cx| {
+                w.finish_env_load(&root, generation, name, switching, previous, result, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_env_load(
+        &mut self,
+        root: &Path,
+        generation: u64,
+        name: String,
+        switching: bool,
+        previous: (Option<Environment>, Option<EnvStatus>),
+        result: vault::LoadResult,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.coll_ix(root) else {
+            return;
+        };
+        let c = &mut self.collections[ix];
+        if c.env_gen != generation {
+            return;
+        }
+        let state = result.state();
+        match result.loaded {
+            Ok(loaded) => {
+                c.active_env = Some(loaded.env);
+                c.env_status = Some(EnvStatus { env: name, state });
+            }
+            Err(e) => {
+                if switching {
+                    c.active_env = previous.0;
+                    c.env_status = previous.1;
+                    cx.emit(WorkspaceEvent::Notice(
+                        format!("Cannot switch environment: {e}").into(),
+                    ));
+                } else {
+                    c.env_status = Some(EnvStatus { env: name, state });
+                    cx.emit(WorkspaceEvent::Notice(
+                        format!("Environment reload failed: {e}").into(),
+                    ));
+                }
+            }
+        }
+        if self.active_collection == Some(ix) {
+            cx.emit(WorkspaceEvent::EnvironmentChanged);
+            cx.emit(WorkspaceEvent::SecretsChanged);
+        }
+        cx.notify();
+    }
+
+    /// True when the active collection's open root may share its keychain secrets.
+    pub fn can_share_secrets(&self) -> bool {
+        self.active_collection().is_some_and(|c| {
+            matches!(
+                c.env_status.as_ref().map(|s| &s.state),
+                Some(EnvState::Loaded {
+                    can_share: true,
+                    ..
+                })
+            )
+        })
+    }
+
+    /// Run the keychain probe off the UI thread; the panel disables keychain actions on failure.
+    pub fn probe_keychain(&mut self, cx: &mut Context<Self>) {
+        let stores = self.stores.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match stores.get(wisp_storage::vault::StoreKind::Keychain) {
+                        Some(s) => s.probe().map_err(|e| e.to_string()),
+                        None => Err("the keychain is not available".to_string()),
+                    }
+                })
+                .await;
+            this.update(cx, |w, cx| {
+                w.keychain_probe = Some(result);
+                cx.emit(WorkspaceEvent::SecretsChanged);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// An action the user asked for: confirm first when it has a confirmation, else run it.
+    pub fn request_env_action(&mut self, action: EnvAction, cx: &mut Context<Self>) {
+        let Some(c) = self.active_collection() else {
+            return;
+        };
+        let Some(env) = c.active_env.as_ref().map(|e| e.name.clone()) else {
+            cx.emit(WorkspaceEvent::Notice("Select an environment first".into()));
+            return;
+        };
+        let root = c.tree.root.clone();
+        match vault::first_prompt(&action, &env, &root) {
+            Some(spec) => cx.emit(WorkspaceEvent::Prompt(spec)),
+            None => self.run_env_action(root, env, action, cx),
+        }
+    }
+
+    /// The share action after the folder picker returned `new_root`: only from the open root, and
+    /// only when it passed the binding check.
+    pub fn request_share(&mut self, new_root: PathBuf, cx: &mut Context<Self>) {
+        if !self.can_share_secrets() {
+            cx.emit(WorkspaceEvent::Notice(
+                "Not shared: keychain secrets are not enabled for this folder".into(),
+            ));
+            return;
+        }
+        self.request_env_action(EnvAction::Share { new_root }, cx);
+    }
+
+    /// The answer to a prompt: run what the pressed button stands for.
+    pub fn answer_prompt(&mut self, spec: &PromptSpec, button: usize, cx: &mut Context<Self>) {
+        if let Some(action) = spec.answer(button) {
+            self.run_env_action(spec.root.clone(), spec.env.clone(), action, cx);
+        }
+    }
+
+    /// Run a confirmed action on a background task, then show its outcome and reload.
+    pub fn run_env_action(
+        &mut self,
+        root: PathBuf,
+        env: String,
+        action: EnvAction,
+        cx: &mut Context<Self>,
+    ) {
+        let data = self.data_dir.clone();
+        let stores = self.stores.clone();
+        let refresh_store = self.refresh_store.clone();
+        let coll_id = self
+            .coll_ix(&root)
+            .and_then(|ix| match &self.collections[ix].coll_id {
+                IdState::Known(id) => Some(id.clone()),
+                _ => None,
+            });
+        cx.spawn(async move |this, cx| {
+            let (r, e, a) = (root.clone(), env.clone(), action.clone());
+            let (outcome, forget_err) = cx
+                .background_executor()
+                .spawn(async move {
+                    let outcome = vault::run(
+                        &a,
+                        &vault::OpEnv {
+                            root: &r,
+                            env: &e,
+                            data: data.as_ref(),
+                            stores: &*stores,
+                        },
+                    );
+                    // The moved environment's stored refresh tokens go too, off the UI thread.
+                    let forget_err = match (&a, &outcome, &coll_id) {
+                        (EnvAction::MoveToFile { .. }, vault::Outcome::Done(_), Some(id)) => {
+                            refresh_store.forget_environment(id, &e).err()
+                        }
+                        _ => None,
+                    };
+                    (outcome, forget_err)
+                })
+                .await;
+            this.update(cx, |w, cx| {
+                w.finish_env_action(root, env, action, outcome, forget_err, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_env_action(
+        &mut self,
+        root: PathBuf,
+        env: String,
+        action: EnvAction,
+        outcome: vault::Outcome,
+        forget_err: Option<wisp_core::auth::oauth2::RefreshStoreError>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(spec) = vault::prompt_for(&outcome, &action, &env, &root) {
+            cx.emit(WorkspaceEvent::Prompt(spec));
+            return;
+        }
+        let done = matches!(outcome, vault::Outcome::Done(_));
+        if let vault::Outcome::Done(t) | vault::Outcome::Notice(t) = outcome {
+            cx.emit(WorkspaceEvent::Notice(t.into()));
+        }
+        if done && let Some(ix) = self.coll_ix(&root) {
+            match action {
+                EnvAction::NewId => {
+                    if let Some(id) = refresh_known_id(&mut self.collections[ix]) {
+                        self.on_id_known(id, cx);
+                        cx.emit(WorkspaceEvent::CookiesChanged);
+                    }
+                }
+                EnvAction::MoveToFile { .. } => {
+                    if let Some(e) = &forget_err {
+                        cx.emit(WorkspaceEvent::Notice(
+                            format!("Moved to file; stored refresh tokens were not deleted: {e}")
+                                .into(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Reload so the status and the names reflect what happened (or did not).
+        if let Some(ix) = self.coll_ix(&root) {
+            let active = self.collections[ix]
+                .active_env
+                .as_ref()
+                .map(|e| e.name.clone());
+            if active.as_deref() == Some(env.as_str()) {
+                self.load_env_at(ix, env, false, cx);
+            }
+        }
+    }
+
+    fn take_token_banners(&mut self, cx: &mut Context<Self>) {
+        let new = self.refresh_store.take_banners();
+        if !new.is_empty() {
+            self.token_banners.extend(new);
+            cx.emit(WorkspaceEvent::SecretsChanged);
+            cx.notify();
+        }
     }
 
     /// Handle a coalesced batch of watcher events for the collection at `root`.
@@ -1689,12 +2059,7 @@ impl Workspace {
         if let Some(name) = env_name
             && paths.iter().any(|p| affects_env(p, &name))
         {
-            let result = self.set_environment_at(ix, Some(&name), cx);
-            if let Err(e) = result {
-                cx.emit(WorkspaceEvent::Notice(
-                    format!("Environment reload failed: {e}").into(),
-                ));
-            }
+            self.load_env_at(ix, name, false, cx);
         } else if paths.iter().any(|p| !affects_tree(p))
             && let Ok(names) = list_environments(root)
         {
@@ -1901,6 +2266,10 @@ impl Workspace {
                 cx.emit(WorkspaceEvent::Notice(message.to_string().into()));
             }
         })?;
+        let mut plan = plan;
+        if let Some(auth) = plan.prepared.auth.as_mut() {
+            mark_persist(&self.refresh_store, c, auth);
+        }
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
         }
@@ -2014,9 +2383,12 @@ impl Workspace {
             c.and_then(|c| c.active_env.as_ref()),
             partition.clone().flatten(),
         )?;
-        let Some(command) = command else {
+        let Some(mut command) = command else {
             return Ok(());
         };
+        if let Command::AuthorizeStart { auth, .. } = &mut command {
+            mark_persist(&self.refresh_store, c, auth);
+        }
         if partition.is_none() {
             // No id yet: create it off the UI thread, then start the flow.
             let tab = tab.downgrade();
@@ -2120,6 +2492,7 @@ impl Workspace {
     }
 
     fn on_event(&mut self, event: Event, cx: &mut Context<Self>) {
+        self.take_token_banners(cx);
         let id = match &event {
             Event::Started { id, .. }
             | Event::Headers { id, .. }
@@ -3383,6 +3756,19 @@ mod tests {
     }
 
     #[test]
+    fn new_id_refreshes_the_cached_collection_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = make_collection(dir.path(), "a");
+        let old = resolve_collection_id(&c.tree.root).unwrap().to_string();
+        c.coll_id = IdState::Known(old.clone());
+        assert_eq!(refresh_known_id(&mut c), None);
+        let new = assign_collection_id(&c.tree.root).unwrap().to_string();
+        assert_ne!(new, old);
+        assert_eq!(refresh_known_id(&mut c), Some(new.clone()));
+        assert_eq!(c.coll_id, IdState::Known(new));
+    }
+
+    #[test]
     fn collections_history_goes_to_the_sending_collection() {
         let dir = tempfile::tempdir().unwrap();
         let a = make_collection(dir.path(), "a");
@@ -4053,5 +4439,233 @@ mod tests {
             failure_state(&e("state mismatch")),
             AuthorizeState::Failed("state mismatch".into())
         );
+    }
+}
+
+/// Workspace-level environment wiring over a `MemoryStore` and a temp data dir. The OS keychain
+/// is never touched: the stores are injected.
+#[cfg(test)]
+mod env_wiring_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use wisp_core::auth::oauth2::{Grant, RefreshTokenStore, TokenKey};
+    use wisp_core::request::ClientAuth;
+    use wisp_storage::vault::{MemoryStore, SecretStore, SecretValue, bind, secret_account};
+
+    const ID: &str = "abcdef0123456789";
+
+    struct Fx {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        store: Arc<MemoryStore>,
+        ws: Entity<Workspace>,
+    }
+
+    /// A bound collection with a keychain-mode `dev`, a file-mode `file` and a broken `bad`.
+    fn fixture(cx: &mut TestAppContext) -> Fx {
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir::at(dir.path().join("data"));
+        let root = dir.path().join("coll");
+        std::fs::create_dir_all(root.join("environments")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            format!("format = 1\nid = \"{ID}\"\n"),
+        )
+        .unwrap();
+        let envs = root.join("environments");
+        std::fs::write(
+            envs.join("dev.toml"),
+            "secrets = \"keychain\"\nsecret_names = [\"token\"]\n[vars]\nhost = \"h\"\n",
+        )
+        .unwrap();
+        std::fs::write(envs.join("file.toml"), "[vars]\nhost = \"f\"\n").unwrap();
+        std::fs::write(envs.join("bad.toml"), "this is = [not valid").unwrap();
+        let root = root.canonicalize().unwrap();
+        bind(&data, &CollectionId::parse(ID).unwrap(), &root).unwrap();
+        let store = Arc::new(MemoryStore::new());
+        store
+            .set(
+                &secret_account(&CollectionId::parse(ID).unwrap(), "dev", "token"),
+                &SecretValue::new("kc-secret"),
+            )
+            .unwrap();
+        let shared: vault::SharedStores = store.clone();
+        let ws = cx.new(|cx| Workspace::new(Settings::default(), None, None, shared, cx));
+        ws.update(cx, |w, _| w.data_dir = Some(data));
+        Fx {
+            _dir: dir,
+            root,
+            store,
+            ws,
+        }
+    }
+
+    fn open(fx: &Fx, cx: &mut TestAppContext) {
+        let root = fx.root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.open_collection(&root, cx).unwrap());
+        cx.run_until_parked();
+    }
+
+    fn env_name(fx: &Fx, cx: &mut TestAppContext) -> Option<String> {
+        fx.ws.read_with(cx, |w, _| {
+            w.collections[0].active_env.as_ref().map(|e| e.name.clone())
+        })
+    }
+
+    fn status_env(fx: &Fx, cx: &mut TestAppContext) -> Option<String> {
+        fx.ws.read_with(cx, |w, _| {
+            w.collections[0].env_status.as_ref().map(|s| s.env.clone())
+        })
+    }
+
+    fn switch(fx: &Fx, name: &str, cx: &mut TestAppContext) {
+        fx.ws
+            .update(cx, |w, cx| w.set_environment(Some(name), cx).unwrap());
+        cx.run_until_parked();
+    }
+
+    fn token_key(env: &str) -> TokenKey {
+        TokenKey {
+            grant: Grant::AuthCode,
+            token_url: "https://idp.test/token".into(),
+            client_id: "client".into(),
+            scope: "read".into(),
+            collection: Some(ID.into()),
+            environment: Some(env.into()),
+        }
+    }
+
+    #[gpui::test]
+    fn stale_load_generation_is_dropped(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "file", cx);
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("file"));
+        // A result from an older load of `dev` arrives late.
+        let (root, data) = fx.ws.read_with(cx, |w, _| {
+            (w.collections[0].tree.root.clone(), w.data_dir.clone())
+        });
+        let late = vault::load_job(&root, "dev", data.as_ref(), &*fx.store);
+        fx.ws.update(cx, |w, cx| {
+            let stale = w.collections[0].env_gen - 1;
+            w.finish_env_load(&root, stale, "dev".into(), true, (None, None), late, cx);
+        });
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("file"));
+        assert_eq!(status_env(&fx, cx).as_deref(), Some("file"));
+    }
+
+    #[gpui::test]
+    fn reopened_collection_ignores_the_old_instances_late_load(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        let old_gen = fx.ws.read_with(cx, |w, _| w.collections[0].env_gen);
+        // Close and reopen; the new instance loads once, so a per-collection counter would
+        // hand it the old instance's generation.
+        fx.ws.update(cx, |w, cx| w.close_collection(0, cx));
+        open(&fx, cx);
+        switch(&fx, "file", cx);
+        let (root, data) = fx.ws.read_with(cx, |w, _| {
+            (w.collections[0].tree.root.clone(), w.data_dir.clone())
+        });
+        let late = vault::load_job(&root, "dev", data.as_ref(), &*fx.store);
+        fx.ws.update(cx, |w, cx| {
+            assert_ne!(w.collections[0].env_gen, old_gen);
+            w.finish_env_load(&root, old_gen, "dev".into(), true, (None, None), late, cx);
+        });
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("file"));
+        assert_eq!(status_env(&fx, cx).as_deref(), Some("file"));
+    }
+
+    #[gpui::test]
+    fn failed_switch_restores_the_previous_environment(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("dev"));
+        switch(&fx, "bad", cx);
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("dev"));
+        assert_eq!(status_env(&fx, cx).as_deref(), Some("dev"));
+        // The restored status is the loaded keychain one, not a placeholder.
+        assert!(
+            fx.ws
+                .read_with(cx, |w, _| persist_refresh_for(&w.collections[0]))
+        );
+    }
+
+    #[gpui::test]
+    fn send_and_authorize_set_persist_from_environment_status(cx: &mut TestAppContext) {
+        fn code() -> EngineAuth {
+            EngineAuth::OAuth2AuthCode {
+                auth_url: "a".into(),
+                token_url: "t".into(),
+                client_id: "c".into(),
+                client_secret: String::new(),
+                scope: String::new(),
+                client_auth: ClientAuth::Body,
+                redirect_port: 0,
+                persist_refresh: false,
+            }
+        }
+        fn persists(a: &EngineAuth) -> bool {
+            matches!(
+                a,
+                EngineAuth::OAuth2AuthCode {
+                    persist_refresh: true,
+                    ..
+                }
+            )
+        }
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let run = |cx: &mut TestAppContext| {
+            fx.ws.read_with(cx, |w, _| {
+                let mut a = code();
+                mark_persist(&w.refresh_store, w.collections.first(), &mut a);
+                persists(&a)
+            })
+        };
+        // No environment: memory only.
+        assert!(!run(cx));
+        switch(&fx, "dev", cx);
+        assert!(run(cx), "keychain environment persists");
+        switch(&fx, "file", cx);
+        assert!(!run(cx), "file environment does not persist");
+        // The adapter was told `file` is file-mode, so a save for it is refused.
+        let saved = fx
+            .ws
+            .read_with(cx, |w, _| w.refresh_store.save(&token_key("file"), "rt"));
+        assert!(saved.is_err());
+        // No collection: memory only.
+        fx.ws.read_with(cx, |w, _| {
+            let mut a = code();
+            mark_persist(&w.refresh_store, None, &mut a);
+            assert!(!persists(&a));
+        });
+    }
+
+    #[gpui::test]
+    fn move_to_file_forgets_stored_refresh_tokens(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        fx.ws.read_with(cx, |w, _| {
+            w.refresh_store.save(&token_key("dev"), "rt-1").unwrap();
+        });
+        let has_refresh = |fx: &Fx| fx.store.accounts().iter().any(|a| a.contains("/oauth2/"));
+        assert!(has_refresh(&fx));
+        let root = fx.root.clone();
+        fx.ws.update(cx, |w, cx| {
+            w.run_env_action(
+                root,
+                "dev".into(),
+                EnvAction::MoveToFile { allow_drop: true },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(!has_refresh(&fx), "{:?}", fx.store.accounts());
+        assert!(fx.root.join("environments/dev.secrets.toml").exists());
     }
 }

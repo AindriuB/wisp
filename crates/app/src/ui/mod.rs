@@ -2,6 +2,7 @@
 
 pub mod collections;
 pub mod cookie_jar;
+pub mod env_secrets;
 pub mod history;
 pub mod import;
 pub mod kv;
