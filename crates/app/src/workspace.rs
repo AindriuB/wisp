@@ -1588,12 +1588,20 @@ impl Workspace {
         let tree = open_collection(&root)?;
         let environments = list_environments(&tree.root).unwrap_or_default();
         let mut c = OpenCollection::new(tree, environments);
-        let rx = match Watcher::start(&c.tree.root) {
-            Ok((w, rx)) => {
+        // gpui tests run a deterministic scheduler; a real watcher thread would schedule
+        // foreground work from outside it and trip its determinism check.
+        let started = if cfg!(test) {
+            None
+        } else {
+            Some(Watcher::start(&c.tree.root))
+        };
+        let rx = match started {
+            None => None,
+            Some(Ok((w, rx))) => {
                 c.watcher = Some(w);
                 Some(rx)
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 tracing::warn!(error = %e, "watcher unavailable");
                 None
             }
