@@ -1,14 +1,16 @@
 # 111 — SecretStore trait, store-mode environments and migration in storage
 
+Amendment: module renamed to vault (deny rule) — `wisp_storage::vault`, files `crates/storage/src/vault.rs` and `crates/storage/tests/vault.rs`; type names unchanged.
+
 **Repo:** `.`
 **Depends on:** 109 (the size answer comes before any keychain implementation is fanned out; this task adds no dependency)
 **Size impact:** none expected (no OS keychain code, no new dependencies; `no-deps` check)
 **Owns:**
-- crates/storage/src/secrets.rs (new)
+- crates/storage/src/vault.rs (new)
 - crates/storage/src/environment.rs
 - crates/storage/src/error.rs
-- crates/storage/src/lib.rs (one `pub mod secrets;` line)
-- crates/storage/tests/secrets.rs (new)
+- crates/storage/src/lib.rs (one `pub mod vault;` line)
+- crates/storage/tests/vault.rs (new)
 
 ## Goal
 Add the storage half of optional per-environment secret stores, without any OS backend. That half is a blocking `SecretStore` trait that does not assume an OS keychain, an in-memory store, an extensible `secrets = "<kind>"` environment mode, a loader that follows the fail-closed table below, and explicit migration between the file and a store. Task 114 adds the OS keychain store and task 115 wires the app. Wave 3 ships only `file` and `keychain`; a later version may add other stores (e.g. KeePassXC), and this seam must take them as additive variants without rework.
@@ -59,8 +61,8 @@ The load never returns `Err` for a store failure or an unknown kind; only TOML a
 
 ## Checks
 cargo writes no JUnit XML here, so tests are `command` checks.
-- `secrets` command — AC1-AC6, AC8
-  run: `export CARGO_TARGET_DIR=/Users/Andrew/workspace/wisp/target/wt-111; test "$(cargo test -p wisp-storage --locked --test secrets -- --list 2>/dev/null | rg -c ': test$')" -ge 22 && cargo test -p wisp-storage --locked`
+- `vault` command — AC1-AC6, AC8
+  run: `export CARGO_TARGET_DIR=/Users/Andrew/workspace/wisp/target/wt-111; test "$(cargo test -p wisp-storage --locked --test vault -- --list 2>/dev/null | rg -c ': test$')" -ge 22 && cargo test -p wisp-storage --locked`
 - `env-unchanged` command — AC7
   run: `export CARGO_TARGET_DIR=/Users/Andrew/workspace/wisp/target/wt-111; cargo test -p wisp-storage --locked --lib environment::`
 - `no-deps` command — size
