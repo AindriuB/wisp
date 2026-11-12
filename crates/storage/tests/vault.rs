@@ -1917,6 +1917,9 @@ fn make_repo(root: &Path) {
 /// A linked worktree of `main`: `.git` file -> `<main>/.git/worktrees/<name>`
 /// with `commondir` and a back-pointing `gitdir`.
 fn make_worktree(main: &Path, wt: &Path, name: &str) {
+    // Like git, write canonical (realpath) paths.
+    let main = &std::fs::canonicalize(main).unwrap();
+    let wt = &std::fs::canonicalize(wt).unwrap();
     let gd = main.join(".git/worktrees").join(name);
     std::fs::create_dir_all(&gd).unwrap();
     std::fs::write(gd.join("commondir"), "../..\n").unwrap();
@@ -2071,6 +2074,39 @@ fn unc_style_gitdir_is_refused_without_io() {
     std::fs::write(e.path().join(".git"), "gitdir: //server/share/x\n").unwrap();
     unverified(&c, e.path());
     std::fs::write(e.path().join(".git"), "gitdir: \\\\server\\share\\x\n").unwrap();
+    unverified(&c, e.path());
+}
+
+#[test]
+fn lexically_plausible_unc_gitdir_is_refused() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    let name = a.path().join(".git").file_name().unwrap().to_owned();
+    let text = format!(
+        "gitdir: //server/share/{}/worktrees/w\n",
+        name.to_string_lossy()
+    );
+    std::fs::write(e.path().join(".git"), text).unwrap();
+    unverified(&c, e.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_inside_a_plausible_gitdir_is_never_followed() {
+    let a = tempfile::tempdir().unwrap();
+    let e = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), e.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    // Outside the tempdir, with a commondir that is a directory: reading it
+    // would be an error, so Unverified proves it was never opened.
+    std::fs::create_dir_all(out.path().join(".git/worktrees/w/commondir")).unwrap();
+    std::os::unix::fs::symlink(out.path(), e.path().join("sub")).unwrap();
+    std::fs::write(e.path().join(".git"), "gitdir: sub/.git/worktrees/w\n").unwrap();
     unverified(&c, e.path());
 }
 

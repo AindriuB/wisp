@@ -394,21 +394,19 @@ fn lexical(p: &Path) -> PathBuf {
     out
 }
 
-/// Cheap lexical pre-check, no I/O: `gitdir` must look like
-/// `<something named like a trusted common dir>/worktrees/<name>`.
-fn plausible_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
+/// Lexical, no I/O: is `gitdir` exactly `<trusted>/worktrees/<name>`, with
+/// `<trusted>` a canonical trusted common dir and `<name>` one normal component?
+fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
+    use std::path::Component;
     let Some(parent) = gitdir.parent() else {
         return false;
     };
-    if parent.file_name().is_none_or(|n| n != "worktrees") {
-        return false;
-    }
-    let Some(common) = parent.parent() else {
-        return false;
-    };
-    trusted
-        .iter()
-        .any(|t| t == common || (t.file_name().is_some() && t.file_name() == common.file_name()))
+    let name_ok = matches!(gitdir.components().next_back(), Some(Component::Normal(_)));
+    name_ok
+        && parent
+            .parent()
+            .zip(parent.file_name())
+            .is_some_and(|(common, w)| w == "worktrees" && trusted.iter().any(|t| t == common))
 }
 
 /// The canonical git common directory of the checkout at `root`, read from
@@ -417,10 +415,12 @@ fn plausible_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
 /// naming `<common>/worktrees/<name>`, whose `commondir` file gives the common
 /// dir and whose `gitdir` file must point back at this `.git`. `Ok(None)` when
 /// `root` is not a verifiable checkout; a symlinked `.git` is `Invalid`.
-/// The canonical git common dir of `root` (see above). With `trusted` (the common dirs of already-bound
-/// roots, computed from trusted local paths), a linked worktree's gitdir must
-/// sit under `<trusted>/worktrees`, checked lexically and then on the canonical
-/// path, before `commondir` is read; UNC/device paths are refused untouched.
+///
+/// With `trusted` (the canonical common dirs of already-bound roots, from
+/// local paths), the gitdir text is joined to the canonical `root` and
+/// normalised lexically; it must equal `<trusted>/worktrees/<name>` exactly
+/// before anything derived from it is statted or read. UNC/device paths are
+/// refused untouched.
 fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf>, StorageError> {
     // Canonicalise `root` once; `<canon_root>/.git` is then the identity and is
     // never followed again after the lstat below.
@@ -449,23 +449,27 @@ fn common_dir(root: &Path, trusted: Option<&[PathBuf]>) -> Result<Option<PathBuf
     if is_remote_or_device(target) {
         return Ok(None);
     }
-    let joined = canon_root.join(target);
-    if let Some(t) = trusted
-        && !plausible_worktree_gitdir(&lexical(&joined), t)
-    {
-        return Ok(None);
-    }
-    let Some(gitdir) = canon(&joined) else {
-        return Ok(None);
-    };
-    if let Some(t) = trusted {
-        let ok = gitdir
-            .parent()
-            .is_some_and(|p| t.iter().any(|c| p == c.join("worktrees")));
-        if !ok {
+    let joined = lexical(&canon_root.join(target));
+    let gitdir = if let Some(t) = trusted {
+        if !exact_worktree_gitdir(&joined, t) {
             return Ok(None);
         }
-    }
+        // Matched exactly: now it may be touched, but only if no symlink lies
+        // on the path.
+        match std::fs::symlink_metadata(&joined) {
+            Ok(m) if m.is_dir() => {}
+            _ => return Ok(None),
+        }
+        match canon(&joined) {
+            Some(g) if g == joined => g,
+            _ => return Ok(None),
+        }
+    } else {
+        let Some(g) = canon(&joined) else {
+            return Ok(None);
+        };
+        g
+    };
     // A linked worktree always has a `commondir`; without one the gitdir is a
     // whole repository chosen by this folder, which proves nothing.
     let Some(common) = read_git_file(&gitdir.join("commondir"))? else {
@@ -624,4 +628,27 @@ pub(crate) fn env_lock(data: &DataDir, plain: &Path) -> Result<EnvLock, StorageE
         _mutex: guard,
         _file: f,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_remote_or_device;
+
+    #[test]
+    fn remote_and_device_prefixes_are_detected() {
+        for t in [
+            "//server/share/x",
+            "\\\\server\\share\\x",
+            "\\\\?\\UNC\\server\\share",
+            "//?/UNC/server/share",
+            "//?/C:/x",
+            "\\\\.\\pipe\\x",
+            "//./pipe/x",
+        ] {
+            assert!(is_remote_or_device(t), "{t}");
+        }
+        for t in ["sub/.git/worktrees/w", "/home/a/.git", "../x"] {
+            assert!(!is_remote_or_device(t), "{t}");
+        }
+    }
 }

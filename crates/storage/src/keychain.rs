@@ -20,8 +20,8 @@ use crate::vault::{SecretStore, SecretStoreError, SecretValue, UnavailableReason
 
 /// Largest value accepted, in bytes: Windows' confirmed credential blob cap.
 pub const MAX_SECRET_BYTES: usize = 2560;
-/// Longest account accepted, in bytes: Windows' target-name cap (513), applied
-/// on every platform so behaviour does not differ by OS.
+/// Longest account accepted, in bytes: Windows' `CRED_MAX_USERNAME_LENGTH` (513, the
+/// user field), applied on every platform so behaviour does not differ by OS.
 pub const MAX_ACCOUNT_BYTES: usize = 513;
 /// Bound on `probe`.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
