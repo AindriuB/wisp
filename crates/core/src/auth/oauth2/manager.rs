@@ -319,6 +319,7 @@ impl Inner {
         let expires_at = resp
             .expires_in
             .and_then(|d| self.clock.now().checked_add(d));
+        let used = refreshed.as_ref().map(|(_, u)| u.clone());
         let guard = self
             .lock_store(&p.key, &mut cancel)
             .await
@@ -328,7 +329,12 @@ impl Inner {
         {
             return Ok(false);
         }
-        // The store is written before anything is cached: an authorize that fails, times out
+        if keep_refresh {
+            // The IdP has already revoked the old refresh token: cache the new one first, so
+            // a failed, panicked, stuck or cancelled save cannot lose it.
+            self.cache(p, resp, keep_refresh, expires_at, used.as_ref());
+        }
+        // An authorize writes the store before anything is cached: one that fails, times out
         // or is cancelled while saving changes nothing in memory.
         let save = match (&resp.refresh_token, p.persist_refresh) {
             (Some(rt), true) => Some(rt.expose().to_owned()),
@@ -357,26 +363,49 @@ impl Inner {
                     self.stale().remove(&p.key);
                 }
             }
-            Ok((g, Err(e))) if keep_refresh => {
+            Ok((g, Err(e))) => {
                 _held = Some(g);
-                tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
-            }
-            Ok((_, Err(e))) => {
+                if keep_refresh {
+                    tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
+                    self.stale().insert(p.key.clone());
+                    return Ok(true);
+                }
                 tracing::warn!(error = %e, "the refresh token store failed; nothing was cached");
-                return Err(err(ErrorKind::Auth, e.to_string()));
+                let what = if persisting {
+                    "cannot save refresh token"
+                } else {
+                    "cannot remove stored refresh token"
+                };
+                return Err(err(ErrorKind::Auth, format!("{what}: {e}")));
             }
             Err(stop) => {
                 // The call may still land: the stored token is unknown.
                 self.stale().insert(p.key.clone());
-                if keep_refresh && matches!(stop, Stop::TimedOut) {
+                if keep_refresh {
                     tracing::warn!(
-                        "the refresh token store did not answer; the token stays in memory"
+                        "the refresh token store gave no answer; the token stays in memory"
                     );
-                } else {
-                    return Err(stop.error());
+                    return Ok(true);
                 }
+                return Err(stop.error());
             }
         }
+        if !keep_refresh {
+            self.cache(p, resp, keep_refresh, expires_at, used.as_ref());
+        }
+        Ok(true)
+    }
+
+    /// Updates the in-memory entry of `p.key` from `resp` (and bumps the generation of an
+    /// authorize).
+    fn cache(
+        &self,
+        p: &Params<'_>,
+        resp: &TokenResponse,
+        keep_refresh: bool,
+        expires_at: Option<Instant>,
+        used: Option<&Secret>,
+    ) {
         let mut map = self.entries();
         if !keep_refresh {
             let mut g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
@@ -391,11 +420,10 @@ impl Inner {
             e.refresh = Some(rt.clone());
         } else if !keep_refresh {
             e.refresh = None;
-        } else if let Some((_, used)) = refreshed {
+        } else if let Some(used) = used {
             // The old refresh token stays valid; remember it in memory.
-            e.refresh = Some(used);
+            e.refresh = Some(used.clone());
         }
-        Ok(true)
     }
 
     /// One refresh-token grant and the caching of its result.
@@ -715,6 +743,7 @@ mod tests {
         release: AtomicBool,
         entered: AtomicBool,
         stick_save: bool,
+        panic_save: bool,
         loads: AtomicUsize,
     }
 
@@ -745,6 +774,9 @@ mod tests {
             Ok(None)
         }
         fn save(&self, _: &TokenKey, _: &str) -> Result<(), RefreshStoreError> {
+            if self.panic_save {
+                panic!("SAVE_SENTINEL");
+            }
             if self.stick_save {
                 self.wait();
             }
@@ -837,6 +869,65 @@ mod tests {
         let resp = token_resp();
         let (r, _tx) = tokio::join!(m.put(&p, &resp, false, None, Some(&mut cancelled)), act);
         (m, p.key, r, store)
+    }
+
+    fn refresh_of(m: &OAuth2, key: &TokenKey) -> Option<String> {
+        let map = m.entries();
+        Some(map.get(key)?.refresh.as_ref()?.expose().to_owned())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_caches_the_rotated_token_while_its_save_is_stuck() {
+        let store = Arc::new(Stuck {
+            stick_save: true,
+            ..Stuck::default()
+        });
+        let _release = Release(store.clone());
+        let m = OAuth2::new(store.clone(), Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        seed_old(&m, &p.key);
+        let resp = token_resp();
+        let act = async {
+            while !store.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            // Still saving: a second send must already see RT, not OLDRT.
+            assert_eq!(refresh_of(&m, &p.key).as_deref(), Some("RT"));
+            tokio::time::advance(STORE_TIMEOUT + Duration::from_secs(1)).await;
+        };
+        let (r, ()) = tokio::join!(
+            m.put(&p, &resp, true, Some((0, Secret::new("OLDRT"))), None),
+            act
+        );
+        assert!(r.unwrap());
+        assert_eq!(refresh_of(&m, &p.key).as_deref(), Some("RT"));
+        assert!(m.stale().contains(&p.key));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_whose_save_panics_still_caches_the_rotated_token() {
+        let store = Arc::new(Stuck {
+            panic_save: true,
+            ..Stuck::default()
+        });
+        let m = OAuth2::new(store, Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        seed_old(&m, &p.key);
+        let r = m
+            .put(
+                &p,
+                &token_resp(),
+                true,
+                Some((0, Secret::new("OLDRT"))),
+                None,
+            )
+            .await;
+        assert!(r.unwrap());
+        assert_eq!(refresh_of(&m, &p.key).as_deref(), Some("RT"));
+        assert_eq!(cached_access(&m, &p.key).as_deref(), Some("AT"));
+        assert!(m.stale().contains(&p.key));
     }
 
     #[tokio::test(start_paused = true)]

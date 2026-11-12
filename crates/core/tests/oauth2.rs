@@ -990,7 +990,10 @@ async fn a_failing_store_save_fails_the_authorize_and_caches_nothing() {
     )
     .await;
     let ev = next_auth_event(&rx).await;
-    assert_eq!(auth_error(&[ev]).message, "keychain denied");
+    assert_eq!(
+        auth_error(&[ev]).message,
+        "cannot save refresh token: keychain denied"
+    );
     let evs = send(&engine, &rx, request(target.uri(), auth)).await;
     assert_eq!(
         auth_error(&evs).message,
@@ -1123,11 +1126,16 @@ async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
             )
             .await;
             let ev = next_auth_event(&rx).await;
-            assert_eq!(auth_error(&[ev]).message, "keychain denied");
+            assert_eq!(
+                auth_error(&[ev]).message,
+                "cannot remove stored refresh token: keychain denied"
+            );
             assert_eq!(
                 status_of(&send(&engine, &rx, request(target.uri(), auth)).await),
                 Some(200)
             );
+            let bearers: Vec<String> = seen(&target, "/").await.into_iter().map(|r| r.0).collect();
+            assert_eq!(bearers, ["Bearer AT_X"], "{bearers:?}");
             continue;
         }
         authorize_fully(&engine, &rx, auth.clone()).await;
