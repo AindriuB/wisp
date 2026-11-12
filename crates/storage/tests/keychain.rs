@@ -51,10 +51,7 @@ fn mapping_covers_every_row() {
         map_error(&pf("Error { code: -25308 }")),
         SecretStoreError::Locked
     );
-    assert_eq!(
-        map_error(&pf("collection IsLocked")),
-        SecretStoreError::Locked
-    );
+    assert_eq!(map_error(&nsa("Locked")), SecretStoreError::Locked);
     assert_eq!(
         map_error(&pf("Error { code: -128 }")),
         SecretStoreError::Denied
@@ -63,16 +60,23 @@ fn mapping_covers_every_row() {
         map_error(&pf("Error { code: -25293 }")),
         SecretStoreError::Denied
     );
-    assert_eq!(map_error(&pf("code: 1223")), SecretStoreError::Denied);
-    assert_eq!(map_error(&pf("code: 5")), SecretStoreError::Denied);
-    assert_eq!(map_error(&pf("prompt dismissed")), SecretStoreError::Denied);
+    assert_eq!(
+        map_error(&pf("PlatformError(1223)")),
+        SecretStoreError::Denied
+    );
+    assert_eq!(map_error(&pf("PlatformError(5)")), SecretStoreError::Denied);
+    assert_eq!(map_error(&nsa("Prompt")), SecretStoreError::Denied);
     assert_eq!(
         map_error(&KErr::TooLong("password".into(), 2560)),
         SecretStoreError::TooLarge
     );
     assert_eq!(
-        map_error(&pf("os error 0x800706F7")),
+        map_error(&pf("PlatformError(2147944183)")),
         SecretStoreError::TooLarge
+    );
+    assert_eq!(
+        map_error(&pf("PlatformError(1314)")),
+        SecretStoreError::Other { code: Some(1314) }
     );
     assert_eq!(
         map_error(&pf("Error { code: -9999 }")),
@@ -358,8 +362,16 @@ fn headless_probe_is_unavailable() {
 #[test]
 #[ignore = "needs a locked gnome-keyring in docker"]
 fn headless_locked_probe() {
-    let (_svc, c) = real(&[]);
-    let r = c.store.probe();
-    println!("locked probe: {r:?}");
-    assert_eq!(r, Err(SecretStoreError::Locked));
+    let (_svc, c) = real(&["locked-a"]);
+    // Searching for a missing account does not unlock, so the probe passes.
+    assert_eq!(c.store.probe(), Ok(()));
+    // Touching an item needs the collection: Locked, or Denied when the
+    // unlock prompt is dismissed. `set` stands in for `get` on an existing
+    // item, which a locked container cannot seed from here.
+    let r = c.store.set("locked-a", &SecretValue::new("v"));
+    println!("locked set: {r:?}");
+    assert!(matches!(
+        r,
+        Err(SecretStoreError::Locked | SecretStoreError::Denied)
+    ));
 }

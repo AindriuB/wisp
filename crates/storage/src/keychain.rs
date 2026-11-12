@@ -45,6 +45,7 @@ impl Default for Timeouts {
 
 /// The OS calls, called blocking on the worker thread. Public so tests can
 /// supply a fake; production uses [`open`].
+#[doc(hidden)]
 pub trait Backend: Send + Sync + 'static {
     /// Read the fixed probe account. `Err(NoEntry)` means the store works.
     fn probe(&self) -> Result<(), KeyringError>;
@@ -94,6 +95,7 @@ pub fn open(service: &str, portable: bool) -> Box<dyn SecretStore> {
 }
 
 /// A store over any backend, with explicit timeouts.
+#[doc(hidden)]
 pub fn open_with(backend: Arc<dyn Backend>, timeouts: Timeouts) -> Box<dyn SecretStore> {
     Box::new(KeychainStore {
         worker: Worker::new(backend),
@@ -196,8 +198,11 @@ impl Worker {
             let _ = rtx.send(out);
         });
         let sent = self.sender().and_then(|tx| {
-            tx.send(job)
-                .map_err(|_| SecretStoreError::Other { code: None })
+            tx.send(job).map_err(|_| {
+                // The worker died (a panicking backend): respawn next call.
+                *self.tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                SecretStoreError::Other { code: None }
+            })
         });
         if let Err(e) = sent {
             self.busy.store(false, Ordering::SeqCst);
@@ -206,12 +211,10 @@ impl Worker {
         match rrx.recv_timeout(timeout) {
             Ok(v) => Ok(v),
             Err(RecvTimeoutError::Timeout) => Err(unavailable(UnavailableReason::TimedOut)),
-            // The worker panicked mid-call. Make the next call respawn it.
-            Err(RecvTimeoutError::Disconnected) => {
-                *self.tx.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                self.busy.store(false, Ordering::SeqCst);
-                Err(SecretStoreError::Other { code: None })
-            }
+            // The worker panicked mid-call; `Idle` already cleared `busy`
+            // while unwinding, and the next send finds the dead channel and
+            // drops it. Touching either here could wipe a later caller's claim.
+            Err(RecvTimeoutError::Disconnected) => Err(SecretStoreError::Other { code: None }),
         }
     }
 }
@@ -281,12 +284,21 @@ impl SecretStore for KeychainStore {
 /// Map a `keyring` error to a store error. `NoEntry` is not an error and
 /// callers handle it first; here it is `Other` for completeness. The payload
 /// of `BadEncoding`, `BadDataFormat` and `Ambiguous` is never formatted.
+#[doc(hidden)]
 pub fn map_error(e: &KeyringError) -> SecretStoreError {
     match e {
         KeyringError::NoDefaultStore => unavailable(UnavailableReason::NoService),
         KeyringError::TooLong(..) => SecretStoreError::TooLarge,
         KeyringError::NoStorageAccess(p) => {
-            classify(&format!("{p:?}"), unavailable(UnavailableReason::NoService))
+            let text = format!("{p:?}");
+            // zbus-secret-service-keyring-store wraps `secret_service::Error`
+            // whose Debug is the bare variant name.
+            match text.as_str() {
+                "Locked" => return SecretStoreError::Locked,
+                "Prompt" => return SecretStoreError::Denied,
+                _ => {}
+            }
+            classify(&text, unavailable(UnavailableReason::NoService))
         }
         KeyringError::PlatformFailure(p) => {
             let text = format!("{p:?}");
@@ -336,8 +348,9 @@ fn classify(text: &str, default: SecretStoreError) -> SecretStoreError {
     default
 }
 
-/// The status code in a platform error's Debug text: `code: -25293`,
-/// `Code(5)` or `0x800706F7`.
+/// The status code in a platform error's Debug text: `code: -25293`
+/// (security-framework), `PlatformError(5)` (windows-native-keyring-store,
+/// decimal) or `0x800706F7`.
 fn extract_code(text: &str) -> Option<i64> {
     let lower = text.to_ascii_lowercase();
     if let Some(i) = lower.find("0x") {
@@ -349,7 +362,7 @@ fn extract_code(text: &str) -> Option<i64> {
             return Some(v);
         }
     }
-    for key in ["code: ", "code(", "code "] {
+    for key in ["code: ", "platformerror(", "code(", "code "] {
         if let Some(i) = lower.find(key) {
             let rest = &lower[i + key.len()..];
             let num: String = rest
