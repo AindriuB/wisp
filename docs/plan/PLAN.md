@@ -69,6 +69,9 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - collections.rs:66-72 re-derives names and walks collection_root(i) instead of using OpenCollection::name() and Workspace::collections; drift risk.
 - collections.rs list_open stays true when the count drops to 1, so the list reappears expanded when a second collection opens.
 - The duplicate-name test only checks that paths pass through.
+- 53-1 collections.rs:147 row click activates by the index captured at render; if a collection closed in between (e.g. a clone refusal) another one is activated → capture the row's root and resolve with coll_ix on click, as close does
+- 53-2 collections.rs:99 the open list has no dismiss on click-away or Escape; it stays open over the tree
+- 53-3 (nit) collections.rs:126 active mark is a text ✓ with padded spaces; alignment depends on the font → icon or fixed-width slot
 
 ### Follow-ups from task 112 (not 0.2.0 wave 3)
 - Settings write on activate is now synchronous file I/O on the UI thread; move persist_collections off-thread and coalesced, or skip when unchanged.
