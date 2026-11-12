@@ -175,6 +175,22 @@ fn step(current: Option<usize>, len: usize, delta: isize) -> Option<usize> {
     })
 }
 
+/// Clear the path-keyed state when the shown collection root changes.
+fn reset_for_root(
+    shown_root: &mut Option<PathBuf>,
+    new_root: Option<PathBuf>,
+    pending: &mut Option<Pending>,
+    selected: &mut Option<PathBuf>,
+    collapsed: &mut HashSet<PathBuf>,
+) {
+    if *shown_root != new_root {
+        *shown_root = new_root;
+        *pending = None;
+        *selected = None;
+        collapsed.clear();
+    }
+}
+
 fn target_label(dir: &Path) -> String {
     if dir.as_os_str().is_empty() {
         "(collection root)".into()
@@ -276,12 +292,13 @@ impl Sidebar {
             .read(cx)
             .active_collection()
             .map(|c| c.tree.root.clone());
-        if root != self.shown_root {
-            self.shown_root = root;
-            self.pending = None;
-            self.selected = None;
-            self.collapsed.clear();
-        }
+        reset_for_root(
+            &mut self.shown_root,
+            root,
+            &mut self.pending,
+            &mut self.selected,
+            &mut self.collapsed,
+        );
     }
 
     fn notice(&self, text: String, cx: &mut Context<Self>) {
@@ -979,6 +996,36 @@ mod tests {
         let want: HashSet<PathBuf> =
             ["people".into(), "people/admin".into(), "other".into()].into();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn collections_root_change_clears_path_keyed_state() {
+        let mut shown = Some(PathBuf::from("/a"));
+        let mut pending = Some(Pending::Move {
+            path: "users".into(),
+            targets: vec![PathBuf::new()],
+        });
+        let mut selected = Some(PathBuf::from("users"));
+        let mut collapsed: HashSet<PathBuf> = ["users".into()].into();
+
+        reset_for_root(
+            &mut shown,
+            Some("/a".into()),
+            &mut pending,
+            &mut selected,
+            &mut collapsed,
+        );
+        assert!(pending.is_some() && selected.is_some() && !collapsed.is_empty());
+
+        reset_for_root(
+            &mut shown,
+            Some("/b".into()),
+            &mut pending,
+            &mut selected,
+            &mut collapsed,
+        );
+        assert_eq!(shown, Some(PathBuf::from("/b")));
+        assert!(pending.is_none() && selected.is_none() && collapsed.is_empty());
     }
 
     #[test]
