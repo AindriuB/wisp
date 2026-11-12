@@ -110,3 +110,14 @@ Reviewed HEAD: b062d0ff5fdefe26c7a3da34ed243ea26c7a1661
 - [P3, optional] crates/storage/src/keychain.rs:210-214 — after a worker panic the `Disconnected` arm clears `busy`/`tx` late and can wipe another caller's claim, allowing two OS calls at once. Only a panicking backend triggers it.
 - [P3, optional] crates/storage/tests/keychain.rs:277-288 — `debug_redacts_stores` never formats either store with `{:?}`; make it format both and assert no sentinel.
 - Also: update `headless_locked_probe` per the amendment above. Consider `#[doc(hidden)]` on the public test seam (Backend, open_with, map_error).
+
+## Amendment 2 (orchestrator, 2026-11-12)
+
+The `headless-locked` check seeds an item before locking: after unlocking the test keyring, run `secret-tool store` for a fixed `wisp-test-locked` service/account, then `secret-tool lock`, then run the ignored test. `headless_locked_probe` asserts probe `Ok(())` and `get` on that seeded item returns `Err(Locked)` (or `Denied` if a prompt is dismissed) — `get` and `set` take different code paths in zbus-secret-service-keyring-store, and the amendment names `get`. The implementer owns the `headless-locked` command text in this file for that change.
+
+## Review round 2 — findings
+
+Reviewed HEAD: b3bc086d4b09a300312194be28c7e28e53b39eb3
+
+- [P2] crates/storage/src/keychain.rs:186-217 — after a backend panic, an immediate next call can claim `busy`, send into the dying worker's still-open channel, and have its job dropped unrun; its `Idle` was never built, so `busy` stays set and every later call returns `TimedOut` for the life of the store (reviewer reproduced 2972/3000). Build `Idle(busy)` before `Box::new` and move it into the job closure so a dropped job still clears `busy`. Add a test: backend whose probe panics; probe, immediate get, short wait, get again → not TimedOut (recovers).
+- [DRIFT → Amendment 2] crates/storage/tests/keychain.rs:364-376 `headless_locked_probe` checks `set` on a new account; per Amendment 2 seed an item and check `get`.
