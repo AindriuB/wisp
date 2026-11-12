@@ -17,6 +17,7 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+<<<<<<< HEAD
 ## 2026-11-12 — Secret store abstraction (task 111)
 Environments can now declare which store holds their secret values. `crates/storage/src/vault.rs` adds a `SecretStore` trait, an in-memory store, and an extensible `StoreKind`; `<env>.toml` gains `secrets` and `secret_names`. The loader fails closed on any store error including TimedOut, and values migrate between the file and a store in both directions. The OS keychain backend is task 114 and its wiring is 115.
 **Cost:** `File` is a `StoreKind` mode, not a second `SecretStore` implementation as the spec said (spec amended). The module is `vault` because the project deny rule blocks reads of `secrets.*`. Review round 1 fixed: a final delete failure is now Ok plus a LeftoverFileWarning (user decision); rollback restores a pre-existing store entry's old value; a non-string `secrets` no longer makes save write a plaintext secrets file; read-back mismatch and `migrate_to_file` restore gained tests. Known gaps are in PLAN under follow-ups from task 111.
@@ -24,6 +25,20 @@ Environments can now declare which store holds their secret values. `crates/stor
 ## 2026-11-12 — Keychain spike (task 109)
 The spike chose `keyring` 4.x for the OS keychain. Measured size cost: Windows +26,112 B, Linux +290,960 B. PR #51 was closed unmerged; the spike was evidence only.
 **Cost:** Wave-2 left 363,744 B of Windows headroom, so 26,112 B fits; wave 3 still needs its size gate (task 116). Do not merge the spike branch; backend work is task 114.
+=======
+## 2026-11-12 — Collection switcher in the sidebar (task 113)
+The sidebar header now shows the active collection's name with a dropdown listing every open collection, a check mark on the active one, the path as a tooltip, and a × that closes it through root.rs's shared close_collection_at, so the dirty-tab prompt is the same as the palette's. Hand-checked on a macOS release build with three collections: picking beta switched header, tree and the saved active_collection; with a dirty tab, × showed "Discard unsaved changes? Closing this collection closes its tabs."; Cancel left beta open and active with the tab dirty; Discard closed beta with its file on disk unchanged; after Quit and relaunch alpha and the active gamma were restored.
+**Cost:** Closing the active collection makes the last one active rather than the previous one (the 112 follow-up, still open). GPUI windows repaint and capture reliably only when frontmost, though background clicks worked. Three small follow-ups are in PLAN.md (name derivation drift, list_open stuck true, weak duplicate-name test).
+PR #53 review round 1 found 0 Medium+, 2 Lows and 1 Nit, all to follow-ups.
+
+## 2026-11-12 — PR #50 review round 1 (task 112)
+Three Mediums were fixed in f28b1d5: import targets the collection captured when the dialog opens and refuses if it was closed; Clear history and sidebar Delete act on the collection captured before the prompt; close and clone-clash decisions were extracted into tested plans (plan_clash, plan_close, confirmed_open).
+**Cost:** The dispatch in close_collection and the clash handler stays untested (50-R1, accepted by the user) because there is no GPUI test harness; adding one is follow-up 50-R2. Lows and nits (50-4 to 50-19, 50-P3a/b) went to the task 112 follow-ups in PLAN.md, and 50-8 also to task 99 as AC52.
+
+## 2026-11-12 — Several collections open at once (task 112)
+The workspace now holds up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs. The open list lives in settings.toml; the palette has Switch and Close collection, quit saves every cookie jar, and cloning a collection whose id is already open is refused. Amendment 1 (user decisions): measure scripts use a per-launch temp WISP_DATA_DIR, sidebar pending move/rename and selection are cleared on collection switch, and root.rs owns the Close collection dirty prompt while Open no longer asks to discard because it adds. Tester: workspace suite green, 248 app tests, fmt and clippy clean, Cargo.lock unchanged. Reviewer 11/12, with AC11 measured on macOS arm64 release: idle RSS about 110.2 MB with 1 collection and 110.3 MB with 8 at 15 s, against a 120 MiB budget.
+**Cost:** Two review rounds plus the amendment. The RSS figures are one sample each with a temp WISP_DATA_DIR and HOME, and at 12 s they were still settling (100.9 and 110.4 MB), so measure at 15 s or later. Settings writes on open, close and activate go through update_settings, which the reviewer accepted as the existing idiom but which is synchronous I/O on the UI thread. The measure.ps1 changes have not been run. Nine follow-ups are in PLAN.md.
+>>>>>>> origin/main
 
 ## 2026-11-10 — Wave-2 size gate (task 108)
 Wave 2 (tasks 100-108) passed the binary size gate, measured from run 42890358687 at 8c468ff (main df81213 plus the task file). Windows is 15,136,256 B against the 15,500,000 B limit (wave 1 14,514,688, +621,568), leaving 363,744 B of headroom; macOS is 11,595,488 B (+546,384) and Linux 25,444,088 B (+644,808). All RSS figures are within budgets.json.

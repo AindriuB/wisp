@@ -11,6 +11,8 @@ pub enum CommandId {
     NewRequest,
     CloseTab,
     OpenCollection,
+    SwitchCollection,
+    CloseCollection,
     SwitchEnvironment,
     ToggleTheme,
     ToggleLayout,
@@ -26,6 +28,8 @@ pub enum CommandId {
 pub enum PaletteKind {
     Request(PathBuf),
     Environment(Option<String>),
+    /// An open collection, by root, so a list change cannot retarget it.
+    Collection(PathBuf),
     Command(CommandId),
 }
 
@@ -33,6 +37,7 @@ pub enum PaletteKind {
 pub enum PaletteMode {
     All,
     Environments,
+    Collections,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,12 +55,14 @@ pub struct Match {
 }
 
 impl CommandId {
-    pub const ALL: [CommandId; 14] = [
+    pub const ALL: [CommandId; 16] = [
         CommandId::Send,
         CommandId::Save,
         CommandId::NewRequest,
         CommandId::CloseTab,
         CommandId::OpenCollection,
+        CommandId::SwitchCollection,
+        CommandId::CloseCollection,
         CommandId::SwitchEnvironment,
         CommandId::ToggleTheme,
         CommandId::ToggleLayout,
@@ -74,6 +81,8 @@ impl CommandId {
             CommandId::NewRequest => "New request",
             CommandId::CloseTab => "Close tab",
             CommandId::OpenCollection => "Open collection",
+            CommandId::SwitchCollection => "Switch collection…",
+            CommandId::CloseCollection => "Close collection",
             CommandId::SwitchEnvironment => "Switch environment",
             CommandId::ToggleTheme => "Toggle theme",
             CommandId::ToggleLayout => "Toggle layout",
@@ -119,6 +128,8 @@ pub fn items(
                 kind: PaletteKind::Command(*c),
             }));
         }
+        // Built by `collection_items`: the list is not part of the tree.
+        PaletteMode::Collections => {}
         PaletteMode::Environments => {
             let mark = |on: bool| {
                 if on {
@@ -140,6 +151,22 @@ pub fn items(
         }
     }
     out
+}
+
+/// The open collections by name, the path as detail. `active` is marked in the detail.
+pub fn collection_items(open: &[(String, PathBuf)], active: Option<usize>) -> Vec<PaletteItem> {
+    open.iter()
+        .enumerate()
+        .map(|(i, (name, path))| PaletteItem {
+            label: name.clone(),
+            detail: if active == Some(i) {
+                format!("{} (active)", path.display())
+            } else {
+                path.display().to_string()
+            },
+            kind: PaletteKind::Collection(path.clone()),
+        })
+        .collect()
 }
 
 /// Score `query` (lowercased chars) as a subsequence of `text`; returns the
@@ -289,12 +316,12 @@ mod tests {
             ],
         };
         let all = items(Some(&tree), &[], None, PaletteMode::All);
-        assert_eq!(all.len(), 2 + 14);
+        assert_eq!(all.len(), 2 + 16);
         assert_eq!(all[0].label, "Get user");
         assert_eq!(all[0].detail, "users/get.toml");
         assert_eq!(all[0].kind, PaletteKind::Request("users/get.toml".into()));
         assert_eq!(all[2].label, "Send request");
-        assert_eq!(items(None, &[], None, PaletteMode::All).len(), 14);
+        assert_eq!(items(None, &[], None, PaletteMode::All).len(), 16);
 
         let envs = vec!["dev".to_string(), "prod".to_string()];
         let e = items(None, &envs, Some("prod"), PaletteMode::Environments);
@@ -306,6 +333,19 @@ mod tests {
         assert_eq!(e[2].kind, PaletteKind::Environment(Some("prod".into())));
         let e = items(None, &envs, None, PaletteMode::Environments);
         assert_eq!(e[0].detail, "active");
+    }
+
+    #[test]
+    fn collections_items_list_open_ones_by_name_with_the_path() {
+        let open = vec![
+            ("api".to_string(), PathBuf::from("/w/api")),
+            ("web".to_string(), PathBuf::from("/w/web")),
+        ];
+        let v = collection_items(&open, Some(1));
+        assert_eq!(v[0].label, "api");
+        assert_eq!(v[0].detail, "/w/api");
+        assert_eq!(v[0].kind, PaletteKind::Collection("/w/api".into()));
+        assert_eq!(v[1].detail, "/w/web (active)");
     }
 
     #[test]
