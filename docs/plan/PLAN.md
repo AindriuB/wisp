@@ -174,6 +174,17 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - 52-N1 marker cross-registry read-modify-write race: fails closed (extra bind prompt only).
 - 52-N2 root list per id has no size cap (grows only via user-confirmed additional checkouts) -> cheap cap later.
 - 52-N3 a collection whose collection.toml is a symlink (dotfiles setups) now errors and history turns off; intended fail-closed, user-visible.
+- 52-43 (-> task 99) read_collection_id follows a symlinked collection.toml, so a crafted sibling link takes a victim's id without knowing it -> confine the read; missing stays None.
+- 52-44 (-> task 99) one stable registry id is written into every marker; a tracked marker shows modified and leaks a linkable per-user id -> per-root key (e.g. hash of registry id and root); warn on a tracked marker.
+- 52-45 (-> task 99) the attacker-controllable marker is read whole with no size or entry cap -> cap size from lstat, fail closed; drop malformed entries on write.
+- 52-46 LooksLikeCopy / IdBoundElsewhere / rebind docs still describe one root and point worktrees at assign_new_collection_id -> point at bind_additional_checkout / share_with_folder; fix the 52-37 link.
+- 52-47 ensure_collection_id now needs canonicalize; where it fails on Windows volumes, history turns off -> note for AC38 or fall back when the component walk passed.
+- 52-48 (nit, -> task 99 AC56) collection.toml check-then-write race -> extend AC56.
+- 52-49 (nit) non_regular_collection_toml_is_refused passes without the helper (EISDIR) -> assert StorageError::Invalid.
+- 52-50 (nit) marker lines for vanished registries are never removed -> fold into the 52-N2 cap.
+- 52-51 (nit) confined_regular_file returns Ok(true) when the file equals the root -> refuse when there are no components.
+- 52-N4 (-> task 99) a stale linked-worktree entry (folder deleted by hand, not `git worktree remove`) verifies any folder later created at that path -> also require the entry not to be prunable, or check the folder's owner.
+- 52-W1 (task 115 wiring rule) share_with_folder can't prove its caller: 115 must pass the currently open, bound collection's root as from_root and take new_root from a folder picker; never fill from_root from bound_roots inside an unbound folder's prompt.
 
 ### Follow-ups from task 104 (not 0.2.0 wave 2)
 - [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.
