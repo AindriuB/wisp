@@ -562,8 +562,10 @@ impl AuthEditor {
         let ws = self.workspace.read(cx);
         let scope = ws.scope_for(rel.as_deref());
         // The same filter `scope_for` applies: ancestors without defaults are skipped.
-        let mut names: Vec<String> = match (rel.as_deref().and_then(|p| p.parent()), &ws.collection)
-        {
+        let mut names: Vec<String> = match (
+            rel.as_deref().and_then(|p| p.parent()),
+            ws.active_collection(),
+        ) {
             (Some(parent), Some(c)) => parent
                 .ancestors()
                 .filter(|p| !p.as_os_str().is_empty())

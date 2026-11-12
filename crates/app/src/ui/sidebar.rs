@@ -21,7 +21,7 @@ use wisp_storage::collection::Node;
 use wisp_storage::ops;
 
 use crate::actions::{OpenCollection, OpenPalette, palette_hint};
-use crate::workspace::{Workspace, WorkspaceEvent};
+use crate::workspace::{Workspace, WorkspaceEvent, confirmed_open};
 
 const NO_ENV: &str = "No environment";
 const METHOD_WIDTH: f32 = 46.0;
@@ -175,6 +175,22 @@ fn step(current: Option<usize>, len: usize, delta: isize) -> Option<usize> {
     })
 }
 
+/// Clear the path-keyed state when the shown collection root changes.
+fn reset_for_root(
+    shown_root: &mut Option<PathBuf>,
+    new_root: Option<PathBuf>,
+    pending: &mut Option<Pending>,
+    selected: &mut Option<PathBuf>,
+    collapsed: &mut HashSet<PathBuf>,
+) {
+    if *shown_root != new_root {
+        *shown_root = new_root;
+        *pending = None;
+        *selected = None;
+        collapsed.clear();
+    }
+}
+
 fn target_label(dir: &Path) -> String {
     if dir.as_os_str().is_empty() {
         "(collection root)".into()
@@ -216,6 +232,8 @@ pub struct Sidebar {
     collapsed: HashSet<PathBuf>,
     selected: Option<PathBuf>,
     pending: Option<Pending>,
+    /// Root of the collection the state above belongs to.
+    shown_root: Option<PathBuf>,
     focus: FocusHandle,
     scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
@@ -243,6 +261,7 @@ impl Sidebar {
                     ev,
                     WorkspaceEvent::CollectionChanged | WorkspaceEvent::EnvironmentChanged
                 ) {
+                    this.reset_on_switch(cx);
                     this.sync_env(window, cx);
                 }
                 cx.notify();
@@ -256,12 +275,30 @@ impl Sidebar {
             collapsed: HashSet::new(),
             selected: None,
             pending: None,
+            shown_root: None,
             focus,
             scroll: gpui::ScrollHandle::new(),
             _subs: subs,
         };
+        this.reset_on_switch(cx);
         this.sync_env(window, cx);
         this
+    }
+
+    /// Clear the path-keyed state when the active collection is another one.
+    fn reset_on_switch(&mut self, cx: &mut Context<Self>) {
+        let root = self
+            .workspace
+            .read(cx)
+            .active_collection()
+            .map(|c| c.tree.root.clone());
+        reset_for_root(
+            &mut self.shown_root,
+            root,
+            &mut self.pending,
+            &mut self.selected,
+            &mut self.collapsed,
+        );
     }
 
     fn notice(&self, text: String, cx: &mut Context<Self>) {
@@ -271,7 +308,7 @@ impl Sidebar {
 
     /// Bring the select's items and selection in line with the workspace.
     fn sync_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (names, active) = match self.workspace.read(cx).collection.as_ref() {
+        let (names, active) = match self.workspace.read(cx).active_collection() {
             Some(c) => (
                 c.environments.clone(),
                 c.active_env.as_ref().map(|e| e.name.clone()),
@@ -309,8 +346,7 @@ impl Sidebar {
     fn rows(&self, cx: &Context<Self>) -> Vec<Row> {
         self.workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map(|c| flatten(&c.tree.nodes, &self.collapsed))
             .unwrap_or_default()
     }
@@ -412,8 +448,7 @@ impl Sidebar {
         let targets = self
             .workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map(|c| move_targets(&c.tree.nodes, &path))
             .unwrap_or_default();
         self.pending = Some(Pending::Move { path, targets });
@@ -423,8 +458,7 @@ impl Sidebar {
     fn root(&self, cx: &Context<Self>) -> Option<PathBuf> {
         self.workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map(|c| c.tree.root.clone())
     }
 
@@ -484,13 +518,12 @@ impl Sidebar {
         cx.notify();
     }
 
-    fn delete(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(root) = self.root(cx) else { return };
-        match ops::delete_node(&root, path) {
+    fn delete(&mut self, root: &Path, path: &Path, cx: &mut Context<Self>) {
+        match ops::delete_node(root, path) {
             Ok(()) => {
                 self.workspace.update(cx, |w, cx| {
-                    w.on_node_deleted(path, cx);
-                    w.reload_tree(cx);
+                    w.on_node_deleted(root, path, cx);
+                    w.reload_tree_of(root, cx);
                 });
                 self.collapsed.retain(|c| !c.starts_with(path));
                 if self
@@ -683,10 +716,18 @@ impl Sidebar {
             cx,
         );
         let path = path.to_path_buf();
+        // The collection the prompt was raised for, not whichever is active after it.
+        let root = self.root(cx);
         cx.spawn(async move |this, cx| {
-            if matches!(answer.await, Ok(0)) {
-                let _ = this.update(cx, |this, cx| this.delete(&path, cx));
-            }
+            let confirmed = matches!(answer.await, Ok(0));
+            let _ = this.update(cx, |this, cx| {
+                let ix = root
+                    .as_deref()
+                    .and_then(|r| this.workspace.read(cx).coll_ix(r));
+                if let (Some(_), Some(root)) = (confirmed_open(confirmed, ix), root) {
+                    this.delete(&root, &path, cx);
+                }
+            });
         })
         .detach();
     }
@@ -702,8 +743,7 @@ impl Sidebar {
         let count = self
             .workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map_or(0, |c| descendant_count(&c.tree.nodes, path));
         self.confirm_delete(path, name, Some(count), window, cx);
     }
@@ -794,8 +834,8 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ws = self.workspace.read(cx);
-        let open = ws.collection.is_some();
-        let error = ws.collection.as_ref().and_then(|c| c.error.clone());
+        let open = ws.active_collection().is_some();
+        let error = ws.active_collection().and_then(|c| c.error.clone());
         let active_path: Option<PathBuf> = ws.active_tab().and_then(|t| t.read(cx).path.clone());
         let border = cx.theme().border;
         let danger = cx.theme().danger;
@@ -963,6 +1003,36 @@ mod tests {
         let want: HashSet<PathBuf> =
             ["people".into(), "people/admin".into(), "other".into()].into();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn collections_root_change_clears_path_keyed_state() {
+        let mut shown = Some(PathBuf::from("/a"));
+        let mut pending = Some(Pending::Move {
+            path: "users".into(),
+            targets: vec![PathBuf::new()],
+        });
+        let mut selected = Some(PathBuf::from("users"));
+        let mut collapsed: HashSet<PathBuf> = ["users".into()].into();
+
+        reset_for_root(
+            &mut shown,
+            Some("/a".into()),
+            &mut pending,
+            &mut selected,
+            &mut collapsed,
+        );
+        assert!(pending.is_some() && selected.is_some() && !collapsed.is_empty());
+
+        reset_for_root(
+            &mut shown,
+            Some("/b".into()),
+            &mut pending,
+            &mut selected,
+            &mut collapsed,
+        );
+        assert_eq!(shown, Some(PathBuf::from("/b")));
+        assert!(pending.is_none() && selected.is_none() && collapsed.is_empty());
     }
 
     #[test]
