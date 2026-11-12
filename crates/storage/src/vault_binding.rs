@@ -368,7 +368,12 @@ fn read_git_file(path: &Path) -> Result<Option<String>, StorageError> {
 /// dir and whose `gitdir` file must point back at this `.git`. `Ok(None)` when
 /// `root` is not a verifiable checkout; a symlinked `.git` is `Invalid`.
 pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageError> {
-    let dot_git = root.join(".git");
+    // Canonicalise `root` once; `<canon_root>/.git` is then the identity and is
+    // never followed again after the lstat below.
+    let Ok(canon_root) = std::fs::canonicalize(root) else {
+        return Ok(None);
+    };
+    let dot_git = canon_root.join(".git");
     let meta = match std::fs::symlink_metadata(&dot_git) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -379,7 +384,7 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     }
     let canon = |p: &Path| std::fs::canonicalize(p).ok();
     if meta.is_dir() {
-        return Ok(canon(&dot_git));
+        return Ok(Some(dot_git));
     }
     let Some(text) = read_git_file(&dot_git)? else {
         return Ok(None);
@@ -387,7 +392,7 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     let Some(target) = text.strip_prefix("gitdir:").map(str::trim) else {
         return Ok(None);
     };
-    let Some(gitdir) = canon(&root.join(target)) else {
+    let Some(gitdir) = canon(&canon_root.join(target)) else {
         return Ok(None);
     };
     // A linked worktree always has a `commondir`; without one the gitdir is a
@@ -400,9 +405,7 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     };
     // The gitdir must live directly under `<common>/worktrees/`, inside the
     // repository's own `.git`, which this folder's author cannot have written.
-    if gitdir.parent() != Some(common.join("worktrees").as_path())
-        || canon(&common.join("worktrees")).as_deref() != gitdir.parent()
-    {
+    if gitdir.parent() != Some(common.join("worktrees").as_path()) {
         return Ok(None);
     }
     // The worktree's gitdir must name this `.git` back, so a forged `.git`
@@ -410,7 +413,7 @@ pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageErro
     let back = read_git_file(&gitdir.join("gitdir"))?;
     let back_ok = back
         .and_then(|b| canon(&gitdir.join(b)))
-        .is_some_and(|b| Some(b) == canon(&dot_git));
+        .is_some_and(|b| b == dot_git);
     Ok(back_ok.then_some(common))
 }
 
