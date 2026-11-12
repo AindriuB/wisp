@@ -22,7 +22,7 @@ than no plan.
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); 114 (OS keychain secret store on `keyring` 4, module keychain in wisp-storage; not yet linked into the app; Windows 15,256,576 B, 243,424 B headroom); see HISTORY. Open: 115 (keychain wiring), 116 (wave-3 size gate).
+- **Wave 3:** multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); 114 (OS keychain secret store on `keyring` 4, module keychain in wisp-storage; not yet linked into the app; Windows 15,256,576 B, 243,424 B headroom); 115 (keychain wiring: OS keychain in the app, secrets panel, confirmed bind/move flows; PR #55; Windows 15,171,072 B after opt-level "z" on wisp-storage); see HISTORY. Open: 116 (wave-3 size gate and measure), then task 99, then the Windows CI job (54-CI) last before the 0.2.0 tag.
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -64,6 +64,35 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - No test fails if the symlink-to-`.toml` check in `sidecar_path` is disabled; Unix is covered by the dev/ino check.
 - The reserved-name rule also rejects display names like "CON.txt" whose file slug would be harmless (decided).
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
+
+### Follow-ups from task 115 (not 0.2.0 wave 3)
+From the user review of PR #55:
+- 55-6 file-mode is derived from load status, so a Loading or Error file-mode environment still calls keychain delete.
+- 55-7 (security, -> task 99, AC72) no data dir reads bindings from the shared /tmp/wisp-no-data-dir.
+- 55-8 the NewId failure notice does not name the operation.
+- 55-9 (security, -> task 99, AC73) a failed reload keeps the old secrets active while the status says not loaded.
+- 55-10 Move-to-file forget uses the cached id and is skipped silently when the id is not Known.
+- 55-11 a re-probe keeps a stale Ok until the new probe returns.
+- 55-12 too-large token banners are global and never cleared.
+- 55-13 set_environment_at cannot fail, leaving dead error branches.
+- 55-14 refresh_known_id blocks the UI thread on the RESOLVE lock.
+- 55-15 (nit) the index prefix is derived by stripping a formatted account.
+- 55-16 (nit) the value is cleared before the outcome is known.
+- 55-17 (nit) a folder-picker error is treated as cancel.
+- 55-18 a Send during post-move Loading clears the move mark, so an older in-flight save can store.
+- 55-19 (security, -> task 99, AC74) imported_names reads the file before the confinement check (follows symlinks, blocks on a FIFO).
+- 55-20 (nit) duplicate asserts.
+- 55-21 (security, -> task 99, AC75) the test Workspace::new resolves the real user data dir before it is swapped.
+
+From the internal review:
+- A quick double env switch where the second fails can leave the status Loading.
+- A forget/save race on the index is possible (no input found that triggers it).
+- The mark_persist test does not cover the call sites in send/authorize.
+- The NewId and Move-to-file wiring tests call helpers directly rather than the UI path.
+- The watcher is skipped for all app unit tests under cfg(test).
+
+From the AC9 hand check:
+- Tell users a stale keychain prompt can remain after a timeout (it outlives the app process).
 
 ### Follow-ups from task 114 (not 0.2.0 wave 3)
 - (a) keyring 4's platform errors are opaque, so `map_error` classifies by Debug text; real Windows errors are still unseen (Windows CI has no test job).
