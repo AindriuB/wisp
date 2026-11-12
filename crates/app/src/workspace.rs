@@ -35,11 +35,105 @@ use crate::ui::history as history_ui;
 /// Quiet period after the first watcher event before the batch is handled.
 const WATCH_BATCH: Duration = Duration::from_millis(50);
 
+/// At most this many collections are open at once.
+pub const MAX_OPEN_COLLECTIONS: usize = 8;
+
+/// An ordered set of tabs and which one is showing.
+#[derive(Default)]
+pub struct TabGroup {
+    pub tabs: Vec<Entity<RequestTab>>,
+    pub active: Option<usize>,
+}
+
+/// One open collection and everything that belongs to it alone.
 pub struct OpenCollection {
     pub tree: CollectionTree,
     pub environments: Vec<String>,
     pub active_env: Option<Environment>,
     pub error: Option<String>,
+    /// The collection's tabs; a tab belongs to exactly one group.
+    pub group: TabGroup,
+    /// Where the collection's id stands; resolved off the UI thread.
+    coll_id: IdState,
+    history: HistoryState,
+    /// True once a history Notice was shown for this collection.
+    history_notified: bool,
+    watcher: Option<Watcher>,
+    _watch_task: Option<Task<()>>,
+}
+
+impl OpenCollection {
+    fn new(tree: CollectionTree, environments: Vec<String>) -> Self {
+        Self {
+            tree,
+            environments,
+            active_env: None,
+            error: None,
+            group: TabGroup::default(),
+            coll_id: IdState::Reading,
+            history: HistoryState::Unresolved,
+            history_notified: false,
+            watcher: None,
+            _watch_task: None,
+        }
+    }
+
+    /// The folder name, or the whole path when there is none.
+    pub fn name(&self) -> String {
+        self.tree.root.file_name().map_or_else(
+            || self.tree.root.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    }
+}
+
+/// What opening a path does, given the roots already open (canonical).
+#[derive(Debug, PartialEq, Eq)]
+enum Admit {
+    /// Already open at this index: activate it, start nothing.
+    Existing(usize),
+    /// At the cap: refuse, change nothing.
+    Full,
+    Add,
+}
+
+fn admit(open: &[&Path], root: &Path) -> Admit {
+    if let Some(ix) = open.iter().position(|p| *p == root) {
+        Admit::Existing(ix)
+    } else if open.len() >= MAX_OPEN_COLLECTIONS {
+        Admit::Full
+    } else {
+        Admit::Add
+    }
+}
+
+/// When two open collections share an id: `(refused, kept)`. The one opened later is refused.
+fn id_clash(ids: &[Option<&str>], ix: usize) -> Option<(usize, usize)> {
+    let id = ids.get(ix).copied().flatten()?;
+    let other = ids
+        .iter()
+        .enumerate()
+        .find(|(j, o)| *j != ix && **o == Some(id))?
+        .0;
+    Some((ix.max(other), ix.min(other)))
+}
+
+/// The active index once collection `closed` was removed, leaving `len` collections.
+fn active_after_close(active: Option<usize>, closed: usize, len: usize) -> Option<usize> {
+    match active {
+        _ if len == 0 => None,
+        Some(a) if a > closed => Some(a - 1),
+        Some(a) if a < closed => Some(a),
+        Some(_) => Some(closed.min(len - 1)),
+        None => None,
+    }
+}
+
+/// The tab's owner: a collection (by index) or the scratch group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Scratch,
+    Collection(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +154,8 @@ struct Sent {
     /// The unresolved draft; the store redacts it.
     draft: Request,
     request: Option<String>,
+    /// The root of the sending tab's collection; the history entry goes there.
+    root: Option<PathBuf>,
 }
 
 /// Where history writing stands for the open collection.
@@ -203,6 +299,50 @@ struct QuitWork {
     plan: QuitPlan,
     /// Snapshot for the toggle's enable and the final save.
     cookies: Vec<StoredCookie>,
+}
+
+/// Plan the quit work for the saving collections `ids` plus any with queued jobs.
+fn quit_work(
+    mut ids: Vec<String>,
+    queued: &[CookieJob],
+    files: &mut HashMap<String, CookieStatus>,
+    jars: &CookieJars,
+) -> Vec<QuitWork> {
+    for job in queued {
+        if !ids.iter().any(|i| i == job.id()) {
+            ids.push(job.id().to_owned());
+        }
+    }
+    let mut work = Vec::new();
+    for id in ids {
+        let ops: Vec<QuitOp> = queued
+            .iter()
+            .filter(|j| j.id() == id)
+            .filter_map(|j| match j {
+                CookieJob::Save { .. } => Some(QuitOp::Save),
+                CookieJob::Enable { .. } => Some(QuitOp::Enable),
+                CookieJob::Disable { .. } => Some(QuitOp::Disable),
+                CookieJob::Load { .. } => None,
+            })
+            .collect();
+        let jar = jars.jar(Some(&id));
+        let generation = jar.generation();
+        let Some(st) = files.get_mut(&id) else {
+            continue;
+        };
+        st.debounce.observe(generation, Instant::now());
+        let dirty = st.debounce.dirty() || ops.contains(&QuitOp::Save);
+        let plan = plan_quit(&ops, st.saving(), dirty);
+        if plan.toggle.is_none() && !plan.save {
+            continue;
+        }
+        if plan.save {
+            st.debounce.saved(generation);
+        }
+        let cookies = cookie_ui::to_stored(jar.snapshot(SystemTime::now()));
+        work.push(QuitWork { id, plan, cookies });
+    }
+    work
 }
 
 impl CookieStatus {
@@ -394,6 +534,23 @@ impl HistoryJob {
             }
         }
     }
+}
+
+/// A handle to `c`'s history, or the reason there is none.
+fn history_job_of(c: &OpenCollection, data: Option<&DataDir>) -> Result<HistoryJob, String> {
+    let store = match &c.history {
+        HistoryState::Off(reason) => return Err(reason.clone()),
+        HistoryState::Ready(s) => Some(s.clone()),
+        HistoryState::Unresolved => None,
+    };
+    let Some(data) = data.cloned() else {
+        return Err("the data directory is unknown".into());
+    };
+    Ok(HistoryJob {
+        store,
+        root: c.tree.root.clone(),
+        data,
+    })
 }
 
 fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
@@ -896,20 +1053,18 @@ pub struct Workspace {
     pub engine: Engine,
     pub settings: Settings,
     pub settings_path: Option<PathBuf>,
-    pub collection: Option<OpenCollection>,
-    pub tabs: Vec<Entity<RequestTab>>,
-    pub active: Option<usize>,
+    /// The open collections, in order.
+    pub collections: Vec<OpenCollection>,
+    /// Index of the active collection; `None` shows the scratch group.
+    active_collection: Option<usize>,
+    /// Tabs created with no collection open.
+    scratch: TabGroup,
     routes: HashMap<RequestId, WeakEntity<RequestTab>>,
     /// Interactive authorizations in flight, by engine id.
     auth_routes: HashMap<RequestId, WeakEntity<RequestTab>>,
     sent: HashMap<RequestId, Sent>,
     data_dir: Option<DataDir>,
-    history: HistoryState,
-    /// True once a history Notice was shown for the open collection.
-    history_notified: bool,
     jars: CookieJars,
-    /// The open collection's id, read and resolved off the UI thread.
-    coll_id: IdState,
     /// Persistence state per collection id, once its file was checked in this run.
     cookie_files: HashMap<String, CookieStatus>,
     cookie_queue: VecDeque<CookieJob>,
@@ -921,8 +1076,6 @@ pub struct Workspace {
     cookie_ticker: Option<Task<()>>,
     _quit_sub: Option<gpui::Subscription>,
     autosend: Option<RequestId>,
-    watcher: Option<Watcher>,
-    _watch_task: Option<Task<()>>,
     empty_defaults: CollectionDefaults,
     /// True while a discard prompt is waiting for an answer.
     pub prompt_up: bool,
@@ -955,11 +1108,6 @@ fn affects_env(path: &Path, env: &str) -> bool {
             .is_some_and(|f| f == format!("{env}.toml") || f == format!("{env}.secrets.toml"))
 }
 
-/// Replacing a collection discards every tab, so any dirty tab needs a confirmation.
-fn open_needs_confirm(dirty: impl IntoIterator<Item = bool>) -> bool {
-    dirty.into_iter().any(|d| d)
-}
-
 /// What closing one tab does.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CloseStep {
@@ -978,15 +1126,93 @@ pub fn close_step(dirty: bool, prompt_active: bool) -> CloseStep {
 }
 
 impl Workspace {
-    /// True when any tab holds unsaved changes.
+    /// The active collection, if one is.
+    pub fn active_collection(&self) -> Option<&OpenCollection> {
+        self.active_collection.and_then(|i| self.collections.get(i))
+    }
+
+    /// Index of the active collection.
+    pub fn active_collection_ix(&self) -> Option<usize> {
+        self.active_collection
+    }
+
+    /// The tabs showing now: the active collection's, else the scratch group's.
+    pub fn group(&self) -> &TabGroup {
+        self.active_collection().map_or(&self.scratch, |c| &c.group)
+    }
+
+    fn group_mut(&mut self) -> &mut TabGroup {
+        match self.active_collection {
+            Some(i) if i < self.collections.len() => &mut self.collections[i].group,
+            _ => &mut self.scratch,
+        }
+    }
+
+    fn group_of_mut(&mut self, owner: Owner) -> &mut TabGroup {
+        match owner {
+            Owner::Collection(i) => &mut self.collections[i].group,
+            Owner::Scratch => &mut self.scratch,
+        }
+    }
+
+    /// The visible tabs.
+    pub fn tabs(&self) -> &[Entity<RequestTab>] {
+        &self.group().tabs
+    }
+
+    /// Index of the showing tab among `tabs()`.
+    pub fn active_tab_ix(&self) -> Option<usize> {
+        self.group().active
+    }
+
+    pub fn all_tabs(&self) -> impl Iterator<Item = &Entity<RequestTab>> {
+        self.collections
+            .iter()
+            .flat_map(|c| c.group.tabs.iter())
+            .chain(self.scratch.tabs.iter())
+    }
+
+    fn owner_of(&self, tab: &Entity<RequestTab>) -> Option<Owner> {
+        if let Some(i) = self
+            .collections
+            .iter()
+            .position(|c| c.group.tabs.contains(tab))
+        {
+            Some(Owner::Collection(i))
+        } else {
+            self.scratch.tabs.contains(tab).then_some(Owner::Scratch)
+        }
+    }
+
+    fn root_of(&self, owner: Owner) -> Option<PathBuf> {
+        match owner {
+            Owner::Collection(i) => self.collections.get(i).map(|c| c.tree.root.clone()),
+            Owner::Scratch => None,
+        }
+    }
+
+    fn coll_ix(&self, root: &Path) -> Option<usize> {
+        self.collections.iter().position(|c| c.tree.root == root)
+    }
+
+    /// True when any tab, in any collection, holds unsaved changes.
     pub fn any_dirty(&self, cx: &gpui::App) -> bool {
-        self.tabs.iter().any(|t| t.read(cx).is_dirty())
+        self.all_tabs().any(|t| t.read(cx).is_dirty())
+    }
+
+    /// True when closing collection `ix` would discard unsaved changes.
+    pub fn collection_dirty(&self, ix: usize, cx: &gpui::App) -> bool {
+        self.collections
+            .get(ix)
+            .is_some_and(|c| c.group.tabs.iter().any(|t| t.read(cx).is_dirty()))
     }
 
     /// Close the tab `tab` if it is still open; the index may have moved.
     pub fn close_tab_entity(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
-        if let Some(ix) = self.tabs.iter().position(|t| t == tab) {
-            self.close_tab(ix, cx);
+        if let Some(owner) = self.owner_of(tab)
+            && let Some(ix) = self.group_of_mut(owner).tabs.iter().position(|t| t == tab)
+        {
+            self.close_tab_in(owner, ix, cx);
         }
     }
 
@@ -1006,17 +1232,14 @@ impl Workspace {
             engine,
             settings,
             settings_path,
-            collection: None,
-            tabs: Vec::new(),
-            active: None,
+            collections: Vec::new(),
+            active_collection: None,
+            scratch: TabGroup::default(),
             routes: HashMap::new(),
             auth_routes: HashMap::new(),
             sent: HashMap::new(),
             data_dir: DataDir::resolve(),
-            history: HistoryState::Unresolved,
-            history_notified: false,
             jars,
-            coll_id: IdState::Absent,
             cookie_files: HashMap::new(),
             cookie_queue: VecDeque::new(),
             cookie_busy: false,
@@ -1025,8 +1248,6 @@ impl Workspace {
             cookie_ticker: None,
             _quit_sub: None,
             autosend: None,
-            watcher: None,
-            _watch_task: None,
             empty_defaults: CollectionDefaults::default(),
             prompt_up: false,
         };
@@ -1060,11 +1281,7 @@ impl Workspace {
                 }
             })
         }));
-        if let Some(root) = open
-            && let Err(e) = this.open_collection(&root, cx)
-        {
-            eprintln!("wisp: cannot open collection {}: {e:#}", root.display());
-        }
+        this.restore_collections(open, cx);
         // The URL goes through `send`, so a resolve failure prints its problems.
         // Terminal events of superseded or closed tabs write no history.
         if let Ok(url) = std::env::var("WISP_AUTOSEND_URL") {
@@ -1103,37 +1320,114 @@ impl Workspace {
         .detach();
     }
 
-    pub fn open_collection(&mut self, root: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
-        let tree = open_collection(root)?;
-        // The new collection opened; only now drop the old one's tabs (their
-        // relative paths would otherwise point into the new root).
-        // In-flight requests are cancelled by `close_tab`; their terminal events
-        // find no tab and write no history.
-        while !self.tabs.is_empty() {
-            self.close_tab(self.tabs.len() - 1, cx);
+    /// Open the remembered collections and the argv one at startup. Refusals and failures are
+    /// shown as one notice once the window exists; missing paths are dropped from the list.
+    fn restore_collections(&mut self, argv: Option<PathBuf>, cx: &mut Context<Self>) {
+        let argv = argv.map(|p| p.canonicalize().unwrap_or(p));
+        let plan = settings::plan_restore(
+            &self.settings.open_collections,
+            self.settings.active_collection.as_deref(),
+            argv,
+            Path::exists,
+        );
+        let mut notes: Vec<String> = Vec::new();
+        if !plan.dropped.is_empty() {
+            let names: Vec<String> = plan
+                .dropped
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            notes.push(format!(
+                "Collection not found, removed from the open list: {}",
+                names.join(", ")
+            ));
         }
+        let mut active = None;
+        for path in &plan.open {
+            match self.add_collection(path, cx) {
+                Ok(ix) => {
+                    if plan.active.as_deref() == Some(path.as_path()) {
+                        active = Some(ix);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("wisp: cannot open collection {}: {e:#}", path.display());
+                    notes.push(format!("Cannot open {}: {e:#}", path.display()));
+                }
+            }
+        }
+        if let Some(ix) = active.or((!self.collections.is_empty()).then_some(0)) {
+            self.active_collection = Some(ix);
+        }
+        let roots = self.open_roots();
+        let active_root = self.active_collection().map(|c| c.tree.root.clone());
+        if roots != self.settings.open_collections || active_root != self.settings.active_collection
+        {
+            self.persist_collections(cx);
+        }
+        if !notes.is_empty() {
+            let text = notes.join("; ");
+            // The window subscribes after construction; emit once it has.
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |_, cx| cx.emit(WorkspaceEvent::Notice(text.into())))
+                    .ok();
+            })
+            .detach();
+        }
+    }
+
+    fn open_roots(&self) -> Vec<PathBuf> {
+        self.collections
+            .iter()
+            .map(|c| c.tree.root.clone())
+            .collect()
+    }
+
+    /// Remember the open list and the active collection in settings.toml.
+    fn persist_collections(&mut self, cx: &mut Context<Self>) {
+        let roots = self.open_roots();
+        let active = self.active_collection().map(|c| c.tree.root.clone());
+        self.update_settings(
+            |s| {
+                s.open_collections = roots;
+                s.active_collection = active;
+            },
+            cx,
+        );
+    }
+
+    /// Add a collection without activating it. An open path (after canonicalising) returns
+    /// the existing index and starts nothing.
+    fn add_collection(&mut self, root: &Path, cx: &mut Context<Self>) -> anyhow::Result<usize> {
+        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let open: Vec<&Path> = self
+            .collections
+            .iter()
+            .map(|c| c.tree.root.as_path())
+            .collect();
+        match admit(&open, &root) {
+            Admit::Existing(ix) => return Ok(ix),
+            Admit::Full => anyhow::bail!(
+                "At most {MAX_OPEN_COLLECTIONS} collections can be open; close one first"
+            ),
+            Admit::Add => {}
+        }
+        let tree = open_collection(&root)?;
         let environments = list_environments(&tree.root).unwrap_or_default();
-        let (watcher, rx) = match Watcher::start(&tree.root) {
-            Ok((w, rx)) => (Some(w), Some(rx)),
+        let mut c = OpenCollection::new(tree, environments);
+        let rx = match Watcher::start(&c.tree.root) {
+            Ok((w, rx)) => {
+                c.watcher = Some(w);
+                Some(rx)
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "watcher unavailable");
-                (None, None)
+                None
             }
         };
-        // Flush the old collection's jar before the new one is loaded; no jar is cleared.
-        self.flush_cookies(cx);
-        self.history = HistoryState::Unresolved;
-        self.history_notified = false;
-        self.coll_id = IdState::Reading;
-        self.start_id_read(tree.root.clone(), cx);
-        self.collection = Some(OpenCollection {
-            tree,
-            environments,
-            active_env: None,
-            error: None,
-        });
-        self.watcher = watcher;
-        self._watch_task = rx.map(|rx| {
+        let tree_root = c.tree.root.clone();
+        c._watch_task = rx.map(|rx| {
+            let root = tree_root.clone();
             cx.spawn(async move |this, cx| {
                 while let Ok(first) = rx.recv().await {
                     cx.background_executor().timer(WATCH_BATCH).await;
@@ -1142,7 +1436,7 @@ impl Workspace {
                         paths.push(more.path);
                     }
                     if this
-                        .update(cx, |this, cx| this.on_disk_changes(&paths, cx))
+                        .update(cx, |this, cx| this.on_disk_changes(&root, &paths, cx))
                         .is_err()
                     {
                         break;
@@ -1150,20 +1444,65 @@ impl Workspace {
                 }
             })
         });
-        cx.emit(WorkspaceEvent::CollectionChanged);
-        // An open history panel reloads for the new collection.
-        cx.emit(WorkspaceEvent::HistoryChanged);
-        cx.notify();
+        self.collections.push(c);
+        self.start_id_read(tree_root, cx);
+        Ok(self.collections.len() - 1)
+    }
+
+    /// Open a collection and make it active; an open one is just activated.
+    pub fn open_collection(&mut self, root: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        let ix = self.add_collection(root, cx)?;
+        self.activate_collection(ix, cx);
         Ok(())
     }
 
-    /// True when opening another collection needs the user's confirmation.
-    pub fn open_needs_confirm(&self, cx: &Context<Self>) -> bool {
-        open_needs_confirm(self.tabs.iter().map(|t| t.read(cx).is_dirty()))
+    /// Make collection `ix` the active one and remember it.
+    pub fn activate_collection(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.collections.len() {
+            return;
+        }
+        self.active_collection = Some(ix);
+        self.persist_collections(cx);
+        self.emit_view_changed(cx);
+    }
+
+    /// The tree, environment picker, tabs, history and cookies all follow the active collection.
+    fn emit_view_changed(&mut self, cx: &mut Context<Self>) {
+        cx.emit(WorkspaceEvent::CollectionChanged);
+        cx.emit(WorkspaceEvent::EnvironmentChanged);
+        cx.emit(WorkspaceEvent::TabsChanged);
+        cx.emit(WorkspaceEvent::ActiveTabChanged);
+        cx.emit(WorkspaceEvent::HistoryChanged);
+        cx.emit(WorkspaceEvent::CookiesChanged);
+        cx.notify();
+    }
+
+    /// Close collection `ix`: its tabs are cancelled and dropped, its watcher stops and its
+    /// jar is saved when persistence is on and the jar is dirty.
+    pub fn close_collection(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if ix >= self.collections.len() {
+            return;
+        }
+        let tabs = std::mem::take(&mut self.collections[ix].group.tabs);
+        for tab in &tabs {
+            self.release_tab(tab, cx);
+        }
+        self.flush_cookies_for(ix, cx);
+        self.collections.remove(ix);
+        self.active_collection =
+            active_after_close(self.active_collection, ix, self.collections.len());
+        self.persist_collections(cx);
+        self.emit_view_changed(cx);
     }
 
     pub fn reload_tree(&mut self, cx: &mut Context<Self>) {
-        let Some(c) = self.collection.as_mut() else {
+        if let Some(ix) = self.active_collection {
+            self.reload_tree_at(ix, cx);
+        }
+    }
+
+    fn reload_tree_at(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(c) = self.collections.get_mut(ix) else {
             return;
         };
         match open_collection(&c.tree.root) {
@@ -1176,7 +1515,9 @@ impl Workspace {
         if let Ok(names) = list_environments(&c.tree.root) {
             c.environments = names;
         }
-        cx.emit(WorkspaceEvent::CollectionChanged);
+        if self.active_collection == Some(ix) {
+            cx.emit(WorkspaceEvent::CollectionChanged);
+        }
         cx.notify();
     }
 
@@ -1185,59 +1526,75 @@ impl Workspace {
         name: Option<&str>,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
-        let Some(c) = self.collection.as_mut() else {
+        match self.active_collection {
+            Some(ix) => self.set_environment_at(ix, name, cx),
+            None => Ok(()),
+        }
+    }
+
+    fn set_environment_at(
+        &mut self,
+        ix: usize,
+        name: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let Some(c) = self.collections.get_mut(ix) else {
             return Ok(());
         };
         c.active_env = match name {
             Some(n) => Some(load_environment(&c.tree.root, n)?),
             None => None,
         };
-        cx.emit(WorkspaceEvent::EnvironmentChanged);
+        if self.active_collection == Some(ix) {
+            cx.emit(WorkspaceEvent::EnvironmentChanged);
+        }
         cx.notify();
         Ok(())
     }
 
-    /// Handle a coalesced batch of watcher events.
-    fn on_disk_changes(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+    /// Handle a coalesced batch of watcher events for the collection at `root`.
+    fn on_disk_changes(&mut self, root: &Path, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let Some(ix) = self.coll_ix(root) else {
             return;
         };
         let mut paths: Vec<&PathBuf> = paths.iter().collect();
         paths.sort();
         paths.dedup();
         for p in &paths {
-            if let Some(tab) = self
+            if let Some(tab) = self.collections[ix]
+                .group
                 .tabs
                 .iter()
                 .find(|t| t.read(cx).path.as_deref() == Some(p.as_path()))
                 .cloned()
             {
-                self.apply_disk_state(&tab, &root, cx);
+                self.apply_disk_state(&tab, root, cx);
             }
         }
         if paths.iter().any(|p| affects_tree(p)) {
-            self.reload_tree(cx);
+            self.reload_tree_at(ix, cx);
         }
-        let env_name = self
-            .collection
+        let env_name = self.collections[ix]
+            .active_env
             .as_ref()
-            .and_then(|c| c.active_env.as_ref())
             .map(|e| e.name.clone());
+        let active = self.active_collection == Some(ix);
         if let Some(name) = env_name
             && paths.iter().any(|p| affects_env(p, &name))
         {
-            let result = self.set_environment(Some(&name), cx);
+            let result = self.set_environment_at(ix, Some(&name), cx);
             if let Err(e) = result {
                 cx.emit(WorkspaceEvent::Notice(
                     format!("Environment reload failed: {e}").into(),
                 ));
             }
         } else if paths.iter().any(|p| !affects_tree(p))
-            && let Some(c) = self.collection.as_mut()
-            && let Ok(names) = list_environments(&root)
+            && let Ok(names) = list_environments(root)
         {
-            c.environments = names;
-            cx.emit(WorkspaceEvent::EnvironmentChanged);
+            self.collections[ix].environments = names;
+            if active {
+                cx.emit(WorkspaceEvent::EnvironmentChanged);
+            }
         }
     }
 
@@ -1269,7 +1626,7 @@ impl Workspace {
 
     /// Discard the draft and take the file as it is on disk.
     pub fn reload_from_disk(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
-        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+        let Some(root) = self.owner_of(tab).and_then(|o| self.root_of(o)) else {
             return;
         };
         let Some(rel) = tab.read(cx).path.clone() else {
@@ -1292,24 +1649,20 @@ impl Workspace {
 
     pub fn open_request(&mut self, rel: &Path, cx: &mut Context<Self>) {
         if let Some(ix) = self
-            .tabs
+            .tabs()
             .iter()
             .position(|t| t.read(cx).path.as_deref() == Some(rel))
         {
             self.activate_tab(ix, cx);
             return;
         }
-        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+        let Some(root) = self.active_collection().map(|c| c.tree.root.clone()) else {
             return;
         };
         match load_request(&root.join(rel)) {
             Ok(req) => {
                 let tab = cx.new(|_| RequestTab::from_saved(rel.to_path_buf(), req));
-                self.tabs.push(tab);
-                self.active = Some(self.tabs.len() - 1);
-                cx.emit(WorkspaceEvent::TabsChanged);
-                cx.emit(WorkspaceEvent::ActiveTabChanged);
-                cx.notify();
+                self.push_tab(tab, cx);
             }
             Err(e) => cx.emit(WorkspaceEvent::Notice(
                 format!("Cannot open {}: {e}", rel.display()).into(),
@@ -1317,29 +1670,52 @@ impl Workspace {
         }
     }
 
-    pub fn new_scratch_tab(&mut self, url: String, cx: &mut Context<Self>) -> Entity<RequestTab> {
-        let tab = cx.new(|_| RequestTab::new_scratch(url));
-        self.tabs.push(tab.clone());
-        self.active = Some(self.tabs.len() - 1);
+    /// Add `tab` to the showing group and make it the active tab.
+    fn push_tab(&mut self, tab: Entity<RequestTab>, cx: &mut Context<Self>) {
+        let g = self.group_mut();
+        g.tabs.push(tab);
+        g.active = Some(g.tabs.len() - 1);
         cx.emit(WorkspaceEvent::TabsChanged);
         cx.emit(WorkspaceEvent::ActiveTabChanged);
         cx.notify();
+    }
+
+    pub fn new_scratch_tab(&mut self, url: String, cx: &mut Context<Self>) -> Entity<RequestTab> {
+        let tab = cx.new(|_| RequestTab::new_scratch(url));
+        self.push_tab(tab.clone(), cx);
         tab
     }
 
     pub fn activate_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix < self.tabs.len() && self.active != Some(ix) {
-            self.active = Some(ix);
+        let g = self.group_mut();
+        if ix < g.tabs.len() && g.active != Some(ix) {
+            g.active = Some(ix);
             cx.emit(WorkspaceEvent::ActiveTabChanged);
             cx.notify();
         }
     }
 
-    pub fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix >= self.tabs.len() {
+    fn close_tab_in(&mut self, owner: Owner, ix: usize, cx: &mut Context<Self>) {
+        let g = self.group_of_mut(owner);
+        if ix >= g.tabs.len() {
             return;
         }
-        let tab = self.tabs.remove(ix);
+        let tab = g.tabs.remove(ix);
+        g.active = match g.active {
+            _ if g.tabs.is_empty() => None,
+            Some(a) if a > ix => Some(a - 1),
+            Some(a) if a < ix => Some(a),
+            _ => Some(ix.min(g.tabs.len() - 1)),
+        };
+        self.release_tab(&tab, cx);
+        cx.emit(WorkspaceEvent::TabsChanged);
+        cx.emit(WorkspaceEvent::ActiveTabChanged);
+        cx.notify();
+    }
+
+    /// Everything a tab owns outside itself: its in-flight send and authorization are
+    /// cancelled, its routes dropped and its body released.
+    fn release_tab(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
         let (sending, body) = tab.update(cx, |t, _| {
             (t.response.phase == Phase::Sending, t.response.body.take())
         });
@@ -1356,23 +1732,15 @@ impl Workspace {
         if let Some(cmd) = close_auth(&mut self.auth_routes, &closed, waiting) {
             self.engine.submit(cmd);
         }
-        self.active = match self.active {
-            _ if self.tabs.is_empty() => None,
-            Some(a) if a > ix => Some(a - 1),
-            Some(a) if a < ix => Some(a),
-            _ => Some(ix.min(self.tabs.len() - 1)),
-        };
-        cx.emit(WorkspaceEvent::TabsChanged);
-        cx.emit(WorkspaceEvent::ActiveTabChanged);
-        cx.notify();
     }
 
     pub fn active_tab(&self) -> Option<Entity<RequestTab>> {
-        self.active.and_then(|ix| self.tabs.get(ix).cloned())
+        let g = self.group();
+        g.active.and_then(|ix| g.tabs.get(ix).cloned())
     }
 
     pub fn scope_for(&self, rel: Option<&Path>) -> Scope<'_> {
-        match &self.collection {
+        match self.active_collection() {
             Some(c) => c
                 .tree
                 .scope_for(rel.unwrap_or_else(|| Path::new("")), c.active_env.as_ref()),
@@ -1407,13 +1775,18 @@ impl Workspace {
         if pending {
             return Ok(None);
         }
+        let root = self.owner_of(tab).and_then(|o| self.root_of(o));
+        let c = root
+            .as_deref()
+            .and_then(|r| self.coll_ix(r))
+            .map(|i| &self.collections[i]);
         let plan = prepare_send(
             &draft,
             path.as_deref(),
             origin.as_ref(),
-            self.collection.as_ref().map(|c| &c.tree),
+            c.map(|c| &c.tree),
             &self.empty_defaults,
-            self.collection.as_ref().and_then(|c| c.active_env.as_ref()),
+            c.and_then(|c| c.active_env.as_ref()),
         )
         .inspect_err(|e| {
             // A refused body is explained here; callers skip their own notice.
@@ -1424,8 +1797,10 @@ impl Workspace {
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
         }
-        if let Some(partition) = self.partition_now() {
-            return Ok(Some(self.submit_plan(tab, draft, plan, partition, cx)));
+        if let Some(partition) = self.partition_for(root.as_deref()) {
+            return Ok(Some(
+                self.submit_plan(tab, draft, plan, partition, root, cx),
+            ));
         }
         // No id yet: create it off the UI thread, then submit.
         self.show_sending(tab, None, cx);
@@ -1433,7 +1808,7 @@ impl Workspace {
         let token = self.next_wait;
         self.id_waits.insert(tab.entity_id(), token);
         let tab = tab.downgrade();
-        self.resolve_id_then(cx, move |this, partition, cx| {
+        self.resolve_id_then(root.clone(), cx, move |this, partition, cx| {
             let Some(tab) = tab.upgrade() else {
                 return;
             };
@@ -1444,7 +1819,7 @@ impl Workspace {
             let Some(partition) = partition else {
                 return;
             };
-            this.submit_plan(&tab, draft, plan, partition, cx);
+            this.submit_plan(&tab, draft, plan, partition, root, cx);
         });
         Ok(None)
     }
@@ -1455,6 +1830,7 @@ impl Workspace {
         draft: Request,
         mut plan: SendPlan,
         partition: Option<String>,
+        root: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> RequestId {
         plan.prepared.client.collection = partition;
@@ -1469,6 +1845,7 @@ impl Workspace {
             Sent {
                 request: recorded_request(scope_path.as_deref()),
                 draft,
+                root,
             },
         );
         self.show_sending(tab, Some(id), cx);
@@ -1515,14 +1892,19 @@ impl Workspace {
                 t.authorize.waiting_id(),
             )
         };
-        let partition = self.partition_now();
+        let root = self.owner_of(tab).and_then(|o| self.root_of(o));
+        let c = root
+            .as_deref()
+            .and_then(|r| self.coll_ix(r))
+            .map(|i| &self.collections[i]);
+        let partition = self.partition_for(root.as_deref());
         let command = prepare_authorize(
             &draft,
             path.as_deref(),
             origin.as_ref(),
-            self.collection.as_ref().map(|c| &c.tree),
+            c.map(|c| &c.tree),
             &self.empty_defaults,
-            self.collection.as_ref().and_then(|c| c.active_env.as_ref()),
+            c.and_then(|c| c.active_env.as_ref()),
             partition.clone().flatten(),
         )?;
         let Some(command) = command else {
@@ -1531,7 +1913,7 @@ impl Workspace {
         if partition.is_none() {
             // No id yet: create it off the UI thread, then start the flow.
             let tab = tab.downgrade();
-            self.resolve_id_then(cx, move |this, partition, cx| {
+            self.resolve_id_then(root, cx, move |this, partition, cx| {
                 if let (Some(_), Some(tab)) = (partition, tab.upgrade()) {
                     let _ = this.authorize(&tab, cx);
                 }
@@ -1755,13 +2137,18 @@ impl Workspace {
         body: Option<Vec<u8>>,
         cx: &mut Context<Self>,
     ) {
-        let Some(c) = &self.collection else { return };
-        let task_root = c.tree.root.clone();
-        let job = match self.history_job() {
+        // The entry belongs to the collection the tab was sent from, not the active one.
+        let Some(task_root) = sent.root.clone() else {
+            return;
+        };
+        let Some(cix) = self.coll_ix(&task_root) else {
+            return;
+        };
+        let job = match history_job_of(&self.collections[cix], self.data_dir.as_ref()) {
             Ok(j) => j,
             Err(reason) => {
-                if matches!(self.history, HistoryState::Unresolved) {
-                    self.history_off(reason, cx);
+                if matches!(self.collections[cix].history, HistoryState::Unresolved) {
+                    self.history_off(&task_root, reason, cx);
                 }
                 return;
             }
@@ -1796,21 +2183,25 @@ impl Workspace {
             });
             let result = work.await;
             this.update(cx, |this, cx| {
-                // The collection changed while this was in flight: its result is stale.
-                if this.collection.as_ref().map(|c| &c.tree.root) != Some(&task_root) {
+                // The collection was closed while this was in flight: its result is stale.
+                let Some(cix) = this.coll_ix(&task_root) else {
                     return;
-                }
+                };
                 match result {
                     Ok(store) => {
-                        if matches!(this.history, HistoryState::Unresolved) {
-                            this.history = HistoryState::Ready(store);
+                        if matches!(this.collections[cix].history, HistoryState::Unresolved) {
+                            this.collections[cix].history = HistoryState::Ready(store);
                         }
                         cx.emit(WorkspaceEvent::HistoryChanged);
                     }
-                    Err((true, reason)) => this.history_off(reason, cx),
+                    Err((true, reason)) => this.history_off(&task_root, reason, cx),
                     Err((false, reason)) => {
                         tracing::warn!(error = %reason, "history append failed");
-                        this.history_notice(format!("History entry dropped: {reason}"), cx);
+                        this.history_notice(
+                            &task_root,
+                            format!("History entry dropped: {reason}"),
+                            cx,
+                        );
                     }
                 }
             })
@@ -1819,29 +2210,19 @@ impl Workspace {
         .detach();
     }
 
-    fn history_off(&mut self, reason: String, cx: &mut Context<Self>) {
-        self.history = HistoryState::Off(reason.clone());
-        self.history_notice(format!("History is off: {reason}"), cx);
+    fn history_off(&mut self, root: &Path, reason: String, cx: &mut Context<Self>) {
+        if let Some(ix) = self.coll_ix(root) {
+            self.collections[ix].history = HistoryState::Off(reason.clone());
+        }
+        self.history_notice(root, format!("History is off: {reason}"), cx);
     }
 
-    /// A handle to the open collection's history, or the reason there is none.
+    /// A handle to the active collection's history, or the reason there is none.
     pub fn history_job(&self) -> Result<HistoryJob, String> {
-        let Some(c) = &self.collection else {
+        let Some(c) = self.active_collection() else {
             return Err("Open a collection to see its history".into());
         };
-        let store = match &self.history {
-            HistoryState::Off(reason) => return Err(reason.clone()),
-            HistoryState::Ready(s) => Some(s.clone()),
-            HistoryState::Unresolved => None,
-        };
-        let Some(data) = self.data_dir.clone() else {
-            return Err("the data directory is unknown".into());
-        };
-        Ok(HistoryJob {
-            store,
-            root: c.tree.root.clone(),
-            data,
-        })
+        history_job_of(c, self.data_dir.as_ref())
     }
 
     /// Open a history entry in a new tab. The stored request is read on the
@@ -1854,7 +2235,7 @@ impl Workspace {
                 return;
             }
         };
-        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+        let Some(root) = self.active_collection().map(|c| c.tree.root.clone()) else {
             return;
         };
         let bodies = self.engine.bodies();
@@ -1865,26 +2246,28 @@ impl Workspace {
                 .spawn(async move { job.load_entry(&entry_for_job, &bodies) });
             let result = work.await;
             this.update(cx, |this, cx| {
-                let still_open = this.collection.as_ref().map(|c| &c.tree.root) == Some(&root);
+                let still_open = this.coll_ix(&root);
                 match result {
-                    Ok((_, handle)) if !still_open => {
+                    Ok((_, handle)) if still_open.is_none() => {
                         if let Some(h) = handle {
                             this.release_body(&h);
                         }
                     }
                     Ok((mut stored, handle)) => {
+                        let cix = still_open.unwrap_or_default();
                         let origin = sanitized_origin(&entry, &mut stored.request);
                         let response =
                             history_ui::stored_response(&entry, stored.response_headers, handle);
                         let tab =
                             cx.new(|_| RequestTab::from_history(stored.request, response, origin));
-                        this.tabs.push(tab);
-                        this.active = Some(this.tabs.len() - 1);
+                        let g = this.group_of_mut(Owner::Collection(cix));
+                        g.tabs.push(tab);
+                        g.active = Some(g.tabs.len() - 1);
                         cx.emit(WorkspaceEvent::TabsChanged);
                         cx.emit(WorkspaceEvent::ActiveTabChanged);
                         cx.notify();
                     }
-                    Err(e) if still_open => cx.emit(WorkspaceEvent::Notice(
+                    Err(e) if still_open.is_some() => cx.emit(WorkspaceEvent::Notice(
                         format!("Cannot open history entry: {e}").into(),
                     )),
                     Err(_) => {}
@@ -1904,14 +2287,14 @@ impl Workspace {
                 return;
             }
         };
-        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+        let Some(root) = self.active_collection().map(|c| c.tree.root.clone()) else {
             return;
         };
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move { job.clear() });
             let result = work.await;
             this.update(cx, |this, cx| {
-                if this.collection.as_ref().map(|c| &c.tree.root) != Some(&root) {
+                if this.coll_ix(&root).is_none() {
                     return;
                 }
                 match result {
@@ -1930,14 +2313,17 @@ impl Workspace {
     }
 
     /// Show a history Notice, once per collection.
-    fn history_notice(&mut self, text: String, cx: &mut Context<Self>) {
-        if !std::mem::replace(&mut self.history_notified, true) {
+    fn history_notice(&mut self, root: &Path, text: String, cx: &mut Context<Self>) {
+        let Some(ix) = self.coll_ix(root) else {
+            return;
+        };
+        if !std::mem::replace(&mut self.collections[ix].history_notified, true) {
             cx.emit(WorkspaceEvent::Notice(text.into()));
         }
     }
 
     pub fn save(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) -> anyhow::Result<()> {
-        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+        let Some(root) = self.owner_of(tab).and_then(|o| self.root_of(o)) else {
             cx.emit(WorkspaceEvent::Notice("Open a collection to save".into()));
             return Ok(());
         };
@@ -1987,7 +2373,7 @@ impl Workspace {
     }
 
     pub fn on_node_moved(&mut self, old_rel: &Path, new_rel: &Path, cx: &mut Context<Self>) {
-        for tab in &self.tabs {
+        for tab in &self.group().tabs {
             tab.update(cx, |t, cx| {
                 if let Some(p) = t
                     .path
@@ -2003,7 +2389,7 @@ impl Workspace {
     }
 
     pub fn on_node_deleted(&mut self, rel: &Path, cx: &mut Context<Self>) {
-        for tab in &self.tabs {
+        for tab in &self.group().tabs {
             tab.update(cx, |t, cx| {
                 if t.path.as_deref().is_some_and(|p| p.starts_with(rel)) {
                     t.set_disk_state(DiskState::DeletedOnDisk, cx);
@@ -2060,21 +2446,29 @@ pub(crate) fn describe_problems(e: &ResolveError) -> String {
 /// job and runs one at a time; the UI thread only reads the cached id and the in-memory jar.
 impl Workspace {
     /// `Some(partition)` once known (`Some(None)`: no collection), `None` while the id still
-    /// has to be read or created.
-    fn partition_now(&self) -> Option<Option<String>> {
-        if self.collection.is_none() {
+    /// has to be read or created. A root that is no longer open counts as no collection.
+    fn partition_for(&self, root: Option<&Path>) -> Option<Option<String>> {
+        let Some(c) = root
+            .and_then(|r| self.coll_ix(r))
+            .map(|i| &self.collections[i])
+        else {
             return Some(None);
-        }
-        match &self.coll_id {
+        };
+        match &c.coll_id {
             IdState::Known(id) => Some(Some(id.clone())),
             IdState::Failed { partition, .. } => Some(Some(partition.clone())),
             IdState::Reading | IdState::Absent => None,
         }
     }
 
+    fn partition_now(&self) -> Option<Option<String>> {
+        self.partition_for(self.active_collection().map(|c| c.tree.root.as_path()))
+    }
+
+    /// The active collection's id, once known.
     fn known_id(&self) -> Option<String> {
-        match (&self.collection, &self.coll_id) {
-            (Some(_), IdState::Known(id)) => Some(id.clone()),
+        match self.active_collection().map(|c| &c.coll_id) {
+            Some(IdState::Known(id)) => Some(id.clone()),
             _ => None,
         }
     }
@@ -2089,13 +2483,13 @@ impl Workspace {
 
     /// Why cookies cannot be saved for the open collection, if so.
     fn cookie_unavailable(&self) -> Option<String> {
-        if self.collection.is_none() {
+        let Some(c) = self.active_collection() else {
             return Some("open a collection first".into());
-        }
+        };
         if self.data_dir.is_none() {
             return Some("the data directory is unknown".into());
         }
-        match &self.coll_id {
+        match &c.coll_id {
             IdState::Failed { reason, .. } => Some(reason.clone()),
             _ => None,
         }
@@ -2103,15 +2497,13 @@ impl Workspace {
 
     /// What the Cookies manager shows.
     pub fn cookie_panel(&self) -> CookiePanel {
-        let name = self.collection.as_ref().map(|c| {
-            c.tree.root.file_name().map_or_else(
-                || c.tree.root.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            )
-        });
+        let name = self.active_collection().map(OpenCollection::name);
         let persistence = if let Some(reason) = self.cookie_unavailable() {
             Persistence::Unavailable(reason)
-        } else if matches!(self.coll_id, IdState::Absent) {
+        } else if matches!(
+            self.active_collection().map(|c| &c.coll_id),
+            Some(IdState::Absent)
+        ) {
             Persistence::Off
         } else {
             match self.known_id().and_then(|id| self.cookie_files.get(&id)) {
@@ -2147,15 +2539,53 @@ impl Workspace {
     /// Record a resolved id for `root` if that collection is still open. A read result only
     /// lands while the read is the latest word; a known id is never replaced.
     fn apply_id(&mut self, root: &Path, state: IdState, from_read: bool, cx: &mut Context<Self>) {
-        if self.collection.as_ref().map(|c| c.tree.root.as_path()) != Some(root) {
+        let Some(ix) = self.coll_ix(root) else {
             return;
-        }
-        if matches!(self.coll_id, IdState::Known(_))
-            || (from_read && !matches!(self.coll_id, IdState::Reading))
+        };
+        let c = &self.collections[ix];
+        if matches!(c.coll_id, IdState::Known(_))
+            || (from_read && !matches!(c.coll_id, IdState::Reading))
         {
             return;
         }
-        self.coll_id = state.clone();
+        // Two open collections never share an id: the later one is refused, before anything
+        // is loaded or written for it.
+        if let IdState::Known(id) = &state {
+            let mut ids: Vec<Option<&str>> = self
+                .collections
+                .iter()
+                .map(|c| match &c.coll_id {
+                    IdState::Known(i) => Some(i.as_str()),
+                    _ => None,
+                })
+                .collect();
+            ids[ix] = Some(id.as_str());
+            if let Some((refused, kept)) = id_clash(&ids, ix) {
+                let text = format!(
+                    "\"{}\" has the same collection id as the open \"{}\" ({}); not opened. \
+                     Change the id in its collection.toml to open both.",
+                    self.collections[refused].name(),
+                    self.collections[kept].name(),
+                    self.collections[kept].tree.root.display(),
+                );
+                if refused == ix {
+                    self.close_collection(ix, cx);
+                } else {
+                    // The newer one finished reading first; the older one's id just landed.
+                    self.collections[ix].coll_id = state;
+                    self.close_collection(refused, cx);
+                    if let Some(ix) = self.coll_ix(root) {
+                        let IdState::Known(id) = self.collections[ix].coll_id.clone() else {
+                            return;
+                        };
+                        self.on_id_known(id, cx);
+                    }
+                }
+                cx.emit(WorkspaceEvent::Notice(text.into()));
+                return;
+            }
+        }
+        self.collections[ix].coll_id = state.clone();
         match state {
             IdState::Known(id) => self.on_id_known(id, cx),
             IdState::Failed { reason, .. } => self.cookies_not_saved(&reason, cx),
@@ -2169,14 +2599,15 @@ impl Workspace {
     /// background executor when there is none. `None` when the collection changed meanwhile.
     fn resolve_id_then(
         &mut self,
+        root: Option<PathBuf>,
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, Option<Option<String>>, &mut Context<Self>) + 'static,
     ) {
-        if let Some(p) = self.partition_now() {
+        if let Some(p) = self.partition_for(root.as_deref()) {
             then(self, Some(p), cx);
             return;
         }
-        let Some(root) = self.collection.as_ref().map(|c| c.tree.root.clone()) else {
+        let Some(root) = root else {
             then(self, None, cx);
             return;
         };
@@ -2193,8 +2624,11 @@ impl Workspace {
                 .await;
             this.update(cx, |this, cx| {
                 this.apply_id(&root, state, false, cx);
-                let same = this.collection.as_ref().map(|c| c.tree.root.as_path()) == Some(&root);
-                let p = if same { this.partition_now() } else { None };
+                let p = if this.coll_ix(&root).is_some() {
+                    this.partition_for(Some(&root))
+                } else {
+                    None
+                };
                 then(this, p, cx);
             })
             .ok();
@@ -2234,45 +2668,16 @@ impl Workspace {
     }
 
     /// Quit work: drain the queue, and per collection plan the last queued toggle and a
-    /// final save of the snapshot. Marks saved generations.
+    /// final save of the snapshot. Marks saved generations. Covers every open collection.
     fn take_quit_work(&mut self) -> Option<(Vec<QuitWork>, DataDir)> {
         let data = self.data_dir.clone()?;
         let queued: Vec<CookieJob> = self.cookie_queue.drain(..).collect();
-        let mut ids: Vec<String> = self.cookie_saving().into_iter().collect();
-        for job in &queued {
-            if !ids.iter().any(|i| i == job.id()) {
-                ids.push(job.id().to_owned());
-            }
-        }
-        let mut work = Vec::new();
-        for id in ids {
-            let ops: Vec<QuitOp> = queued
-                .iter()
-                .filter(|j| j.id() == id)
-                .filter_map(|j| match j {
-                    CookieJob::Save { .. } => Some(QuitOp::Save),
-                    CookieJob::Enable { .. } => Some(QuitOp::Enable),
-                    CookieJob::Disable { .. } => Some(QuitOp::Disable),
-                    CookieJob::Load { .. } => None,
-                })
-                .collect();
-            let jar = self.jars.jar(Some(&id));
-            let generation = jar.generation();
-            let Some(st) = self.cookie_files.get_mut(&id) else {
-                continue;
-            };
-            st.debounce.observe(generation, Instant::now());
-            let dirty = st.debounce.dirty() || ops.contains(&QuitOp::Save);
-            let plan = plan_quit(&ops, st.saving(), dirty);
-            if plan.toggle.is_none() && !plan.save {
-                continue;
-            }
-            if plan.save {
-                st.debounce.saved(generation);
-            }
-            let cookies = cookie_ui::to_stored(jar.snapshot(SystemTime::now()));
-            work.push(QuitWork { id, plan, cookies });
-        }
+        let work = quit_work(
+            self.saving_ids(),
+            &queued,
+            &mut self.cookie_files,
+            &self.jars,
+        );
         (!work.is_empty()).then_some((work, data))
     }
 
@@ -2341,18 +2746,27 @@ impl Workspace {
         );
     }
 
-    /// True when the open collection's file is on and healthy, so changes are saved.
-    fn cookie_saving(&self) -> Option<String> {
-        let id = self.known_id()?;
-        let st = self.cookie_files.get(&id)?;
-        st.saving().then_some(id)
+    /// Ids of the open collections whose file is on and healthy, so changes are saved.
+    fn saving_ids(&self) -> Vec<String> {
+        self.collections
+            .iter()
+            .filter_map(|c| match &c.coll_id {
+                IdState::Known(id) => Some(id),
+                _ => None,
+            })
+            .filter(|id| self.cookie_files.get(*id).is_some_and(CookieStatus::saving))
+            .cloned()
+            .collect()
     }
 
-    /// Save now if the open collection's jar changed since the last save.
-    fn flush_cookies(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.cookie_saving() else {
+    /// Save collection `ix`'s jar now if it changed since the last save.
+    fn flush_cookies_for(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(IdState::Known(id)) = self.collections.get(ix).map(|c| c.coll_id.clone()) else {
             return;
         };
+        if !self.cookie_files.get(&id).is_some_and(CookieStatus::saving) {
+            return;
+        }
         let generation = self.jars.jar(Some(&id)).generation();
         let dirty = self.cookie_files.get_mut(&id).is_some_and(|st| {
             st.debounce.observe(generation, Instant::now());
@@ -2363,10 +2777,10 @@ impl Workspace {
         }
     }
 
-    /// Watch the open collection's jar while persistence is on. The timer stops itself when
+    /// Watch the open collections' jars while persistence is on. The timer stops itself when
     /// there is nothing to watch.
     fn ensure_cookie_ticker(&mut self, cx: &mut Context<Self>) {
-        if self.cookie_ticker.is_some() || self.cookie_saving().is_none() {
+        if self.cookie_ticker.is_some() || self.saving_ids().is_empty() {
             return;
         }
         self.cookie_ticker = Some(cx.spawn(async move |this, cx| {
@@ -2387,16 +2801,19 @@ impl Workspace {
     }
 
     fn cookie_tick(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
-        let Some(id) = self.cookie_saving() else {
+        let ids = self.saving_ids();
+        if ids.is_empty() {
             return false;
-        };
-        let generation = self.jars.jar(Some(&id)).generation();
-        let due = self.cookie_files.get_mut(&id).is_some_and(|st| {
-            st.debounce.observe(generation, now);
-            st.debounce.due(now)
-        });
-        if due {
-            self.queue_cookie_save(&id, cx);
+        }
+        for id in ids {
+            let generation = self.jars.jar(Some(&id)).generation();
+            let due = self.cookie_files.get_mut(&id).is_some_and(|st| {
+                st.debounce.observe(generation, now);
+                st.debounce.due(now)
+            });
+            if due {
+                self.queue_cookie_save(&id, cx);
+            }
         }
         true
     }
@@ -2408,7 +2825,8 @@ impl Workspace {
             self.cookies_not_saved(&reason, cx);
             return;
         }
-        self.resolve_id_then(cx, move |this, partition, cx| {
+        let root = self.active_collection().map(|c| c.tree.root.clone());
+        self.resolve_id_then(root, cx, move |this, partition, cx| {
             if partition.is_none() {
                 return;
             }
@@ -2769,10 +3187,83 @@ mod tests {
     }
 
     #[test]
-    fn open_confirmation_only_for_dirty_tabs() {
-        assert!(!open_needs_confirm([]));
-        assert!(!open_needs_confirm([false, false]));
-        assert!(open_needs_confirm([false, true]));
+    fn collections_admit_activates_an_open_path_and_caps_at_eight() {
+        let open: Vec<&Path> = vec![Path::new("/a"), Path::new("/b")];
+        assert_eq!(admit(&open, Path::new("/b")), Admit::Existing(1));
+        assert_eq!(admit(&open, Path::new("/c")), Admit::Add);
+        let names: Vec<PathBuf> = (0..MAX_OPEN_COLLECTIONS)
+            .map(|i| PathBuf::from(format!("/c{i}")))
+            .collect();
+        let full: Vec<&Path> = names.iter().map(PathBuf::as_path).collect();
+        assert_eq!(admit(&full, Path::new("/ninth")), Admit::Full);
+        // An open one is still activated at the cap.
+        assert_eq!(admit(&full, Path::new("/c3")), Admit::Existing(3));
+    }
+
+    #[test]
+    fn collections_same_id_at_another_path_refuses_the_later_one() {
+        let ids = [Some("x"), Some("y"), Some("x")];
+        assert_eq!(id_clash(&ids, 2), Some((2, 0)));
+        assert_eq!(id_clash(&ids, 0), Some((2, 0)));
+        assert_eq!(id_clash(&ids, 1), None);
+        assert_eq!(id_clash(&[None, Some("x")], 1), None);
+    }
+
+    #[test]
+    fn collections_closing_keeps_the_active_one_in_range() {
+        assert_eq!(active_after_close(Some(2), 0, 2), Some(1));
+        assert_eq!(active_after_close(Some(0), 2, 2), Some(0));
+        assert_eq!(active_after_close(Some(2), 2, 2), Some(1));
+        assert_eq!(active_after_close(Some(0), 0, 0), None);
+    }
+
+    fn make_collection(dir: &Path, name: &str) -> OpenCollection {
+        let root = dir.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("collection.toml"), "format = 1\n").unwrap();
+        OpenCollection::new(open_collection(&root).unwrap(), Vec::new())
+    }
+
+    #[test]
+    fn collections_history_goes_to_the_sending_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = make_collection(dir.path(), "a");
+        let b = make_collection(dir.path(), "b");
+        let data = DataDir::at(dir.path().join("data"));
+        // `a` is active, but the tab was sent from `b`: the job is `b`'s.
+        let cols = [a, b];
+        let sent_root = cols[1].tree.root.clone();
+        let ix = cols.iter().position(|c| c.tree.root == sent_root).unwrap();
+        let job = history_job_of(&cols[ix], Some(&data)).unwrap();
+        assert_eq!(job.root, cols[1].tree.root);
+        assert_ne!(job.root, cols[0].tree.root);
+        job.open().unwrap();
+        // Only `b` got an id: the entry's store was resolved for its collection.
+        assert!(read_collection_id(&cols[1].tree.root).unwrap().is_some());
+        assert!(read_collection_id(&cols[0].tree.root).unwrap().is_none());
+    }
+
+    #[test]
+    fn collections_quit_saves_every_open_collection_with_saving_on() {
+        let jars = CookieJars::default();
+        let mut files = HashMap::new();
+        for id in ["id-a", "id-b", "id-off"] {
+            let mut st = healthy();
+            st.enabled = id != "id-off";
+            st.debounce = Debounce::new(jars.jar(Some(id)).generation());
+            files.insert(id.to_string(), st);
+            // A change after the last save makes the jar dirty.
+            jars.jar(Some(id)).clear();
+        }
+        let ids = ["id-a".to_string(), "id-b".to_string(), "id-off".to_string()];
+        let saving: Vec<String> = ids.iter().filter(|i| files[*i].saving()).cloned().collect();
+        let work = quit_work(saving, &[], &mut files, &jars);
+        let got: Vec<&str> = work.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(got, ["id-a", "id-b"]);
+        assert!(work.iter().all(|w| w.plan.save));
+        // A second pass finds both clean.
+        let again = quit_work(vec!["id-a".into(), "id-b".into()], &[], &mut files, &jars);
+        assert!(again.is_empty());
     }
 
     #[test]

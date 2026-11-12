@@ -371,8 +371,7 @@ impl ImportView {
     fn current_root(&self, cx: &gpui::App) -> Option<PathBuf> {
         self.workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map(|c| c.tree.root.clone())
     }
 

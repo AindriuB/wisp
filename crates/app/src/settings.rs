@@ -27,6 +27,10 @@ pub struct Settings {
     pub body_memory_limit: u64,
     /// Store response bodies in history.
     pub history_bodies: bool,
+    /// Collections open at last write, in order.
+    pub open_collections: Vec<PathBuf>,
+    /// The active one of `open_collections`.
+    pub active_collection: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -37,6 +41,8 @@ impl Default for Settings {
             pretty_limit: PRETTY_LIMIT,
             body_memory_limit: wisp_core::body::DEFAULT_MEMORY_LIMIT,
             history_bodies: true,
+            open_collections: Vec::new(),
+            active_collection: None,
         }
     }
 }
@@ -140,6 +146,22 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
             None => bad.push("history_bodies"),
         }
     }
+    if let Some(item) = doc.get("open_collections") {
+        match item.as_array().map(|a| {
+            a.iter()
+                .map(|v| v.as_str().map(PathBuf::from))
+                .collect::<Option<Vec<_>>>()
+        }) {
+            Some(Some(v)) => settings.open_collections = v,
+            _ => bad.push("open_collections"),
+        }
+    }
+    if let Some(item) = doc.get("active_collection") {
+        match item.as_str() {
+            Some(p) => settings.active_collection = Some(PathBuf::from(p)),
+            None => bad.push("active_collection"),
+        }
+    }
     for (key, slot) in [
         ("pretty_limit", &mut settings.pretty_limit),
         ("body_memory_limit", &mut settings.body_memory_limit),
@@ -212,6 +234,50 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
         settings.history_bodies == d.history_bodies,
         |i| i.as_bool() == Some(settings.history_bodies),
     );
+    let paths: Vec<String> = settings
+        .open_collections
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let same_paths = |i: &Item| {
+        i.as_array().is_some_and(|a| {
+            a.len() == paths.len()
+                && a.iter()
+                    .zip(&paths)
+                    .all(|(v, p)| v.as_str() == Some(p.as_str()))
+        })
+    };
+    set_if_differs(
+        &mut doc,
+        "open_collections",
+        value(
+            paths
+                .iter()
+                .map(String::as_str)
+                .collect::<toml_edit::Array>(),
+        ),
+        paths.is_empty(),
+        same_paths,
+    );
+    if paths.is_empty() && doc.get("open_collections").is_some() {
+        doc.remove("open_collections");
+    }
+    let active = settings
+        .active_collection
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    match &active {
+        Some(a) => set_if_differs(
+            &mut doc,
+            "active_collection",
+            value(a.as_str()),
+            false,
+            |i| i.as_str() == Some(a.as_str()),
+        ),
+        None => {
+            doc.remove("active_collection");
+        }
+    }
     for (key, n, default) in [
         ("pretty_limit", settings.pretty_limit, d.pretty_limit),
         (
@@ -231,6 +297,54 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
     }
     wisp_storage::fs::atomic_write(path, doc.to_string().as_bytes())?;
     Ok(())
+}
+
+/// The collections to open at startup.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Restore {
+    pub open: Vec<PathBuf>,
+    pub active: Option<PathBuf>,
+    /// Remembered paths that no longer exist.
+    pub dropped: Vec<PathBuf>,
+}
+
+/// Combine the remembered list with an argv path. Missing remembered paths are dropped; an
+/// argv path is added (if new) and made active. `exists` is the filesystem check.
+pub fn plan_restore(
+    open: &[PathBuf],
+    active: Option<&Path>,
+    argv: Option<PathBuf>,
+    exists: impl Fn(&Path) -> bool,
+) -> Restore {
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for p in open {
+        if kept.contains(p) {
+            continue;
+        }
+        if exists(p) {
+            kept.push(p.clone());
+        } else {
+            dropped.push(p.clone());
+        }
+    }
+    let mut active = active
+        .filter(|a| kept.iter().any(|k| k == a))
+        .map(Path::to_path_buf);
+    if let Some(a) = argv {
+        if !kept.contains(&a) {
+            kept.push(a.clone());
+        }
+        active = Some(a);
+    }
+    if active.is_none() {
+        active = kept.first().cloned();
+    }
+    Restore {
+        open: kept,
+        active,
+        dropped,
+    }
 }
 
 #[cfg(test)]
@@ -373,6 +487,8 @@ mod tests {
             pretty_limit: 100,
             body_memory_limit: 200,
             history_bodies: true,
+            open_collections: Vec::new(),
+            active_collection: None,
         };
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();
@@ -430,5 +546,49 @@ mod tests {
         let (s, w) = load(&p);
         assert!(s.history_bodies);
         assert!(w.unwrap().contains("history_bodies"));
+    }
+
+    #[test]
+    fn collections_roundtrip_keeping_comments_and_other_keys() {
+        let d = dir("colls");
+        let f = d.join("settings.toml");
+        std::fs::write(&f, "# mine\ntheme = \"dark\" # keep\nextra = 1\n").unwrap();
+        let (mut s, _) = load(&f);
+        s.open_collections = vec!["/a".into(), "/b".into()];
+        s.active_collection = Some("/b".into());
+        save(&f, &s).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("# mine") && text.contains("# keep") && text.contains("extra = 1"));
+        let (back, warn) = load(&f);
+        assert_eq!(warn, None);
+        assert_eq!(back.open_collections, s.open_collections);
+        assert_eq!(back.active_collection, s.active_collection);
+        s.open_collections.clear();
+        s.active_collection = None;
+        save(&f, &s).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(!text.contains("open_collections") && !text.contains("active_collection"));
+        assert!(text.contains("extra = 1"));
+    }
+
+    #[test]
+    fn collections_restore_drops_missing_paths_once_and_argv_becomes_active() {
+        let open: Vec<PathBuf> = vec!["/a".into(), "/gone".into(), "/b".into()];
+        let r = plan_restore(&open, Some(Path::new("/b")), None, |p| {
+            p != Path::new("/gone")
+        });
+        assert_eq!(r.open, vec![PathBuf::from("/a"), "/b".into()]);
+        assert_eq!(r.active, Some("/b".into()));
+        assert_eq!(r.dropped, vec![PathBuf::from("/gone")]);
+        let r = plan_restore(&open, Some(Path::new("/b")), Some("/c".into()), |p| {
+            p != Path::new("/gone")
+        });
+        assert_eq!(r.open.last(), Some(&PathBuf::from("/c")));
+        assert_eq!(r.active, Some("/c".into()));
+        // An active path that was dropped falls back to the first open one.
+        let r = plan_restore(&open, Some(Path::new("/gone")), None, |p| {
+            p != Path::new("/gone")
+        });
+        assert_eq!(r.active, Some("/a".into()));
     }
 }

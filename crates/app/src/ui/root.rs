@@ -13,9 +13,9 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 
 use crate::actions::{
-    CancelRequest, ClearHistory, CloseTab, KeepMine, NewRequest, NextTab, OpenCollection,
-    OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest, ShowCookieJar,
-    ShowHistory, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    CancelRequest, ClearHistory, CloseCollection, CloseTab, KeepMine, NewRequest, NextTab,
+    OpenCollection, OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest,
+    ShowCookieJar, ShowHistory, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
 use crate::settings::{SplitAxis, ThemeMode};
@@ -205,7 +205,7 @@ impl WorkspaceView {
     }
 
     fn on_clear_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(name) = self.workspace.read(cx).collection.as_ref().map(|c| {
+        let Some(name) = self.workspace.read(cx).active_collection().map(|c| {
             c.tree.root.file_name().map_or_else(
                 || c.tree.root.display().to_string(),
                 |n| n.to_string_lossy().into_owned(),
@@ -273,33 +273,10 @@ impl WorkspaceView {
         });
     }
 
-    fn on_open_collection(
-        &mut self,
-        _: &OpenCollection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Opening replaces the collection and closes every tab: ask first when
-        // a draft would be lost. Cancel changes nothing.
-        let confirm = self
-            .workspace
-            .update(cx, |w, cx| w.open_needs_confirm(cx))
-            .then(|| {
-                window.prompt(
-                    PromptLevel::Warning,
-                    "Discard unsaved changes?",
-                    Some("Opening another collection closes all tabs."),
-                    &["Discard", "Cancel"],
-                    cx,
-                )
-            });
+    fn on_open_collection(&mut self, _: &OpenCollection, _: &mut Window, cx: &mut Context<Self>) {
+        // Opening adds a collection beside the open ones; nothing is discarded.
         let ws = self.workspace.clone();
         cx.spawn(async move |_, cx| {
-            if let Some(answer) = confirm
-                && !matches!(answer.await, Ok(0))
-            {
-                return;
-            }
             let rx = cx.update(|cx| {
                 cx.prompt_for_paths(PathPromptOptions {
                     files: false,
@@ -317,6 +294,47 @@ impl WorkspaceView {
                     }
                 });
             }
+        })
+        .detach();
+    }
+
+    fn on_close_collection(
+        &mut self,
+        _: &CloseCollection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.workspace.read(cx).active_collection_ix() else {
+            self.workspace.update(cx, |_, cx| {
+                cx.emit(WorkspaceEvent::Notice("No collection is open".into()))
+            });
+            return;
+        };
+        if !self.workspace.read(cx).collection_dirty(ix, cx) {
+            self.workspace
+                .update(cx, |w, cx| w.close_collection(ix, cx));
+            return;
+        }
+        if window.has_active_prompt() || self.workspace.read(cx).prompt_up {
+            return;
+        }
+        self.workspace.update(cx, |w, _| w.prompt_up = true);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Discard unsaved changes?",
+            Some("Closing this collection closes its tabs."),
+            &["Discard", "Cancel"],
+            cx,
+        );
+        let ws = self.workspace.clone();
+        cx.spawn(async move |_, cx| {
+            let close = matches!(answer.await, Ok(0));
+            ws.update(cx, |w, cx| {
+                w.prompt_up = false;
+                if close {
+                    w.close_collection(ix, cx);
+                }
+            });
         })
         .detach();
     }
@@ -348,7 +366,7 @@ impl WorkspaceView {
 
     /// Create the per-tab views the first time a tab is rendered and drop closed ones.
     fn tab_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tabs = self.workspace.read(cx).tabs.clone();
+        let tabs: Vec<_> = self.workspace.read(cx).all_tabs().cloned().collect();
         self.views
             .retain(|id, _| tabs.iter().any(|t| t.entity_id() == *id));
         for tab in tabs {
@@ -422,7 +440,7 @@ impl Render for WorkspaceView {
         });
         let (tabs, active, split) = {
             let w = self.workspace.read(cx);
-            (w.tabs.clone(), w.active, w.settings.split)
+            (w.tabs().to_vec(), w.active_tab_ix(), w.settings.split)
         };
 
         let titles: Vec<Tab> = tabs
@@ -581,6 +599,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_send))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_open_collection))
+            .on_action(cx.listener(Self::on_close_collection))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_toggle_layout))
             .on_action(cx.listener(|this, _: &CancelRequest, _, cx| {
@@ -591,26 +610,22 @@ impl Render for WorkspaceView {
                     .update(cx, |w, cx| drop(w.new_scratch_tab(String::new(), cx)));
             }))
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-                let active = this
-                    .workspace
-                    .read(cx)
-                    .active
-                    .and_then(|ix| this.workspace.read(cx).tabs.get(ix).cloned());
+                let active = this.workspace.read(cx).active_tab();
                 if let Some(tab) = active {
                     request_close_tab(&this.workspace, &tab, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NextTab, _, cx| {
                 this.workspace.update(cx, |w, cx| {
-                    if let Some(ix) = w.active {
-                        w.activate_tab((ix + 1) % w.tabs.len(), cx);
+                    if let Some(ix) = w.active_tab_ix() {
+                        w.activate_tab((ix + 1) % w.tabs().len(), cx);
                     }
                 });
             }))
             .on_action(cx.listener(|this, _: &PrevTab, _, cx| {
                 this.workspace.update(cx, |w, cx| {
-                    if let Some(ix) = w.active {
-                        w.activate_tab((ix + w.tabs.len() - 1) % w.tabs.len(), cx);
+                    if let Some(ix) = w.active_tab_ix() {
+                        w.activate_tab((ix + w.tabs().len() - 1) % w.tabs().len(), cx);
                     }
                 });
             }))

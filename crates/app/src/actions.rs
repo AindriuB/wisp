@@ -15,6 +15,8 @@ actions!(
         OpenPalette,
         SwitchEnvironment,
         OpenCollection,
+        SwitchCollection,
+        CloseCollection,
         ReloadFromDisk,
         KeepMine,
         ToggleTheme,

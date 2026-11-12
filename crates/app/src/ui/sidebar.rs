@@ -271,7 +271,7 @@ impl Sidebar {
 
     /// Bring the select's items and selection in line with the workspace.
     fn sync_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (names, active) = match self.workspace.read(cx).collection.as_ref() {
+        let (names, active) = match self.workspace.read(cx).active_collection() {
             Some(c) => (
                 c.environments.clone(),
                 c.active_env.as_ref().map(|e| e.name.clone()),
@@ -309,8 +309,7 @@ impl Sidebar {
     fn rows(&self, cx: &Context<Self>) -> Vec<Row> {
         self.workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map(|c| flatten(&c.tree.nodes, &self.collapsed))
             .unwrap_or_default()
     }
@@ -412,8 +411,7 @@ impl Sidebar {
         let targets = self
             .workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map(|c| move_targets(&c.tree.nodes, &path))
             .unwrap_or_default();
         self.pending = Some(Pending::Move { path, targets });
@@ -423,8 +421,7 @@ impl Sidebar {
     fn root(&self, cx: &Context<Self>) -> Option<PathBuf> {
         self.workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map(|c| c.tree.root.clone())
     }
 
@@ -702,8 +699,7 @@ impl Sidebar {
         let count = self
             .workspace
             .read(cx)
-            .collection
-            .as_ref()
+            .active_collection()
             .map_or(0, |c| descendant_count(&c.tree.nodes, path));
         self.confirm_delete(path, name, Some(count), window, cx);
     }
@@ -794,8 +790,8 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ws = self.workspace.read(cx);
-        let open = ws.collection.is_some();
-        let error = ws.collection.as_ref().and_then(|c| c.error.clone());
+        let open = ws.active_collection().is_some();
+        let error = ws.active_collection().and_then(|c| c.error.clone());
         let active_path: Option<PathBuf> = ws.active_tab().and_then(|t| t.read(cx).path.clone());
         let border = cx.theme().border;
         let danger = cx.theme().danger;
