@@ -104,6 +104,15 @@ function Write-Result($status, $reason, $idle, $idlePriv, $after, $afterPriv, $s
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $work | Out-Null
+# Each launch gets its own fresh data dir, so a run never touches the real settings,
+# collections or history.
+$dataRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $dataRoot | Out-Null
+function New-DataDir($name) {
+  $d = Join-Path $dataRoot $name
+  New-Item -ItemType Directory -Path $d | Out-Null
+  $d
+}
 $server = $null; $app = $null; $exitCode = 0
 function Stop-All {
   if ($app -and -not $app.HasExited) { $app.Kill() }
@@ -145,7 +154,9 @@ try {
 
   # Run 1: idle.
   $errFile = "$logBase.idle.err.log"
+  $env:WISP_DATA_DIR = New-DataDir 'idle'
   $app = Start-Process $Binary -PassThru -RedirectStandardOutput "$logBase.idle.out.log" -RedirectStandardError $errFile
+  Remove-Item Env:WISP_DATA_DIR
   $null = $app.Handle  # keep the handle so ExitCode stays readable
   Start-Sleep -Seconds $settle
   if ($app.HasExited) { Fail 'window failed to start (process exited during idle run)' }
@@ -156,11 +167,13 @@ try {
 
   # Run 2: after one request.
   $env:WISP_AUTOSEND_URL = $url
+  $env:WISP_DATA_DIR = New-DataDir 'req'
   $reqOut = "$logBase.req.out.log"
   $errFile = "$logBase.req.err.log"
   $app = Start-Process $Binary -PassThru -RedirectStandardOutput $reqOut -RedirectStandardError $errFile
   $null = $app.Handle
   Remove-Item Env:WISP_AUTOSEND_URL
+  Remove-Item Env:WISP_DATA_DIR
   $got = $false
   # Each pass: completed line, then failed line, then process exit. A final
   # pass after exit catches a line written just before the process ended.
@@ -201,6 +214,6 @@ catch {
 }
 finally {
   Stop-All
-  Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+  Remove-Item -Recurse -Force $work, $dataRoot -ErrorAction SilentlyContinue
 }
 exit $exitCode

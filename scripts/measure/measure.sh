@@ -61,12 +61,15 @@ logbase="${out%.json}"
 export RUST_BACKTRACE=1 RUST_LOG=info
 
 work="$(mktemp -d)"
+# Each launch gets its own fresh data dir, so a run never touches the real settings,
+# collections or history.
+data_root="$(mktemp -d)"
 server_pid=""; app_pid=""
 # shellcheck disable=SC2329  # invoked via trap, not by name
 cleanup() {
   [ -n "$app_pid" ] && kill "$app_pid" 2>/dev/null
   [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
-  rm -rf "$work"
+  rm -rf "$work" "$data_root"
 }
 trap cleanup EXIT
 
@@ -181,7 +184,7 @@ find_device() {
 
 # Run 1: idle.
 err_file="$logbase.idle.err.log"
-"$bin" >"$logbase.idle.out.log" 2>"$err_file" &
+WISP_DATA_DIR="$(mktemp -d "$data_root/idle.XXXXXX")" "$bin" >"$logbase.idle.out.log" 2>"$err_file" &
 app_pid=$!
 sleep "$settle"
 kill -0 "$app_pid" 2>/dev/null || fail "window failed to start (process exited during idle run)"
@@ -195,7 +198,7 @@ kill "$app_pid" 2>/dev/null; wait "$app_pid" 2>/dev/null; app_pid=""
 # Run 2: after one request.
 err_file="$logbase.req.err.log"
 req_out="$logbase.req.out.log"
-WISP_AUTOSEND_URL="http://127.0.0.1:$port/file.bin" "$bin" >"$req_out" 2>"$err_file" &
+WISP_DATA_DIR="$(mktemp -d "$data_root/req.XXXXXX")" WISP_AUTOSEND_URL="http://127.0.0.1:$port/file.bin" "$bin" >"$req_out" 2>"$err_file" &
 app_pid=$!
 got=""; alive=1
 for _ in $(seq 1 300); do

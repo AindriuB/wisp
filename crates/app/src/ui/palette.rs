@@ -180,9 +180,12 @@ impl PaletteView {
                     });
                 }
             }
-            PaletteKind::Collection(ix) => {
-                self.workspace
-                    .update(cx, |w, cx| w.activate_collection(ix, cx));
+            PaletteKind::Collection(root) => {
+                self.workspace.update(cx, |w, cx| {
+                    if let Some(ix) = w.coll_ix(&root) {
+                        w.activate_collection(ix, cx);
+                    }
+                });
             }
             PaletteKind::Command(CommandId::SwitchCollection) => {
                 self.mode = PaletteMode::Collections;

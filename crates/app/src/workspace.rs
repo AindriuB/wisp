@@ -553,6 +553,29 @@ fn history_job_of(c: &OpenCollection, data: Option<&DataDir>) -> Result<HistoryJ
     })
 }
 
+/// The collection a sent tab's history entry goes to (by its root, never the active one)
+/// and the job that writes it.
+fn history_target(
+    cols: &[OpenCollection],
+    root: &Path,
+    data: Option<&DataDir>,
+) -> Option<(usize, Result<HistoryJob, String>)> {
+    let ix = cols.iter().position(|c| c.tree.root == root)?;
+    Some((ix, history_job_of(&cols[ix], data)))
+}
+
+/// Ids of the collections whose cookie file is on and healthy.
+fn saving_ids_of(cols: &[OpenCollection], files: &HashMap<String, CookieStatus>) -> Vec<String> {
+    cols.iter()
+        .filter_map(|c| match &c.coll_id {
+            IdState::Known(id) => Some(id),
+            _ => None,
+        })
+        .filter(|id| files.get(*id).is_some_and(CookieStatus::saving))
+        .cloned()
+        .collect()
+}
+
 fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
     nodes.iter().any(|n| match n {
         Node::Request(m) => m.path == rel,
@@ -1136,6 +1159,11 @@ impl Workspace {
         self.active_collection
     }
 
+    /// The root of open collection `ix`.
+    pub fn collection_root(&self, ix: usize) -> Option<PathBuf> {
+        self.collections.get(ix).map(|c| c.tree.root.clone())
+    }
+
     /// The tabs showing now: the active collection's, else the scratch group's.
     pub fn group(&self) -> &TabGroup {
         self.active_collection().map_or(&self.scratch, |c| &c.group)
@@ -1191,7 +1219,7 @@ impl Workspace {
         }
     }
 
-    fn coll_ix(&self, root: &Path) -> Option<usize> {
+    pub fn coll_ix(&self, root: &Path) -> Option<usize> {
         self.collections.iter().position(|c| c.tree.root == root)
     }
 
@@ -1356,7 +1384,16 @@ impl Workspace {
                 }
             }
         }
-        if let Some(ix) = active.or((!self.collections.is_empty()).then_some(0)) {
+        // An argv path that was refused leaves `active` unset: keep the remembered one.
+        let remembered = self
+            .settings
+            .active_collection
+            .as_deref()
+            .and_then(|r| self.coll_ix(r));
+        if let Some(ix) = active
+            .or(remembered)
+            .or((!self.collections.is_empty()).then_some(0))
+        {
             self.active_collection = Some(ix);
         }
         let roots = self.open_roots();
@@ -2141,10 +2178,12 @@ impl Workspace {
         let Some(task_root) = sent.root.clone() else {
             return;
         };
-        let Some(cix) = self.coll_ix(&task_root) else {
+        let Some((cix, job)) =
+            history_target(&self.collections, &task_root, self.data_dir.as_ref())
+        else {
             return;
         };
-        let job = match history_job_of(&self.collections[cix], self.data_dir.as_ref()) {
+        let job = match job {
             Ok(j) => j,
             Err(reason) => {
                 if matches!(self.collections[cix].history, HistoryState::Unresolved) {
@@ -2748,15 +2787,7 @@ impl Workspace {
 
     /// Ids of the open collections whose file is on and healthy, so changes are saved.
     fn saving_ids(&self) -> Vec<String> {
-        self.collections
-            .iter()
-            .filter_map(|c| match &c.coll_id {
-                IdState::Known(id) => Some(id),
-                _ => None,
-            })
-            .filter(|id| self.cookie_files.get(*id).is_some_and(CookieStatus::saving))
-            .cloned()
-            .collect()
+        saving_ids_of(&self.collections, &self.cookie_files)
     }
 
     /// Save collection `ix`'s jar now if it changed since the last save.
@@ -3232,11 +3263,17 @@ mod tests {
         let data = DataDir::at(dir.path().join("data"));
         // `a` is active, but the tab was sent from `b`: the job is `b`'s.
         let cols = [a, b];
-        let sent_root = cols[1].tree.root.clone();
-        let ix = cols.iter().position(|c| c.tree.root == sent_root).unwrap();
-        let job = history_job_of(&cols[ix], Some(&data)).unwrap();
+        let sent = Sent {
+            draft: Request::default(),
+            request: None,
+            root: Some(cols[1].tree.root.clone()),
+        };
+        let (ix, job) = history_target(&cols, sent.root.as_deref().unwrap(), Some(&data)).unwrap();
+        assert_eq!(ix, 1);
+        let job = job.unwrap();
         assert_eq!(job.root, cols[1].tree.root);
         assert_ne!(job.root, cols[0].tree.root);
+        assert!(history_target(&cols, &dir.path().join("gone"), Some(&data)).is_none());
         job.open().unwrap();
         // Only `b` got an id: the entry's store was resolved for its collection.
         assert!(read_collection_id(&cols[1].tree.root).unwrap().is_some());
@@ -3245,8 +3282,10 @@ mod tests {
 
     #[test]
     fn collections_quit_saves_every_open_collection_with_saving_on() {
+        let dir = tempfile::tempdir().unwrap();
         let jars = CookieJars::default();
         let mut files = HashMap::new();
+        let mut cols = Vec::new();
         for id in ["id-a", "id-b", "id-off"] {
             let mut st = healthy();
             st.enabled = id != "id-off";
@@ -3254,9 +3293,13 @@ mod tests {
             files.insert(id.to_string(), st);
             // A change after the last save makes the jar dirty.
             jars.jar(Some(id)).clear();
+            let mut c = make_collection(dir.path(), id);
+            c.coll_id = IdState::Known(id.to_string());
+            cols.push(c);
         }
-        let ids = ["id-a".to_string(), "id-b".to_string(), "id-off".to_string()];
-        let saving: Vec<String> = ids.iter().filter(|i| files[*i].saving()).cloned().collect();
+        // `id-a` is first (the active one in a real workspace); `id-b` must still be saved.
+        let saving = saving_ids_of(&cols, &files);
+        assert_eq!(saving, ["id-a", "id-b"]);
         let work = quit_work(saving, &[], &mut files, &jars);
         let got: Vec<&str> = work.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(got, ["id-a", "id-b"]);

@@ -216,6 +216,8 @@ pub struct Sidebar {
     collapsed: HashSet<PathBuf>,
     selected: Option<PathBuf>,
     pending: Option<Pending>,
+    /// Root of the collection the state above belongs to.
+    shown_root: Option<PathBuf>,
     focus: FocusHandle,
     scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
@@ -243,6 +245,7 @@ impl Sidebar {
                     ev,
                     WorkspaceEvent::CollectionChanged | WorkspaceEvent::EnvironmentChanged
                 ) {
+                    this.reset_on_switch(cx);
                     this.sync_env(window, cx);
                 }
                 cx.notify();
@@ -256,12 +259,29 @@ impl Sidebar {
             collapsed: HashSet::new(),
             selected: None,
             pending: None,
+            shown_root: None,
             focus,
             scroll: gpui::ScrollHandle::new(),
             _subs: subs,
         };
+        this.reset_on_switch(cx);
         this.sync_env(window, cx);
         this
+    }
+
+    /// Clear the path-keyed state when the active collection is another one.
+    fn reset_on_switch(&mut self, cx: &mut Context<Self>) {
+        let root = self
+            .workspace
+            .read(cx)
+            .active_collection()
+            .map(|c| c.tree.root.clone());
+        if root != self.shown_root {
+            self.shown_root = root;
+            self.pending = None;
+            self.selected = None;
+            self.collapsed.clear();
+        }
     }
 
     fn notice(&self, text: String, cx: &mut Context<Self>) {

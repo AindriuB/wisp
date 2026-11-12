@@ -318,6 +318,9 @@ impl WorkspaceView {
         if window.has_active_prompt() || self.workspace.read(cx).prompt_up {
             return;
         }
+        let Some(root) = self.workspace.read(cx).collection_root(ix) else {
+            return;
+        };
         self.workspace.update(cx, |w, _| w.prompt_up = true);
         let answer = window.prompt(
             PromptLevel::Warning,
@@ -331,7 +334,8 @@ impl WorkspaceView {
             let close = matches!(answer.await, Ok(0));
             ws.update(cx, |w, cx| {
                 w.prompt_up = false;
-                if close {
+                // Indices may have shifted while the prompt was up: resolve by root.
+                if close && let Some(ix) = w.coll_ix(&root) {
                     w.close_collection(ix, cx);
                 }
             });

@@ -28,8 +28,8 @@ pub enum CommandId {
 pub enum PaletteKind {
     Request(PathBuf),
     Environment(Option<String>),
-    /// An open collection, by index.
-    Collection(usize),
+    /// An open collection, by root, so a list change cannot retarget it.
+    Collection(PathBuf),
     Command(CommandId),
 }
 
@@ -164,7 +164,7 @@ pub fn collection_items(open: &[(String, PathBuf)], active: Option<usize>) -> Ve
             } else {
                 path.display().to_string()
             },
-            kind: PaletteKind::Collection(i),
+            kind: PaletteKind::Collection(path.clone()),
         })
         .collect()
 }
@@ -344,7 +344,7 @@ mod tests {
         let v = collection_items(&open, Some(1));
         assert_eq!(v[0].label, "api");
         assert_eq!(v[0].detail, "/w/api");
-        assert_eq!(v[0].kind, PaletteKind::Collection(0));
+        assert_eq!(v[0].kind, PaletteKind::Collection("/w/api".into()));
         assert_eq!(v[1].detail, "/w/web (active)");
     }
 
