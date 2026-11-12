@@ -11,6 +11,7 @@ pub mod history;
 pub mod import;
 pub mod ops;
 pub mod request;
+pub mod secrets;
 pub mod watcher;
 
 pub use error::StorageError;

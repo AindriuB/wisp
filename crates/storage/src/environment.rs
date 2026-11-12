@@ -13,11 +13,11 @@ const DIR: &str = "environments";
 const SECRETS_SUFFIX: &str = ".secrets.toml";
 const IGNORE_LINE: &str = "*.secrets.toml";
 
-fn plain_path(root: &Path, name: &str) -> PathBuf {
+pub(crate) fn plain_path(root: &Path, name: &str) -> PathBuf {
     root.join(DIR).join(format!("{name}.toml"))
 }
 
-fn secrets_path(root: &Path, name: &str) -> PathBuf {
+pub(crate) fn secrets_path(root: &Path, name: &str) -> PathBuf {
     root.join(DIR).join(format!("{name}{SECRETS_SUFFIX}"))
 }
 
@@ -34,7 +34,7 @@ fn valid_name(name: &str) -> bool {
     !crate::fs::is_reserved_device_name(name)
 }
 
-fn check_name(root: &Path, name: &str) -> Result<(), StorageError> {
+pub(crate) fn check_name(root: &Path, name: &str) -> Result<(), StorageError> {
     if !valid_name(name) {
         return Err(StorageError::Invalid {
             path: root.join(DIR),
@@ -45,7 +45,7 @@ fn check_name(root: &Path, name: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
-fn io(path: &Path, source: std::io::Error) -> StorageError {
+pub(crate) fn io(path: &Path, source: std::io::Error) -> StorageError {
     StorageError::Io {
         path: path.to_path_buf(),
         source,
@@ -86,7 +86,7 @@ pub fn list_environments(root: &Path) -> Result<Vec<String>, StorageError> {
     Ok(names)
 }
 
-fn load_vars(path: &Path) -> Result<Vec<wisp_core::request::Var>, StorageError> {
+pub(crate) fn load_vars(path: &Path) -> Result<Vec<wisp_core::request::Var>, StorageError> {
     let text = fs::read_to_string(path)?;
     let doc = codec::parse(path, &text)?;
     codec::read_vars(doc.as_table(), "vars", path)
@@ -116,7 +116,7 @@ pub fn load_environment(root: &Path, name: &str) -> Result<Environment, StorageE
 }
 
 /// Edit (or create) a file's `[vars]` table in place and return the new text.
-fn render(path: &Path, vars: &[wisp_core::request::Var]) -> Result<String, StorageError> {
+pub(crate) fn render(path: &Path, vars: &[wisp_core::request::Var]) -> Result<String, StorageError> {
     let mut doc = if path.exists() {
         codec::parse(path, &fs::read_to_string(path)?)?
     } else {
@@ -131,7 +131,7 @@ fn render(path: &Path, vars: &[wisp_core::request::Var]) -> Result<String, Stora
     Ok(doc.to_string())
 }
 
-fn ensure_gitignore(dir: &Path) -> Result<(), StorageError> {
+pub(crate) fn ensure_gitignore(dir: &Path) -> Result<(), StorageError> {
     let path = dir.join(".gitignore");
     if !path.exists() {
         return fs::atomic_write(&path, format!("{IGNORE_LINE}\n").as_bytes());
@@ -189,6 +189,17 @@ pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageErr
     std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
 
     let pp = plain_path(root, &env.name);
+    if pp.exists() {
+        let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
+        let mode = crate::secrets::read_mode(&doc, &pp).unwrap_or(crate::secrets::Mode::File);
+        if mode != crate::secrets::Mode::File {
+            // A store-mode (or unknown-kind) environment never gets a secrets
+            // file; `secrets` and `secret_names` are kept verbatim by `render`.
+            fs::atomic_write(&pp, render(&pp, &env.vars)?.as_bytes())?;
+            tracing::debug!(environment = %env.name, "saved environment (store mode, plain vars only)");
+            return Ok(());
+        }
+    }
     let sp = secrets_path(root, &env.name);
     let plain_text = render(&pp, &env.vars)?;
     let secrets_text = if !env.secrets.is_empty() || sp.exists() {
