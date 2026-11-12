@@ -7,10 +7,9 @@
 //! collection), maps `id -> canonical root`, holds no secret values and is
 //! written `0600`. A corrupt or unreadable registry fails closed.
 //!
-//! Policy: an unbound id fails closed for reads and deletes. A store write
-//! (set, migrate-to-store, import) binds an unbound id only when the
-//! environment has no secret names yet (first-time setup); otherwise the user
-//! must confirm with [`crate::vault::bind`]. An id bound to a different canonical root fails closed for
+//! Policy: an unbound id fails closed for every operation; nothing binds
+//! implicitly. Only the user's explicit confirmation, [`crate::vault::bind`],
+//! creates a row. An id bound to a different canonical root fails closed for
 //! every operation until [`rebind`] is called.
 
 use std::collections::{BTreeMap, HashMap};
@@ -33,7 +32,7 @@ pub(crate) enum BindError {
     BoundElsewhere {
         bound_root: PathBuf,
     },
-    /// No registry row for the id and the caller may not create one.
+    /// No registry row for the id.
     Unbound,
 }
 
@@ -126,12 +125,30 @@ fn write_registry(path: &Path, map: &BTreeMap<String, String>) -> Result<(), Sto
     fs::atomic_write_force_private(path, text.as_bytes())
 }
 
-/// Check `id` against `root`. With `bind`, an unbound id is bound to `root`.
-pub(crate) fn check(
+/// Check `id` against `root`. An unbound id is an error; only
+/// [`bind_confirmed`] creates a row.
+pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), BindError> {
+    let canon = canonical(root)?;
+    let path = registry_path(data);
+    let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_private_dir(data.root())?;
+    let _f = lock_file(&path.with_extension("lock"))?;
+    let map = read_registry(&path)?;
+    match map.get(id.as_str()) {
+        Some(b) if *b == key(&canon) => Ok(()),
+        Some(b) => Err(BindError::BoundElsewhere {
+            bound_root: PathBuf::from(b),
+        }),
+        None => Err(BindError::Unbound),
+    }
+}
+
+/// Bind an unbound `id` to `root` after the user confirmed it. Already bound
+/// to `root` is fine; bound elsewhere is an error (use [`rebind`] to move).
+pub(crate) fn bind_confirmed(
     data: &DataDir,
     id: &CollectionId,
     root: &Path,
-    bind: bool,
 ) -> Result<(), BindError> {
     let canon = canonical(root)?;
     let path = registry_path(data);
@@ -145,25 +162,11 @@ pub(crate) fn check(
             bound_root: PathBuf::from(b),
         }),
         None => {
-            if bind {
-                map.insert(id.as_str().to_string(), key(&canon));
-                write_registry(&path, &map)?;
-                Ok(())
-            } else {
-                Err(BindError::Unbound)
-            }
+            map.insert(id.as_str().to_string(), key(&canon));
+            write_registry(&path, &map)?;
+            Ok(())
         }
     }
-}
-
-/// Bind an unbound `id` to `root` after the user confirmed it. Already bound
-/// to `root` is fine; bound elsewhere is an error (use [`rebind`] to move).
-pub(crate) fn bind_confirmed(
-    data: &DataDir,
-    id: &CollectionId,
-    root: &Path,
-) -> Result<(), BindError> {
-    check(data, id, root, true)
 }
 
 /// The canonical root `id` is bound to, if any.

@@ -493,7 +493,7 @@ pub fn load_environment_with(
     let Some(id) = id else {
         return Ok(failed(FailReason::NoCollectionId));
     };
-    match binding::check(&ctx.data, id, root, false) {
+    match binding::check(&ctx.data, id, root) {
         Ok(()) => {}
         Err(BindError::BoundElsewhere { bound_root }) => {
             return Ok(failed(FailReason::IdBoundElsewhere { bound_root }));
@@ -532,8 +532,8 @@ pub enum SecretsError {
     /// written. See [`rebind`].
     #[error("collection id is bound to another collection root: {}", bound_root.display())]
     IdBoundElsewhere { bound_root: PathBuf },
-    /// The collection id has no binding on this machine and the operation may
-    /// not create one; nothing was read or written. See [`bind`].
+    /// The collection id has no binding on this machine; nothing was
+    /// read or written. See [`bind`].
     #[error("collection id is not bound to this collection root")]
     Unbound,
     /// `migrate_to_file` found names with no value in the store; nothing was
@@ -573,14 +573,9 @@ fn map_bind(e: BindError) -> SecretsError {
     }
 }
 
-/// Check the binding; `create` lets a first-time setup bind an unbound id.
-fn check_bind(
-    ctx: &VaultCtx,
-    id: &CollectionId,
-    root: &Path,
-    create: bool,
-) -> Result<(), SecretsError> {
-    binding::check(&ctx.data, id, root, create).map_err(map_bind)
+/// Check the binding; an unbound id is [`SecretsError::Unbound`].
+fn check_bind(ctx: &VaultCtx, id: &CollectionId, root: &Path) -> Result<(), SecretsError> {
+    binding::check(&ctx.data, id, root).map_err(map_bind)
 }
 
 /// Bind `id` to `root` after the user confirmed "use keychain secrets for this
@@ -685,7 +680,7 @@ pub fn migrate_to_store(
     } else {
         Vec::new()
     };
-    check_bind(ctx, id, root, true)?;
+    check_bind(ctx, id, root)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
     let touched = copy_into_store(store, &bounded, id, name, &secrets)?;
@@ -731,7 +726,7 @@ pub fn import_secrets_file(
     }
     let secrets = crate::environment::load_vars(&sp)?;
     let mut names = read_names(&doc, &pp)?;
-    check_bind(ctx, id, root, names.is_empty())?;
+    check_bind(ctx, id, root)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
     let touched = copy_into_store(store, &bounded, id, name, &secrets)?;
@@ -771,7 +766,7 @@ pub fn migrate_to_file(
         return Err(invalid(&pp, "secrets", "environment is not in store mode"));
     }
     let names = read_names(&doc, &pp)?;
-    check_bind(ctx, id, root, false)?;
+    check_bind(ctx, id, root)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
     let mut secrets = Vec::new();
@@ -856,8 +851,8 @@ fn store_mode_doc(
 }
 
 /// Set one secret in a store-mode environment: the store first, then
-/// `secret_names`. Never writes a secrets file. Binds an unbound collection
-/// id to `root` only for a first-time setup (no `secret_names` yet). The read-modify-write of `<env>.toml` is locked.
+/// `secret_names`. Never writes a secrets file. An unbound collection id is
+/// refused. The read-modify-write of `<env>.toml` is locked.
 pub fn set_secret(
     root: &Path,
     name: &str,
@@ -870,7 +865,7 @@ pub fn set_secret(
     check_name(root, name)?;
     let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc, mut names) = store_mode_doc(root, name)?;
-    check_bind(ctx, id, root, names.is_empty())?;
+    check_bind(ctx, id, root)?;
     store.set(&secret_account(id, name, var), value)?;
     if !names.iter().any(|n| n == var) {
         names.push(var.to_string());
@@ -893,7 +888,7 @@ pub fn delete_secret(
     check_name(root, name)?;
     let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc, mut names) = store_mode_doc(root, name)?;
-    check_bind(ctx, id, root, false)?;
+    check_bind(ctx, id, root)?;
     store.delete(&secret_account(id, name, var))?;
     if names.iter().any(|n| n == var) {
         names.retain(|n| n != var);
