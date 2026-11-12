@@ -25,6 +25,10 @@ pub enum StorageError {
     Exists { path: PathBuf },
     #[error("unsupported format {found} in {}", path.display())]
     UnsupportedFormat { path: PathBuf, found: i64 },
+    /// A non-file-mode environment cannot take secrets through
+    /// `save_environment`; use `vault::set_secret`.
+    #[error("secrets of {} live in a secret store; use set_secret", path.display())]
+    SecretsNeedStore { path: PathBuf },
     #[error("not a collection: {}", path.display())]
     NotACollection { path: PathBuf },
     #[error("watch error: {message}")]

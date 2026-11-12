@@ -8,17 +8,21 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use toml_edit::DocumentMut;
 use wisp_core::request::{Environment, Var};
 
 use crate::collection::CollectionId;
+use crate::data_dir::DataDir;
 use crate::environment::{check_name, ensure_gitignore, plain_path, render, secrets_path};
+use crate::vault_binding::{self as binding, BindError};
 use crate::{StorageError, codec, fs};
 
 pub use crate::error::{SecretStoreError, UnavailableReason};
+pub use crate::vault_binding::{bound_root, rebind};
 
 /// A secret string. Debug prints `<redacted>`; there is no Display.
 #[derive(Clone, PartialEq, Eq)]
@@ -68,9 +72,12 @@ impl StoreKind {
 /// A blocking secret store, addressed by an account string.
 ///
 /// Any method may block for seconds or go over IPC (D-Bus, a socket, a
-/// browser-protocol pipe); callers run them off the UI thread. The account is
-/// a store-neutral address; a store maps it to its own scheme without
-/// changing it.
+/// browser-protocol pipe). Callers run them off the UI thread. Implementations
+/// must bound each call and map a timeout to
+/// `Unavailable { reason: TimedOut }`; the operations in this module add a
+/// whole-call deadline ([`OPERATION_DEADLINE`]) on top, so N names cannot
+/// take N times the per-call bound. The account is a store-neutral address; a
+/// store maps it to its own scheme without changing it.
 pub trait SecretStore: Send + Sync {
     /// Check that the store can be used at all.
     fn probe(&self) -> Result<(), SecretStoreError>;
@@ -284,12 +291,90 @@ fn set_names(doc: &mut DocumentMut, names: &[String]) {
     doc.insert("secret_names", toml_edit::value(arr));
 }
 
+/// Whole-call budget for [`load_environment_with`] and the migrations: N
+/// secret names must not take N times a per-call bound.
+pub const OPERATION_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Per-user context for vault operations: where the binding registry and the
+/// environment locks live, and the whole-call deadline.
+#[derive(Debug, Clone)]
+pub struct VaultCtx {
+    pub data: DataDir,
+    pub deadline: Duration,
+}
+
+impl VaultCtx {
+    pub fn new(data: DataDir) -> Self {
+        Self {
+            data,
+            deadline: OPERATION_DEADLINE,
+        }
+    }
+
+    /// Replace the whole-call deadline (tests use a short one).
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
+    }
+}
+
+const TIMED_OUT: SecretStoreError = SecretStoreError::Unavailable {
+    reason: UnavailableReason::TimedOut,
+};
+
+/// A store seen through a whole-call deadline: a call that starts after, or
+/// returns after, the deadline is a `TimedOut` failure.
+struct Bounded<'a> {
+    store: &'a dyn SecretStore,
+    end: Instant,
+}
+
+impl<'a> Bounded<'a> {
+    fn new(store: &'a dyn SecretStore, budget: Duration) -> Self {
+        Self {
+            store,
+            end: Instant::now() + budget,
+        }
+    }
+
+    fn check(&self) -> Result<(), SecretStoreError> {
+        if Instant::now() >= self.end {
+            Err(TIMED_OUT)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn probe(&self) -> Result<(), SecretStoreError> {
+        self.check()?;
+        self.store.probe()?;
+        self.check()
+    }
+
+    fn get(&self, a: &str) -> Result<Option<SecretValue>, SecretStoreError> {
+        self.check()?;
+        let r = self.store.get(a)?;
+        self.check()?;
+        Ok(r)
+    }
+
+    fn set(&self, a: &str, v: &SecretValue) -> Result<(), SecretStoreError> {
+        self.check()?;
+        self.store.set(a, v)?;
+        self.check()
+    }
+}
+
 /// Why a store-mode load produced no secrets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailReason {
     UnknownStoreKind(String),
     NoCollectionId,
     Store(SecretStoreError),
+    /// The collection id is bound to another root; nothing was read.
+    IdBoundElsewhere {
+        bound_root: PathBuf,
+    },
 }
 
 /// Where a loaded environment's secrets came from.
@@ -322,12 +407,14 @@ fn is_absent(reason: UnavailableReason) -> bool {
 }
 
 /// Load an environment, following the fail-closed table. Only TOML and IO
-/// problems are `Err`; a store failure is a `Failed` status.
+/// problems are `Err`; a store failure is a `Failed` status. Blocking: run it
+/// off the UI thread. The whole call is bounded by `ctx.deadline`.
 pub fn load_environment_with(
     root: &Path,
     name: &str,
     id: Option<&CollectionId>,
     stores: &dyn SecretStores,
+    ctx: &VaultCtx,
 ) -> Result<LoadedEnvironment, StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
@@ -373,14 +460,19 @@ pub fn load_environment_with(
         Mode::Unknown(s) => return Ok(failed(FailReason::UnknownStoreKind(s))),
         Mode::Store(k) => k,
     };
-    let probe = match stores.get(kind) {
-        Some(s) => s.probe().map(|()| s),
-        None => Err(SecretStoreError::Unavailable {
-            reason: UnavailableReason::NotConfigured,
-        }),
+    let store = match stores.get(kind) {
+        Some(s) => Bounded::new(s, ctx.deadline),
+        None => {
+            return Ok(finish(
+                file_secrets()?,
+                LoadStatus::FellBackToFile {
+                    reason: UnavailableReason::NotConfigured,
+                },
+            ));
+        }
     };
-    let store = match probe {
-        Ok(s) => s,
+    match store.probe() {
+        Ok(()) => {}
         Err(SecretStoreError::Unavailable { reason }) if is_absent(reason) => {
             return Ok(finish(
                 file_secrets()?,
@@ -388,10 +480,17 @@ pub fn load_environment_with(
             ));
         }
         Err(e) => return Ok(failed(FailReason::Store(e))),
-    };
+    }
     let Some(id) = id else {
         return Ok(failed(FailReason::NoCollectionId));
     };
+    match binding::check(&ctx.data, id, root, false) {
+        Ok(()) => {}
+        Err(BindError::BoundElsewhere { bound_root }) => {
+            return Ok(failed(FailReason::IdBoundElsewhere { bound_root }));
+        }
+        Err(BindError::Storage(e)) => return Err(e),
+    }
     let mut secrets = Vec::new();
     for n in &names {
         match store.get(&secret_account(id, name, n)) {
@@ -419,6 +518,14 @@ pub enum SecretsError {
     Storage(#[from] StorageError),
     #[error(transparent)]
     Store(#[from] SecretStoreError),
+    /// The collection id is bound to a different root; nothing was read or
+    /// written. See [`rebind`].
+    #[error("collection id is bound to another collection root: {}", bound_root.display())]
+    IdBoundElsewhere { bound_root: PathBuf },
+    /// `migrate_to_file` found names with no value in the store; nothing was
+    /// changed. Pass `allow_drop_unresolved` to drop them.
+    #[error("secret names without a value in the store: {}", names.join(", "))]
+    UnresolvedNames { names: Vec<String> },
 }
 
 /// A store entry that could not be deleted after `migrate_to_file`.
@@ -432,7 +539,7 @@ pub struct DeleteWarning {
 /// `migrate_to_store`; the plaintext file is left behind.
 #[derive(Debug)]
 pub struct LeftoverFileWarning {
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
     pub error: StorageError,
 }
 
@@ -444,23 +551,98 @@ fn invalid(path: &Path, key: &str, message: &str) -> SecretsError {
     })
 }
 
-fn read_plain(root: &Path, name: &str) -> Result<(std::path::PathBuf, DocumentMut), StorageError> {
+fn bind(ctx: &VaultCtx, id: &CollectionId, root: &Path, write: bool) -> Result<(), SecretsError> {
+    binding::check(&ctx.data, id, root, write).map_err(|e| match e {
+        BindError::Storage(e) => SecretsError::Storage(e),
+        BindError::BoundElsewhere { bound_root } => SecretsError::IdBoundElsewhere { bound_root },
+    })
+}
+
+fn read_plain(root: &Path, name: &str) -> Result<(PathBuf, DocumentMut), StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
     let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
     Ok((pp, doc))
 }
 
+type Touched = Vec<(String, Option<SecretValue>)>;
+
+/// Put every touched account back: `None` means the entry did not exist.
+fn rollback(store: &dyn SecretStore, touched: &Touched) {
+    for (a, old) in touched {
+        let r = match old {
+            Some(v) => store.set(a, v),
+            None => store.delete(a),
+        };
+        if r.is_err() {
+            tracing::warn!("could not restore a secret store entry during rollback");
+        }
+    }
+}
+
+/// Copy `secrets` into the store with read-back verification. On failure the
+/// entries this call touched are restored; on success they are returned so a
+/// later failure can restore them too.
+fn copy_into_store(
+    store: &dyn SecretStore,
+    bounded: &Bounded<'_>,
+    id: &CollectionId,
+    name: &str,
+    secrets: &[Var],
+) -> Result<Touched, SecretStoreError> {
+    let mut touched: Touched = Vec::new();
+    let mut copy = || -> Result<(), SecretStoreError> {
+        for v in secrets {
+            let account = secret_account(id, name, &v.name);
+            let old = bounded.get(&account)?;
+            touched.push((account.clone(), old));
+            let value = SecretValue::new(v.value.as_str());
+            bounded.set(&account, &value)?;
+            if bounded.get(&account)?.as_ref() != Some(&value) {
+                return Err(SecretStoreError::Other { code: None });
+            }
+        }
+        Ok(())
+    };
+    match copy() {
+        Ok(()) => Ok(touched),
+        Err(e) => {
+            rollback(store, &touched);
+            Err(e)
+        }
+    }
+}
+
+fn remove_secrets_file(name: &str, sp: &Path) -> Option<LeftoverFileWarning> {
+    if sp.exists()
+        && let Err(e) = std::fs::remove_file(sp)
+    {
+        tracing::warn!(environment = name, "could not delete the old secrets file");
+        return Some(LeftoverFileWarning {
+            path: sp.to_path_buf(),
+            error: StorageError::Io {
+                path: sp.to_path_buf(),
+                source: e,
+            },
+        });
+    }
+    None
+}
+
 /// Move an environment's file secrets into `store`. Ordered so that a
 /// failure before the file is deleted leaves the file and mode unchanged and
-/// removes the entries this call created.
+/// restores the entries this call touched. Blocking; bounded by
+/// `ctx.deadline`.
 pub fn migrate_to_store(
     root: &Path,
     name: &str,
     id: &CollectionId,
     kind: StoreKind,
     store: &dyn SecretStore,
+    ctx: &VaultCtx,
 ) -> Result<Option<LeftoverFileWarning>, SecretsError> {
+    check_name(root, name)?;
+    let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc) = read_plain(root, name)?;
     if kind == StoreKind::File || read_mode(&doc, &pp)? != Mode::File {
         return Err(invalid(&pp, "secrets", "environment is not in file mode"));
@@ -471,61 +653,20 @@ pub fn migrate_to_store(
     } else {
         Vec::new()
     };
-    store.probe()?;
-
-    // Every account this call touches, with the value to put back: `None`
-    // means the entry did not exist and is deleted again.
-    let mut touched: Vec<(String, Option<SecretValue>)> = Vec::new();
-    let rollback = |touched: &[(String, Option<SecretValue>)]| {
-        for (a, old) in touched {
-            let r = match old {
-                Some(v) => store.set(a, v),
-                None => store.delete(a),
-            };
-            if r.is_err() {
-                tracing::warn!("could not restore a secret store entry during rollback");
-            }
-        }
-    };
-    let mut copy = || -> Result<(), SecretStoreError> {
-        for v in &secrets {
-            let account = secret_account(id, name, &v.name);
-            let old = store.get(&account)?;
-            touched.push((account.clone(), old));
-            let value = SecretValue::new(v.value.as_str());
-            store.set(&account, &value)?;
-            if store.get(&account)?.as_ref() != Some(&value) {
-                return Err(SecretStoreError::Other { code: None });
-            }
-        }
-        Ok(())
-    };
-    if let Err(e) = copy() {
-        rollback(&touched);
-        return Err(e.into());
-    }
+    bind(ctx, id, root, true)?;
+    let bounded = Bounded::new(store, ctx.deadline);
+    bounded.probe()?;
+    let touched = copy_into_store(store, &bounded, id, name, &secrets)?;
 
     doc["secrets"] = toml_edit::value(kind.as_str());
     let names: Vec<String> = secrets.iter().map(|v| v.name.clone()).collect();
     set_names(&mut doc, &names);
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
-        rollback(&touched);
+        rollback(store, &touched);
         return Err(e.into());
     }
     // Store entries and mode are committed; a failed delete is a warning.
-    let mut leftover = None;
-    if sp.exists()
-        && let Err(e) = std::fs::remove_file(&sp)
-    {
-        tracing::warn!(environment = name, "could not delete the old secrets file");
-        leftover = Some(LeftoverFileWarning {
-            path: sp.clone(),
-            error: StorageError::Io {
-                path: sp.clone(),
-                source: e,
-            },
-        });
-    }
+    let leftover = remove_secrets_file(name, &sp);
     tracing::debug!(
         environment = name,
         count = names.len(),
@@ -534,29 +675,86 @@ pub fn migrate_to_store(
     Ok(leftover)
 }
 
-/// Move an environment's store secrets back into `<env>.secrets.toml`. Any
-/// read error aborts with nothing changed. A failure deleting store entries
-/// afterwards is returned as warnings; the file stays.
+/// For an environment already in store mode that has an ignored
+/// `<env>.secrets.toml`: copy the file's values into the store, add its names
+/// to `secret_names`, then delete the file. Same rollback rules as
+/// [`migrate_to_store`]: a failure before the file is deleted restores
+/// pre-existing store values; a failed final delete is a warning.
+pub fn import_secrets_file(
+    root: &Path,
+    name: &str,
+    id: &CollectionId,
+    store: &dyn SecretStore,
+    ctx: &VaultCtx,
+) -> Result<Option<LeftoverFileWarning>, SecretsError> {
+    check_name(root, name)?;
+    let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
+    let (pp, mut doc) = read_plain(root, name)?;
+    if !matches!(read_mode(&doc, &pp)?, Mode::Store(_)) {
+        return Err(invalid(&pp, "secrets", "environment is not in store mode"));
+    }
+    let sp = secrets_path(root, name);
+    if !sp.exists() {
+        return Err(invalid(&sp, "path", "no secrets file to import"));
+    }
+    let secrets = crate::environment::load_vars(&sp)?;
+    let mut names = read_names(&doc, &pp)?;
+    bind(ctx, id, root, true)?;
+    let bounded = Bounded::new(store, ctx.deadline);
+    bounded.probe()?;
+    let touched = copy_into_store(store, &bounded, id, name, &secrets)?;
+
+    for v in &secrets {
+        if !names.contains(&v.name) {
+            names.push(v.name.clone());
+        }
+    }
+    set_names(&mut doc, &names);
+    if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
+        rollback(store, &touched);
+        return Err(e.into());
+    }
+    Ok(remove_secrets_file(name, &sp))
+}
+
+/// Move an environment's store secrets back into `<env>.secrets.toml`,
+/// keeping every other key already in that file. Any read error aborts with
+/// nothing changed. Names with no value in the store abort with
+/// [`SecretsError::UnresolvedNames`] and nothing changed, unless
+/// `allow_drop_unresolved` is set, which drops only those names. A failure
+/// deleting store entries afterwards is returned as warnings; the file stays.
+/// Blocking; bounded by `ctx.deadline`.
 pub fn migrate_to_file(
     root: &Path,
     name: &str,
     id: &CollectionId,
     store: &dyn SecretStore,
+    allow_drop_unresolved: bool,
+    ctx: &VaultCtx,
 ) -> Result<Vec<DeleteWarning>, SecretsError> {
+    check_name(root, name)?;
+    let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc) = read_plain(root, name)?;
     if !matches!(read_mode(&doc, &pp)?, Mode::Store(_)) {
         return Err(invalid(&pp, "secrets", "environment is not in store mode"));
     }
     let names = read_names(&doc, &pp)?;
-    store.probe()?;
+    bind(ctx, id, root, false)?;
+    let bounded = Bounded::new(store, ctx.deadline);
+    bounded.probe()?;
     let mut secrets = Vec::new();
+    let mut unresolved = Vec::new();
     for n in &names {
-        if let Some(v) = store.get(&secret_account(id, name, n))? {
-            secrets.push(Var {
+        match bounded.get(&secret_account(id, name, n))? {
+            Some(v) => secrets.push(Var {
                 name: n.clone(),
                 value: v.expose().to_string(),
-            });
+            }),
+            None => unresolved.push(n.clone()),
         }
+    }
+    if !unresolved.is_empty() && !allow_drop_unresolved {
+        return Err(SecretsError::UnresolvedNames { names: unresolved });
     }
 
     let sp = secrets_path(root, name);
@@ -565,7 +763,19 @@ pub fn migrate_to_file(
     } else {
         None
     };
-    let text = render(&sp, &secrets)?;
+    // Overlay the store values on what the file already holds; never drop keys.
+    let mut merged = if old_file.is_some() {
+        crate::environment::load_vars(&sp)?
+    } else {
+        Vec::new()
+    };
+    for s in secrets.iter() {
+        match merged.iter_mut().find(|m| m.name == s.name) {
+            Some(m) => m.value = s.value.clone(),
+            None => merged.push(s.clone()),
+        }
+    }
+    let text = render(&sp, &merged)?;
     let dir = root.join(crate::environment::DIR);
     ensure_gitignore(&dir)?;
     fs::atomic_write_private(&sp, text.as_bytes())?;
@@ -604,7 +814,7 @@ pub fn migrate_to_file(
 fn store_mode_doc(
     root: &Path,
     name: &str,
-) -> Result<(std::path::PathBuf, DocumentMut, Vec<String>), SecretsError> {
+) -> Result<(PathBuf, DocumentMut, Vec<String>), SecretsError> {
     let (pp, doc) = read_plain(root, name)?;
     if !matches!(read_mode(&doc, &pp)?, Mode::Store(_)) {
         return Err(invalid(&pp, "secrets", "environment is not in store mode"));
@@ -614,7 +824,8 @@ fn store_mode_doc(
 }
 
 /// Set one secret in a store-mode environment: the store first, then
-/// `secret_names`. Never writes a secrets file.
+/// `secret_names`. Never writes a secrets file. Binds an unbound collection
+/// id to `root`. The read-modify-write of `<env>.toml` is locked.
 pub fn set_secret(
     root: &Path,
     name: &str,
@@ -622,8 +833,12 @@ pub fn set_secret(
     store: &dyn SecretStore,
     var: &str,
     value: &SecretValue,
+    ctx: &VaultCtx,
 ) -> Result<(), SecretsError> {
+    check_name(root, name)?;
+    let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc, mut names) = store_mode_doc(root, name)?;
+    bind(ctx, id, root, true)?;
     store.set(&secret_account(id, name, var), value)?;
     if !names.iter().any(|n| n == var) {
         names.push(var.to_string());
@@ -634,15 +849,19 @@ pub fn set_secret(
 }
 
 /// Delete one secret from a store-mode environment: the store first, then
-/// `secret_names`. Never writes a secrets file.
+/// `secret_names`. Never writes a secrets file. Does not bind an unbound id.
 pub fn delete_secret(
     root: &Path,
     name: &str,
     id: &CollectionId,
     store: &dyn SecretStore,
     var: &str,
+    ctx: &VaultCtx,
 ) -> Result<(), SecretsError> {
+    check_name(root, name)?;
+    let _l = binding::env_lock(&ctx.data, &plain_path(root, name))?;
     let (pp, mut doc, mut names) = store_mode_doc(root, name)?;
+    bind(ctx, id, root, false)?;
     store.delete(&secret_account(id, name, var))?;
     if names.iter().any(|n| n == var) {
         names.retain(|n| n != var);

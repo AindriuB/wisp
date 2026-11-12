@@ -2,14 +2,19 @@ use std::path::Path;
 
 use wisp_core::request::{Environment, Var};
 use wisp_storage::collection::CollectionId;
+use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{load_environment, save_environment};
 use wisp_storage::vault::{
     FailReason, LoadStatus, MemoryStore, NoStores, SecretStore, SecretStoreError, SecretValue,
-    StoreKind, UnavailableReason, delete_secret, load_environment_with, migrate_to_file,
+    StoreKind, UnavailableReason, VaultCtx, delete_secret, load_environment_with, migrate_to_file,
     migrate_to_store, refresh_token_account, secret_account, set_secret, store_state_account,
 };
 
 const SENTINEL: &str = "s3ntinel-value-xyz";
+
+fn cx() -> VaultCtx {
+    VaultCtx::new(DataDir::at(tempfile::tempdir().unwrap().keep()))
+}
 
 fn id() -> CollectionId {
     CollectionId::parse("abcdef0123456789").unwrap()
@@ -49,7 +54,7 @@ fn file_env(root: &Path) {
 }
 
 fn load(root: &Path, store: &MemoryStore) -> wisp_storage::vault::LoadedEnvironment {
-    load_environment_with(root, "dev", Some(&id()), store).unwrap()
+    load_environment_with(root, "dev", Some(&id()), store, &cx()).unwrap()
 }
 
 fn var(n: &str, v: &str) -> Var {
@@ -119,7 +124,7 @@ fn no_store_for_kind_falls_back_as_not_configured() {
     let t = tempfile::tempdir().unwrap();
     write(t.path(), "dev.toml", STORE_TOML);
     write(t.path(), "dev.secrets.toml", "[vars]\ntoken = \"t1\"\n");
-    let l = load_environment_with(t.path(), "dev", Some(&id()), &NoStores).unwrap();
+    let l = load_environment_with(t.path(), "dev", Some(&id()), &NoStores, &cx()).unwrap();
     assert_eq!(
         l.status,
         LoadStatus::FellBackToFile {
@@ -184,7 +189,7 @@ fn locked_denied_other_probe_fail_closed() {
 fn store_ok_without_collection_id_fails() {
     let t = tempfile::tempdir().unwrap();
     write(t.path(), "dev.toml", STORE_TOML);
-    let l = load_environment_with(t.path(), "dev", None, &MemoryStore::new()).unwrap();
+    let l = load_environment_with(t.path(), "dev", None, &MemoryStore::new(), &cx()).unwrap();
     assert_eq!(
         l.status,
         LoadStatus::Failed {
@@ -287,7 +292,7 @@ fn migrate_to_store_success() {
     let t = tempfile::tempdir().unwrap();
     file_env(t.path());
     let s = MemoryStore::new();
-    migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).unwrap();
+    migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).unwrap();
     assert!(!exists(t.path(), "dev.secrets.toml"));
     let plain = read(t.path(), "dev.toml");
     assert!(plain.contains("# keep me"));
@@ -310,7 +315,7 @@ fn migrate_to_store_probe_failure_changes_nothing() {
     let before = read(t.path(), "dev.toml");
     let s = MemoryStore::new();
     s.fail_probe(Some(SecretStoreError::Locked));
-    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).is_err());
+    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).is_err());
     assert_eq!(read(t.path(), "dev.toml"), before);
     assert!(exists(t.path(), "dev.secrets.toml"));
     assert!(s.accounts().is_empty());
@@ -325,7 +330,7 @@ fn migrate_to_store_set_failure_rolls_back_created_entries() {
         let before = read(t.path(), "dev.toml");
         let s = MemoryStore::new();
         s.fail_nth(n, SecretStoreError::Denied);
-        assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).is_err());
+        assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).is_err());
         assert_eq!(read(t.path(), "dev.toml"), before);
         assert!(exists(t.path(), "dev.secrets.toml"));
         assert!(s.accounts().is_empty(), "n={n}: {:?}", s.accounts());
@@ -338,7 +343,7 @@ fn migrate_to_store_read_back_failure_rolls_back() {
     file_env(t.path());
     let s = MemoryStore::new();
     s.fail_nth(2, SecretStoreError::Other { code: Some(1) });
-    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).is_err());
+    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).is_err());
     assert!(exists(t.path(), "dev.secrets.toml"));
     assert!(s.accounts().is_empty());
 }
@@ -351,7 +356,7 @@ fn migrate_to_store_rollback_keeps_preexisting_entries() {
     put(&s, "token", "old");
     // token: get, set, get; key: get, set(fail)
     s.fail_nth(4, SecretStoreError::Denied);
-    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).is_err());
+    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).is_err());
     assert_eq!(s.accounts(), vec![acct("token")]);
     assert_eq!(
         s.get(&acct("token")).unwrap(),
@@ -384,7 +389,7 @@ fn migrate_to_store_read_back_mismatch_rolls_back() {
     file_env(t.path());
     let before = read(t.path(), "dev.toml");
     let s = LyingStore(MemoryStore::new());
-    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).is_err());
+    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).is_err());
     assert_eq!(read(t.path(), "dev.toml"), before);
     assert!(exists(t.path(), "dev.secrets.toml"));
     assert!(s.0.accounts().is_empty());
@@ -435,7 +440,7 @@ fn migrate_to_store_final_delete_failure_is_a_warning() {
             std::fs::write(hook_sp.join("x"), "x").unwrap();
         }),
     };
-    let w = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s)
+    let w = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx())
         .unwrap()
         .expect("a warning naming the leftover file");
     assert_eq!(w.path, sp);
@@ -448,7 +453,7 @@ fn migrate_to_store_success_has_no_warning() {
     let t = tempfile::tempdir().unwrap();
     file_env(t.path());
     let s = MemoryStore::new();
-    let w = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).unwrap();
+    let w = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).unwrap();
     assert!(w.is_none());
 }
 
@@ -471,7 +476,7 @@ fn migrate_to_file_plain_write_failure_restores_existing_secrets_file() {
             std::fs::create_dir(&hook_pp).unwrap();
         }),
     };
-    assert!(migrate_to_file(t.path(), "dev", &id(), &s).is_err());
+    assert!(migrate_to_file(t.path(), "dev", &id(), &s, false, &cx()).is_err());
     assert_eq!(read(t.path(), "dev.secrets.toml"), "[vars]\nold = \"o\"\n");
     assert_eq!(s.inner.accounts().len(), 2);
 }
@@ -485,7 +490,7 @@ fn migrate_to_store_write_failure_rolls_back() {
     let dir = t.path().join("environments");
     let s = MemoryStore::new();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let r = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s);
+    let r = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx());
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     if r.is_ok() {
         return; // running with privileges that ignore the mode
@@ -508,7 +513,7 @@ fn migrate_to_file_success() {
     let t = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
     store_env(t.path(), &s);
-    let warnings = migrate_to_file(t.path(), "dev", &id(), &s).unwrap();
+    let warnings = migrate_to_file(t.path(), "dev", &id(), &s, false, &cx()).unwrap();
     assert!(warnings.is_empty());
     let plain = read(t.path(), "dev.toml");
     assert!(plain.contains("# keep me"));
@@ -534,7 +539,7 @@ fn migrate_to_file_read_failure_changes_nothing() {
     let s = MemoryStore::new();
     store_env(t.path(), &s);
     s.fail_nth(1, SecretStoreError::Locked);
-    assert!(migrate_to_file(t.path(), "dev", &id(), &s).is_err());
+    assert!(migrate_to_file(t.path(), "dev", &id(), &s, false, &cx()).is_err());
     assert_eq!(read(t.path(), "dev.toml"), STORE_TOML);
     assert!(!exists(t.path(), "dev.secrets.toml"));
     assert_eq!(s.accounts().len(), 2);
@@ -547,7 +552,7 @@ fn migrate_to_file_delete_failure_is_a_warning() {
     store_env(t.path(), &s);
     // two gets succeed, first delete fails
     s.fail_nth(2, SecretStoreError::Denied);
-    let warnings = migrate_to_file(t.path(), "dev", &id(), &s).unwrap();
+    let warnings = migrate_to_file(t.path(), "dev", &id(), &s, false, &cx()).unwrap();
     assert_eq!(warnings.len(), 1);
     assert!(exists(t.path(), "dev.secrets.toml"));
     assert!(read(t.path(), "dev.toml").contains("secrets = \"file\""));
@@ -564,7 +569,16 @@ fn set_secret_writes_store_then_names() {
         "secrets = \"keychain\"\nsecret_names = []\n[vars]\n",
     );
     let s = MemoryStore::new();
-    set_secret(t.path(), "dev", &id(), &s, "token", &SecretValue::new("v")).unwrap();
+    set_secret(
+        t.path(),
+        "dev",
+        &id(),
+        &s,
+        "token",
+        &SecretValue::new("v"),
+        &cx(),
+    )
+    .unwrap();
     assert!(read(t.path(), "dev.toml").contains("\"token\""));
     assert_eq!(s.accounts(), vec![acct("token")]);
     assert!(!exists(t.path(), "dev.secrets.toml"));
@@ -580,7 +594,18 @@ fn set_secret_store_failure_leaves_names() {
     );
     let s = MemoryStore::new();
     s.fail_next(SecretStoreError::TooLarge);
-    assert!(set_secret(t.path(), "dev", &id(), &s, "token", &SecretValue::new("v")).is_err());
+    assert!(
+        set_secret(
+            t.path(),
+            "dev",
+            &id(),
+            &s,
+            "token",
+            &SecretValue::new("v"),
+            &cx()
+        )
+        .is_err()
+    );
     assert!(!read(t.path(), "dev.toml").contains("token"));
     assert!(!exists(t.path(), "dev.secrets.toml"));
 }
@@ -590,7 +615,7 @@ fn delete_secret_removes_store_then_name() {
     let t = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
     store_env(t.path(), &s);
-    delete_secret(t.path(), "dev", &id(), &s, "token").unwrap();
+    delete_secret(t.path(), "dev", &id(), &s, "token", &cx()).unwrap();
     let plain = read(t.path(), "dev.toml");
     assert!(!plain.contains("\"token\""));
     assert!(plain.contains("\"key\""));
@@ -603,7 +628,7 @@ fn delete_secret_store_failure_leaves_names() {
     let s = MemoryStore::new();
     store_env(t.path(), &s);
     s.fail_next(SecretStoreError::Locked);
-    assert!(delete_secret(t.path(), "dev", &id(), &s, "token").is_err());
+    assert!(delete_secret(t.path(), "dev", &id(), &s, "token", &cx()).is_err());
     assert_eq!(read(t.path(), "dev.toml"), STORE_TOML);
 }
 
@@ -700,7 +725,7 @@ fn migrate_error_messages_hold_no_secret() {
     );
     let s = MemoryStore::new();
     s.fail_nth(1, SecretStoreError::Denied);
-    let e = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).unwrap_err();
+    let e = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &cx()).unwrap_err();
     assert!(!e.to_string().contains(SENTINEL));
     assert!(!format!("{e:?}").contains(SENTINEL));
 }

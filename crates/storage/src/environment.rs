@@ -95,9 +95,17 @@ pub(crate) fn load_vars(path: &Path) -> Result<Vec<wisp_core::request::Var>, Sto
 /// Load an environment: vars from `<name>.toml`, secrets from `<name>.secrets.toml`.
 pub fn load_environment(root: &Path, name: &str) -> Result<Environment, StorageError> {
     check_name(root, name)?;
-    let vars = load_vars(&plain_path(root, name))?;
+    let pp = plain_path(root, name);
+    let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
+    let vars = codec::read_vars(doc.as_table(), "vars", &pp)?;
+    // Only file mode reads `<name>.secrets.toml`; store, unknown and
+    // unreadable modes yield no secrets (use `vault::load_environment_with`).
+    let is_file = matches!(
+        crate::vault::read_mode(&doc, &pp),
+        Ok(crate::vault::Mode::File)
+    );
     let sp = secrets_path(root, name);
-    let secrets = if sp.exists() {
+    let secrets = if is_file && sp.exists() {
         load_vars(&sp)?
     } else {
         Vec::new()
@@ -201,6 +209,9 @@ pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageErr
             Ok(crate::vault::Mode::File)
         );
         if !is_file {
+            if !env.secrets.is_empty() {
+                return Err(StorageError::SecretsNeedStore { path: pp });
+            }
             // A store-mode (or unknown-kind) environment never gets a secrets
             // file; `secrets` and `secret_names` are kept verbatim by `render`.
             fs::atomic_write(&pp, render(&pp, &env.vars)?.as_bytes())?;
