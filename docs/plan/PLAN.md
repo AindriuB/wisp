@@ -75,6 +75,19 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - (g) After a backend panic the next one or two calls return Other before the worker respawns (dev/test only; release is panic=abort).
 - (h) macOS signed-release keychain behaviour is untested; 115's hand check covers the dev build.
 
+PR #54 round 1 (54-1 fixed in the PR: TooLong maps to TooLarge only for the secret, plus a 513-byte account guard):
+- 54-2 macOS -61, -25244 and -25292 (access refusals) map to Unavailable{NoService} instead of Denied -> add them to classify's Denied arm.
+- 54-3 a TimedOut set/delete may still land later, so callers (111 rollback, 115) must not assume nothing was written -> document TimedOut as outcome-unknown on set/delete and in the trait contract.
+- 54-4 (-> task 99, AC68) Windows credentials default to Enterprise (roaming) persistence -> use Local, or record roaming as accepted.
+- 54-5 (-> task 99, AC69) items are keyed by a generic service/account, so other apps can plant or duplicate them (Linux Ambiguous), and '.' is unescaped in Windows target names -> distinctive reverse-DNS service in 115, reject empty/dotted service in open(), document Ambiguous.
+- 54-6 (tests) the timeout test uses equal probe/call bounds and only blocks the probe.
+- 54-7 (tests) the mapping test misses Windows 1312 and Linux NoResult rows; the NO_SERVICE keywords are mostly untested.
+- 54-8 (tests) the probe test cannot see the account read.
+- 54-9 the PR #54 body misses block-padding, cbc, hkdf, secret-service and the 109 figures/stat note.
+- 54-10 (nit) tests poll with thread::sleep -> use a channel signal.
+- 54-11 (nit) the in-crate store-Debug test never inserts ACCOUNT/SECRET sentinels before formatting.
+- 54-12 (nit, -> task 99, AC70) secret copies on the worker are not zeroized.
+
 ### Follow-ups from task 113 (not 0.2.0 wave 3)
 - collections.rs:66-72 re-derives names and walks collection_root(i) instead of using OpenCollection::name() and Workspace::collections; drift risk.
 - collections.rs list_open stays true when the count drops to 1, so the list reappears expanded when a second collection opens.
@@ -171,6 +184,16 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - 52-P3e (-> task 99) TOCTOU: marker and secrets-file checks run before the open, and the reads/writes follow symlinks (fs.rs resolve) -> open with O_NOFOLLOW or verify the opened handle.
 - 52-P3f (-> task 99) ensure_marker_ignored / ensure_gitignore write through a symlinked environments/.gitignore (also on main) -> refuse a symlinked .gitignore.
 - 52-P3g (for 115's prompt text) FailReason::Unbound can't tell "never bound" from "previously bound here, marker missing", so the bind prompt can't warn that confirming gives this path's existing keychain secrets to the folder now there -> consider a distinct reason.
+
+PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/device gitdir refused before I/O, exact lexical match against `<canonical trusted common>/worktrees/<name>` before any I/O, Windows verbatim paths compared in Disk form; cfg(unix) on the symlink tests):
+- 52-54 (-> task 99, AC65) worktree verification trusts the bound root's own .git as anchor; if that root arrived by zip/sync its .git is attacker content -> require the common dir outside every collection root, or document the trust assumption.
+- 52-55 (-> task 99, AC66) environment.rs:280 evaluates sp.exists() twice; a file appearing between them is written unchecked.
+- 52-56 (-> task 99, folded into AC64) the back-pointer is canonicalised through symlinks; a retargeted component of a real entry's path verifies another folder.
+- 52-57 (-> task 99, AC67) verify and bind resolve new_root separately under separate locks, and so does share_with_folder -> canonicalise once, check and bind under one lock.
+- 52-58..52-60 (nits, tests) symlinked_dot_git_is_refused asserts only is_err; the dangling-link test doesn't assert the target stayed absent; missing tests for an in-folder symlink gitdir, worktree-to-worktree, relative paths and a mismatched id.
+- 52-61 (nit) non-top-level collections, separate-git-dir and submodules never verify as additional checkouts -> document.
+- 52-62 (nit) HISTORY reads as if vars-only saves through a symlinked environments/ now work; they still fail, with a clearer message.
+- 52-W Windows code paths in vault_binding (simplify_verbatim, cfg(windows) tests, make_worktree git_style) are uncompiled and unrun; CI has no Windows test job (task 99 AC38).
 - 52-29 (-> task 99) migrate_to_store (and file-mode load) read the secrets file without check_secrets_path, storing a symlink target's values.
 - 52-30 (-> task 99, fold into AC53) migrate_to_file still merges store secrets into a git-tracked regular secrets file -> refuse or warn on tracked files.
 - 52-31 (-> task 99) copy check uses exists() (metadata errors read as gone, fails open); a read error blocks a real move; relies on the committed id rather than the old root's marker -> try_exists, fail closed except NotFound, use the marker nonce.
