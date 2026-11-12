@@ -1688,3 +1688,66 @@ fn migrate_to_file_forces_0600_on_an_existing_file() {
         0o600
     );
 }
+
+// ---- PR #52: symlinked binding marker ----
+
+#[cfg(unix)]
+fn unbound_load(root: &Path, c: &VaultCtx) -> bool {
+    let l = load_environment_with(root, "dev", Some(&id()), &MemoryStore::new(), c).unwrap();
+    l.status
+        == LoadStatus::Failed {
+            reason: FailReason::Unbound,
+        }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_environments_dir_is_unbound() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let c = bcx(t.path());
+    assert!(!unbound_load(t.path(), &c));
+    let moved = out.path().join("environments");
+    std::fs::rename(t.path().join("environments"), &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, t.path().join("environments")).unwrap();
+    assert!(unbound_load(t.path(), &c));
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_marker_is_unbound() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let c = bcx(t.path());
+    let marker = t.path().join("environments/.wisp-binding");
+    let copy = out.path().join("marker");
+    std::fs::copy(&marker, &copy).unwrap();
+    std::fs::remove_file(&marker).unwrap();
+    std::os::unix::fs::symlink(&copy, &marker).unwrap();
+    assert!(unbound_load(t.path(), &c));
+}
+
+#[cfg(unix)]
+#[test]
+fn bind_refuses_a_symlinked_marker() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let target = out.path().join("marker");
+    std::fs::write(&target, "original").unwrap();
+    std::os::unix::fs::symlink(&target, t.path().join("environments/.wisp-binding")).unwrap();
+    assert!(bind(&cx().data, &id(), t.path()).is_err());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+}
+
+#[cfg(unix)]
+#[test]
+fn bind_refuses_a_symlinked_environments_dir() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(out.path(), t.path().join("environments")).unwrap();
+    assert!(bind(&cx().data, &id(), t.path()).is_err());
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+}

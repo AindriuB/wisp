@@ -165,9 +165,53 @@ fn new_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// The marker's nonce; `None` when the marker is missing.
-fn read_marker(root: &Path) -> Result<Option<String>, StorageError> {
+/// The marker path if it is safe to touch: `environments` and the marker are
+/// not symlinks, the marker is a regular file, and both resolve inside `root`.
+/// `Ok(None)` when either is absent; `Invalid` on any refusal.
+fn safe_marker(root: &Path) -> Result<Option<PathBuf>, StorageError> {
+    let dir = root.join(crate::environment::DIR);
     let p = marker_path(root);
+    let refuse = |path: &Path| StorageError::Invalid {
+        path: path.to_path_buf(),
+        key: "path".into(),
+        message:
+            "binding marker must be a regular file inside the collection's environments directory"
+                .into(),
+    };
+    match std::fs::symlink_metadata(&dir) {
+        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => return Err(refuse(&dir)),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(&dir, e)),
+    }
+    let canon_root = canonical(root)?;
+    let canon_dir = std::fs::canonicalize(&dir).map_err(|e| io(&dir, e))?;
+    if !canon_dir.starts_with(&canon_root) {
+        return Err(refuse(&dir));
+    }
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.file_type().is_symlink() || !m.is_file() => Err(refuse(&p)),
+        Ok(_) => {
+            let c = std::fs::canonicalize(&p).map_err(|e| io(&p, e))?;
+            if c.starts_with(&canon_dir) {
+                Ok(Some(p))
+            } else {
+                Err(refuse(&p))
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io(&p, e)),
+    }
+}
+
+/// The marker's nonce; `None` when the marker is missing or refused (fail
+/// closed: a refused marker reads as no marker, so the id is `Unbound`).
+fn read_marker(root: &Path) -> Result<Option<String>, StorageError> {
+    let p = match safe_marker(root) {
+        Ok(Some(p)) => p,
+        Ok(None) | Err(StorageError::Invalid { .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     match std::fs::read_to_string(&p) {
         Ok(t) => Ok(Some(t.trim().to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -176,9 +220,12 @@ fn read_marker(root: &Path) -> Result<Option<String>, StorageError> {
 }
 
 /// Write a fresh nonce to the marker (mode `0600`, git-ignored) and return it.
+/// Refuses, writing nothing, when the directory or marker is a symlink.
 fn write_marker(root: &Path) -> Result<String, StorageError> {
+    safe_marker(root)?;
     let dir = root.join(crate::environment::DIR);
     std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
+    safe_marker(root)?;
     crate::environment::ensure_marker_ignored(&dir)?;
     let nonce = new_nonce();
     fs::atomic_write_force_private(&marker_path(root), nonce.as_bytes())?;
