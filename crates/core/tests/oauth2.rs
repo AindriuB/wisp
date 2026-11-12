@@ -973,7 +973,7 @@ async fn a_failing_store_load_fails_the_send_without_the_error_holding_a_token()
 }
 
 #[tokio::test]
-async fn a_failing_store_save_keeps_the_tokens_and_still_completes() {
+async fn a_failing_store_save_fails_the_authorize_and_caches_nothing() {
     let idp = code_token_server("RT", 3600).await;
     let target = resource_server().await;
     let store = Arc::new(Recording {
@@ -989,14 +989,12 @@ async fn a_failing_store_save_keeps_the_tokens_and_still_completes() {
         &format!("/callback?code=c&state={state}"),
     )
     .await;
-    assert!(matches!(
-        next_auth_event(&rx).await,
-        Event::AuthCompleted { .. }
-    ));
-    assert_eq!(store.saves.lock().unwrap().len(), 1);
+    let ev = next_auth_event(&rx).await;
+    assert_eq!(auth_error(&[ev]).message, "keychain denied");
+    let evs = send(&engine, &rx, request(target.uri(), auth)).await;
     assert_eq!(
-        status_of(&send(&engine, &rx, request(target.uri(), auth)).await),
-        Some(200)
+        auth_error(&evs).message,
+        "Not authorized: use Authorize first"
     );
 }
 
@@ -1114,9 +1112,25 @@ async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
         let auth = code_auth(&idp.uri(), 0, true);
         authorize_fully(&engine, &rx, auth.clone()).await;
         assert_eq!(store.saves.lock().unwrap().len(), 1);
+        if fail_forget {
+            // The forget failed, so the second authorize fails and nothing changed: the first
+            // authorization is still the cached one.
+            let (_, url) = authorize(&engine, &rx, auth.clone(), None).await;
+            let state = param(&url, "state").unwrap();
+            raw_get(
+                redirect_port(&url),
+                &format!("/callback?code=c&state={state}"),
+            )
+            .await;
+            let ev = next_auth_event(&rx).await;
+            assert_eq!(auth_error(&[ev]).message, "keychain denied");
+            assert_eq!(
+                status_of(&send(&engine, &rx, request(target.uri(), auth)).await),
+                Some(200)
+            );
+            continue;
+        }
         authorize_fully(&engine, &rx, auth.clone()).await;
-        // A failed forget leaves RT_X in the store; AuthCompleted was still emitted and the
-        // stale marker keeps the send from refreshing with RT_X (the mock expects 0).
         {
             let forgets = store.forgets.lock().unwrap();
             assert_eq!(forgets.len(), 1);
