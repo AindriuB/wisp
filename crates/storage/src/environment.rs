@@ -262,7 +262,17 @@ fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), Stora
         plain_doc = Some(doc);
     }
     let sp = secrets_path(root, &env.name);
-    fs::confined_regular_file(root, &sp, "secrets file")?;
+    if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(StorageError::Invalid {
+            path: dir.to_path_buf(),
+            key: "path".into(),
+            message: "the environments directory must not be a symbolic link".into(),
+        });
+    }
+    // Only a save that writes (or rewrites) the secrets file needs it checked.
+    if !env.secrets.is_empty() || sp.exists() {
+        fs::confined_regular_file(root, &sp, "secrets file")?;
+    }
     let plain_text = match plain_doc {
         Some(doc) => render_doc(doc, &env.vars)?,
         None => render(&pp, &env.vars)?,

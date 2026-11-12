@@ -544,6 +544,11 @@ pub enum SecretsError {
     /// with `collection::assign_new_collection_id`.
     #[error("collection id is still in use by {}; this looks like a copy", bound_root.display())]
     LooksLikeCopy { bound_root: PathBuf },
+    /// `bind_additional_checkout` could not verify that the folder is a checkout
+    /// of an already-bound root (same git common directory). `bound_roots` are
+    /// the roots the id is bound to.
+    #[error("this folder is not a verified checkout of a bound collection root")]
+    UnverifiedCheckout { bound_roots: Vec<PathBuf> },
     /// `migrate_to_file` found names with no value in the store; nothing was
     /// changed. Pass `allow_drop_unresolved` to drop them.
     #[error("secret names without a value in the store: {}", names.join(", "))]
@@ -594,14 +599,49 @@ pub fn bind(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), Secret
     binding::bind_confirmed(data, id, root).map_err(map_bind)
 }
 
-/// Add `root` (another checkout of the same collection) to the roots `id` is
-/// bound to, after the user confirmed it. The roots already bound stay bound.
+/// Add `new_root` to the roots `id` is bound to, one click from the new
+/// folder. Succeeds only when `new_root` carries `id` and is a verified
+/// checkout of an already-bound root: both resolve to the same git common
+/// directory, read from `.git` files (never from remote URLs). Otherwise
+/// [`SecretsError::UnverifiedCheckout`]; use [`share_with_folder`] from a bound
+/// checkout instead.
 pub fn bind_additional_checkout(
     data: &DataDir,
     id: &CollectionId,
-    root: &Path,
+    new_root: &Path,
 ) -> Result<(), SecretsError> {
-    binding::bind_additional_confirmed(data, id, root).map_err(map_bind)
+    require_same_id(id, new_root)?;
+    if binding::verified_siblings(data, id, new_root)?.is_empty() {
+        return Err(SecretsError::UnverifiedCheckout {
+            bound_roots: binding::bound_roots(data, id)?,
+        });
+    }
+    binding::bind_additional_confirmed(data, id, new_root).map_err(map_bind)
+}
+
+/// "Share keychain secrets with another folder": the user started from
+/// `from_root`, which must pass the binding check, and picked `new_root`, which
+/// must carry the same id. No git relationship is needed.
+pub fn share_with_folder(
+    data: &DataDir,
+    id: &CollectionId,
+    from_root: &Path,
+    new_root: &Path,
+) -> Result<(), SecretsError> {
+    binding::check(data, id, from_root).map_err(map_bind)?;
+    require_same_id(id, new_root)?;
+    binding::bind_additional_confirmed(data, id, new_root).map_err(map_bind)
+}
+
+fn require_same_id(id: &CollectionId, root: &Path) -> Result<(), SecretsError> {
+    match crate::collection::read_collection_id(root)? {
+        Some(found) if &found == id => Ok(()),
+        _ => Err(invalid(
+            root,
+            "id",
+            "the folder does not carry this collection id",
+        )),
+    }
 }
 
 /// Move `id`'s binding to `new_root` after the user confirmed the move. Refused

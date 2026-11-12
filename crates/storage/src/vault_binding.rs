@@ -329,6 +329,104 @@ pub(crate) fn bind_additional_confirmed(
     bind_inner(data, id, root, true)
 }
 
+const GIT_FILE_CAP: u64 = 4096;
+
+fn git_refuse(path: &Path, message: &str) -> StorageError {
+    StorageError::Invalid {
+        path: path.to_path_buf(),
+        key: "path".into(),
+        message: message.into(),
+    }
+}
+
+/// Read a small git metadata file (a regular file, never a symlink, capped).
+fn read_git_file(path: &Path) -> Result<Option<String>, StorageError> {
+    use std::io::Read;
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() || !m.is_file() || m.len() > GIT_FILE_CAP => {
+            Err(git_refuse(
+                path,
+                "git metadata must be a small regular file, not a link",
+            ))
+        }
+        Ok(_) => {
+            let mut text = String::new();
+            std::fs::File::open(path)
+                .and_then(|f| f.take(GIT_FILE_CAP).read_to_string(&mut text))
+                .map_err(|e| io(path, e))?;
+            Ok(Some(text.trim().to_string()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io(path, e)),
+    }
+}
+
+/// The canonical git common directory of the checkout at `root`, read from
+/// files only (no git binary). A normal checkout has a `.git` directory, which
+/// is the common dir. A linked worktree has a `.git` file `gitdir: <path>`
+/// naming `<common>/worktrees/<name>`, whose `commondir` file gives the common
+/// dir and whose `gitdir` file must point back at this `.git`. `Ok(None)` when
+/// `root` is not a verifiable checkout; a symlinked `.git` is `Invalid`.
+pub(crate) fn git_common_dir(root: &Path) -> Result<Option<PathBuf>, StorageError> {
+    let dot_git = root.join(".git");
+    let meta = match std::fs::symlink_metadata(&dot_git) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(&dot_git, e)),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(git_refuse(&dot_git, ".git must not be a symbolic link"));
+    }
+    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    if meta.is_dir() {
+        return Ok(canon(&dot_git));
+    }
+    let Some(text) = read_git_file(&dot_git)? else {
+        return Ok(None);
+    };
+    let Some(target) = text.strip_prefix("gitdir:").map(str::trim) else {
+        return Ok(None);
+    };
+    let Some(gitdir) = canon(&root.join(target)) else {
+        return Ok(None);
+    };
+    let Some(common) = read_git_file(&gitdir.join("commondir"))? else {
+        return Ok(Some(gitdir));
+    };
+    let Some(common) = canon(&gitdir.join(common)) else {
+        return Ok(None);
+    };
+    // The worktree's gitdir must name this `.git` back, so a forged `.git`
+    // file cannot claim someone else's repository.
+    let back = read_git_file(&gitdir.join("gitdir"))?;
+    let back_ok = back
+        .and_then(|b| canon(&gitdir.join(b)))
+        .is_some_and(|b| Some(b) == canon(&dot_git));
+    Ok(back_ok.then_some(common))
+}
+
+/// The bound roots of `id` (that still pass the binding check) whose git
+/// common directory equals `new_root`'s. Empty means `new_root` is unverified.
+pub(crate) fn verified_siblings(
+    data: &DataDir,
+    id: &CollectionId,
+    new_root: &Path,
+) -> Result<Vec<PathBuf>, StorageError> {
+    let Some(want) = git_common_dir(new_root)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for r in bound_roots(data, id)? {
+        if check(data, id, &r).is_err() {
+            continue;
+        }
+        if matches!(git_common_dir(&r), Ok(Some(c)) if c == want) {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
 /// Every canonical root `id` is bound to (in binding order).
 pub fn bound_roots(data: &DataDir, id: &CollectionId) -> Result<Vec<PathBuf>, StorageError> {
     let path = registry_path(data);

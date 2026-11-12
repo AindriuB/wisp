@@ -908,6 +908,7 @@ fn load_environment_ignores_secrets_file_in_non_file_modes() {
 use std::time::{Duration, Instant};
 use wisp_storage::vault::{
     bind_additional_checkout, bound_root, bound_roots, import_secrets_file, rebind,
+    share_with_folder,
 };
 
 fn bound_err(e: &SecretsError) -> bool {
@@ -1839,7 +1840,7 @@ fn additional_checkout_binds_a_second_root() {
     let c = bcx(a.path());
     // Plain bind of another root still needs the explicit action.
     assert!(bound_err(&bind(&c.data, &id(), b.path()).unwrap_err()));
-    bind_additional_checkout(&c.data, &id(), b.path()).unwrap();
+    share_with_folder(&c.data, &id(), a.path(), b.path()).unwrap();
     assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 2);
     let s = MemoryStore::new();
     for r in [&a, &b] {
@@ -1869,7 +1870,7 @@ fn rebind_of_one_root_leaves_the_other_bound() {
         write(r.path(), "dev.toml", STORE_TOML);
     }
     let c = bcx(a.path());
-    bind_additional_checkout(&c.data, &id(), b.path()).unwrap();
+    share_with_folder(&c.data, &id(), a.path(), b.path()).unwrap();
     // Both live: moving to n is a copy.
     assert!(matches!(
         rebind(&c.data, &id(), n.path()).unwrap_err(),
@@ -1904,6 +1905,178 @@ fn two_data_dirs_bound_to_one_root_both_stay_bound() {
     bind(&c1.data, &id(), t.path()).unwrap();
     assert!(!unbound_status(t.path(), &c1));
     assert!(!unbound_status(t.path(), &c2));
+}
+
+// ---- PR #52 round 4 ----
+
+/// A normal checkout: `.git` is a directory holding the common dir.
+fn make_repo(root: &Path) {
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+}
+
+/// A linked worktree of `main`: `.git` file -> `<main>/.git/worktrees/<name>`
+/// with `commondir` and a back-pointing `gitdir`.
+fn make_worktree(main: &Path, wt: &Path, name: &str) {
+    let gd = main.join(".git/worktrees").join(name);
+    std::fs::create_dir_all(&gd).unwrap();
+    std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+    std::fs::write(
+        gd.join("gitdir"),
+        format!("{}\n", wt.join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+}
+
+fn id_roots(roots: &[&Path]) {
+    for r in roots {
+        write_id(r, id().as_str());
+    }
+}
+
+#[test]
+fn git_worktree_of_bound_repo_is_a_one_click_checkout() {
+    let a = tempfile::tempdir().unwrap();
+    let w = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), w.path()]);
+    make_repo(a.path());
+    make_worktree(a.path(), w.path(), "w1");
+    let c = bcx(a.path());
+    bind_additional_checkout(&c.data, &id(), w.path()).unwrap();
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 2);
+}
+
+#[test]
+fn separate_repo_with_copied_id_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), b.path()]);
+    make_repo(a.path());
+    make_repo(b.path());
+    let c = bcx(a.path());
+    assert!(matches!(
+        bind_additional_checkout(&c.data, &id(), b.path()).unwrap_err(),
+        SecretsError::UnverifiedCheckout { .. }
+    ));
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 1);
+}
+
+#[test]
+fn non_git_folder_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), b.path()]);
+    make_repo(a.path());
+    let c = bcx(a.path());
+    assert!(matches!(
+        bind_additional_checkout(&c.data, &id(), b.path()).unwrap_err(),
+        SecretsError::UnverifiedCheckout { .. }
+    ));
+}
+
+#[test]
+fn forged_git_file_without_back_pointer_is_unverified() {
+    let a = tempfile::tempdir().unwrap();
+    let w = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), w.path()]);
+    make_repo(a.path());
+    let gd = a.path().join(".git/worktrees/other");
+    std::fs::create_dir_all(&gd).unwrap();
+    std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+    std::fs::write(w.path().join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+    let c = bcx(a.path());
+    assert!(matches!(
+        bind_additional_checkout(&c.data, &id(), w.path()).unwrap_err(),
+        SecretsError::UnverifiedCheckout { .. }
+    ));
+}
+
+#[test]
+fn symlinked_dot_git_is_refused() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), b.path()]);
+    make_repo(a.path());
+    std::os::unix::fs::symlink(a.path().join(".git"), b.path().join(".git")).unwrap();
+    let c = bcx(a.path());
+    assert!(bind_additional_checkout(&c.data, &id(), b.path()).is_err());
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 1);
+}
+
+#[test]
+fn share_with_folder_from_a_bound_root_works() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), b.path()]);
+    let c = bcx(a.path());
+    share_with_folder(&c.data, &id(), a.path(), b.path()).unwrap();
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 2);
+}
+
+#[test]
+fn share_with_folder_from_unbound_or_stale_root_fails() {
+    let a = tempfile::tempdir().unwrap();
+    let u = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), u.path(), b.path()]);
+    let c = bcx(a.path());
+    assert!(share_with_folder(&c.data, &id(), u.path(), b.path()).is_err());
+    // Marker mismatch: the bound root's marker is gone.
+    std::fs::remove_file(marker(a.path())).unwrap();
+    assert!(share_with_folder(&c.data, &id(), a.path(), b.path()).is_err());
+    assert_eq!(bound_roots(&c.data, &id()).unwrap().len(), 1);
+}
+
+#[test]
+fn share_with_folder_needs_the_same_id() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    id_roots(&[a.path()]);
+    write_id(b.path(), "fedcba9876543210");
+    let c = bcx(a.path());
+    assert!(share_with_folder(&c.data, &id(), a.path(), b.path()).is_err());
+}
+
+fn file_mode_env(vars: Vec<Var>, secrets: Vec<Var>) -> Environment {
+    Environment {
+        name: "dev".into(),
+        vars,
+        secrets,
+    }
+}
+
+#[test]
+fn symlinked_environments_dir_vars_only_save_names_the_directory() {
+    let t = tempfile::tempdir().unwrap();
+    let real = tempfile::tempdir().unwrap();
+    std::fs::write(real.path().join("dev.toml"), "secrets = \"file\"\n").unwrap();
+    std::os::unix::fs::symlink(real.path(), t.path().join("environments")).unwrap();
+    let e = save_environment_locked(t.path(), &file_mode_env(vec![var("h", "1")], vec![]), &cx())
+        .unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("environments directory"), "{m}");
+    assert!(!m.contains("secrets"), "{m}");
+}
+
+#[test]
+fn vars_only_save_ignores_a_dangling_secrets_link() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", "secrets = \"file\"\n");
+    std::os::unix::fs::symlink(
+        t.path().join("nowhere"),
+        t.path().join("environments/dev.secrets.toml"),
+    )
+    .unwrap();
+    save_environment_locked(t.path(), &file_mode_env(vec![var("h", "1")], vec![]), &cx()).unwrap();
+    // Writing a secret through that link is still refused.
+    assert!(
+        save_environment_locked(
+            t.path(),
+            &file_mode_env(vec![var("h", "1")], vec![var("k", "v")]),
+            &cx()
+        )
+        .is_err()
+    );
 }
 
 fn unbound_status(root: &Path, c: &VaultCtx) -> bool {
