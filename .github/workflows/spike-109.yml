@@ -1,0 +1,79 @@
+name: Spike 109
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [task/109-keychain-spike]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Build variants and measure
+        shell: bash
+        run: |
+          set -x
+          for v in base:"" a:spike-gpui b:spike-win c:spike-keyring; do
+            name=${v%%:*}; feat=${v#*:}
+            if [ -n "$feat" ]; then cargo build --release --locked -p wisp-app --features "$feat"; else cargo build --release --locked -p wisp-app; fi
+            cp target/release/wisp.exe wisp-$name.exe
+            echo "binary_bytes variant=$name $(stat -c %s wisp-$name.exe)"
+          done
+      - name: Run b and c (service wisp-spike-109 only)
+        shell: bash
+        run: |
+          WISP_SPIKE_KEYCHAIN=b ./wisp-b.exe || true
+          WISP_SPIKE_KEYCHAIN=c ./wisp-c.exe || true
+          for n in 2559 2560 2561 4096; do echo "blob $n"; WISP_SPIKE_BLOB_LEN=$n WISP_SPIKE_KEYCHAIN=b ./wisp-b.exe || true; done
+          WISP_SPIKE_KEYCHAIN=a timeout 30 ./wisp-a.exe || true
+
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install GPUI build packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ libasound2-dev libfontconfig-dev libgit2-dev \
+            libglib2.0-dev libssl-dev libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev make cmake clang lld llvm jq git curl \
+            gettext-base elfutils libsqlite3-dev musl-tools musl-dev build-essential \
+            pipewire xdg-desktop-portal libstdc++-14-dev gnome-keyring dbus
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Build variants and measure
+        run: |
+          set -x
+          for v in base: a:spike-gpui o:spike-oo7 c:spike-keyring; do
+            name=${v%%:*}; feat=${v#*:}
+            if [ -n "$feat" ]; then cargo build --release --locked -p wisp-app --features "$feat"; else cargo build --release --locked -p wisp-app; fi
+            cp target/release/wisp wisp-$name
+            echo "binary_bytes variant=$name $(stat -c %s wisp-$name)"
+          done
+      - name: Headless runs
+        run: |
+          run() { # $1 label, rest: command
+            label=$1; shift
+            echo "=== $label"
+            s=$(date +%s%N)
+            timeout 60 "$@"; rc=$?
+            e=$(date +%s%N)
+            echo "exit=$rc total_ms=$(( (e-s)/1000000 ))"
+          }
+          env | grep -c '^DISPLAY=\|^WAYLAND' || true
+          for n in o c; do
+            echo "##### variant $n"
+            run "no-bus ($n)" env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR WISP_SPIKE_KEYCHAIN=$n ./wisp-$n
+            run "bus-no-provider ($n)" dbus-run-session -- env WISP_SPIKE_KEYCHAIN=$n ./wisp-$n
+            run "gnome-keyring-uninitialised-locked ($n)" dbus-run-session -- bash -c "gnome-keyring-daemon --start --foreground --components=secrets >/dev/null 2>&1 & sleep 2; WISP_SPIKE_KEYCHAIN=$n timeout 55 ./wisp-$n; echo rc=\$?"
+            run "gnome-keyring-unlocked ($n)" dbus-run-session -- bash -c "echo -n spikepw | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1; gnome-keyring-daemon --start --foreground --components=secrets >/dev/null 2>&1 & sleep 2; WISP_SPIKE_KEYCHAIN=$n timeout 55 ./wisp-$n; echo rc=\$?"
+          done

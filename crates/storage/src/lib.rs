@@ -9,6 +9,7 @@ pub mod error;
 pub mod fs;
 pub mod history;
 pub mod import;
+pub mod keychain_spike;
 pub mod ops;
 pub mod request;
 pub mod watcher;

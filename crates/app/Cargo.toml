@@ -21,6 +21,13 @@ tracing.workspace = true
 toml_edit.workspace = true
 image.workspace = true
 
+[features]
+spike-keyring = ["wisp-storage/spike-keyring"]
+spike-win = ["wisp-storage/spike-win"]
+spike-oo7 = ["wisp-storage/spike-oo7"]
+spike-gpui = []
+spike-mac = ["wisp-storage/spike-mac"]
+
 [build-dependencies]
 winresource = { version = "0.1", default-features = false }
 

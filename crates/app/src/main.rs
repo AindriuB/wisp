@@ -148,10 +148,28 @@ fn install_menus(cx: &mut gpui::App) {
 }
 
 fn main() {
+    if let Ok(which) = std::env::var("WISP_SPIKE_KEYCHAIN") {
+        if which != "a" && wisp_storage::keychain_spike::run(&which) {
+            return;
+        }
+    }
     trace("app run start");
     let app = gpui_platform::application().with_assets(assets::Icons);
     app.run(|cx| {
         gpui_component::init(cx);
+        #[cfg(feature = "spike-gpui")]
+        if std::env::var("WISP_SPIKE_KEYCHAIN").as_deref() == Ok("a") {
+            let w = cx.write_credentials("wisp-spike-109", "spike-account", b"not-a-real-secret");
+            let r = cx.read_credentials("wisp-spike-109");
+            let d = cx.delete_credentials("wisp-spike-109");
+            cx.spawn(async move |cx| {
+                println!("spike109 a write: {:?}", w.await.map_err(|e| format!("{e:?}")));
+                println!("spike109 a read: {:?}", r.await.map(|o| o.map(|(u, p)| (u, p.len()))).map_err(|e| format!("{e:?}")));
+                println!("spike109 a delete: {:?}", d.await.map_err(|e| format!("{e:?}")));
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        }
         actions::bind_keys(cx);
         #[cfg(target_os = "macos")]
         {
