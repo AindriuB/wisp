@@ -973,7 +973,7 @@ async fn a_failing_store_load_fails_the_send_without_the_error_holding_a_token()
 }
 
 #[tokio::test]
-async fn a_failing_store_save_keeps_the_tokens_and_still_completes() {
+async fn a_failing_store_save_fails_the_authorize_and_caches_nothing() {
     let idp = code_token_server("RT", 3600).await;
     let target = resource_server().await;
     let store = Arc::new(Recording {
@@ -989,14 +989,15 @@ async fn a_failing_store_save_keeps_the_tokens_and_still_completes() {
         &format!("/callback?code=c&state={state}"),
     )
     .await;
-    assert!(matches!(
-        next_auth_event(&rx).await,
-        Event::AuthCompleted { .. }
-    ));
-    assert_eq!(store.saves.lock().unwrap().len(), 1);
+    let ev = next_auth_event(&rx).await;
     assert_eq!(
-        status_of(&send(&engine, &rx, request(target.uri(), auth)).await),
-        Some(200)
+        auth_error(&[ev]).message,
+        "cannot save refresh token: keychain denied"
+    );
+    let evs = send(&engine, &rx, request(target.uri(), auth)).await;
+    assert_eq!(
+        auth_error(&evs).message,
+        "Not authorized: use Authorize first"
     );
 }
 
@@ -1114,9 +1115,30 @@ async fn reauthorizing_without_a_refresh_token_drops_the_old_one() {
         let auth = code_auth(&idp.uri(), 0, true);
         authorize_fully(&engine, &rx, auth.clone()).await;
         assert_eq!(store.saves.lock().unwrap().len(), 1);
+        if fail_forget {
+            // The forget failed, so the second authorize fails and nothing changed: the first
+            // authorization is still the cached one.
+            let (_, url) = authorize(&engine, &rx, auth.clone(), None).await;
+            let state = param(&url, "state").unwrap();
+            raw_get(
+                redirect_port(&url),
+                &format!("/callback?code=c&state={state}"),
+            )
+            .await;
+            let ev = next_auth_event(&rx).await;
+            assert_eq!(
+                auth_error(&[ev]).message,
+                "cannot remove stored refresh token: keychain denied"
+            );
+            assert_eq!(
+                status_of(&send(&engine, &rx, request(target.uri(), auth)).await),
+                Some(200)
+            );
+            let bearers: Vec<String> = seen(&target, "/").await.into_iter().map(|r| r.0).collect();
+            assert_eq!(bearers, ["Bearer AT_X"], "{bearers:?}");
+            continue;
+        }
         authorize_fully(&engine, &rx, auth.clone()).await;
-        // A failed forget leaves RT_X in the store; AuthCompleted was still emitted and the
-        // stale marker keeps the send from refreshing with RT_X (the mock expects 0).
         {
             let forgets = store.forgets.lock().unwrap();
             assert_eq!(forgets.len(), 1);
@@ -1570,4 +1592,187 @@ async fn reauthorizing_with_persist_off_forgets_the_stored_token_and_it_is_never
     .await;
     let posts = seen(&idp, "/token").await;
     assert!(!posts.iter().any(|(_, b)| b.contains("RT_X")), "{posts:?}");
+}
+
+// ---- store calls run off the engine workers ----
+
+/// A store that logs the order of its calls; `load` can block on a channel or panic.
+#[derive(Default)]
+struct Ordered {
+    inner: MemoryOnly,
+    log: Mutex<Vec<&'static str>>,
+    load_reached: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    load_release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    panic_on_load: bool,
+}
+
+impl RefreshTokenStore for Ordered {
+    fn load(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError> {
+        self.log.lock().unwrap().push("load");
+        if self.panic_on_load {
+            panic!("RT_SENTINEL");
+        }
+        let tx = self.load_reached.lock().unwrap().take();
+        let rx = self.load_release.lock().unwrap().take();
+        if let (Some(tx), Some(rx)) = (tx, rx) {
+            tx.send(()).unwrap();
+            let _ = rx.recv();
+        }
+        let r = self.inner.load(key);
+        self.log.lock().unwrap().push("load_done");
+        r
+    }
+    fn save(&self, key: &TokenKey, rt: &str) -> Result<(), RefreshStoreError> {
+        self.log.lock().unwrap().push("save");
+        self.inner.save(key, rt)
+    }
+    fn forget(&self, key: &TokenKey) -> Result<(), RefreshStoreError> {
+        self.log.lock().unwrap().push("forget");
+        self.inner.forget(key)
+    }
+}
+
+#[tokio::test]
+async fn store_calls_for_one_key_run_in_order() {
+    let idp = token_server("AT").await;
+    let target = resource_server().await;
+    let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let store = Arc::new(Ordered {
+        load_reached: Mutex::new(Some(reached_tx)),
+        load_release: Mutex::new(Some(release_rx)),
+        ..Ordered::default()
+    });
+    let (engine, rx, _) = engine_with(store.clone());
+    let auth = code_auth(&idp.uri(), 0, true);
+    // A send blocks in `load`; cancelling it must not release the key's lock.
+    let id = engine.submit(Command::Send(request(target.uri(), auth.clone())));
+    tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .expect("the load was reached");
+    engine.submit(Command::Cancel(id));
+    within(
+        async {
+            loop {
+                if matches!(rx.recv().await.unwrap(), Event::Cancelled { id: got } if got == id) {
+                    break;
+                }
+            }
+        },
+        "the send was cancelled",
+    )
+    .await;
+    // An authorize now wants to `save` the same key while the load still runs.
+    // Accepted residual (task 110): this sleep bounds the wait for the second call to
+    // reach the key's lock. It can pass with a broken lock on a very slow machine but
+    // never fails falsely; no sleep-free test can prove an overlap did not happen.
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        release_tx.send(()).unwrap();
+    };
+    tokio::join!(authorize_fully(&engine, &rx, auth), release);
+    assert_eq!(
+        *store.log.lock().unwrap(),
+        vec!["load", "load_done", "forget"]
+    );
+}
+
+#[tokio::test]
+async fn store_save_then_forget_for_one_key_reach_the_store_in_order() {
+    let idp = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT", "token_type": "bearer", "expires_in": 100,
+            "refresh_token": "RT_X",
+        })))
+        .mount(&idp)
+        .await;
+    let store = Arc::new(Ordered::default());
+    let (engine, rx, _) = engine_with(store.clone());
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, true)).await;
+    authorize_fully(&engine, &rx, code_auth(&idp.uri(), 0, false)).await;
+    assert_eq!(*store.log.lock().unwrap(), vec!["save", "forget"]);
+}
+
+#[tokio::test]
+async fn store_load_blocking_does_not_stall_a_one_worker_engine() {
+    let idp = token_server("AT").await;
+    let target = resource_server().await;
+    let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let store = Arc::new(Ordered {
+        load_reached: Mutex::new(Some(reached_tx)),
+        load_release: Mutex::new(Some(release_rx)),
+        ..Ordered::default()
+    });
+    let (engine, rx) = Engine::start_with_clock(
+        EngineConfig {
+            worker_threads: 1,
+            refresh_tokens: store,
+            ..EngineConfig::default()
+        },
+        TestClock::new(),
+    );
+    engine.submit(Command::Send(request(
+        target.uri(),
+        code_auth(&idp.uri(), 0, true),
+    )));
+    tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .expect("the load was reached");
+    // A plain send completes while the load is still blocked.
+    let mut plain = request(target.uri(), code_auth(&idp.uri(), 0, true));
+    plain.auth = None;
+    engine.submit(Command::Send(plain));
+    let mut completed = false;
+    while !completed {
+        match tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an event arrives while the store is blocked")
+            .unwrap()
+        {
+            Event::Completed { .. } => completed = true,
+            Event::Failed { error, .. } => panic!("{error:?}"),
+            _ => {}
+        }
+    }
+    release_tx.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn store_load_failures_fail_closed_without_a_token_in_the_message() {
+    let idp = token_server("AT").await;
+    let target = resource_server().await;
+    let failing = Arc::new(Recording {
+        fail_load: true,
+        ..Recording::default()
+    });
+    let panicking = Arc::new(Ordered {
+        panic_on_load: true,
+        ..Ordered::default()
+    });
+    let stores: [Arc<dyn RefreshTokenStore>; 2] = [failing, panicking];
+    let mut messages = Vec::new();
+    for store in stores {
+        let (engine, rx, _) = engine_with(store);
+        let evs = send(
+            &engine,
+            &rx,
+            request(target.uri(), code_auth(&idp.uri(), 0, true)),
+        )
+        .await;
+        assert!(matches!(evs.last(), Some(Event::Failed { .. })), "{evs:?}");
+        let msg = auth_error(&evs).message;
+        assert!(!msg.contains("RT_SENTINEL"), "{msg}");
+        messages.push(msg);
+    }
+    assert!(messages[0].contains("keychain locked"), "{}", messages[0]);
+    assert!(
+        messages[1].contains("the refresh token store failed"),
+        "{}",
+        messages[1]
+    );
+    assert!(seen(&idp, "/token").await.is_empty());
 }

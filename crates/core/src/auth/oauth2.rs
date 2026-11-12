@@ -52,8 +52,8 @@ impl RefreshStoreError {
 /// Where refresh tokens live between runs. Values are secrets: implementations must not log them.
 ///
 /// Implementations may block (a keychain prompt waits for the user). The engine must therefore
-/// call a blocking store through `tokio::task::spawn_blocking`; that wiring arrives with the
-/// keychain store. [`MemoryOnly`] never blocks and never fails.
+/// call every store method through `tokio::task::spawn_blocking`, and it does. [`MemoryOnly`]
+/// never blocks and never fails.
 pub trait RefreshTokenStore: Send + Sync {
     fn load(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError>;
     fn save(&self, key: &TokenKey, refresh_token: &str) -> Result<(), RefreshStoreError>;

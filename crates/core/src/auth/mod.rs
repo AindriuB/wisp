@@ -49,6 +49,19 @@ pub enum EngineAuth {
     },
 }
 
+impl EngineAuth {
+    /// Turns refresh-token persistence on or off. Only the auth-code variant has the flag;
+    /// the others ignore the call.
+    pub fn set_persist_refresh(&mut self, on: bool) {
+        if let EngineAuth::OAuth2AuthCode {
+            persist_refresh, ..
+        } = self
+        {
+            *persist_refresh = on;
+        }
+    }
+}
+
 impl fmt::Debug for EngineAuth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -119,6 +132,32 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_persist_refresh_sets_only_auth_code() {
+        let mut code = EngineAuth::OAuth2AuthCode {
+            auth_url: "a".into(),
+            token_url: "t".into(),
+            client_id: "c".into(),
+            client_secret: String::new(),
+            scope: String::new(),
+            client_auth: ClientAuth::Body,
+            redirect_port: 0,
+            persist_refresh: false,
+        };
+        code.set_persist_refresh(true);
+        assert!(matches!(
+            code,
+            EngineAuth::OAuth2AuthCode {
+                persist_refresh: true,
+                ..
+            }
+        ));
+        let mut d = digest();
+        let before = format!("{d:?}");
+        d.set_persist_refresh(true);
+        assert_eq!(before, format!("{d:?}"));
+    }
 
     fn digest() -> EngineAuth {
         EngineAuth::Digest {

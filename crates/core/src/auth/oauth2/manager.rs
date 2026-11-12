@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use super::token::{ClientCreds, Secret, TokenResponse, check_endpoint, post};
-use super::{Grant, RefreshTokenStore, TokenKey, loopback, pkce};
+use super::{Grant, RefreshStoreError, RefreshTokenStore, TokenKey, loopback, pkce};
 use crate::auth::EngineAuth;
 use crate::client::ClientCache;
 use crate::engine::err;
@@ -20,6 +20,52 @@ const EXPIRY_MARGIN: Duration = Duration::from_secs(30);
 const DEFAULT_AUTHORIZE_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a token request may take when the caller names no timeout.
 const DEFAULT_TOKEN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long acquiring a key's store lock, or one store call, may take before the operation
+/// fails closed. A keychain prompt that nobody answers must not wedge a key forever.
+const STORE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The message of a store timeout. Fixed: it holds no token.
+const STORE_TIMED_OUT: &str = "the refresh token store timed out";
+
+/// A future that resolves when the command that started an operation is cancelled.
+type CancelFut<'a> = &'a mut (dyn std::future::Future<Output = ()> + Unpin + Send);
+
+/// Why a bounded wait for the store lock or a store call ended without a result.
+enum Stop {
+    Cancelled,
+    TimedOut,
+    /// The blocking task panicked.
+    Failed,
+}
+
+impl Stop {
+    fn error(&self) -> EngineError {
+        match self {
+            Stop::Cancelled => err(ErrorKind::Auth, "cancelled"),
+            Stop::TimedOut => err(ErrorKind::Auth, STORE_TIMED_OUT),
+            Stop::Failed => err(ErrorKind::Auth, "the refresh token store failed"),
+        }
+    }
+}
+
+type Guard = tokio::sync::OwnedMutexGuard<()>;
+
+/// Waits for `fut`, but at most [`STORE_TIMEOUT`] and not past `cancel`.
+async fn bounded<T>(
+    fut: impl std::future::Future<Output = T>,
+    cancel: &mut Option<CancelFut<'_>>,
+) -> Result<T, Stop> {
+    let cancelled = async {
+        match cancel {
+            Some(c) => c.await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        v = fut => Ok(v),
+        () = cancelled => Err(Stop::Cancelled),
+        () = tokio::time::sleep(STORE_TIMEOUT) => Err(Stop::TimedOut),
+    }
+}
 
 /// The engine's source of the current time for token expiry; tests inject their own.
 pub trait Clock: Send + Sync {
@@ -197,6 +243,37 @@ impl Inner {
         m.entry(key.clone()).or_default().clone()
     }
 
+    /// Takes the key's store lock, bounded by [`STORE_TIMEOUT`] and `cancel`.
+    async fn lock_store(
+        &self,
+        key: &TokenKey,
+        cancel: &mut Option<CancelFut<'_>>,
+    ) -> Result<Guard, Stop> {
+        bounded(self.store_lock(key).lock_owned(), cancel).await
+    }
+
+    /// Runs a store call on the blocking pool, so a slow store never stalls an engine worker.
+    /// The key's lock guard moves into the blocking task and comes back with the result. A
+    /// call that times out or is cancelled cannot be killed: its guard stays with it and is
+    /// released only when the call really returns, so a later call for the key waits on the
+    /// lock (and times out there) instead of overlapping it.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        guard: Guard,
+        cancel: &mut Option<CancelFut<'_>>,
+        f: impl FnOnce(&dyn RefreshTokenStore) -> Result<T, RefreshStoreError> + Send + 'static,
+    ) -> Result<(Guard, Result<T, RefreshStoreError>), Stop> {
+        let store = self.store.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let r = f(&*store);
+            (guard, r)
+        });
+        match bounded(task, cancel).await? {
+            Ok(done) => Ok(done),
+            Err(_) => Err(Stop::Failed),
+        }
+    }
+
     fn generation(&self, key: &TokenKey) -> u64 {
         let g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
         g.get(key).copied().unwrap_or(0)
@@ -224,69 +301,129 @@ impl Inner {
     /// stored one is forgotten whatever `persist_refresh` says, and the key's generation moves
     /// on. `refreshed` is `(generation read before the refresh, the refresh token it used)`:
     /// when the generation has moved, nothing is cached or saved and `false` is returned.
+    ///
+    /// Fails closed, caching nothing, when the key's store lock is not won within
+    /// [`STORE_TIMEOUT`] or `cancel` fires first. The store is written before the cache: an
+    /// authorize whose save or forget fails, times out or is cancelled changes nothing in
+    /// memory and returns a token-free error. A call that times out or is cancelled leaves
+    /// the key stale (the stored token is unknown). A refresh whose save fails or times out
+    /// still caches its token in memory.
     async fn put(
         &self,
         p: &Params<'_>,
         resp: &TokenResponse,
         keep_refresh: bool,
         refreshed: Option<(u64, Secret)>,
-    ) -> bool {
+        mut cancel: Option<CancelFut<'_>>,
+    ) -> Result<bool, EngineError> {
         let expires_at = resp
             .expires_in
             .and_then(|d| self.clock.now().checked_add(d));
-        let lock = self.store_lock(&p.key);
-        let _store_guard = lock.lock().await;
+        let used = refreshed.as_ref().map(|(_, u)| u.clone());
+        let guard = self
+            .lock_store(&p.key, &mut cancel)
+            .await
+            .map_err(|s| s.error())?;
+        if let Some((epoch, _)) = &refreshed
+            && self.generation(&p.key) != *epoch
         {
-            let mut map = self.entries();
-            if let Some((epoch, _)) = &refreshed
-                && self.generation(&p.key) != *epoch
-            {
-                return false;
-            }
-            if !keep_refresh {
-                let mut g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
-                *g.entry(p.key.clone()).or_insert(0) += 1;
-            }
-            let e = map.entry(p.key.clone()).or_default();
-            e.access = Some(Access {
-                token: resp.access_token.clone(),
-                expires_at,
-            });
-            if let Some(rt) = &resp.refresh_token {
-                e.refresh = Some(rt.clone());
-            } else if !keep_refresh {
-                e.refresh = None;
-            } else if let Some((_, used)) = refreshed {
-                // The old refresh token stays valid; remember it in memory.
-                e.refresh = Some(used);
-            }
+            return Ok(false);
         }
-        let saved = match &resp.refresh_token {
-            Some(rt) if p.persist_refresh => match self.store.save(&p.key, rt.expose()) {
-                Ok(()) => {
-                    self.stale().remove(&p.key);
-                    true
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
-                    false
-                }
-            },
-            _ => false,
+        if keep_refresh {
+            // The IdP has already revoked the old refresh token: cache the new one first, so
+            // a failed, panicked, stuck or cancelled save cannot lose it.
+            self.cache(p, resp, keep_refresh, expires_at, used.as_ref());
+        }
+        // An authorize writes the store before anything is cached: one that fails, times out
+        // or is cancelled while saving changes nothing in memory.
+        let save = match (&resp.refresh_token, p.persist_refresh) {
+            (Some(rt), true) => Some(rt.expose().to_owned()),
+            _ => None,
         };
-        if !saved && !keep_refresh {
-            // A re-authorize leaves no earlier authorization's token in the store.
-            match self.store.forget(&p.key) {
-                Ok(()) => {
+        let persisting = save.is_some();
+        let key = p.key.clone();
+        let outcome = match save {
+            Some(token) => {
+                self.blocking(guard, &mut cancel, move |s| s.save(&key, &token))
+                    .await
+            }
+            None if !keep_refresh => {
+                // A re-authorize leaves no earlier authorization's token in the store.
+                self.blocking(guard, &mut cancel, move |s| s.forget(&key))
+                    .await
+            }
+            None => Ok((guard, Ok(()))),
+        };
+        // Held until the cache is updated.
+        let mut _held = None;
+        match outcome {
+            Ok((g, Ok(()))) => {
+                _held = Some(g);
+                if persisting || !keep_refresh {
                     self.stale().remove(&p.key);
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "cannot forget the stored refresh token");
+            }
+            Ok((g, Err(e))) => {
+                _held = Some(g);
+                if keep_refresh {
+                    tracing::warn!(error = %e, "cannot store the refresh token; it stays in memory");
                     self.stale().insert(p.key.clone());
+                    return Ok(true);
                 }
+                tracing::warn!(error = %e, "the refresh token store failed; nothing was cached");
+                let what = if persisting {
+                    "cannot save refresh token"
+                } else {
+                    "cannot remove stored refresh token"
+                };
+                return Err(err(ErrorKind::Auth, format!("{what}: {e}")));
+            }
+            Err(stop) => {
+                // The call may still land: the stored token is unknown.
+                self.stale().insert(p.key.clone());
+                if keep_refresh {
+                    tracing::warn!(
+                        "the refresh token store gave no answer; the token stays in memory"
+                    );
+                    return Ok(true);
+                }
+                return Err(stop.error());
             }
         }
-        true
+        if !keep_refresh {
+            self.cache(p, resp, keep_refresh, expires_at, used.as_ref());
+        }
+        Ok(true)
+    }
+
+    /// Updates the in-memory entry of `p.key` from `resp` (and bumps the generation of an
+    /// authorize).
+    fn cache(
+        &self,
+        p: &Params<'_>,
+        resp: &TokenResponse,
+        keep_refresh: bool,
+        expires_at: Option<Instant>,
+        used: Option<&Secret>,
+    ) {
+        let mut map = self.entries();
+        if !keep_refresh {
+            let mut g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
+            *g.entry(p.key.clone()).or_insert(0) += 1;
+        }
+        let e = map.entry(p.key.clone()).or_default();
+        e.access = Some(Access {
+            token: resp.access_token.clone(),
+            expires_at,
+        });
+        if let Some(rt) = &resp.refresh_token {
+            e.refresh = Some(rt.clone());
+        } else if !keep_refresh {
+            e.refresh = None;
+        } else if let Some(used) = used {
+            // The old refresh token stays valid; remember it in memory.
+            e.refresh = Some(used.clone());
+        }
     }
 
     /// One refresh-token grant and the caching of its result.
@@ -309,7 +446,10 @@ impl Inner {
             ("refresh_token", refresh.expose()),
         ];
         let resp = post(&http, &url, &p.creds, &fields, timeout).await?;
-        if !self.put(&p, &resp, true, Some((epoch, refresh))).await {
+        if !self
+            .put(&p, &resp, true, Some((epoch, refresh)), None)
+            .await?
+        {
             // A re-authorize landed meanwhile: use its state, never this result.
             return match self.fresh(&p.key) {
                 Some(t) => Ok((p.key, t)),
@@ -354,12 +494,22 @@ impl OAuth2 {
                 let mut held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
                 if held.is_none() && p.persist_refresh {
                     // Serialise with a re-authorize's store writes, then look again.
-                    let lock = self.store_lock(&p.key);
-                    let _guard = lock.lock().await;
+                    let guard = self
+                        .lock_store(&p.key, &mut None)
+                        .await
+                        .map_err(|s| s.error())?;
                     epoch = self.generation(&p.key);
                     held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
                     if held.is_none() && !self.stale().contains(&p.key) {
-                        held = match self.store.load(&p.key) {
+                        // The guard moves into the blocking call: a timed-out or cancelled
+                        // send must not release the lock while the store call still runs.
+                        let key = p.key.clone();
+                        let loaded =
+                            match self.blocking(guard, &mut None, move |s| s.load(&key)).await {
+                                Ok((_, r)) => r,
+                                Err(stop) => return Err(stop.error()),
+                            };
+                        held = match loaded {
                             Ok(Some(r)) => Some(Secret::new(r)),
                             Ok(None) => return Err(not_authorized()),
                             Err(e) => {
@@ -393,7 +543,7 @@ impl OAuth2 {
                 };
             }
         };
-        self.put(&p, &resp, true, None).await;
+        self.put(&p, &resp, true, None, None).await?;
         Ok((p.key, resp.access_token))
     }
 
@@ -497,7 +647,8 @@ impl OAuth2 {
             r = post(&http, &token_url, &p.creds, &fields, DEFAULT_TOKEN_TIMEOUT) => r?,
             () = &mut cancelled => return Err(err(ErrorKind::Auth, "cancelled")),
         };
-        self.put(&p, &resp, false, None).await;
+        self.put(&p, &resp, false, None, Some(&mut cancelled))
+            .await?;
         Ok(())
     }
 }
@@ -506,6 +657,8 @@ impl OAuth2 {
 mod tests {
     use super::*;
     use crate::auth::oauth2::MemoryOnly;
+    use crate::cookies::CookieJars;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn same_compares_whole_strings() {
@@ -551,5 +704,301 @@ mod tests {
             assert!(text.contains("<redacted>"), "{text}");
             assert!(!text.contains("ACCESSMARK") && !text.contains("REFRESHMARK"));
         }
+    }
+
+    fn code_auth() -> EngineAuth {
+        EngineAuth::OAuth2AuthCode {
+            auth_url: "https://i/a".into(),
+            token_url: "https://i/t".into(),
+            client_id: "c".into(),
+            client_secret: String::new(),
+            scope: String::new(),
+            client_auth: crate::auth::ClientAuth::default(),
+            redirect_port: 0,
+            persist_refresh: true,
+        }
+    }
+
+    fn settings() -> ClientSettings {
+        ClientSettings {
+            verify_tls: true,
+            follow_redirects: false,
+            proxy: None,
+            collection: None,
+        }
+    }
+
+    fn token_resp() -> TokenResponse {
+        TokenResponse {
+            access_token: Secret::new("AT"),
+            refresh_token: Some(Secret::new("RT")),
+            expires_in: Some(Duration::from_secs(100)),
+        }
+    }
+
+    /// A store whose `load` (or `save`, if `stick_save`) blocks until `release` is set;
+    /// `entered` says a blocking call was reached, `loads` counts `load` calls.
+    #[derive(Default)]
+    struct Stuck {
+        release: AtomicBool,
+        entered: AtomicBool,
+        stick_save: bool,
+        panic_save: bool,
+        loads: AtomicUsize,
+    }
+
+    impl Stuck {
+        fn wait(&self) {
+            self.entered.store(true, Ordering::SeqCst);
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    /// Releases the stuck call when dropped, so a failing assert cannot hang the runtime.
+    struct Release(Arc<Stuck>);
+
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.release.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl RefreshTokenStore for Stuck {
+        fn load(&self, _: &TokenKey) -> Result<Option<String>, RefreshStoreError> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            if !self.stick_save {
+                self.wait();
+            }
+            Ok(None)
+        }
+        fn save(&self, _: &TokenKey, _: &str) -> Result<(), RefreshStoreError> {
+            if self.panic_save {
+                panic!("SAVE_SENTINEL");
+            }
+            if self.stick_save {
+                self.wait();
+            }
+            Ok(())
+        }
+        fn forget(&self, _: &TokenKey) -> Result<(), RefreshStoreError> {
+            Ok(())
+        }
+    }
+
+    async fn bearer(m: &OAuth2, auth: &EngineAuth) -> Result<(TokenKey, Secret), EngineError> {
+        let clients = ClientCache::new(CookieJars::default());
+        m.bearer(&clients, auth, &settings(), &None, None).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_load_that_never_returns_fails_a_send_closed_after_the_bound() {
+        let store = Arc::new(Stuck::default());
+        let _release = Release(store.clone());
+        let m = OAuth2::new(store.clone(), Arc::new(SystemClock));
+        let auth = code_auth();
+        // Tokio does not auto-advance paused time while a blocking task runs: advance by hand.
+        let advance = async {
+            while !store.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::advance(STORE_TIMEOUT + Duration::from_secs(1)).await;
+        };
+        let (first, ()) = tokio::join!(bearer(&m, &auth), advance);
+        assert_eq!(first.unwrap_err().message, STORE_TIMED_OUT);
+        // The load still runs and still owns the key's lock: the next send times out on it.
+        let advance = async {
+            tokio::task::yield_now().await;
+            tokio::time::advance(STORE_TIMEOUT + Duration::from_secs(1)).await;
+        };
+        let (second, ()) = tokio::join!(bearer(&m, &auth), advance);
+        assert_eq!(second.unwrap_err().message, STORE_TIMED_OUT);
+        assert!(m.entries().is_empty(), "nothing was cached");
+        // The lock was never given up: the second send did not start another load.
+        assert_eq!(store.loads.load(Ordering::SeqCst), 1);
+    }
+
+    fn seed_old(m: &OAuth2, key: &TokenKey) {
+        m.entries().insert(
+            key.clone(),
+            Entry {
+                access: Some(Access {
+                    token: Secret::new("OLD"),
+                    expires_at: None,
+                }),
+                refresh: Some(Secret::new("OLDRT")),
+            },
+        );
+    }
+
+    fn cached_access(m: &OAuth2, key: &TokenKey) -> Option<String> {
+        let t = m.fresh(key)?;
+        Some(t.expose().to_owned())
+    }
+
+    /// Runs an authorize `put` against a store stuck in `save`; it is then cancelled or timed out.
+    async fn stuck_put(
+        cancel_it: bool,
+    ) -> (OAuth2, TokenKey, Result<bool, EngineError>, Arc<Stuck>) {
+        let store = Arc::new(Stuck {
+            stick_save: true,
+            ..Stuck::default()
+        });
+        let m = OAuth2::new(store.clone(), Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        seed_old(&m, &p.key);
+        let (tx, rx) = oneshot::channel::<()>();
+        let mut cancelled = Box::pin(async move {
+            let _ = rx.await;
+        });
+        let act = async {
+            while !store.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            if cancel_it {
+                tx.send(()).unwrap();
+                None
+            } else {
+                tokio::time::advance(STORE_TIMEOUT + Duration::from_secs(1)).await;
+                // Kept open: a dropped sender would read as a cancel.
+                Some(tx)
+            }
+        };
+        let resp = token_resp();
+        let (r, _tx) = tokio::join!(m.put(&p, &resp, false, None, Some(&mut cancelled)), act);
+        (m, p.key, r, store)
+    }
+
+    fn refresh_of(m: &OAuth2, key: &TokenKey) -> Option<String> {
+        let map = m.entries();
+        Some(map.get(key)?.refresh.as_ref()?.expose().to_owned())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_caches_the_rotated_token_while_its_save_is_stuck() {
+        let store = Arc::new(Stuck {
+            stick_save: true,
+            ..Stuck::default()
+        });
+        let _release = Release(store.clone());
+        let m = OAuth2::new(store.clone(), Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        seed_old(&m, &p.key);
+        let resp = token_resp();
+        let act = async {
+            while !store.entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            // Still saving: a second send must already see RT, not OLDRT.
+            assert_eq!(refresh_of(&m, &p.key).as_deref(), Some("RT"));
+            tokio::time::advance(STORE_TIMEOUT + Duration::from_secs(1)).await;
+        };
+        let (r, ()) = tokio::join!(
+            m.put(&p, &resp, true, Some((0, Secret::new("OLDRT"))), None),
+            act
+        );
+        assert!(r.unwrap());
+        assert_eq!(refresh_of(&m, &p.key).as_deref(), Some("RT"));
+        assert!(m.stale().contains(&p.key));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refresh_whose_save_panics_still_caches_the_rotated_token() {
+        let store = Arc::new(Stuck {
+            panic_save: true,
+            ..Stuck::default()
+        });
+        let m = OAuth2::new(store, Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        seed_old(&m, &p.key);
+        let r = m
+            .put(
+                &p,
+                &token_resp(),
+                true,
+                Some((0, Secret::new("OLDRT"))),
+                None,
+            )
+            .await;
+        assert!(r.unwrap());
+        assert_eq!(refresh_of(&m, &p.key).as_deref(), Some("RT"));
+        assert_eq!(cached_access(&m, &p.key).as_deref(), Some("AT"));
+        assert!(m.stale().contains(&p.key));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_during_the_save_keeps_the_previous_authorization() {
+        let (m, key, r, store) = stuck_put(true).await;
+        let _release = Release(store);
+        assert_eq!(r.unwrap_err().message, "cancelled");
+        assert_eq!(cached_access(&m, &key).as_deref(), Some("OLD"));
+        assert_eq!(m.generation(&key), 0, "generation unchanged");
+        assert!(m.stale().contains(&key), "the save may have landed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timeout_during_the_save_keeps_the_previous_authorization() {
+        let (m, key, r, store) = stuck_put(false).await;
+        let _release = Release(store);
+        assert_eq!(r.unwrap_err().message, STORE_TIMED_OUT);
+        assert_eq!(cached_access(&m, &key).as_deref(), Some("OLD"));
+        assert_eq!(m.generation(&key), 0, "generation unchanged");
+        assert!(m.stale().contains(&key));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_saved_authorization_is_cached_and_bumps_the_generation() {
+        let m = OAuth2::new(Arc::new(MemoryOnly::default()), Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        seed_old(&m, &p.key);
+        assert!(m.put(&p, &token_resp(), false, None, None).await.unwrap());
+        assert_eq!(cached_access(&m, &p.key).as_deref(), Some("AT"));
+        assert_eq!(m.generation(&p.key), 1);
+        assert!(!m.stale().contains(&p.key));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_authorize_waiting_on_the_lock_is_cancelled_promptly() {
+        let m = OAuth2::new(Arc::new(MemoryOnly::default()), Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        // Holds the key's store lock, as a blocked store call would.
+        let _held = m.store_lock(&p.key).lock_owned().await;
+        let (tx, rx) = oneshot::channel::<()>();
+        let mut cancelled = Box::pin(async move {
+            let _ = rx.await;
+        });
+        tx.send(()).unwrap();
+        let started = tokio::time::Instant::now();
+        let e = m
+            .put(&p, &token_resp(), false, None, Some(&mut cancelled))
+            .await
+            .unwrap_err();
+        assert_eq!(e.message, "cancelled");
+        assert!(started.elapsed() < STORE_TIMEOUT);
+        assert!(m.entries().is_empty(), "nothing was cached");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_authorize_waiting_on_the_lock_times_out_and_fails_closed() {
+        let m = OAuth2::new(Arc::new(MemoryOnly::default()), Arc::new(SystemClock));
+        let auth = code_auth();
+        let p = params(&auth, &None, &None).unwrap();
+        let _held = m.store_lock(&p.key).lock_owned().await;
+        let (_tx, rx) = oneshot::channel::<()>();
+        let mut cancelled = Box::pin(async move {
+            let _ = rx.await;
+        });
+        let e = m
+            .put(&p, &token_resp(), false, None, Some(&mut cancelled))
+            .await
+            .unwrap_err();
+        assert_eq!(e.message, STORE_TIMED_OUT);
+        assert!(m.entries().is_empty(), "nothing was cached");
     }
 }
