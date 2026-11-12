@@ -96,3 +96,9 @@ Reviewed HEAD 3c148afb4e3ec5da0fd5775a3e178b045d8e3194.
 - [SPEC] crates/app/src/vault.rs:249-258 — forget no-op for any status other than Store{Keychain} breaks core's re-authorize-replaces invariant for keychain-mode envs loaded Failed/FellBack. Settled by amendment (a): skip for file-mode only.
 - [P3, optional] crates/app/src/workspace.rs:1203-1215 — refresh_known_id reads the id from disk on the UI thread; have the NewId outcome carry the new id instead.
 - [P3, optional] workspace.rs:3719 and vault.rs keychain_forget_environment_deletes_its_refresh_tokens — tests call helpers directly; neither covers the NewId / Move to file wiring.
+
+## Attempt 1 — failed (verify, HEAD 2947262)
+
+1. AC17 test (vault.rs ~:1930): the save_environment_locked half asserted the notice only inside `if let Err`, so an Ok passed with no notice. Make it assert `is_err()` unconditionally, then the notice text and the untouched target.
+2. AC7 test (vault.rs ~:1373): `fail_next` hit the index `get`, so the token `set` failure was never exercised. Use `fail_nth(2, ..)` so it lands on the token write for Denied, Locked, Other, TimedOut.
+3. PR #55 body: stale AC10 text. Replace with measure.yml run 43309841430 on 2947262 (Windows 15,171,072 B, gate 15,500,000 B).

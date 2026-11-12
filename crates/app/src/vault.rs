@@ -1382,7 +1382,8 @@ mod keychain_tests {
         ] {
             let m = Arc::new(MemoryStore::new());
             let a = KeychainRefreshStore::new(m.clone());
-            m.fail_next(err);
+            // Index get, index set, then the token write.
+            m.fail_nth(2, err);
             let e = a.save(&key(Some("dev"), Some(ID)), SENTINEL).unwrap_err();
             assert!(!e.to_string().contains(SENTINEL));
             assert!(a.take_banners().is_empty());
@@ -1916,11 +1917,11 @@ mod keychain_tests {
         assert_eq!(std::fs::read_to_string(&real).unwrap(), before);
         assert!(assign_new_collection_id(&root).is_err());
         // save_environment_locked on a symlinked environment file.
-        let s = coll(d.path(), "s", Some("99998888777766665555"));
+        let s = file_coll(d.path(), "s", "99998888777766665555");
+        std::fs::remove_file(s.join("environments/dev.secrets.toml")).unwrap();
         let target = d.path().join("outside.toml");
         std::fs::write(&target, "[vars]\n").unwrap();
-        std::fs::remove_file(s.join("environments/dev.toml")).unwrap();
-        std::os::unix::fs::symlink(&target, s.join("environments/dev.toml")).unwrap();
+        std::os::unix::fs::symlink(&target, s.join("environments/dev.secrets.toml")).unwrap();
         let env = Environment {
             name: "dev".into(),
             vars: vec![],
@@ -1928,10 +1929,9 @@ mod keychain_tests {
         };
         let ctx = VaultCtx::new(data.clone());
         let r = save_environment_locked(&s, &env, &ctx);
-        if let Err(e) = r {
-            let text = save_failure_notice(&e);
-            assert!(text.starts_with("Not saved"));
-        }
+        assert!(r.is_err(), "a symlinked secrets file must be refused");
+        let text = save_failure_notice(&r.unwrap_err());
+        assert!(text.starts_with("Not saved"), "{text}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "[vars]\n");
     }
 }
