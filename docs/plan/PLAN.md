@@ -173,15 +173,19 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [NOTE] Authorize resolves the whole request (same path as Send), so an unresolved variable in the URL or body also blocks it; the button appears only for the request's own auth-code auth, not inherited auth.
 
 ### Follow-ups from task 110 (not 0.2.0 wave 3)
-- [P3] `put` (manager.rs ~259) still holds a borrowed guard across save/forget; nothing cancels it today, but a future caller dropping a `put` future could reopen the overlap. Move an owned guard in, as `bearer` does.
+- [CLOSED by PR #49] [P3] `put` (manager.rs ~259) still holds a borrowed guard across save/forget; nothing cancels it today, but a future caller dropping a `put` future could reopen the overlap. Move an owned guard in, as `bearer` does.
 - [P3] The fail-closed test's RT_SENTINEL check only bites on the panic store; the `fail_load` path cannot fail that assertion.
-- [P3] `bearer`'s inline spawn_blocking duplicates the JoinError message from `Inner::blocking` (manager.rs ~208); route both through one helper.
+- [CLOSED by PR #49] [P3] `bearer`'s inline spawn_blocking duplicates the JoinError message from `Inner::blocking` (manager.rs ~208); route both through one helper.
 - [ACCEPTED residual, user] The overlap test uses a 500 ms window rather than a state-driven wait.
 - [ACCEPTED residual, user, 49-R1] A refresh that times out waiting for the per-key store lock (a previous save hung >30 s) drops the IdP-rotated refresh token, so memory keeps the revoked one and the user must re-authorize. Follow-up: cache a rotated refresh token even when the store lock times out (relaxes the rule that the generation check runs under the store lock).
 - [P3, 49-2] "Fails closed on panic" holds only in test builds; release uses panic = abort. Fix the wording or require stores to catch_unwind (document on the trait).
 - [P3, 49-3] The save-then-forget order test is sequential and passes without the lock (check whether round 1/2 tests supersede it); race a blocked save against a re-authorize, or rename the test.
 - [P3, 49-4] JoinError mapping for save and forget is untested in integration tests.
 - [Note, 49-P3] On refresh grants a failed refresh save keeps the token in memory by design (user decision); no further action.
+- [P3, 49-5] manager.rs:366 Authorize now fails when the store refuses the save; with a keychain that always denies, Authorize never succeeds and the message offers no way out. Point the error at turning persistence off (task 115's keychain/persist setting), or cache in memory and mark stale; record the behaviour change.
+- [P3, 49-6] (tests) manager.rs:841 no test for a forget that times out, or for recovery after a stuck call returns. Add a stuck-forget mode plus a release-then-authorize test.
+- [P3, 49-7] (nit) manager.rs:62 `bounded`'s select is unbiased, so a result ready together with the timeout can be reported as a timeout. Use `biased;` with the future polled first.
+- [P3, 49-8] (nit) manager.rs:333 the comment says a stuck refresh save cannot lose the rotated token; the lock-wait timeout still can (49-R1). Qualify the comment.
 
 ### Follow-ups from task 103 (not 0.2.0 wave 2)
 - [ACCEPTED residual, user 2026-11-10] After a re-authorize, a send that read the old refresh token just before it can still POST that RT to the IdP once; the result is discarded (generation check) and nothing old is used or persisted. Closing it means holding the store lock across the token POST.
