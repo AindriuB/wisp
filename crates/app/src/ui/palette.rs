@@ -12,9 +12,9 @@ use gpui_component::kbd::Kbd;
 use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath, h_flex};
 
 use crate::actions::{
-    CancelRequest, ClearHistory, CloseTab, NewRequest, OpenCollection, OpenImport, OpenPalette,
-    ReloadFromDisk, SaveRequest, SendRequest, ShowCookieJar, ShowHistory, SwitchEnvironment,
-    ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    CancelRequest, ClearHistory, CloseCollection, CloseTab, NewRequest, OpenCollection, OpenImport,
+    OpenPalette, ReloadFromDisk, SaveRequest, SendRequest, ShowCookieJar, ShowHistory,
+    SwitchCollection, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::{self, CommandId, Match, PaletteItem, PaletteKind, PaletteMode};
 use crate::workspace::{Workspace, WorkspaceEvent};
@@ -30,6 +30,8 @@ fn action_for(id: CommandId) -> Box<dyn Action> {
         CommandId::NewRequest => Box::new(NewRequest),
         CommandId::CloseTab => Box::new(CloseTab),
         CommandId::OpenCollection => Box::new(OpenCollection),
+        CommandId::SwitchCollection => Box::new(SwitchCollection),
+        CommandId::CloseCollection => Box::new(CloseCollection),
         CommandId::SwitchEnvironment => Box::new(SwitchEnvironment),
         CommandId::ToggleTheme => Box::new(ToggleTheme),
         CommandId::ToggleLayout => Box::new(ToggleLayout),
@@ -106,21 +108,34 @@ impl PaletteView {
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (items, active, has_collection) = {
             let ws = self.workspace.read(cx);
-            match ws.collection.as_ref() {
-                Some(c) => {
-                    let active = c.active_env.as_ref().map(|e| e.name.clone());
-                    (
-                        palette::items(
-                            Some(&c.tree),
-                            &c.environments,
-                            active.as_deref(),
-                            self.mode,
-                        ),
-                        active,
-                        true,
-                    )
+            let open: Vec<(String, std::path::PathBuf)> = ws
+                .collections
+                .iter()
+                .map(|c| (c.name(), c.tree.root.clone()))
+                .collect();
+            if self.mode == PaletteMode::Collections {
+                (
+                    palette::collection_items(&open, ws.active_collection_ix()),
+                    None,
+                    !open.is_empty(),
+                )
+            } else {
+                match ws.active_collection() {
+                    Some(c) => {
+                        let active = c.active_env.as_ref().map(|e| e.name.clone());
+                        (
+                            palette::items(
+                                Some(&c.tree),
+                                &c.environments,
+                                active.as_deref(),
+                                self.mode,
+                            ),
+                            active,
+                            true,
+                        )
+                    }
+                    None => (palette::items(None, &[], None, self.mode), None, false),
                 }
-                None => (palette::items(None, &[], None, self.mode), None, false),
             }
         };
         self.items = items;
@@ -164,6 +179,18 @@ impl PaletteView {
                         ));
                     });
                 }
+            }
+            PaletteKind::Collection(root) => {
+                self.workspace.update(cx, |w, cx| {
+                    if let Some(ix) = w.coll_ix(&root) {
+                        w.activate_collection(ix, cx);
+                    }
+                });
+            }
+            PaletteKind::Command(CommandId::SwitchCollection) => {
+                self.mode = PaletteMode::Collections;
+                self.reload(window, cx);
+                return;
             }
             PaletteKind::Command(CommandId::SwitchEnvironment) => {
                 // Re-open in place: dispatching the action would have the root
@@ -234,10 +261,13 @@ impl Render for PaletteView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak: WeakEntity<Self> = cx.entity().downgrade();
         let environments = self.mode == PaletteMode::Environments;
+        let collections = self.mode == PaletteMode::Collections;
         let mut command = Command::new(&self.state)
             .filterable(false)
             .placeholder(if environments {
                 "Switch environment"
+            } else if collections {
+                "Switch collection"
             } else {
                 "Search requests and commands"
             })
@@ -258,6 +288,12 @@ impl Render for PaletteView {
             command = command.item(
                 CommandItem::new()
                     .label("Open a collection first")
+                    .disabled(true),
+            );
+        } else if collections && !self.has_collection {
+            command = command.item(
+                CommandItem::new()
+                    .label("No collection is open")
                     .disabled(true),
             );
         } else {
@@ -286,6 +322,10 @@ impl Render for PaletteView {
             // a second palette over this one.
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
                 this.mode = PaletteMode::All;
+                this.reload(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SwitchCollection, window, cx| {
+                this.mode = PaletteMode::Collections;
                 this.reload(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SwitchEnvironment, window, cx| {

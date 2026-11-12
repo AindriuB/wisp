@@ -17,6 +17,18 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-12 — PR #49 review rounds 1-3 (task 110)
+Finding 49-1 is fixed: the per-key store lock and every store call are bounded by STORE_TIMEOUT (30 s) and fail closed, and Authorize cancel works while waiting. Round 2: Authorize saves the refresh token before caching it (user decision), so cancel, timeout or error leaves the previous authorization usable. Round 3: refreshes cache the rotated token before saving (user decision), and Authorize store errors carry context.
+**Cost:** The round 3 reorder fixed a race that showed as a one-off failure of cancelling_a_send_mid_refresh_still_keeps_the_rotated_refresh_token (50/50 after). Residual 49-R1 accepted by the user: a refresh that times out on the store lock drops the rotated refresh token, so the user must re-authorize; see PLAN follow-ups.
+
+## 2026-11-12 — PR #50 review round 1 (task 112)
+Three Mediums were fixed in f28b1d5: import targets the collection captured when the dialog opens and refuses if it was closed; Clear history and sidebar Delete act on the collection captured before the prompt; close and clone-clash decisions were extracted into tested plans (plan_clash, plan_close, confirmed_open).
+**Cost:** The dispatch in close_collection and the clash handler stays untested (50-R1, accepted by the user) because there is no GPUI test harness; adding one is follow-up 50-R2. Lows and nits (50-4 to 50-19, 50-P3a/b) went to the task 112 follow-ups in PLAN.md, and 50-8 also to task 99 as AC52.
+
+## 2026-11-12 — Several collections open at once (task 112)
+The workspace now holds up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs. The open list lives in settings.toml; the palette has Switch and Close collection, quit saves every cookie jar, and cloning a collection whose id is already open is refused. Amendment 1 (user decisions): measure scripts use a per-launch temp WISP_DATA_DIR, sidebar pending move/rename and selection are cleared on collection switch, and root.rs owns the Close collection dirty prompt while Open no longer asks to discard because it adds. Tester: workspace suite green, 248 app tests, fmt and clippy clean, Cargo.lock unchanged. Reviewer 11/12, with AC11 measured on macOS arm64 release: idle RSS about 110.2 MB with 1 collection and 110.3 MB with 8 at 15 s, against a 120 MiB budget.
+**Cost:** Two review rounds plus the amendment. The RSS figures are one sample each with a temp WISP_DATA_DIR and HOME, and at 12 s they were still settling (100.9 and 110.4 MB), so measure at 15 s or later. Settings writes on open, close and activate go through update_settings, which the reviewer accepted as the existing idiom but which is synchronous I/O on the UI thread. The measure.ps1 changes have not been run. Nine follow-ups are in PLAN.md.
+
 ## 2026-11-12 — Refresh-token store off the async workers (task 110)
 Every refresh-token store call (load, save, forget) now runs on spawn_blocking behind a per-key lock held across the whole operation, so a blocking keychain prompt can no longer stall engine I/O. A store failure or panic fails closed, and `set_persist_refresh` was added. 831 workspace tests pass.
 **Cost:** Review round 1 found a cancelled send released the per-key lock while `load` was still running (fixed by moving an owned guard into the spawn_blocking closure) and a test that passed without the lock. Round 2 restored the save-then-forget order test. Accepted residual (user): the overlap test relies on a 500 ms window, not a state wait. `put` still holds a borrowed guard; see PLAN follow-ups from task 110.

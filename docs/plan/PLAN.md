@@ -22,7 +22,7 @@ than no plan.
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** multiple collections; keychain (Linux spike first). Done: 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); see HISTORY.
+- **Wave 3:** multiple collections; keychain (Linux spike first). Done: 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); see HISTORY. Remaining: keychain.
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -64,6 +64,37 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - No test fails if the symlink-to-`.toml` check in `sidecar_path` is disabled; Unix is covered by the dev/ino check.
 - The reserved-name rule also rejects display names like "CON.txt" whose file slug would be harmless (decided).
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
+
+### Follow-ups from task 112 (not 0.2.0 wave 3)
+- Settings write on activate is now synchronous file I/O on the UI thread; move persist_collections off-thread and coalesced, or skip when unchanged.
+- Startup restore scans up to 8 trees synchronously.
+- AC8 clone refusal closes the refused collection's tabs without a dirty check, so a tab edited before the id lands is discarded silently.
+- The history test covers history_target but not that append_history passes sent.root.
+- Clone refusal makes the last collection active rather than the previously active one.
+- Collection paths are stored with to_string_lossy; a non-UTF-8 path on Linux is dropped on restart.
+- set_cookie_persistence reads the active collection's id inside its callback, so switching while an id is being created could apply to the wrong collection.
+- measure.ps1 changes are unrun and unlinted until the first Windows measure run.
+- The refused-argv-path active fallback has no test.
+- 50-4 `quit-check.sh:53` still runs Wisp on the real data dir (now restores and rewrites the collection list); use a per-launch temp WISP_DATA_DIR as in measure.sh.
+- 50-5 Palette Switch/Close resolve-by-root is untested; add a pure helper test with shifted indices.
+- 50-6 `settings.rs:149` corrupt `open_collections`/`active_collection` is untested, and one bad element drops the whole list; keep valid strings and test each key.
+- 50-7 `settings.rs:574` restore dedup branch is untested; duplicate missing paths are reported twice.
+- 50-8 (task 99, AC52) `workspace.rs:527` history re-reads the collection id from disk while cookies and tokens use the cached id; an on-disk id change routes history into another collection's store. Build HistoryJob from the known id.
+- 50-9 Scratch tabs become unreachable once a collection opens but still count as dirty at quit.
+- 50-10 Restore silently forgets a remembered collection that exists but fails to open.
+- 50-11 A settings-save failure during restore is emitted before the window subscribes.
+- 50-12 Jar changes after the close-time flush are never persisted.
+- 50-13 Watcher batches from background collections rescan trees on the UI thread.
+- 50-14 `release_tab` leaves id waits; a closed tab can still send or authorize under the wrong partition (relates to 47-4).
+- 50-15 A clone whose id lands first is briefly live, and its refusal can save the shared jar.
+- 50-16 (nit) `measure.ps1:117` fail path kills the app without WaitForExit, so temp dir removal can fail.
+- 50-17 (nit) Palette collections mode does not preselect the active collection.
+- 50-18 (nit) SwitchCollection has no root handler.
+- 50-19 (nit) Repeated tab-to-collection lookups in send/authorize; use one helper.
+- 50-R1 Residual, accepted by the user: close-collection and clone-clash decisions are tested via plan_clash/plan_close/confirmed_open, but the dispatch in close_collection and the clash handler is not (mutations there pass every test); no GPUI test harness exists.
+- 50-R2 Add a GPUI test harness (gpui TestAppContext) so Workspace flows get end-to-end tests.
+- 50-P3a `sidebar.rs:529-535` after a confirmed delete in a non-active collection, collapsed/selected are trimmed by relative path in the shown collection (cosmetic).
+- 50-P3b `import.rs:610` new test sits before the module's use lines (idiom nit).
 
 ### Follow-ups from task 86 (not for 0.1.1)
 - An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
@@ -138,11 +169,16 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - [P3] The fail-closed test's RT_SENTINEL check only bites on the panic store; the `fail_load` path cannot fail that assertion.
 - [P3] `bearer`'s inline spawn_blocking duplicates the JoinError message from `Inner::blocking` (manager.rs ~208); route both through one helper.
 - [ACCEPTED residual, user] The overlap test uses a 500 ms window rather than a state-driven wait.
+- [ACCEPTED residual, user, 49-R1] A refresh that times out waiting for the per-key store lock (a previous save hung >30 s) drops the IdP-rotated refresh token, so memory keeps the revoked one and the user must re-authorize. Follow-up: cache a rotated refresh token even when the store lock times out (relaxes the rule that the generation check runs under the store lock).
+- [P3, 49-2] "Fails closed on panic" holds only in test builds; release uses panic = abort. Fix the wording or require stores to catch_unwind (document on the trait).
+- [P3, 49-3] The save-then-forget order test is sequential and passes without the lock (check whether round 1/2 tests supersede it); race a blocked save against a re-authorize, or rename the test.
+- [P3, 49-4] JoinError mapping for save and forget is untested in integration tests.
+- [Note, 49-P3] On refresh grants a failed refresh save keeps the token in memory by design (user decision); no further action.
 
 ### Follow-ups from task 103 (not 0.2.0 wave 2)
 - [ACCEPTED residual, user 2026-11-10] After a re-authorize, a send that read the old refresh token just before it can still POST that RT to the IdP once; the result is discarded (generation check) and nothing old is used or persisted. Closing it means holding the store lock across the token POST.
 - [CLOSED by task 110] [P2 -> wave 3 keychain] Store calls run synchronously on engine workers (default 1 worker, max 2); a blocking keychain call (access prompt) stalls all engine I/O. Run store calls via spawn_blocking with the tokio store lock held across the await before a keychain store ships.
-- [P3] Failed save during re-authorize -> forget path has no test (needs a store whose save can fail after the first authorize).
+- [CLOSED by PR #49 round 2] Failed save during re-authorize -> forget path has no test: a failed save now returns before any forget.
 - [P3] The stale marker is in-memory only: a failed forget/save leaves the old RT in the store after restart (wave 3).
 - [P3] engine.rs:972-975 a 401 for a send that started with AT_X, arriving after a re-authorize, invalidates the new AT_Y; invalidate only when the cached token equals the one sent.
 - [P3] No single-flight on refresh; concurrent refreshes may get a rotating RT family revoked.
