@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use super::token::{ClientCreds, Secret, TokenResponse, check_endpoint, post};
-use super::{Grant, RefreshTokenStore, TokenKey, loopback, pkce};
+use super::{Grant, RefreshStoreError, RefreshTokenStore, TokenKey, loopback, pkce};
 use crate::auth::EngineAuth;
 use crate::client::ClientCache;
 use crate::engine::err;
@@ -197,6 +197,33 @@ impl Inner {
         m.entry(key.clone()).or_default().clone()
     }
 
+    /// Runs a store call on the blocking pool, so a slow store never stalls an engine worker.
+    /// Callers hold the key's store lock across the await, which keeps one key's calls in order.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&dyn RefreshTokenStore) -> Result<T, RefreshStoreError> + Send + 'static,
+    ) -> Result<T, RefreshStoreError> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || f(&*store))
+            .await
+            .unwrap_or_else(|_| Err(RefreshStoreError::new("the refresh token store failed")))
+    }
+
+    async fn load_blocking(&self, key: &TokenKey) -> Result<Option<String>, RefreshStoreError> {
+        let key = key.clone();
+        self.blocking(move |s| s.load(&key)).await
+    }
+
+    async fn save_blocking(&self, key: &TokenKey, token: &str) -> Result<(), RefreshStoreError> {
+        let (key, token) = (key.clone(), token.to_owned());
+        self.blocking(move |s| s.save(&key, &token)).await
+    }
+
+    async fn forget_blocking(&self, key: &TokenKey) -> Result<(), RefreshStoreError> {
+        let key = key.clone();
+        self.blocking(move |s| s.forget(&key)).await
+    }
+
     fn generation(&self, key: &TokenKey) -> u64 {
         let g = self.generation.lock().unwrap_or_else(|e| e.into_inner());
         g.get(key).copied().unwrap_or(0)
@@ -262,7 +289,7 @@ impl Inner {
             }
         }
         let saved = match &resp.refresh_token {
-            Some(rt) if p.persist_refresh => match self.store.save(&p.key, rt.expose()) {
+            Some(rt) if p.persist_refresh => match self.save_blocking(&p.key, rt.expose()).await {
                 Ok(()) => {
                     self.stale().remove(&p.key);
                     true
@@ -276,7 +303,7 @@ impl Inner {
         };
         if !saved && !keep_refresh {
             // A re-authorize leaves no earlier authorization's token in the store.
-            match self.store.forget(&p.key) {
+            match self.forget_blocking(&p.key).await {
                 Ok(()) => {
                     self.stale().remove(&p.key);
                 }
@@ -359,7 +386,7 @@ impl OAuth2 {
                     epoch = self.generation(&p.key);
                     held = self.entries().get(&p.key).and_then(|e| e.refresh.clone());
                     if held.is_none() && !self.stale().contains(&p.key) {
-                        held = match self.store.load(&p.key) {
+                        held = match self.load_blocking(&p.key).await {
                             Ok(Some(r)) => Some(Secret::new(r)),
                             Ok(None) => return Err(not_authorized()),
                             Err(e) => {
