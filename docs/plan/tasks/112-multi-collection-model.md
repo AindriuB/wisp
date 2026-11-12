@@ -79,3 +79,9 @@ Non-blocking notes for /verify:
 - Settings are saved on the UI thread via `update_settings` on open, close and activate (existing idiom), and restore scans up to 8 trees at startup.
 - Clone refusal (AC8) picks the last collection as active rather than the previous one.
 - Paths are stored via `to_string_lossy`.
+
+## Review round 2 — findings
+
+Reviewed HEAD: d161b416bb66d7e08a2f3f99997a2756c1e3d466
+
+- [P2] crates/app/src/ui/sidebar.rs:273 — AC12 behaviour is in place (`reset_on_switch` clears pending, selected and collapsed on root change), but no test guards it: making `reset_on_switch` a no-op leaves every test passing. Move the compare-and-clear into a pure function (e.g. taking `(&mut shown_root, new_root, &mut pending, &mut selected, &mut collapsed)`), call it from `reset_on_switch`, and add a `collections_`-named test showing a pending Rename or Move is cleared when the root changes and kept when it does not.
