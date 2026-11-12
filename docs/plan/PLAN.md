@@ -161,6 +161,19 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - 52-P3e (-> task 99) TOCTOU: marker and secrets-file checks run before the open, and the reads/writes follow symlinks (fs.rs resolve) -> open with O_NOFOLLOW or verify the opened handle.
 - 52-P3f (-> task 99) ensure_marker_ignored / ensure_gitignore write through a symlinked environments/.gitignore (also on main) -> refuse a symlinked .gitignore.
 - 52-P3g (for 115's prompt text) FailReason::Unbound can't tell "never bound" from "previously bound here, marker missing", so the bind prompt can't warn that confirming gives this path's existing keychain secrets to the folder now there -> consider a distinct reason.
+- 52-29 (-> task 99) migrate_to_store (and file-mode load) read the secrets file without check_secrets_path, storing a symlink target's values.
+- 52-30 (-> task 99, fold into AC53) migrate_to_file still merges store secrets into a git-tracked regular secrets file -> refuse or warn on tracked files.
+- 52-31 (-> task 99) copy check uses exists() (metadata errors read as gone, fails open); a read error blocks a real move; relies on the committed id rather than the old root's marker -> try_exists, fail closed except NotFound, use the marker nonce.
+- 52-32 lowercasing silently re-keys history, cookies and tokens of collections whose id already had uppercase (unreleased builds only) -> write the lowercase id back and move old paths, or note it.
+- 52-33 a registry from earlier dev builds (v1/v2) is rejected as corrupt and bind can't repair it -> treat old rows as Unbound or let bind replace after confirmation.
+- 52-34 (tests) the symlinked environments-dir test fails on the binding check, not check_secrets_path -> assert the specific error.
+- 52-35 unlocked save_environment is still pub (import uses it) -> pub(crate) or rename; 115 must use save_environment_locked.
+- 52-36 environments/.gitignore is written under the registry lock and under env_lock; interleaving can drop the secrets ignore line -> one per-dir lock or write both lines.
+- 52-37 (nit) broken doc link to rebind in vault_binding.rs; 52-38 (nit) save_environment_locked doc says parsed once but file mode re-reads; 52-40 (nit) first bind adds an untracked environments/.gitignore to store-only collections -> mention in the 115 prompt.
+- 52-P3h (-> task 99) once any bound root is gone, rebind's LooksLikeCopy refusal stops firing for live roots, so a copy can be bound through the "moved" prompt; decide between the current rule and refusing when any live root carries the id (which blocks moving one checkout while another is live).
+- 52-N1 marker cross-registry read-modify-write race: fails closed (extra bind prompt only).
+- 52-N2 root list per id has no size cap (grows only via user-confirmed additional checkouts) -> cheap cap later.
+- 52-N3 a collection whose collection.toml is a symlink (dotfiles setups) now errors and history turns off; intended fail-closed, user-visible.
 
 ### Follow-ups from task 104 (not 0.2.0 wave 2)
 - [P3] cookies.rs: a Set-Cookie with UTF-8 values is silently dropped (`to_str`), and one non-ASCII value drops the whole Cookie header; use `from_utf8` / `HeaderValue::from_bytes` like reqwest's Jar.
