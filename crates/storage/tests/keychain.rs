@@ -278,6 +278,44 @@ fn blocked_probe_times_out_and_never_stalls_later_calls() {
     assert_eq!(got.unwrap().expose(), "v");
 }
 
+/// A backend whose `probe` panics.
+struct Panicky;
+
+impl Backend for Panicky {
+    fn probe(&self) -> Result<(), KErr> {
+        panic!("backend probe panic (expected in this test)");
+    }
+    fn get(&self, _: &str) -> Result<Vec<u8>, KErr> {
+        Ok(b"v".to_vec())
+    }
+    fn set(&self, _: &str, _: &[u8]) -> Result<(), KErr> {
+        Ok(())
+    }
+    fn delete(&self, _: &str) -> Result<(), KErr> {
+        Ok(())
+    }
+}
+
+#[test]
+fn panicking_backend_does_not_wedge_the_store() {
+    let timed_out = SecretStoreError::Unavailable {
+        reason: UnavailableReason::TimedOut,
+    };
+    for _ in 0..200 {
+        let t = Timeouts {
+            probe: Duration::from_millis(300),
+            call: Duration::from_millis(300),
+        };
+        let s = keychain::open_with(Arc::new(Panicky), t);
+        let _ = s.probe();
+        // Immediately after: may land on the dying worker's channel.
+        let _ = s.get("a");
+        std::thread::sleep(Duration::from_millis(50));
+        let r = s.get("a");
+        assert_ne!(r, Err(timed_out.clone()), "store stayed busy after a panic");
+    }
+}
+
 #[test]
 fn debug_redacts_stores() {
     const S: &str = "s3ntinel-value-xyz";
@@ -362,14 +400,14 @@ fn headless_probe_is_unavailable() {
 #[test]
 #[ignore = "needs a locked gnome-keyring in docker"]
 fn headless_locked_probe() {
-    let (_svc, c) = real(&["locked-a"]);
+    // The check seeds this item with `secret-tool store` before locking.
+    let store = keychain::open("wisp-test-locked", false);
     // Searching for a missing account does not unlock, so the probe passes.
-    assert_eq!(c.store.probe(), Ok(()));
-    // Touching an item needs the collection: Locked, or Denied when the
-    // unlock prompt is dismissed. `set` stands in for `get` on an existing
-    // item, which a locked container cannot seed from here.
-    let r = c.store.set("locked-a", &SecretValue::new("v"));
-    println!("locked set: {r:?}");
+    assert_eq!(store.probe(), Ok(()));
+    // Reading an existing item needs the collection: Locked, or Denied when
+    // the unlock prompt is dismissed.
+    let r = store.get("wisp-test-locked");
+    println!("locked get: {r:?}");
     assert!(matches!(
         r,
         Err(SecretStoreError::Locked | SecretStoreError::Denied)

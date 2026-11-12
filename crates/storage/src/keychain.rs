@@ -182,18 +182,19 @@ impl Worker {
             return Err(unavailable(UnavailableReason::TimedOut));
         }
         let (rtx, rrx) = mpsc::channel();
-        let busy = self.busy.clone();
+        // Built before the job so a job dropped unrun (sent into a dying
+        // worker's channel) still clears `busy`.
+        struct Idle(Arc<AtomicBool>);
+        impl Drop for Idle {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let idle = Idle(self.busy.clone());
         let job: Job = Box::new(move |b| {
+            let out = f(b);
             // Idle again before the result is sent, so a caller that got it
             // can call again at once. A late result has no receiver: dropped.
-            struct Idle(Arc<AtomicBool>);
-            impl Drop for Idle {
-                fn drop(&mut self) {
-                    self.0.store(false, Ordering::SeqCst);
-                }
-            }
-            let idle = Idle(busy);
-            let out = f(b);
             drop(idle);
             let _ = rtx.send(out);
         });
@@ -204,10 +205,8 @@ impl Worker {
                 SecretStoreError::Other { code: None }
             })
         });
-        if let Err(e) = sent {
-            self.busy.store(false, Ordering::SeqCst);
-            return Err(e);
-        }
+        // On failure the job was dropped, and its `Idle` cleared `busy`.
+        sent?;
         match rrx.recv_timeout(timeout) {
             Ok(v) => Ok(v),
             Err(RecvTimeoutError::Timeout) => Err(unavailable(UnavailableReason::TimedOut)),
