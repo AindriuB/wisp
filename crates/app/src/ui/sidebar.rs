@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Hsla,
+    AnyElement, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, PromptLevel, Render,
     SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
 };
@@ -21,6 +21,7 @@ use wisp_storage::collection::Node;
 use wisp_storage::ops;
 
 use crate::actions::{OpenCollection, OpenPalette, palette_hint};
+use crate::ui::collections::{CloseRequested, CollectionSwitcher};
 use crate::workspace::{Workspace, WorkspaceEvent, confirmed_open};
 
 const NO_ENV: &str = "No environment";
@@ -227,6 +228,7 @@ enum Pending {
 
 pub struct Sidebar {
     workspace: Entity<Workspace>,
+    switcher: Entity<CollectionSwitcher>,
     env: Entity<SelectState<Vec<SharedString>>>,
     env_items: Vec<SharedString>,
     collapsed: HashSet<PathBuf>,
@@ -238,6 +240,8 @@ pub struct Sidebar {
     scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
 }
+
+impl EventEmitter<CloseRequested> for Sidebar {}
 
 impl Sidebar {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -253,6 +257,10 @@ impl Sidebar {
                 }
             },
         ));
+        let switcher = cx.new(|cx| CollectionSwitcher::new(workspace.clone(), cx));
+        subs.push(cx.subscribe(&switcher, |_, _, ev: &CloseRequested, cx| {
+            cx.emit(CloseRequested(ev.0.clone()));
+        }));
         subs.push(cx.subscribe_in(
             &workspace,
             window,
@@ -270,6 +278,7 @@ impl Sidebar {
         let focus = cx.focus_handle();
         let mut this = Self {
             workspace,
+            switcher,
             env,
             env_items: Vec::new(),
             collapsed: HashSet::new(),
@@ -924,6 +933,7 @@ impl Render for Sidebar {
             .size_full()
             .flex()
             .flex_col()
+            .child(self.switcher.clone())
             .child(header)
             .children(pending)
             .child(body)
