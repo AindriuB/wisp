@@ -26,6 +26,8 @@ actions!(
         ShowCookieJar,
         ClearHistory,
         ToggleHistoryBodies,
+        ShowEnvSecrets,
+        ShareKeychainSecrets,
         Quit
     ]
 );

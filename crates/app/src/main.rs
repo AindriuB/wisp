@@ -17,6 +17,7 @@ mod tab;
 mod theme;
 mod ui;
 mod url_sync;
+mod vault;
 mod workspace;
 
 use gpui::{AppContext as _, Entity, PromptLevel, Window, WindowOptions, px, size};

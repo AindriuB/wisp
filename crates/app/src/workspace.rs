@@ -1,6 +1,7 @@
 //! The workspace entity: engine, collection, tabs and settings.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -15,17 +16,20 @@ use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
 use wisp_core::{
     Command, Engine, EngineConfig, EngineError, Event, EventReceiver, PreparedRequest, RequestId,
 };
-use wisp_storage::collection::{CollectionId, ensure_collection_id, read_collection_id};
+use wisp_storage::collection::{
+    CollectionId, assign_new_collection_id, ensure_collection_id, read_collection_id,
+};
 use wisp_storage::collection::{CollectionTree, Node, open_collection};
 use wisp_storage::cookies::{CookieFile, StoredCookie};
 use wisp_storage::data_dir::DataDir;
-use wisp_storage::environment::{list_environments, load_environment};
+use wisp_storage::environment::list_environments;
 use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
 
 use crate::draft::{self, ReloadAction};
 use crate::settings::{self, Settings};
+use crate::vault::{self, EnvAction, EnvState, EnvStatus, PromptSpec};
 use crate::tab::{
     AuthorizeState, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent,
 };
@@ -50,6 +54,10 @@ pub struct OpenCollection {
     pub tree: CollectionTree,
     pub environments: Vec<String>,
     pub active_env: Option<Environment>,
+    /// How the active environment's secrets loaded; never holds a value.
+    pub env_status: Option<EnvStatus>,
+    /// Bumped by every environment load so a late result is dropped.
+    env_gen: u64,
     pub error: Option<String>,
     /// The collection's tabs; a tab belongs to exactly one group.
     pub group: TabGroup,
@@ -68,6 +76,8 @@ impl OpenCollection {
             tree,
             environments,
             active_env: None,
+            env_status: None,
+            env_gen: 0,
             error: None,
             group: TabGroup::default(),
             coll_id: IdState::Reading,
@@ -198,6 +208,10 @@ pub enum WorkspaceEvent {
     HistoryChanged,
     /// The open collection's cookie persistence state changed.
     CookiesChanged,
+    /// Environment secrets state changed (load status, keychain probe).
+    SecretsChanged,
+    /// Ask the user to confirm; the view answers through `Workspace::answer_prompt`.
+    Prompt(PromptSpec),
 }
 
 /// What was sent, kept for the history entry written at the terminal event.
@@ -222,9 +236,15 @@ enum HistoryState {
 static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Read or create the collection id under the shared lock. Blocking; never on the UI thread.
-fn resolve_collection_id(root: &Path) -> Result<CollectionId, String> {
+pub(crate) fn resolve_collection_id(root: &Path) -> Result<CollectionId, String> {
     let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_collection_id(root).map_err(|e| e.to_string())
+}
+
+/// Give the collection a fresh id under the shared lock. Blocking; never on the UI thread.
+pub(crate) fn assign_collection_id(root: &Path) -> Result<CollectionId, String> {
+    let _g = RESOLVE.lock().unwrap_or_else(|e| e.into_inner());
+    assign_new_collection_id(root).map_err(|e| e.to_string())
 }
 
 /// Read the collection id without writing, under the shared lock. Blocking.
@@ -1153,9 +1173,24 @@ pub struct Workspace {
     empty_defaults: CollectionDefaults,
     /// True while a discard prompt is waiting for an answer.
     pub prompt_up: bool,
+    stores: vault::SharedStores,
+    refresh_store: Arc<vault::KeychainRefreshStore>,
+    /// Banners for refresh tokens kept for this session only.
+    pub token_banners: Vec<String>,
+    /// The keychain probe: `None` until run, then `Ok(())` or the reason.
+    pub keychain_probe: Option<Result<(), String>>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
+
+/// True when the collection's active environment loaded from the keychain: the only case in which
+/// refresh tokens are persisted.
+fn persist_refresh_for(c: &OpenCollection) -> bool {
+    match (&c.active_env, &c.env_status) {
+        (Some(env), Some(status)) => status.persist_refresh(&env.name),
+        _ => false,
+    }
+}
 
 /// Path of a tab after `old` was moved to `new`; `None` when it is not affected.
 fn moved_path(tab: &Path, old: &Path, new: &Path) -> Option<PathBuf> {
@@ -1302,9 +1337,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let jars = CookieJars::default();
+        let stores: vault::SharedStores = Arc::new(vault::AppStores::open(vault::portable_marker()));
+        let refresh_store = Arc::new(vault::KeychainRefreshStore::new(stores.clone()));
         let (engine, events) = Engine::start(EngineConfig {
             body_memory_limit: settings.body_memory_limit,
             cookies: jars.clone(),
+            refresh_tokens: refresh_store.clone(),
             ..EngineConfig::default()
         });
         let mut this = Self {
@@ -1329,6 +1367,10 @@ impl Workspace {
             autosend: None,
             empty_defaults: CollectionDefaults::default(),
             prompt_up: false,
+            stores,
+            refresh_store,
+            token_banners: Vec::new(),
+            keychain_probe: None,
         };
         this.spawn_drain(events, cx);
         // Flush on quit. gpui's shutdown blocks the main thread, so nothing spawned on the
@@ -1648,15 +1690,243 @@ impl Workspace {
         let Some(c) = self.collections.get_mut(ix) else {
             return Ok(());
         };
-        c.active_env = match name {
-            Some(n) => Some(load_environment(&c.tree.root, n)?),
-            None => None,
+        match name {
+            Some(n) => self.load_env_at(ix, n.to_string(), true, cx),
+            None => {
+                c.env_gen += 1;
+                c.active_env = None;
+                c.env_status = None;
+                if self.active_collection == Some(ix) {
+                    cx.emit(WorkspaceEvent::EnvironmentChanged);
+                    cx.emit(WorkspaceEvent::SecretsChanged);
+                }
+                cx.notify();
+            }
+        }
+        Ok(())
+    }
+
+    /// Load environment `name` of collection `ix` through the fail-closed loader on a background
+    /// task. `switching` shows an empty placeholder meanwhile, so no send uses the previous
+    /// environment; a reload keeps the old one until the result lands.
+    fn load_env_at(&mut self, ix: usize, name: String, switching: bool, cx: &mut Context<Self>) {
+        let Some(c) = self.collections.get_mut(ix) else {
+            return;
         };
+        c.env_gen += 1;
+        let generation = c.env_gen;
+        let previous = (c.active_env.clone(), c.env_status.clone());
+        if switching {
+            c.active_env = Some(Environment {
+                name: name.clone(),
+                vars: Vec::new(),
+                secrets: Vec::new(),
+            });
+        }
+        c.env_status = Some(EnvStatus {
+            env: name.clone(),
+            state: EnvState::Loading,
+        });
+        let root = c.tree.root.clone();
+        let data = self.data_dir.clone();
+        let stores = self.stores.clone();
         if self.active_collection == Some(ix) {
             cx.emit(WorkspaceEvent::EnvironmentChanged);
+            cx.emit(WorkspaceEvent::SecretsChanged);
         }
         cx.notify();
-        Ok(())
+        cx.spawn(async move |this, cx| {
+            let job_root = root.clone();
+            let job_name = name.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { vault::load_job(&job_root, &job_name, data.as_ref(), &*stores) })
+                .await;
+            this.update(cx, |w, cx| {
+                w.finish_env_load(&root, generation, name, switching, previous, result, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_env_load(
+        &mut self,
+        root: &Path,
+        generation: u64,
+        name: String,
+        switching: bool,
+        previous: (Option<Environment>, Option<EnvStatus>),
+        result: vault::LoadResult,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.coll_ix(root) else {
+            return;
+        };
+        let c = &mut self.collections[ix];
+        if c.env_gen != generation {
+            return;
+        }
+        let state = result.state();
+        match result.loaded {
+            Ok(loaded) => {
+                c.active_env = Some(loaded.env);
+                c.env_status = Some(EnvStatus { env: name, state });
+            }
+            Err(e) => {
+                if switching {
+                    c.active_env = previous.0;
+                    c.env_status = previous.1;
+                    cx.emit(WorkspaceEvent::Notice(
+                        format!("Cannot switch environment: {e}").into(),
+                    ));
+                } else {
+                    c.env_status = Some(EnvStatus { env: name, state });
+                    cx.emit(WorkspaceEvent::Notice(
+                        format!("Environment reload failed: {e}").into(),
+                    ));
+                }
+            }
+        }
+        if self.active_collection == Some(ix) {
+            cx.emit(WorkspaceEvent::EnvironmentChanged);
+            cx.emit(WorkspaceEvent::SecretsChanged);
+        }
+        cx.notify();
+    }
+
+    /// True when the active collection's open root may share its keychain secrets.
+    pub fn can_share_secrets(&self) -> bool {
+        self.active_collection().is_some_and(|c| {
+            matches!(
+                c.env_status.as_ref().map(|s| &s.state),
+                Some(EnvState::Loaded { can_share: true, .. })
+            )
+        })
+    }
+
+    /// Run the keychain probe off the UI thread; the panel disables keychain actions on failure.
+    pub fn probe_keychain(&mut self, cx: &mut Context<Self>) {
+        let stores = self.stores.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match stores.get(wisp_storage::vault::StoreKind::Keychain) {
+                        Some(s) => s.probe().map_err(|e| e.to_string()),
+                        None => Err("the keychain is not available".to_string()),
+                    }
+                })
+                .await;
+            this.update(cx, |w, cx| {
+                w.keychain_probe = Some(result);
+                cx.emit(WorkspaceEvent::SecretsChanged);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// An action the user asked for: confirm first when it has a confirmation, else run it.
+    pub fn request_env_action(&mut self, action: EnvAction, cx: &mut Context<Self>) {
+        let Some(c) = self.active_collection() else {
+            return;
+        };
+        let Some(env) = c.active_env.as_ref().map(|e| e.name.clone()) else {
+            cx.emit(WorkspaceEvent::Notice("Select an environment first".into()));
+            return;
+        };
+        let root = c.tree.root.clone();
+        match vault::first_prompt(&action, &env, &root) {
+            Some(spec) => cx.emit(WorkspaceEvent::Prompt(spec)),
+            None => self.run_env_action(root, env, action, cx),
+        }
+    }
+
+    /// The share action after the folder picker returned `new_root`: only from the open root, and
+    /// only when it passed the binding check.
+    pub fn request_share(&mut self, new_root: PathBuf, cx: &mut Context<Self>) {
+        if !self.can_share_secrets() {
+            cx.emit(WorkspaceEvent::Notice(
+                "Not shared: keychain secrets are not enabled for this folder".into(),
+            ));
+            return;
+        }
+        self.request_env_action(EnvAction::Share { new_root }, cx);
+    }
+
+    /// The answer to a prompt: run what the pressed button stands for.
+    pub fn answer_prompt(&mut self, spec: &PromptSpec, button: usize, cx: &mut Context<Self>) {
+        if let Some(action) = spec.answer(button) {
+            self.run_env_action(spec.root.clone(), spec.env.clone(), action, cx);
+        }
+    }
+
+    /// Run a confirmed action on a background task, then show its outcome and reload.
+    pub fn run_env_action(
+        &mut self,
+        root: PathBuf,
+        env: String,
+        action: EnvAction,
+        cx: &mut Context<Self>,
+    ) {
+        let data = self.data_dir.clone();
+        let stores = self.stores.clone();
+        cx.spawn(async move |this, cx| {
+            let (r, e, a) = (root.clone(), env.clone(), action.clone());
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    vault::run(
+                        &a,
+                        &vault::OpEnv {
+                            root: &r,
+                            env: &e,
+                            data: data.as_ref(),
+                            stores: &*stores,
+                        },
+                    )
+                })
+                .await;
+            this.update(cx, |w, cx| w.finish_env_action(root, env, action, outcome, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn finish_env_action(
+        &mut self,
+        root: PathBuf,
+        env: String,
+        action: EnvAction,
+        outcome: vault::Outcome,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(spec) = vault::prompt_for(&outcome, &action, &env, &root) {
+            cx.emit(WorkspaceEvent::Prompt(spec));
+            return;
+        }
+        if let vault::Outcome::Done(t) | vault::Outcome::Notice(t) = outcome {
+            cx.emit(WorkspaceEvent::Notice(t.into()));
+        }
+        // Reload so the status and the names reflect what happened (or did not).
+        if let Some(ix) = self.coll_ix(&root) {
+            let active = self.collections[ix].active_env.as_ref().map(|e| e.name.clone());
+            if active.as_deref() == Some(env.as_str()) {
+                self.load_env_at(ix, env, false, cx);
+            }
+        }
+    }
+
+    fn take_token_banners(&mut self, cx: &mut Context<Self>) {
+        let new = self.refresh_store.take_banners();
+        if !new.is_empty() {
+            self.token_banners.extend(new);
+            cx.emit(WorkspaceEvent::SecretsChanged);
+            cx.notify();
+        }
     }
 
     /// Handle a coalesced batch of watcher events for the collection at `root`.
@@ -1689,12 +1959,7 @@ impl Workspace {
         if let Some(name) = env_name
             && paths.iter().any(|p| affects_env(p, &name))
         {
-            let result = self.set_environment_at(ix, Some(&name), cx);
-            if let Err(e) = result {
-                cx.emit(WorkspaceEvent::Notice(
-                    format!("Environment reload failed: {e}").into(),
-                ));
-            }
+            self.load_env_at(ix, name, false, cx);
         } else if paths.iter().any(|p| !affects_tree(p))
             && let Ok(names) = list_environments(root)
         {
@@ -1901,6 +2166,10 @@ impl Workspace {
                 cx.emit(WorkspaceEvent::Notice(message.to_string().into()));
             }
         })?;
+        let mut plan = plan;
+        if let Some(auth) = plan.prepared.auth.as_mut() {
+            auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
+        }
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
         }
@@ -2014,9 +2283,12 @@ impl Workspace {
             c.and_then(|c| c.active_env.as_ref()),
             partition.clone().flatten(),
         )?;
-        let Some(command) = command else {
+        let Some(mut command) = command else {
             return Ok(());
         };
+        if let Command::AuthorizeStart { auth, .. } = &mut command {
+            auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
+        }
         if partition.is_none() {
             // No id yet: create it off the UI thread, then start the flow.
             let tab = tab.downgrade();
@@ -2120,6 +2392,7 @@ impl Workspace {
     }
 
     fn on_event(&mut self, event: Event, cx: &mut Context<Self>) {
+        self.take_token_banners(cx);
         let id = match &event {
             Event::Started { id, .. }
             | Event::Headers { id, .. }
