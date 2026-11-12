@@ -95,3 +95,18 @@ cargo writes no JUnit XML here, so tests are `command` checks.
 - Migrating or reading any existing entry under service `wisp`.
 - Signed-release macOS keychain behaviour. Task 115's hand check covers a dev build.
 - Any KeePassXC-specific store, pairing or dependency (a later version).
+
+## Amendment (orchestrator, 2026-11-12)
+
+AC7 `headless-locked`: the decided probe (read one fixed account that does not exist) cannot see a lock on Linux — searching for a missing account triggers no unlock — so a probe on a locked collection returns `Ok(())`. Expected result becomes: probe `Ok(())`; `get` on an existing item in the locked collection returns `Err(Locked)` (or `Denied` if the unlock prompt is dismissed). Update `headless_locked_probe` accordingly.
+
+## Review round 1 — findings
+
+Reviewed HEAD: b062d0ff5fdefe26c7a3da34ed243ea26c7a1661
+
+- [P2] crates/storage/src/keychain.rs:341-365 — On Windows the status code is never extracted: windows-native-keyring-store wraps it as `#[derive(Debug)] struct PlatformError(u32)` (Debug `PlatformError(5)`, decimal), which `extract_code` doesn't parse, so ERROR_ACCESS_DENIED (5), ERROR_CANCELLED (1223) and the too-large code (decimal of 0x800706F7) all map to `Other { code: None }` instead of Denied/Denied/TooLarge, losing the code (AC3). Parse the `PlatformError(<decimal>)` shape.
+- [P2] crates/storage/src/keychain.rs:288-290,318-324 — On Linux, zbus-secret-service-keyring-store puts `secret_service::Error::{Locked, Prompt}` inside `NoStorageAccess`, whose Debug text is the bare variant name (`Locked`, `Prompt`); `classify` doesn't match those and falls back to `Unavailable{NoService}`. Map `Locked` → Locked and `Prompt` (dismissed) → Denied; keep the existing D-Bus error-name keywords.
+- [P2] crates/storage/tests/keychain.rs:15-34,36-89 — `mapping_covers_every_row` builds error text no real store produces (`code: 5`, `os error 0x800706F7`, `collection IsLocked`, `prompt dismissed`), so it passed with both bugs live. Use the real Debug shapes: Windows `PlatformError(5)`, `PlatformError(1223)`, the decimal too-large code; Secret Service `NoStorageAccess` wrapping bare `Locked` / `Prompt`; keep macOS `code: -25308` style only if that matches apple-native-keyring-store's Debug (check its source in ~/.cargo/registry).
+- [P3, optional] crates/storage/src/keychain.rs:210-214 — after a worker panic the `Disconnected` arm clears `busy`/`tx` late and can wipe another caller's claim, allowing two OS calls at once. Only a panicking backend triggers it.
+- [P3, optional] crates/storage/tests/keychain.rs:277-288 — `debug_redacts_stores` never formats either store with `{:?}`; make it format both and assert no sentinel.
+- Also: update `headless_locked_probe` per the amendment above. Consider `#[doc(hidden)]` on the public test seam (Backend, open_with, map_error).
