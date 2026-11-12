@@ -26,3 +26,4 @@ winresource = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true
+gpui = { workspace = true, features = ["test-support"] }

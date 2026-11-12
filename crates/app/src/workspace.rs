@@ -1206,6 +1206,19 @@ fn sync_file_mode(store: &vault::KeychainRefreshStore, c: &OpenCollection) {
     }
 }
 
+/// Set an outgoing auth's refresh-token persistence from the collection's environment status,
+/// and tell the adapter whether that environment is file-mode. Send and Authorize both call it.
+fn mark_persist(
+    store: &vault::KeychainRefreshStore,
+    c: Option<&OpenCollection>,
+    auth: &mut EngineAuth,
+) {
+    if let Some(c) = c {
+        sync_file_mode(store, c);
+    }
+    auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
+}
+
 /// After "Give this copy its own id": replace the cached id with the one now on disk, so
 /// cookies, history and refresh tokens use it. The new id when it changed.
 fn refresh_known_id(c: &mut OpenCollection) -> Option<String> {
@@ -2247,10 +2260,7 @@ impl Workspace {
         })?;
         let mut plan = plan;
         if let Some(auth) = plan.prepared.auth.as_mut() {
-            if let Some(c) = c {
-                sync_file_mode(&self.refresh_store, c);
-            }
-            auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
+            mark_persist(&self.refresh_store, c, auth);
         }
         if let Some(old) = previous {
             self.engine.submit(Command::Cancel(old));
@@ -2369,10 +2379,7 @@ impl Workspace {
             return Ok(());
         };
         if let Command::AuthorizeStart { auth, .. } = &mut command {
-            if let Some(c) = c {
-                sync_file_mode(&self.refresh_store, c);
-            }
-            auth.set_persist_refresh(c.is_some_and(persist_refresh_for));
+            mark_persist(&self.refresh_store, c, auth);
         }
         if partition.is_none() {
             // No id yet: create it off the UI thread, then start the flow.
@@ -4424,5 +4431,233 @@ mod tests {
             failure_state(&e("state mismatch")),
             AuthorizeState::Failed("state mismatch".into())
         );
+    }
+}
+
+/// Workspace-level environment wiring over a `MemoryStore` and a temp data dir. The OS keychain
+/// is never touched: the stores are injected.
+#[cfg(test)]
+mod env_wiring_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use wisp_core::auth::oauth2::{Grant, RefreshTokenStore, TokenKey};
+    use wisp_core::request::ClientAuth;
+    use wisp_storage::vault::{MemoryStore, SecretStore, SecretValue, bind, secret_account};
+
+    const ID: &str = "abcdef0123456789";
+
+    struct Fx {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        store: Arc<MemoryStore>,
+        ws: Entity<Workspace>,
+    }
+
+    /// A bound collection with a keychain-mode `dev`, a file-mode `file` and a broken `bad`.
+    fn fixture(cx: &mut TestAppContext) -> Fx {
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir::at(dir.path().join("data"));
+        let root = dir.path().join("coll");
+        std::fs::create_dir_all(root.join("environments")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            format!("format = 1\nid = \"{ID}\"\n"),
+        )
+        .unwrap();
+        let envs = root.join("environments");
+        std::fs::write(
+            envs.join("dev.toml"),
+            "secrets = \"keychain\"\nsecret_names = [\"token\"]\n[vars]\nhost = \"h\"\n",
+        )
+        .unwrap();
+        std::fs::write(envs.join("file.toml"), "[vars]\nhost = \"f\"\n").unwrap();
+        std::fs::write(envs.join("bad.toml"), "this is = [not valid").unwrap();
+        let root = root.canonicalize().unwrap();
+        bind(&data, &CollectionId::parse(ID).unwrap(), &root).unwrap();
+        let store = Arc::new(MemoryStore::new());
+        store
+            .set(
+                &secret_account(&CollectionId::parse(ID).unwrap(), "dev", "token"),
+                &SecretValue::new("kc-secret"),
+            )
+            .unwrap();
+        let shared: vault::SharedStores = store.clone();
+        let ws = cx.new(|cx| Workspace::new(Settings::default(), None, None, shared, cx));
+        ws.update(cx, |w, _| w.data_dir = Some(data));
+        Fx {
+            _dir: dir,
+            root,
+            store,
+            ws,
+        }
+    }
+
+    fn open(fx: &Fx, cx: &mut TestAppContext) {
+        let root = fx.root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.open_collection(&root, cx).unwrap());
+        cx.run_until_parked();
+    }
+
+    fn env_name(fx: &Fx, cx: &mut TestAppContext) -> Option<String> {
+        fx.ws.read_with(cx, |w, _| {
+            w.collections[0].active_env.as_ref().map(|e| e.name.clone())
+        })
+    }
+
+    fn status_env(fx: &Fx, cx: &mut TestAppContext) -> Option<String> {
+        fx.ws.read_with(cx, |w, _| {
+            w.collections[0].env_status.as_ref().map(|s| s.env.clone())
+        })
+    }
+
+    fn switch(fx: &Fx, name: &str, cx: &mut TestAppContext) {
+        fx.ws
+            .update(cx, |w, cx| w.set_environment(Some(name), cx).unwrap());
+        cx.run_until_parked();
+    }
+
+    fn token_key(env: &str) -> TokenKey {
+        TokenKey {
+            grant: Grant::AuthCode,
+            token_url: "https://idp.test/token".into(),
+            client_id: "client".into(),
+            scope: "read".into(),
+            collection: Some(ID.into()),
+            environment: Some(env.into()),
+        }
+    }
+
+    #[gpui::test]
+    fn stale_load_generation_is_dropped(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "file", cx);
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("file"));
+        // A result from an older load of `dev` arrives late.
+        let (root, data) = fx.ws.read_with(cx, |w, _| {
+            (w.collections[0].tree.root.clone(), w.data_dir.clone())
+        });
+        let late = vault::load_job(&root, "dev", data.as_ref(), &*fx.store);
+        fx.ws.update(cx, |w, cx| {
+            let stale = w.collections[0].env_gen - 1;
+            w.finish_env_load(&root, stale, "dev".into(), true, (None, None), late, cx);
+        });
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("file"));
+        assert_eq!(status_env(&fx, cx).as_deref(), Some("file"));
+    }
+
+    #[gpui::test]
+    fn reopened_collection_ignores_the_old_instances_late_load(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        let old_gen = fx.ws.read_with(cx, |w, _| w.collections[0].env_gen);
+        // Close and reopen; the new instance loads once, so a per-collection counter would
+        // hand it the old instance's generation.
+        fx.ws.update(cx, |w, cx| w.close_collection(0, cx));
+        open(&fx, cx);
+        switch(&fx, "file", cx);
+        let (root, data) = fx.ws.read_with(cx, |w, _| {
+            (w.collections[0].tree.root.clone(), w.data_dir.clone())
+        });
+        let late = vault::load_job(&root, "dev", data.as_ref(), &*fx.store);
+        fx.ws.update(cx, |w, cx| {
+            assert_ne!(w.collections[0].env_gen, old_gen);
+            w.finish_env_load(&root, old_gen, "dev".into(), true, (None, None), late, cx);
+        });
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("file"));
+        assert_eq!(status_env(&fx, cx).as_deref(), Some("file"));
+    }
+
+    #[gpui::test]
+    fn failed_switch_restores_the_previous_environment(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("dev"));
+        switch(&fx, "bad", cx);
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("dev"));
+        assert_eq!(status_env(&fx, cx).as_deref(), Some("dev"));
+        // The restored status is the loaded keychain one, not a placeholder.
+        assert!(
+            fx.ws
+                .read_with(cx, |w, _| persist_refresh_for(&w.collections[0]))
+        );
+    }
+
+    #[gpui::test]
+    fn send_and_authorize_set_persist_from_environment_status(cx: &mut TestAppContext) {
+        fn code() -> EngineAuth {
+            EngineAuth::OAuth2AuthCode {
+                auth_url: "a".into(),
+                token_url: "t".into(),
+                client_id: "c".into(),
+                client_secret: String::new(),
+                scope: String::new(),
+                client_auth: ClientAuth::Body,
+                redirect_port: 0,
+                persist_refresh: false,
+            }
+        }
+        fn persists(a: &EngineAuth) -> bool {
+            matches!(
+                a,
+                EngineAuth::OAuth2AuthCode {
+                    persist_refresh: true,
+                    ..
+                }
+            )
+        }
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let run = |cx: &mut TestAppContext| {
+            fx.ws.read_with(cx, |w, _| {
+                let mut a = code();
+                mark_persist(&w.refresh_store, w.collections.first(), &mut a);
+                persists(&a)
+            })
+        };
+        // No environment: memory only.
+        assert!(!run(cx));
+        switch(&fx, "dev", cx);
+        assert!(run(cx), "keychain environment persists");
+        switch(&fx, "file", cx);
+        assert!(!run(cx), "file environment does not persist");
+        // The adapter was told `file` is file-mode, so a save for it is refused.
+        let saved = fx
+            .ws
+            .read_with(cx, |w, _| w.refresh_store.save(&token_key("file"), "rt"));
+        assert!(saved.is_err());
+        // No collection: memory only.
+        fx.ws.read_with(cx, |w, _| {
+            let mut a = code();
+            mark_persist(&w.refresh_store, None, &mut a);
+            assert!(!persists(&a));
+        });
+    }
+
+    #[gpui::test]
+    fn move_to_file_forgets_stored_refresh_tokens(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        fx.ws.read_with(cx, |w, _| {
+            w.refresh_store.save(&token_key("dev"), "rt-1").unwrap();
+        });
+        let has_refresh = |fx: &Fx| fx.store.accounts().iter().any(|a| a.contains("/oauth2/"));
+        assert!(has_refresh(&fx));
+        let root = fx.root.clone();
+        fx.ws.update(cx, |w, cx| {
+            w.run_env_action(
+                root,
+                "dev".into(),
+                EnvAction::MoveToFile { allow_drop: true },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(!has_refresh(&fx), "{:?}", fx.store.accounts());
+        assert!(fx.root.join("environments/dev.secrets.toml").exists());
     }
 }
