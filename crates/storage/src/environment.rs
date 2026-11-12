@@ -9,7 +9,7 @@ use wisp_core::request::Environment;
 
 use crate::{StorageError, codec, fs};
 
-const DIR: &str = "environments";
+pub(crate) const DIR: &str = "environments";
 const SECRETS_SUFFIX: &str = ".secrets.toml";
 const IGNORE_LINE: &str = "*.secrets.toml";
 
@@ -194,8 +194,13 @@ pub fn save_environment(root: &Path, env: &Environment) -> Result<(), StorageErr
     let pp = plain_path(root, &env.name);
     if pp.exists() {
         let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
-        let mode = crate::vault::read_mode(&doc, &pp).unwrap_or(crate::vault::Mode::File);
-        if mode != crate::vault::Mode::File {
+        // An unreadable mode (e.g. a non-string `secrets`) is not file mode:
+        // fail closed, never write a secrets file.
+        let is_file = matches!(
+            crate::vault::read_mode(&doc, &pp),
+            Ok(crate::vault::Mode::File)
+        );
+        if !is_file {
             // A store-mode (or unknown-kind) environment never gets a secrets
             // file; `secrets` and `secret_names` are kept verbatim by `render`.
             fs::atomic_write(&pp, render(&pp, &env.vars)?.as_bytes())?;

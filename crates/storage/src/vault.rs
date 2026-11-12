@@ -428,6 +428,14 @@ pub struct DeleteWarning {
     pub error: SecretStoreError,
 }
 
+/// The old `<env>.secrets.toml` could not be deleted after a successful
+/// `migrate_to_store`; the plaintext file is left behind.
+#[derive(Debug)]
+pub struct LeftoverFileWarning {
+    pub path: std::path::PathBuf,
+    pub error: StorageError,
+}
+
 fn invalid(path: &Path, key: &str, message: &str) -> SecretsError {
     SecretsError::Storage(StorageError::Invalid {
         path: path.to_path_buf(),
@@ -452,7 +460,7 @@ pub fn migrate_to_store(
     id: &CollectionId,
     kind: StoreKind,
     store: &dyn SecretStore,
-) -> Result<(), SecretsError> {
+) -> Result<Option<LeftoverFileWarning>, SecretsError> {
     let (pp, mut doc) = read_plain(root, name)?;
     if kind == StoreKind::File || read_mode(&doc, &pp)? != Mode::File {
         return Err(invalid(&pp, "secrets", "environment is not in file mode"));
@@ -465,22 +473,26 @@ pub fn migrate_to_store(
     };
     store.probe()?;
 
-    let mut created: Vec<String> = Vec::new();
-    let rollback = |created: &[String]| {
-        for a in created {
-            if store.delete(a).is_err() {
-                tracing::warn!("could not remove a migrated secret store entry during rollback");
+    // Every account this call touches, with the value to put back: `None`
+    // means the entry did not exist and is deleted again.
+    let mut touched: Vec<(String, Option<SecretValue>)> = Vec::new();
+    let rollback = |touched: &[(String, Option<SecretValue>)]| {
+        for (a, old) in touched {
+            let r = match old {
+                Some(v) => store.set(a, v),
+                None => store.delete(a),
+            };
+            if r.is_err() {
+                tracing::warn!("could not restore a secret store entry during rollback");
             }
         }
     };
     let mut copy = || -> Result<(), SecretStoreError> {
         for v in &secrets {
             let account = secret_account(id, name, &v.name);
-            let existed = store.get(&account)?.is_some();
+            let old = store.get(&account)?;
+            touched.push((account.clone(), old));
             let value = SecretValue::new(v.value.as_str());
-            if !existed {
-                created.push(account.clone());
-            }
             store.set(&account, &value)?;
             if store.get(&account)?.as_ref() != Some(&value) {
                 return Err(SecretStoreError::Other { code: None });
@@ -489,7 +501,7 @@ pub fn migrate_to_store(
         Ok(())
     };
     if let Err(e) = copy() {
-        rollback(&created);
+        rollback(&touched);
         return Err(e.into());
     }
 
@@ -497,21 +509,29 @@ pub fn migrate_to_store(
     let names: Vec<String> = secrets.iter().map(|v| v.name.clone()).collect();
     set_names(&mut doc, &names);
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
-        rollback(&created);
+        rollback(&touched);
         return Err(e.into());
     }
-    if sp.exists() {
-        std::fs::remove_file(&sp).map_err(|e| StorageError::Io {
+    // Store entries and mode are committed; a failed delete is a warning.
+    let mut leftover = None;
+    if sp.exists()
+        && let Err(e) = std::fs::remove_file(&sp)
+    {
+        tracing::warn!(environment = name, "could not delete the old secrets file");
+        leftover = Some(LeftoverFileWarning {
             path: sp.clone(),
-            source: e,
-        })?;
+            error: StorageError::Io {
+                path: sp.clone(),
+                source: e,
+            },
+        });
     }
     tracing::debug!(
         environment = name,
         count = names.len(),
         "migrated secrets to store"
     );
-    Ok(())
+    Ok(leftover)
 }
 
 /// Move an environment's store secrets back into `<env>.secrets.toml`. Any
@@ -540,17 +560,26 @@ pub fn migrate_to_file(
     }
 
     let sp = secrets_path(root, name);
-    let had_file = sp.exists();
+    let old_file = if sp.exists() {
+        Some(fs::read_to_string(&sp)?)
+    } else {
+        None
+    };
     let text = render(&sp, &secrets)?;
-    let dir = root.join("environments");
+    let dir = root.join(crate::environment::DIR);
     ensure_gitignore(&dir)?;
     fs::atomic_write_private(&sp, text.as_bytes())?;
 
     doc["secrets"] = toml_edit::value(StoreKind::File.as_str());
     doc.remove("secret_names");
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
-        if !had_file {
-            let _ = std::fs::remove_file(&sp);
+        match &old_file {
+            Some(old) => {
+                let _ = fs::atomic_write_private(&sp, old.as_bytes());
+            }
+            None => {
+                let _ = std::fs::remove_file(&sp);
+            }
         }
         return Err(e.into());
     }

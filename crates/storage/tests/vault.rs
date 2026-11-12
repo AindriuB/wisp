@@ -353,7 +353,127 @@ fn migrate_to_store_rollback_keeps_preexisting_entries() {
     s.fail_nth(4, SecretStoreError::Denied);
     assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).is_err());
     assert_eq!(s.accounts(), vec![acct("token")]);
+    assert_eq!(
+        s.get(&acct("token")).unwrap(),
+        Some(SecretValue::new("old"))
+    );
     assert!(exists(t.path(), "dev.secrets.toml"));
+}
+
+/// A store that returns a different value on every read.
+struct LyingStore(MemoryStore);
+
+impl SecretStore for LyingStore {
+    fn probe(&self) -> Result<(), SecretStoreError> {
+        self.0.probe()
+    }
+    fn get(&self, account: &str) -> Result<Option<SecretValue>, SecretStoreError> {
+        Ok(self.0.get(account)?.map(|_| SecretValue::new("different")))
+    }
+    fn set(&self, account: &str, value: &SecretValue) -> Result<(), SecretStoreError> {
+        self.0.set(account, value)
+    }
+    fn delete(&self, account: &str) -> Result<(), SecretStoreError> {
+        self.0.delete(account)
+    }
+}
+
+#[test]
+fn migrate_to_store_read_back_mismatch_rolls_back() {
+    let t = tempfile::tempdir().unwrap();
+    file_env(t.path());
+    let before = read(t.path(), "dev.toml");
+    let s = LyingStore(MemoryStore::new());
+    assert!(migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).is_err());
+    assert_eq!(read(t.path(), "dev.toml"), before);
+    assert!(exists(t.path(), "dev.secrets.toml"));
+    assert!(s.0.accounts().is_empty());
+}
+
+/// Runs `hook` on the `nth` (1-based) call to `get`.
+struct HookStore {
+    inner: MemoryStore,
+    nth: usize,
+    calls: std::sync::atomic::AtomicUsize,
+    hook: Box<dyn Fn() + Send + Sync>,
+}
+
+impl SecretStore for HookStore {
+    fn probe(&self) -> Result<(), SecretStoreError> {
+        self.inner.probe()
+    }
+    fn get(&self, a: &str) -> Result<Option<SecretValue>, SecretStoreError> {
+        let r = self.inner.get(a);
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == self.nth {
+            (self.hook)();
+        }
+        r
+    }
+    fn set(&self, a: &str, v: &SecretValue) -> Result<(), SecretStoreError> {
+        self.inner.set(a, v)
+    }
+    fn delete(&self, a: &str) -> Result<(), SecretStoreError> {
+        self.inner.delete(a)
+    }
+}
+
+#[test]
+fn migrate_to_store_final_delete_failure_is_a_warning() {
+    let t = tempfile::tempdir().unwrap();
+    file_env(t.path());
+    let sp = t.path().join("environments").join("dev.secrets.toml");
+    let hook_sp = sp.clone();
+    // After the last read-back, swap the secrets file for a directory so the
+    // final delete fails while the earlier steps succeed.
+    let s = HookStore {
+        inner: MemoryStore::new(),
+        nth: 4,
+        calls: Default::default(),
+        hook: Box::new(move || {
+            std::fs::remove_file(&hook_sp).unwrap();
+            std::fs::create_dir(&hook_sp).unwrap();
+            std::fs::write(hook_sp.join("x"), "x").unwrap();
+        }),
+    };
+    let w = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s)
+        .unwrap()
+        .expect("a warning naming the leftover file");
+    assert_eq!(w.path, sp);
+    assert!(read(t.path(), "dev.toml").contains("secrets = \"keychain\""));
+    assert_eq!(s.inner.accounts().len(), 2);
+}
+
+#[test]
+fn migrate_to_store_success_has_no_warning() {
+    let t = tempfile::tempdir().unwrap();
+    file_env(t.path());
+    let s = MemoryStore::new();
+    let w = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s).unwrap();
+    assert!(w.is_none());
+}
+
+#[test]
+fn migrate_to_file_plain_write_failure_restores_existing_secrets_file() {
+    let t = tempfile::tempdir().unwrap();
+    let s0 = MemoryStore::new();
+    store_env(t.path(), &s0);
+    write(t.path(), "dev.secrets.toml", "[vars]\nold = \"o\"\n");
+    let pp = t.path().join("environments").join("dev.toml");
+    let hook_pp = pp.clone();
+    // After the last read, replace dev.toml with a directory so writing the
+    // plain file fails after the secrets file was already replaced.
+    let s = HookStore {
+        inner: s0,
+        nth: 2,
+        calls: Default::default(),
+        hook: Box::new(move || {
+            std::fs::remove_file(&hook_pp).unwrap();
+            std::fs::create_dir(&hook_pp).unwrap();
+        }),
+    };
+    assert!(migrate_to_file(t.path(), "dev", &id(), &s).is_err());
+    assert_eq!(read(t.path(), "dev.secrets.toml"), "[vars]\nold = \"o\"\n");
+    assert_eq!(s.inner.accounts().len(), 2);
 }
 
 #[cfg(unix)]
@@ -617,4 +737,22 @@ fn save_environment_unknown_kind_never_writes_secrets_file() {
     save_environment(t.path(), &env).unwrap();
     assert!(!exists(t.path(), "dev.secrets.toml"));
     assert!(read(t.path(), "dev.toml").contains("secrets = \"keepassxc\""));
+}
+
+#[test]
+fn save_environment_non_string_secrets_never_writes_secrets_file() {
+    let t = tempfile::tempdir().unwrap();
+    write(
+        t.path(),
+        "dev.toml",
+        "secrets = { kind = \"keepassxc\" }\n[vars]\n",
+    );
+    let env = Environment {
+        name: "dev".into(),
+        vars: vec![var("host", "h")],
+        secrets: vec![var("token", SENTINEL)],
+    };
+    let _ = save_environment(t.path(), &env);
+    assert!(!exists(t.path(), "dev.secrets.toml"));
+    assert!(!read(t.path(), "dev.toml").contains(SENTINEL));
 }
