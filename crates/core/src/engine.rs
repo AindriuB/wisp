@@ -719,7 +719,10 @@ async fn perform(
         .headers
         .iter()
         .any(|h| h.name.eq_ignore_ascii_case("cookie"));
-    let own_redirects = req.client.follow_redirects && (req.auth.is_some() || has_user_cookie);
+    // Likewise any user header outside CROSS_ORIGIN_HEADERS: reqwest would keep it across origins.
+    let has_unlisted_header = req.headers.iter().any(|h| !cross_origin_keeps(&h.name));
+    let own_redirects = req.client.follow_redirects
+        && (req.auth.is_some() || has_user_cookie || has_unlisted_header);
     let client = if own_redirects {
         clients.get(&ClientSettings {
             follow_redirects: false,
@@ -997,17 +1000,7 @@ async fn perform(
         digest_header = None;
         if next.origin() != url.origin() {
             auth_live = false;
-            header_list.retain(|(n, _)| {
-                ![
-                    "authorization",
-                    "cookie",
-                    "cookie2",
-                    "proxy-authorization",
-                    "www-authenticate",
-                ]
-                .iter()
-                .any(|s| n.eq_ignore_ascii_case(s))
-            });
+            header_list.retain(|(n, _)| cross_origin_keeps(n));
         }
         url = next;
     };
@@ -1058,10 +1051,31 @@ async fn perform(
     Ok((received, handle, timings))
 }
 
+/// Headers that survive a redirect to another origin: none of them carries a credential.
+/// Everything else the user set is dropped on a cross-origin hop.
+const CROSS_ORIGIN_HEADERS: &[&str] = &[
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "content-type",
+    "user-agent",
+];
+
+fn cross_origin_keeps(name: &str) -> bool {
+    CROSS_ORIGIN_HEADERS
+        .iter()
+        .any(|s| name.eq_ignore_ascii_case(s))
+}
+
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
     // Only the causes: the top-level text embeds the URL, whose words must not influence the kind.
     let mut chain = String::new();
-    let mut message = e.to_string();
+    // `Display` appends " for url (<url>)"; the URL can hold a secret, so cut it off.
+    let top = e.to_string();
+    let mut message = match top.split_once(" for url (") {
+        Some((head, _)) => head.to_owned(),
+        None => top,
+    };
     let mut src: Option<&dyn StdError> = e.source();
     while let Some(s) = src {
         let text = s.to_string();
@@ -1105,6 +1119,15 @@ fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cross_origin_allow_list_holds_no_credential_name() {
+        for n in CROSS_ORIGIN_HEADERS {
+            assert!(!crate::redact::is_credential_name(n), "{n}");
+        }
+        assert!(cross_origin_keeps("Accept"));
+        assert!(!cross_origin_keeps("X-Api-Key"));
+    }
 
     #[test]
     fn worker_threads_are_clamped_to_one_through_two() {

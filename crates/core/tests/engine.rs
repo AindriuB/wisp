@@ -879,7 +879,7 @@ async fn a_cross_origin_redirect_drops_authorization_on_resend() {
     assert!(!second[0].headers.contains_key("cookie"));
     assert!(!second[0].headers.contains_key("cookie2"));
     assert!(!second[0].headers.contains_key("proxy-authorization"));
-    assert_eq!(second[0].headers.get("x-keep").unwrap(), "yes");
+    assert!(!second[0].headers.contains_key("x-keep"));
     assert_streamed(&second[0], TWO_MIB);
 }
 
@@ -1027,4 +1027,110 @@ fn debug_redacts_engine_config() {
     let pretty = format!("{config:#?}");
     assert!(pretty.contains("<redacted>"));
     assert!(!pretty.contains("REFRESH-MARKER-123"));
+}
+
+/// A GET carrying `headers`, sent to a server that redirects `/first` to `to`; returns both servers' requests.
+async fn get_redirect_with(
+    cross_origin: bool,
+    headers: &[(&str, &str)],
+) -> (Vec<wiremock::Request>, Vec<wiremock::Request>) {
+    let second = MockServer::start().await;
+    Mock::given(path("/second"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&second)
+        .await;
+    let first = MockServer::start().await;
+    let to = if cross_origin {
+        format!("{}/second", second.uri())
+    } else {
+        "/second".to_owned()
+    };
+    Mock::given(path("/first"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", to.as_str()))
+        .mount(&first)
+        .await;
+    Mock::given(path("/second"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&first)
+        .await;
+    let mut req = get(format!("{}/first", first.uri()));
+    req.headers = headers
+        .iter()
+        .map(|(n, v)| Header {
+            name: (*n).into(),
+            value: (*v).into(),
+        })
+        .collect();
+    let evs = send_and_collect(req).await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    (
+        first.received_requests().await.unwrap(),
+        second.received_requests().await.unwrap(),
+    )
+}
+
+const AMZ_HEADERS: [(&str, &str); 3] = [
+    ("X-Amz-Date", "20240101T000000Z"),
+    ("X-Amz-Security-Token", "SECRETVAL"),
+    ("Host", "example.invalid"),
+];
+
+#[tokio::test]
+async fn a_cross_origin_redirect_drops_amz_and_host_headers() {
+    let (first, second) = get_redirect_with(true, &AMZ_HEADERS).await;
+    assert!(first[0].headers.contains_key("x-amz-date"));
+    assert_eq!(second.len(), 1);
+    for n in ["x-amz-date", "x-amz-security-token"] {
+        assert!(!second[0].headers.contains_key(n), "{n}");
+    }
+    assert_ne!(second[0].headers.get("host").unwrap(), "example.invalid");
+}
+
+#[tokio::test]
+async fn a_same_origin_redirect_keeps_amz_and_host_headers() {
+    let (first, _) = get_redirect_with(false, &AMZ_HEADERS).await;
+    assert_eq!(first.len(), 2);
+    assert!(first[1].headers.contains_key("x-amz-date"));
+    assert!(first[1].headers.contains_key("x-amz-security-token"));
+    assert_eq!(first[1].headers.get("host").unwrap(), "example.invalid");
+}
+
+#[tokio::test]
+async fn a_cross_origin_redirect_keeps_accept_and_drops_custom_headers() {
+    let h = [("X-Api-Key", "SECRETVAL"), ("Accept", "text/plain")];
+    let (_, second) = get_redirect_with(true, &h).await;
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].headers.get("accept").unwrap(), "text/plain");
+    assert!(!second[0].headers.contains_key("x-api-key"));
+}
+
+#[tokio::test]
+async fn a_same_origin_redirect_keeps_custom_headers() {
+    let h = [("X-Api-Key", "SECRETVAL"), ("Accept", "text/plain")];
+    let (first, _) = get_redirect_with(false, &h).await;
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[1].headers.get("x-api-key").unwrap(), "SECRETVAL");
+}
+
+#[tokio::test]
+async fn a_connect_error_is_reported_without_url_or_secret() {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    drop(l);
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(get(format!(
+        "http://127.0.0.1:{port}/x?api_key=SECRETVAL"
+    ))));
+    match collect_until_terminal(&rx).await.pop().unwrap() {
+        Event::Failed { error, .. } => {
+            assert_eq!(error.kind, ErrorKind::Connect);
+            let shown = format!("{error} {error:?}");
+            assert!(!shown.contains("SECRETVAL"), "{shown}");
+            assert!(!shown.contains("api_key"), "{shown}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
 }
