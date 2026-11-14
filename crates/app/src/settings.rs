@@ -375,8 +375,10 @@ mod tests {
     #[test]
     fn absolute_override_beats_portable_and_config_dir() {
         let e = Path::new("/exe");
-        let o = Some(Path::new("/over"));
-        let want = Some(PathBuf::from("/over").join("settings.toml"));
+        // `/over` has no drive letter, so it is not absolute on Windows.
+        let over = std::env::temp_dir().join("over");
+        let o = Some(over.as_path());
+        let want = Some(over.join("settings.toml"));
         assert_eq!(location(e, true, Some(Path::new("/c")), o), want);
         assert_eq!(location(e, false, Some(Path::new("/c")), o), want);
         assert_eq!(location(e, false, None, o), want);
