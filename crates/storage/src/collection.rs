@@ -235,6 +235,9 @@ fn id_from_doc(doc: &DocumentMut, path: &Path) -> Result<Option<CollectionId>, S
 /// Read the top-level `id` of `collection.toml`. A missing file or key is `Ok(None)`.
 pub fn read_collection_id(root: &Path) -> Result<Option<CollectionId>, StorageError> {
     let path = root.join(COLLECTION_FILE);
+    if !fs::confined_regular_file(root, &path, "collection.toml")? {
+        return Ok(None);
+    }
     match read_doc(&path)? {
         Some(doc) => id_from_doc(&doc, &path),
         None => Ok(None),

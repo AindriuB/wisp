@@ -427,7 +427,7 @@ pub fn load_environment_with(
 ) -> Result<LoadedEnvironment, StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
-    let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
+    let doc = codec::parse(&pp, &crate::environment::read_plain_text(root, &pp)?)?;
     let mode = read_mode(&doc, &pp)?;
     let names = read_names(&doc, &pp)?;
     let vars = codec::read_vars(doc.as_table(), "vars", &pp)?;
@@ -456,13 +456,8 @@ pub fn load_environment_with(
         }
     };
     let failed = |reason: FailReason| finish(Vec::new(), LoadStatus::Failed { reason });
-    let file_secrets = || -> Result<Vec<Var>, StorageError> {
-        if sp.exists() {
-            crate::environment::load_vars(&sp)
-        } else {
-            Ok(Vec::new())
-        }
-    };
+    let file_secrets =
+        || -> Result<Vec<Var>, StorageError> { crate::environment::load_secrets_file(root, &sp) };
 
     let kind = match mode {
         Mode::File => return Ok(finish(file_secrets()?, LoadStatus::File)),
@@ -654,7 +649,7 @@ pub fn rebind(data: &DataDir, id: &CollectionId, new_root: &Path) -> Result<(), 
 fn read_plain(root: &Path, name: &str) -> Result<(PathBuf, DocumentMut), StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
-    let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
+    let doc = codec::parse(&pp, &crate::environment::read_plain_text(root, &pp)?)?;
     Ok((pp, doc))
 }
 
@@ -747,11 +742,7 @@ pub fn migrate_to_store(
         return Err(invalid(&pp, "secrets", "environment is not in file mode"));
     }
     let sp = secrets_path(root, name);
-    let secrets = if sp.exists() {
-        crate::environment::load_vars(&sp)?
-    } else {
-        Vec::new()
-    };
+    let secrets = crate::environment::load_secrets_file(root, &sp)?;
     check_bind(ctx, id, root)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
