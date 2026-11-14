@@ -231,9 +231,10 @@ fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String
     // without hashing them.
     let max_key = vars.keys().map(String::len).max().unwrap_or(0);
     let mut rest = url;
-    // Absolute offset of the next `}` at or after the cursor; `Some(None)`
-    // once a search found none, so nothing left can match.
-    let mut close_at: Option<Option<usize>> = None;
+    // Absolute offset of the next `}` at or after the cursor, found once and
+    // reused until the cursor passes it. A search that finds none ends the
+    // loop, since nothing left can match.
+    let mut close_at: Option<usize> = None;
     let mut base = 0; // offset of `rest` within `url`
     while let Some(open) = {
         let found = rest.find('{');
@@ -245,12 +246,12 @@ fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String
         let after = &rest[open + 1..];
         let after_at = base + open + 1;
         let close = match close_at {
-            Some(c) if c.is_none_or(|c| c >= after_at) => c,
+            Some(c) if c >= after_at => Some(c),
             _ => {
                 let c = after.find('}').map(|k| after_at + k);
                 #[cfg(test)]
                 bump_by(&SUBST_STEPS, c.map_or(after.len(), |c| c - after_at) + 1);
-                close_at = Some(c);
+                close_at = c;
                 c
             }
         };
