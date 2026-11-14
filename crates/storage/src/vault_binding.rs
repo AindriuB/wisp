@@ -402,17 +402,17 @@ fn simplify_verbatim(p: &Path) -> PathBuf {
     {
         use std::path::{Component, Prefix};
         let mut it = p.components();
-        if let Some(Component::Prefix(pre)) = it.next() {
-            if let Prefix::VerbatimDisk(d) = pre.kind() {
-                let mut out = PathBuf::from(format!("{}:", d as char));
-                out.push(std::path::MAIN_SEPARATOR_STR);
-                for c in it {
-                    if !matches!(c, Component::RootDir) {
-                        out.push(c.as_os_str());
-                    }
+        if let Some(Component::Prefix(pre)) = it.next()
+            && let Prefix::VerbatimDisk(d) = pre.kind()
+        {
+            let mut out = PathBuf::from(format!("{}:", d as char));
+            out.push(std::path::MAIN_SEPARATOR_STR);
+            for c in it {
+                if !matches!(c, Component::RootDir) {
+                    out.push(c.as_os_str());
                 }
-                return out;
             }
+            return out;
         }
     }
     p.to_path_buf()
