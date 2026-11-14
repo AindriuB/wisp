@@ -7,6 +7,7 @@
 - crates/core/src/redact.rs (including its inline tests)
 - crates/storage/src/history.rs (including its inline tests)
 - crates/storage/tests/history.rs
+- crates/app/src/workspace.rs — `sanitize_redacted` and its tests only. Task 121 concurrently owns `finish_env_load` in the same file; whichever merges second rebases. No other part of workspace.rs may change.
 
 ## Goal
 History files live in the per-user data dir and must hold no secret values. Five gaps still write one in plain text: credential words missing from the shared list, response headers not checked by name, `Set-Cookie` with no `name=`, path variables, and JSON bodies with a duplicate secret key. Carried from task 99 AC45 (history and core parts), AC46, AC10, AC16, AC47.
@@ -26,6 +27,7 @@ History files live in the per-user data dir and must hold no secret values. Five
 - [ ] AC5 (99-AC16) Path variables (`Request.path`) whose names pass `is_credential_name` are emptied the same way as query params, a `{{ref}}` value is kept, and each is noted as `path.<name>`. A test stores path vars `token=SECRETVAL` and `id=42` and asserts `SECRETVAL` is in no stored file and `42` survives.
 - [ ] AC6 (99-AC47) A JSON body holding a duplicate key in any object, at any depth, is dropped whole and `body` is noted (fail closed). A test stores `{"token":"SECRETVAL","token":"{{t}}"}` and asserts `SECRETVAL` appears in no stored file. A body without duplicate keys is redacted exactly as today.
 - [ ] AC7 The existing tests in crates/storage/tests/history.rs pass. Where a new fragment changes an expected value, the test is updated to the new expectation, and the PR description names each such test.
+- [ ] AC8 (Decisions 2026-11-14) A resend of a history entry whose path var is noted `path.<name>` drops that var in `sanitize_redacted`, so resolution reports it missing (`MissingPathParam`) and nothing reaches the wire. A test in crates/app/src/workspace.rs resends `DELETE {{base}}/sessions/{token}` with `token` noted `path.token` and asserts the missing-variable result and no send.
 
 ## Checks
 cargo writes no JUnit XML here, so these are command checks.
@@ -39,6 +41,9 @@ cargo writes no JUnit XML here, so these are command checks.
   run: `! rg -n 'SECRET_FRAGMENTS' crates/storage crates/app`
 - `storage-suite` command — AC7 (the importers share the list)
   run: `cargo test -p wisp-storage`
+- `app-resend` command — AC8
+  run: `cargo test -p wisp-app sanitize_redacted`
+  pass: exit 0, 0 failed, at least 1 passed.
 - `lint` command — all
   run: `cargo fmt --check && cargo clippy --workspace --all-targets --locked -- -D warnings`
 
@@ -54,3 +59,11 @@ cargo writes no JUnit XML here, so these are command checks.
 - crates/storage/src/import/**: the importers pick up the new fragments through `is_credential_name` with no edit. If an importer test fails because of the new fragments, stop and report; do not edit import files.
 - 99-AC8, AC9, AC11, AC12, AC13, AC14, AC15, AC17, AC48, AC49, AC50 (deferred history items).
 - The opt-in setting for unredacted `Set-Cookie`.
+
+## Decisions
+- 2026-11-14 (user decision, code review round 1 of PR #62): on resend from history, a path variable that history stored redacted (noted as `path.<name>`) is dropped, so resolution reports it missing (`MissingPathParam`) and the request is not sent; the user re-enters the value. Fail closed. This adds crates/app/src/workspace.rs (`sanitize_redacted` and its tests only) to Owns, and AC8.
+
+## Review round 1 — findings (HEAD ea2203d)
+- [P2] crates/storage/src/history.rs:330-334 — path vars are stored empty and noted `path.<name>`, but the app's resend sanitiser (`sanitize_redacted`, crates/app/src/workspace.rs:693-774) has no `path.` case, so a resend sends an empty path segment (`DELETE {{base}}/sessions/` instead of holding back). Settled by the Decisions entry above.
+- [NOTE, follow-up] crates/core/src/redact.rs:16-22 — the new fragments are substring matches: importers now move headers like X-Bypass-Cache / X-Assignment-Id into the placeholder secrets env, and Text/XML history bodies containing words like "design", "signal", "compass" are dropped whole.
+- [NOTE, follow-up] crates/storage/src/history.rs:534-545 — response header names share the unprefixed `redacted` namespace with request headers; a same-named request header with an intentionally empty value is disabled on resend, and WWW-Authenticate etc. appear in every resend notice.
