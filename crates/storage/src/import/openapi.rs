@@ -15,6 +15,20 @@ use super::{
 /// document; shared `$ref`s are copied once per use.
 const MAX_EXAMPLE_BYTES: usize = 64 * 1024 * 1024;
 
+// Work counters read by the linear-work tests; thread-local so parallel
+// tests do not see each other's counts.
+#[cfg(test)]
+thread_local! {
+    static PARAM_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static MERGE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SUBST_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn bump(c: &'static std::thread::LocalKey<std::cell::Cell<usize>>) {
+    c.with(|c| c.set(c.get() + 1));
+}
+
 fn spend(budget: &mut usize, n: usize) -> Result<(), ImportError> {
     *budget = budget.checked_sub(n).ok_or_else(|| {
         ImportError::TooLarge("work over budget while resolving $refs and parameters".into())
@@ -186,6 +200,8 @@ fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String
     let mut out = String::new();
     let mut rest = url;
     while let Some(open) = rest.find('{') {
+        #[cfg(test)]
+        bump(&SUBST_STEPS);
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
         match after.find('}') {
@@ -418,6 +434,8 @@ fn operation(
     let mut index: HashMap<(&str, &str), usize> = HashMap::new();
     for list in [item.get("parameters"), op.get("parameters")] {
         for p in list.and_then(Value::as_array).into_iter().flatten() {
+            #[cfg(test)]
+            bump(&PARAM_VISITS);
             spend(budget, VISIT_COST)?;
             let Some(p) = deref(doc, p, &at, result, budget)? else {
                 continue;
@@ -428,6 +446,8 @@ fn operation(
             );
             // Hashing and comparing the key costs its length on every visit.
             spend(budget, key.0.len() + key.1.len())?;
+            #[cfg(test)]
+            bump(&MERGE_STEPS);
             if let Some(&i) = index.get(&key) {
                 params[i] = p;
             } else {
@@ -663,7 +683,7 @@ mod tests {
 
     #[test]
     fn shared_ref_parameter_names_are_charged() {
-        let t = std::time::Instant::now();
+        PARAM_VISITS.with(|c| c.set(0));
         let big = "n".repeat(3 * 1024 * 1024);
         let refs = vec![r##"{"$ref":"#/components/parameters/P"}"##; 3000].join(",");
         let doc = format!(
@@ -675,7 +695,11 @@ mod tests {
             "{:?}",
             r.map(|r| r.warnings)
         );
-        assert!(t.elapsed().as_secs() < 2);
+        // Each visit charges the 3 MiB name, so the 64 MiB budget allows at
+        // most MAX / name_len visits (plus the one that trips it).
+        let visits = PARAM_VISITS.with(|c| c.get());
+        let bound = MAX_EXAMPLE_BYTES / big.len() + 2;
+        assert!(visits <= bound, "{visits} visits, bound {bound}");
     }
 
     #[test]
@@ -761,10 +785,13 @@ mod tests {
         let doc = format!(
             r#"{{"openapi":"3.0.0","paths":{{"/a":{{"parameters":[{params}],"get":{{"parameters":[{params}]}}}}}}}}"#
         );
-        let t = std::time::Instant::now();
+        MERGE_STEPS.with(|c| c.set(0));
         let r = parse(doc.as_bytes()).unwrap();
         assert_eq!(requests(&r.items)[0].params.len(), 60_000);
-        assert!(t.elapsed().as_secs() < 2);
+        // One index lookup per parameter in the path and operation lists.
+        let steps = MERGE_STEPS.with(|c| c.get());
+        let bound = 2 * 60_000 + 1;
+        assert!(steps <= bound, "{steps} merge steps, bound {bound}");
     }
 
     #[test]
@@ -806,7 +833,7 @@ mod tests {
     fn brace_heavy_url_is_linear() {
         let vars = serde_json::json!({"z": {}});
         let vars = vars.as_object().unwrap();
-        let start = std::time::Instant::now();
+        SUBST_STEPS.with(|c| c.set(0));
         let big = format!("{}{}", "{".repeat(30_000), "a".repeat(30_000));
         assert_eq!(substitute(&big, vars).unwrap(), big);
         let closed = format!("{}}}", "{".repeat(60_000));
@@ -816,7 +843,11 @@ mod tests {
             substitute(&over, vars),
             Err(ImportError::TooLarge(_))
         ));
-        assert!(start.elapsed().as_millis() < 500);
+        // One scan step per `{` in the inputs that are scanned at all (the
+        // oversize input is rejected up front), plus one for the final pass.
+        let steps = SUBST_STEPS.with(|c| c.get());
+        let bound = (30_000 + 60_000) + 3;
+        assert!(steps <= bound, "{steps} scan steps, bound {bound}");
     }
 
     #[test]
