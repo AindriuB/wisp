@@ -711,6 +711,15 @@ fn sanitize_redacted(req: &mut Request, redacted: &[String]) -> (Vec<String>, Ve
                 note(&mut adjustments, format!("removed var {n}"));
                 handled = true;
             }
+        } else if let Some(n) = name.strip_prefix("path.") {
+            // Fail closed: drop the emptied path var so resolution reports it
+            // missing and nothing is sent until the user re-enters it.
+            let before = req.path.len();
+            req.path.retain(|v| !(v.name == n && v.value.is_empty()));
+            if req.path.len() != before {
+                note(&mut adjustments, format!("removed path variable {n}"));
+                handled = true;
+            }
         } else if let Some(n) = name.strip_prefix("params.") {
             for p in req
                 .params
@@ -4224,6 +4233,29 @@ mod tests {
         assert_eq!(header(&p, "x-api-key"), None);
         assert_eq!(header(&p, "accept"), Some("*/*"));
         assert!(p.notice.unwrap().contains("disabled header X-Api-Key"));
+    }
+
+    #[test]
+    fn redacted_path_var_is_dropped_and_the_resend_is_refused() {
+        let mut d = draft();
+        d.method = Method::Delete;
+        d.url = "http://example.test/sessions/{token}".into();
+        d.path = vec![Var {
+            name: "token".into(),
+            value: String::new(),
+        }];
+        // The resend path sanitises the stored request, then sends the result.
+        let (adj, left) = sanitize_redacted(&mut d, &["path.token".into()]);
+        assert!(d.path.is_empty() && left.is_empty() && adj.len() == 1);
+        let o = body_origin(Body::None, &[]);
+        let e = try_send(&d, &o).err().expect("must not be sent");
+        assert!(
+            e.problems
+                .iter()
+                .any(|p| matches!(p, Problem::MissingPathParam { name } if name == "token")),
+            "{:?}",
+            e.problems
+        );
     }
 
     #[test]
