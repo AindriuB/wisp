@@ -492,15 +492,15 @@ fn postman_object_url_kept_whole_ignores_explicit_query() {
 }
 
 #[test]
-fn templated_port_is_host_port_not_userinfo() {
+fn templated_port_is_host_port_not_userinfo_and_does_not_warn() {
     for url in [
         "http://localhost:{{port}}/api?email=a@b.com",
         "http://{{host}}:{{port}}/users/me@example.com",
     ] {
         let r = curl::parse(&format!("curl '{url}'")).unwrap();
-        assert_eq!(may_contain_warnings(&r).len(), 1, "{url}");
+        assert_eq!(may_contain_warnings(&r).len(), 0, "{url}");
         let r = postman_url(url);
-        assert_eq!(may_contain_warnings(&r).len(), 1, "{url}");
+        assert_eq!(may_contain_warnings(&r).len(), 0, "{url}");
     }
 }
 
