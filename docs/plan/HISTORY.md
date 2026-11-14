@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-14 — Save refuses to overwrite a file changed on disk (task 128)
+Plain Save (Ctrl-S) no longer overwrites a file that changed on disk. While a tab is `ChangedOnDisk`, `Workspace::save` returns `Err` and writes nothing, the tab stays dirty and the banner stays up with the notice "Changed on disk: choose Keep mine to overwrite, or Reload". Keep mine followed by Save writes the draft. With no collection open, Save returns `Err` "Open a collection to save", shown once. The 0.3.0 design work found the hole, and the user chose to fix it before the 0.2.0 tag. The same day, #75 brought `docs/architecture.md` up to 0.2.0 and #73 committed the 0.3.0 spec, `docs/plan/specs/2026-11-14-wisp-0-3-0.md`.
+**Cost:** Four gpui tests cover it, and the refusal test was shown to fail with the guard removed. The guard only reads watcher-processed state, so an external edit saved over before the watcher event lands is still overwritten, and a clean tab whose external edit is unparseable is Ignored and later overwritten; both are open follow-ups in PLAN.md. The task's check command used `--lib` on a bin crate, so do not copy it.
+
 ## 2026-11-14 — Windows distribution wave (tasks 122-127) and 0.2.0 prep
 Windows now has a test and lint job in CI, and the release workflow can sign the Windows exe with SignPath, build an unsigned MSIX and feed a winget manifest generator. The version is 0.2.0, with README and `docs/plan/release-notes-0.2.0.md`; 0.1.1 was never released and its fixes ship in 0.2.0 (user decision), so the 0.1.1 dryrun draft was deleted. README and notes are qualified on Windows file permissions, and task 99 AC76 tracks the ACL work.
 

@@ -28,6 +28,8 @@ Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple col
 - **Windows distribution (tasks 122-127, PRs #65-#71):** **Complete.** Windows CI (54-CI, 99-AC38) is green, so wave 3 and the Windows work are done. Also landed: SignPath signing (124), winget manifests (125), unsigned MSIX artifact (126), winget CRLF fix (127) and the 0.2.0 prep (version, README, release notes); see HISTORY.
 - **Next for 0.2.0, in order:** (1) the release dry run with the size gate (99-AC39) to produce a release candidate; (2) the user's hand test, including the signed macOS keychain; (3) tag v0.2.0 at the tested commit; (4) publish; (5) the AAR (never committed).
 
+- **Next version:** 0.3.0, spec `docs/plan/specs/2026-11-14-wisp-0-3-0.md`. Prioritise the wall-clock-assert fix (34-19) early: `many_parameters_merge_in_linear_time` failed on the Windows CI leg 3+ times on 2026-11-14.
+
 **User setup (optional channels):** none of these block 0.2.0.
 - SignPath Foundation application, then the repository secret and variables (`scripts/release/sign-windows/README.md`).
 - Confirm the winget PackageIdentifier and open the winget-pkgs PR after 0.2.0 is published (`packaging/winget/README.md`).
@@ -76,6 +78,14 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 
 ### Hardening backlog (post-0.2.0)
 `docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled.
+
+### Follow-ups from task 128 (Save and disk conflicts, not 0.2.0)
+- 🔒 data loss: Save checks only watcher-processed state. An external edit saved over before the watcher event lands is overwritten; it needs a re-read or stat at write time. Ties to the 0.3.0 spec's open question 1.
+- 🔒 data loss: on a clean tab, an external edit that leaves the file unparseable is Ignored (`draft.rs:76-80`), so no banner shows and a later save overwrites it.
+- `mark_saved` does not reset `DeletedOnDisk` (`tab.rs:209-213`).
+- Test (b) compares only the URL, not the whole request.
+- Task 128's check command used `--lib` on a bin crate.
+- README says macOS has no portable mode, but `data_dir.rs` and `settings.rs` honour the portable marker on every OS; reconcile.
 
 ### Follow-ups from tasks 122-127 (Windows distribution, not 0.2.0)
 - winget (125): `winget.yml:47` and the README hardcode the `AindriuB/Wisp` path, so the AC4 byte check is skipped silently when the identifier changes.
