@@ -1838,6 +1838,11 @@ impl Workspace {
                         format!("Cannot switch environment: {e}").into(),
                     ));
                 } else {
+                    // Fail closed: the loader refused this environment, so no secret from the
+                    // earlier load stays in use. Plain vars are kept.
+                    if let Some(env) = c.active_env.as_mut() {
+                        env.secrets.clear();
+                    }
                     c.env_status = Some(EnvStatus { env: name, state });
                     cx.emit(WorkspaceEvent::Notice(
                         format!("Environment reload failed: {e}").into(),
@@ -4592,6 +4597,56 @@ mod env_wiring_tests {
             fx.ws
                 .read_with(cx, |w, _| persist_refresh_for(&w.collections[0]))
         );
+    }
+
+    #[gpui::test]
+    fn failed_reload_clears_active_secrets(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        fx.store
+            .set(
+                &secret_account(&CollectionId::parse(ID).unwrap(), "dev", "token"),
+                &SecretValue::new("SECRETVAL"),
+            )
+            .unwrap();
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        let has_secret = |cx: &mut TestAppContext| {
+            fx.ws.read_with(cx, |w, _| {
+                w.collections[0]
+                    .active_env
+                    .as_ref()
+                    .is_some_and(|e| e.secrets.iter().any(|s| s.value == "SECRETVAL"))
+            })
+        };
+        assert!(has_secret(cx), "precondition: secret loaded");
+        let root = fx
+            .ws
+            .read_with(cx, |w, _| w.collections[0].tree.root.clone());
+        fx.ws.update(cx, |w, cx| {
+            let generation = w.collections[0].env_gen;
+            let failed = vault::LoadResult {
+                loaded: Err("keychain binding no longer checks".into()),
+                can_share: false,
+                secrets_file: false,
+            };
+            w.finish_env_load(
+                &root,
+                generation,
+                "dev".into(),
+                false,
+                (None, None),
+                failed,
+                cx,
+            );
+        });
+        assert!(!has_secret(cx));
+        let errored = fx.ws.read_with(cx, |w, _| {
+            matches!(
+                w.collections[0].env_status.as_ref().map(|s| &s.state),
+                Some(EnvState::Error(_))
+            )
+        });
+        assert!(errored);
     }
 
     #[gpui::test]
