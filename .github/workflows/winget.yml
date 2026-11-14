@@ -46,7 +46,7 @@ jobs:
           echo "MANIFEST_ROOT=$RUNNER_TEMP/out/manifests" >> "$GITHUB_ENV"
           committed="packaging/winget/manifests/a/AindriuB/Wisp/$version"
           if [ -d "$committed" ]; then
-            diff -r "$committed" "$RUNNER_TEMP/out/manifests/a/AindriuB/Wisp/$version"
+            diff -r --strip-trailing-cr "$committed" "$RUNNER_TEMP/out/manifests/a/AindriuB/Wisp/$version"
             echo "::notice::generated manifest is byte-identical to the committed $version manifest"
           else
             echo "::notice::no committed manifest for $version yet; commit the artifact"
