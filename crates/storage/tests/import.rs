@@ -420,3 +420,20 @@ fn ipv6_host_with_at_in_path_is_not_userinfo() {
     assert!(request.url.contains("[::1]:8080"), "{}", request.url);
     assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
 }
+
+#[test]
+fn postman_password_with_raw_question_mark_leaks_nothing() {
+    assert_result_no_leak(&postman_url("https://u:?SECPW@h/x"), "SECPW");
+    assert_result_no_leak(&postman_url("https://u:ab?SECPW@h/x"), "SECPW");
+    assert_result_no_leak(&postman_url("https://u:ab?SECPW@h/x"), "ab");
+}
+
+#[test]
+fn postman_host_port_cut_by_question_mark_is_kept_with_warning() {
+    let r = postman_url("https://u:12?34@h/x");
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, "https://u:12?34@h/x");
+    assert_eq!(may_contain_warnings(&r).len(), 1);
+}

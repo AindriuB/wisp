@@ -281,7 +281,21 @@ fn split_url(
     variables: &[Value],
     query: Option<Vec<KeyValue>>,
 ) -> (String, Vec<KeyValue>, Vec<Var>) {
-    let (base, q) = raw.split_once('?').unwrap_or((raw, ""));
+    // Userinfo comes off before the query is cut: a raw `?` in a password must
+    // not leak into params. It is put back afterwards for `request_item`.
+    let (stripped, info) = super::split_userinfo(raw);
+    let removed = raw.len() - stripped.len();
+    let scheme_end = super::authority_start(raw);
+    let userinfo_text = info
+        .as_ref()
+        .map(|_| &raw[scheme_end..scheme_end + removed]);
+    // A kept `name:<digits>` authority may hide a password: keep the whole URL.
+    let keep_whole = info.is_none() && super::may_hold_credentials(raw);
+    let (base, q) = if keep_whole {
+        (stripped.as_str(), "")
+    } else {
+        stripped.split_once('?').unwrap_or((stripped.as_str(), ""))
+    };
     let params = query.unwrap_or_else(|| parse_query(q));
     // Find where the path starts: after the scheme and host.
     let after_scheme = base.find("://").map_or(0, |i| i + 3);
@@ -321,7 +335,11 @@ fn split_url(
             _ => seg.to_string(),
         })
         .collect();
-    (format!("{head}{}", segs.join("/")), params, vars)
+    let mut url = format!("{head}{}", segs.join("/"));
+    if let Some(u) = userinfo_text {
+        url.insert_str(scheme_end.min(url.len()), u);
+    }
+    (url, params, vars)
 }
 
 fn body_of(cx: &mut Ctx, body: Option<&Value>, headers: &[KeyValue], at: &str) -> Body {
