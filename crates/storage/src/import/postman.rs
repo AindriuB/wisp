@@ -148,12 +148,11 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
     } else {
         parse_method(&method_text).unwrap_or(Method::Get)
     };
-    let (url, params, path_vars) = match raw {
+    let (url, params, path_vars, maybe_creds) = match raw {
         Some(Value::String(s)) => split_url(s, &[], None),
         Some(r) => url_of(r.get("url")),
-        None => (String::new(), Vec::new(), Vec::new()),
+        None => (String::new(), Vec::new(), Vec::new(), false),
     };
-    let maybe_creds = super::may_hold_credentials(&url);
     let (url, userinfo) = super::split_userinfo(&url);
     let name = if name.is_empty() {
         request_name(method_name(method), &url)
@@ -219,7 +218,7 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
 
 /// URL string or object into (url, params, path vars). The query is cut off
 /// into params, except for a kept `name:<digits>?...@` URL (see `split_url`).
-fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>) {
+fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>, bool) {
     match url {
         Some(Value::String(s)) => split_url(s, &[], None),
         Some(o @ Value::Object(_)) => {
@@ -273,7 +272,7 @@ fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>) {
             });
             split_url(&raw, array(o.get("variable")), explicit)
         }
-        _ => (String::new(), Vec::new(), Vec::new()),
+        _ => (String::new(), Vec::new(), Vec::new(), false),
     }
 }
 
@@ -281,7 +280,9 @@ fn split_url(
     raw: &str,
     variables: &[Value],
     query: Option<Vec<KeyValue>>,
-) -> (String, Vec<KeyValue>, Vec<Var>) {
+) -> (String, Vec<KeyValue>, Vec<Var>, bool) {
+    // The credentials flag is decided on the raw URL: the query is cut below.
+    let maybe_creds = super::may_hold_credentials(raw);
     // Userinfo comes off before the query is cut: a raw `?` in a password must
     // not leak into params. It is put back afterwards for `request_item`.
     let (stripped, info) = super::split_userinfo(raw);
@@ -350,7 +351,7 @@ fn split_url(
     if let Some(u) = userinfo_text {
         url.insert_str(scheme_end.min(url.len()), u);
     }
-    (url, params, vars)
+    (url, params, vars, maybe_creds)
 }
 
 fn body_of(cx: &mut Ctx, body: Option<&Value>, headers: &[KeyValue], at: &str) -> Body {

@@ -449,6 +449,17 @@ fn postman_host_port_then_path_keeps_params_and_path_var() {
     assert_eq!(names, ["email", "x"]);
     assert_eq!(request.path.len(), 1);
     assert_eq!(request.path[0].name, "id");
+    assert_eq!(may_contain_warnings(&r).len(), 1);
+}
+
+#[test]
+fn postman_host_port_slash_then_query_at_warns() {
+    let r = postman_url("https://u:1234/ab?cd@h/x");
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, "https://u:1234/ab");
+    assert_eq!(may_contain_warnings(&r).len(), 1);
 }
 
 #[test]
