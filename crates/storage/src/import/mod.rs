@@ -315,7 +315,7 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         // An empty port can never be a real port, so it counts as userinfo.
         // `http:h/x@y` is a scheme with no slash (host `h`), not userinfo.
         let looks_like_userinfo = seg.split_once(':').is_some_and(|(h, p)| {
-            !h.is_empty()
+            (!h.is_empty() || scheme_end > 0)
                 && !h.starts_with('[')
                 && !["http", "https", "ws", "wss"]
                     .iter()
@@ -329,7 +329,7 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
             return (url.to_string(), None);
         };
         let limit = rest[first_at..]
-            .find('/')
+            .find(['/', '?', '#'])
             .map_or(rest.len(), |i| first_at + i);
         match rest[..limit].rfind('@') {
             Some(at) => at,
@@ -355,7 +355,7 @@ pub(crate) fn may_hold_credentials(url: &str) -> bool {
         return false;
     };
     !seg.contains('@')
-        && !h.is_empty()
+        && (!h.is_empty() || authority_start(url) > 0)
         && !seg.starts_with('[')
         && is_port_like(p)
         && rest[end..].contains('@')

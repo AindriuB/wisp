@@ -108,3 +108,14 @@ AC2 before the round 2 rewrite:
 - AC5 — postman.rs:296-298 with mod.rs:297 — `keep_whole` and the may-contain-credentials warning key off `is_port_like`, which accepted a templated port, so Postman `http://localhost:{{port}}?email=a@b.com`, `http://{{host}}:{{port}}?email=a@b.com` and `{{host}}:{{port}}?email=a@b.com` kept the whole URL with empty params (and dropped an explicit query array); main gave url `http://localhost:{{port}}` with params `[email=a@b.com]`. Fix: the ambiguity, keep-whole and warning logic applies only to a non-empty all-digit port; a templated segment is plain host:port.
 - AC5 — mod.rs:283-315 — `http:h/x@y` (scheme with no slash) imported as url `y` with Basic auth `http`/`h/x` in secrets; main kept it unchanged. Fix: only `http:/` and `https:///`-style forms are lenient; a scheme with no slash keeps main's behaviour.
 - Added permanent test `url_shapes_import_as_on_main` (tests/import.rs): a table of URL shapes through curl and Postman asserting url, params, path vars, auth and secrets equal main's (7ec7505).
+
+## PR #60 review round 1 (HEAD c3e74e2)
+- 60-1 (Medium, security) mod.rs:318 — empty-username userinfo (`https://:SEC/RET@h/x`) kept in request TOML, no warning. Fixed this round.
+- 60-2 (Medium, security) mod.rs:331 — no path and `@` in query: authority ran to the last `@` (`https://u:SEC/RET@h?email=a@b.com` sent creds to `b.com`). Fixed this round.
+- 60-3 (Medium) tests/import.rs:237 — `assert_no_leak` never checked the secrets file. Fixed this round.
+- 60-4 (follow-up) username-only token with raw `/`, `?` or `#` stays in the URL (at least warn).
+- 60-5 (follow-up) curl.rs:600 `--negotiate -u :` claims kept-as-secrets, returns Inherit.
+- 60-6 (follow-up) single-brace `{port}` plus a later `@` is treated as userinfo.
+- 60-7 (follow-up) backslash lenient scheme is not split.
+- 60-8 (follow-up) postman.rs:297 `may_hold_credentials` computed twice.
+- 60-9 (follow-up) curl.rs:596 auth scheme matched by string.

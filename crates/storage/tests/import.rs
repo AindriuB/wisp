@@ -236,6 +236,12 @@ fn credentials_never_reach_committed_files() {
 /// Import `cmd` with curl, write it, and assert no TOML other than the secrets
 /// file contains any needle; at least one needle must be in the secrets file.
 fn assert_no_leak(cmd: &str, needles: &[&str]) {
+    assert_no_leak_with(cmd, needles, true);
+}
+
+/// `referenced` is false where the request carries no reference by design
+/// (`--ntlm`/`--negotiate` import as Inherit).
+fn assert_no_leak_with(cmd: &str, needles: &[&str], referenced: bool) {
     let r = curl::parse(cmd).unwrap();
     let d = collection();
     write(d.path(), Path::new(""), &r, "imported").unwrap();
@@ -252,6 +258,42 @@ fn assert_no_leak(cmd: &str, needles: &[&str]) {
             );
         }
     }
+    assert_kept_in_secrets(&r, &files, needles, cmd, referenced);
+}
+
+/// At least one needle is in a written `.secrets.toml`, and a request file
+/// holds the `{{name}}` reference to the secret that carries it.
+fn assert_kept_in_secrets(
+    r: &ImportResult,
+    files: &[(PathBuf, String)],
+    needles: &[&str],
+    what: &str,
+    referenced: bool,
+) {
+    let secrets_text: String = files
+        .iter()
+        .filter(|(p, _)| p.to_string_lossy().ends_with(".secrets.toml"))
+        .map(|(_, t)| t.as_str())
+        .collect();
+    let names: Vec<&str> = r
+        .environments
+        .iter()
+        .flat_map(|e| &e.secrets)
+        .filter(|v| needles.iter().any(|n| v.value.contains(n)))
+        .map(|v| v.name.as_str())
+        .collect();
+    assert!(
+        needles.iter().any(|n| secrets_text.contains(n)) && !names.is_empty(),
+        "no needle in the secrets file ({what})"
+    );
+    assert!(
+        !referenced
+            || names.iter().any(|name| files.iter().any(|(p, t)| {
+                !p.to_string_lossy().ends_with(".secrets.toml")
+                    && t.contains(&format!("{{{{{name}}}}}"))
+            })),
+        "no request holds a reference to the secret ({what})"
+    );
 }
 
 #[test]
@@ -284,7 +326,7 @@ fn lenient_scheme_userinfo_is_not_written() {
 fn digest_ntlm_negotiate_credentials_stay_in_secrets() {
     for opt in ["--digest", "--ntlm", "--negotiate"] {
         let cmd = format!("curl {opt} -u user:SECRETVAL http://h/x");
-        assert_no_leak(&cmd, &["SECRETVAL"]);
+        assert_no_leak_with(&cmd, &["SECRETVAL"], opt == "--digest");
         let r = curl::parse(&cmd).unwrap();
         let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
             panic!()
@@ -300,6 +342,32 @@ fn digest_ntlm_negotiate_credentials_stay_in_secrets() {
         }
         assert!(r.warnings.iter().all(|w| !w.message.contains("SECRETVAL")));
     }
+}
+
+#[test]
+fn empty_username_userinfo_goes_to_secrets() {
+    let url = "https://:SEC/RET@h/x";
+    assert_no_leak(&format!("curl '{url}'"), &["SEC", "RET"]);
+    assert_result_no_leak(&postman_url(url), "SEC");
+    assert_result_no_leak(&openapi_url(url), "SEC");
+}
+
+#[test]
+fn at_in_query_does_not_move_the_host() {
+    let url = "https://u:SEC/RET@h?email=a@b.com";
+    assert_no_leak(&format!("curl '{url}'"), &["SEC", "RET"]);
+    let r = curl::parse(&format!("curl '{url}'")).unwrap();
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, "https://h");
+    assert_eq!(request.params[0].value, "a@b.com");
+    let p = postman_url(url);
+    let wisp_storage::import::ImportItem::Request { request, .. } = &p.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, "https://h");
+    assert_result_no_leak(&p, "SEC");
 }
 
 #[test]
