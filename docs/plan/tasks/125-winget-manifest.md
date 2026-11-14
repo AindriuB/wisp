@@ -34,6 +34,10 @@ microsoft/winget-pkgs is the user's own outward-facing PR.
   `https://github.com/AindriuB/wisp/releases/download/v<version>/Wisp-<version>-windows-x64.zip`.
   The script exits non-zero if the zip's line is missing or the version is
   malformed.
+  *Note (2026-11-14, orchestrator; matches the winget-pkgs layout in Context):*
+  the directory's second segment is the first dot-part of PackageIdentifier
+  (e.g. `AindriuB` from `AindriuB.Wisp`), not the display Publisher field,
+  which is free text and may contain spaces or `&`/`|`.
 - [ ] AC2 The templates live in `packaging/winget/templates/`. They pin one
   manifest schema version and set `Architecture: x64`,
   `License: Apache-2.0`, `PackageName: Wisp` and `Publisher` and
@@ -89,3 +93,15 @@ microsoft/winget-pkgs is the user's own outward-facing PR.
   with a token.
 - release.yml (owned by 124 and 126).
 - MSIX or Store manifests (task 126).
+
+## Review round 1 — findings (HEAD e6b2aac)
+- [P2] winget-manifest.sh:31 builds the path from `$PUBLISHER`; with
+  `PUBLISHER="Grid Theory"` it writes `manifests/a/Grid Theory/Wisp/<v>/`,
+  winget.yml:62's unquoted `for d in $dirs` splits it, and `&`/`|` in
+  PUBLISHER break the sed at :35-39 — settled by the AC1 note.
+- [P3, follow-up] winget.yml:47 and README.md:22-26 hardcode the
+  AindriuB/Wisp path, so a changed identifier silently skips the AC4 byte
+  check.
+- [P3, follow-up] winget.yml:4-5 runs on prerelease publish and fails the
+  version regex.
+- [NOTE, follow-up] GH_TOKEN is job-level; move it to the Generate step.
