@@ -245,6 +245,15 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
                 "server URL over {MAX_URL_BYTES} bytes"
             )));
         }
+        if super::may_hold_credentials(&url) {
+            result.warn(
+                &root,
+                format!(
+                    "server {}: the URL may contain credentials; check it before committing",
+                    i + 1
+                ),
+            );
+        }
         let (stripped, userinfo) = super::split_userinfo(&url);
         if userinfo.is_some() {
             url = stripped;

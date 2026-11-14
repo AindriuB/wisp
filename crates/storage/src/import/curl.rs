@@ -290,6 +290,8 @@ struct Flags {
     data: Vec<String>,
     form: Vec<String>,
     user: Option<String>,
+    /// `--digest`, `--ntlm` or `--negotiate`, by option name.
+    scheme: Option<&'static str>,
     cookie: Option<String>,
     insecure: bool,
     location: bool,
@@ -344,6 +346,9 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                 "user" => f.user = Some(need(&mut args, &arg)?),
                 "cookie" => f.cookie = Some(need(&mut args, &arg)?),
                 "url" => set_url(&mut f, need(&mut args, &arg)?),
+                "digest" => f.scheme = Some("--digest"),
+                "ntlm" => f.scheme = Some("--ntlm"),
+                "negotiate" => f.scheme = Some("--negotiate"),
                 "insecure" => f.insecure = true,
                 "location" | "location-trusted" => f.location = true,
                 "get" => f.get = true,
@@ -401,8 +406,8 @@ fn set_url(f: &mut Flags, url: String) {
     if f.url.is_none() {
         f.url = Some(url);
     } else {
-        let url = url.split(['?', '#']).next().unwrap_or_default().to_string();
         let (url, _) = super::split_userinfo(&url);
+        let url = url.split(['?', '#']).next().unwrap_or_default().to_string();
         f.warn(format!("extra URL `{url}` is not imported"));
     }
 }
@@ -436,8 +441,13 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
         .url
         .take()
         .ok_or_else(|| ImportError::Parse("no URL in the curl command".into()))?;
-    let (url, mut params) = split_query(url_raw.trim());
-    let (url, userinfo) = super::split_userinfo(&url);
+    // Userinfo first: a password may hold `?` or `#`, which would otherwise
+    // start the query.
+    if super::may_hold_credentials(url_raw.trim()) {
+        f.warn("the URL may contain credentials; check it before committing".into());
+    }
+    let (url_raw, userinfo) = super::split_userinfo(url_raw.trim());
+    let (url, mut params) = split_query(&url_raw);
     if userinfo.is_some() && f.user.is_some() {
         f.warn("the URL has credentials and -u was given; -u is used".into());
     }
@@ -569,20 +579,37 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
         }
     }
 
-    let auth = match &f.user {
-        Some(u) => {
+    let creds = match (&f.user, userinfo) {
+        (Some(u), _) => {
             let (user, pass) = u.split_once(':').unwrap_or((u.as_str(), ""));
-            Auth::Basic {
-                username: sink.secret_ref(&name, "username", user.to_string()),
-                password: sink.secret_ref(&name, "password", pass.to_string()),
-            }
+            Some((user.to_string(), pass.to_string()))
         }
-        None => match userinfo {
-            Some((user, pass)) => Auth::Basic {
-                username: sink.secret_ref(&name, "username", user),
-                password: sink.secret_ref(&name, "password", pass),
-            },
-            None => Auth::Inherit,
+        (None, info) => info,
+    };
+    let auth = match (creds, f.scheme) {
+        (None, scheme) => {
+            if let Some(s) = scheme {
+                f.warn(format!("option `{s}` is not imported"));
+            }
+            Auth::Inherit
+        }
+        (Some((user, pass)), Some("--digest")) => Auth::Digest {
+            username: sink.secret_ref(&name, "username", user),
+            password: sink.secret_ref(&name, "password", pass),
+        },
+        (Some((user, pass)), Some(s)) => {
+            // Kept in the secrets environment so nothing is lost; no auth is
+            // set because Basic would send the password in the clear form.
+            sink.secret_ref(&name, "username", user);
+            sink.secret_ref(&name, "password", pass);
+            f.warn(format!(
+                "option `{s}` is not supported; credentials were kept as secrets and no auth was set"
+            ));
+            Auth::Inherit
+        }
+        (Some((user, pass)), None) => Auth::Basic {
+            username: sink.secret_ref(&name, "username", user),
+            password: sink.secret_ref(&name, "password", pass),
         },
     };
 
