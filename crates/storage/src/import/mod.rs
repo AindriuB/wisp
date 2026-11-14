@@ -325,9 +325,10 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
 #[derive(PartialEq)]
 enum PortAt {
     No,
-    /// Empty port, or a digit run cut by `?`/`#`: clearly a broken password.
+    /// Empty port: clearly a broken password.
     Broken,
-    /// Non-empty digits then `/`: taken as host:port, but may be credentials.
+    /// Non-empty digits then `/`, `?` or `#`: taken as host:port, but may be
+    /// credentials.
     Maybe,
 }
 
@@ -346,7 +347,7 @@ fn port_at(url: &str) -> PortAt {
     {
         return PortAt::No;
     }
-    if p.is_empty() || !rest[end..].starts_with('/') {
+    if p.is_empty() {
         PortAt::Broken
     } else {
         PortAt::Maybe
@@ -354,13 +355,12 @@ fn port_at(url: &str) -> PortAt {
 }
 
 /// True for forms that are clearly a `user:pass` whose password holds a raw
-/// `/`, `?` or `#`: an empty port, or a digit run cut by `?` or `#`, with a
-/// later `@`. The URL cannot be split safely; importers refuse it.
+/// `/`, `?` or `#`: an empty port with a later `@`. The URL cannot be split safely; importers refuse it.
 pub(crate) fn has_ambiguous_userinfo(url: &str) -> bool {
     port_at(url) == PortAt::Broken
 }
 
-/// True for `name:<digits>/...@...`: kept as host:port, but the digits may be
+/// True for `name:<digits>` then `/`, `?` or `#` and a later `@`: kept as host:port, but the digits may be
 /// a password; importers warn without naming any part of the URL.
 pub(crate) fn may_hold_credentials(url: &str) -> bool {
     port_at(url) == PortAt::Maybe
