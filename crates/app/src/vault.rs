@@ -1182,18 +1182,7 @@ fn no_keychain() -> Outcome {
 /// The variable names declared in `<env>.secrets.toml` (its `[vars]` table); empty when the file
 /// cannot be read. Values are never read out.
 fn imported_names(root: &Path, env: &str) -> Vec<String> {
-    let path = root
-        .join("environments")
-        .join(format!("{env}.secrets.toml"));
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| t.parse::<toml_edit::DocumentMut>().ok())
-        .and_then(|d| {
-            d.get("vars")
-                .and_then(|v| v.as_table_like())
-                .map(|t| t.iter().map(|(k, _)| k.to_string()).collect())
-        })
-        .unwrap_or_default()
+    wisp_storage::environment::secrets_file_names(root, env)
 }
 
 /// "Move to keychain" hit the size cap: name the variable and its size. The environment is still
@@ -2027,5 +2016,19 @@ mod keychain_tests {
         let text = save_failure_notice(&r.unwrap_err());
         assert!(text.starts_with("Not saved"), "{text}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "[vars]\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn imported_names_ignores_a_symlinked_secrets_file() {
+        let t = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let target = out.path().join("outside.toml");
+        std::fs::write(&target, "[vars]\nLEAKEDNAME = \"SECRETVAL\"\n").unwrap();
+        let root = file_coll(t.path(), "c", "abcdef0123456789");
+        let sp = root.join("environments/dev.secrets.toml");
+        std::fs::remove_file(&sp).unwrap();
+        std::os::unix::fs::symlink(&target, &sp).unwrap();
+        assert!(imported_names(&root, "dev").is_empty());
     }
 }

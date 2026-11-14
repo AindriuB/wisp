@@ -2335,3 +2335,84 @@ fn unbound_status(root: &Path, c: &VaultCtx) -> bool {
             reason: FailReason::Unbound,
         }
 }
+
+// ---- symlink confinement (task 120) ----
+
+#[cfg(unix)]
+#[test]
+fn symlinked_gitignore_refuses_save_and_leaves_target() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let target = out.path().join("outside");
+    std::fs::write(&target, "ORIGINAL\n").unwrap();
+    let dir = t.path().join("environments");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(&target, dir.join(".gitignore")).unwrap();
+    let env = Environment {
+        name: "dev".into(),
+        vars: vec![],
+        secrets: vec![Var {
+            name: "token".into(),
+            value: "SECRETVAL".into(),
+        }],
+    };
+    assert!(save_environment(t.path(), &env).is_err());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "ORIGINAL\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_secrets_file_fails_load_and_migrate() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let target = out.path().join("outside.toml");
+    std::fs::write(&target, "[vars]\ntoken = \"SECRETVAL\"\n").unwrap();
+    write(t.path(), "dev.toml", "[vars]\nhost = \"h\"\n");
+    std::os::unix::fs::symlink(&target, t.path().join("environments/dev.secrets.toml")).unwrap();
+    assert!(load_environment(t.path(), "dev").is_err());
+    let c = bcx(t.path());
+    assert!(load_environment_with(t.path(), "dev", Some(&id()), &NoStores, &c).is_err());
+    let s = MemoryStore::new();
+    let r = migrate_to_store(t.path(), "dev", &id(), StoreKind::Keychain, &s, &c);
+    assert!(r.is_err());
+    assert!(s.accounts().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_collection_toml_yields_no_id() {
+    let t = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let target = out.path().join("other.toml");
+    std::fs::write(&target, "format = 1\nid = \"abcdef0123456789\"\n").unwrap();
+    std::os::unix::fs::symlink(&target, t.path().join("collection.toml")).unwrap();
+    assert!(wisp_storage::collection::read_collection_id(t.path()).is_err());
+    let m = tempfile::tempdir().unwrap();
+    assert!(
+        wisp_storage::collection::read_collection_id(m.path())
+            .unwrap()
+            .is_none()
+    );
+}
+
+// ---- PR #63: symlinked plain env file ----
+
+#[cfg(unix)]
+#[test]
+fn symlinked_plain_env_file_is_refused_not_loaded_as_vars() {
+    let t = tempfile::tempdir().unwrap();
+    let dir = t.path().join("environments");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("prod.secrets.toml"), "[vars]\nk = \"SECRETVAL\"\n").unwrap();
+    std::os::unix::fs::symlink(dir.join("prod.secrets.toml"), dir.join("dev.toml")).unwrap();
+    let e = load_environment_with(t.path(), "dev", None, &NoStores, &cx());
+    assert!(
+        matches!(e, Err(wisp_storage::StorageError::Invalid { .. })),
+        "{e:?}"
+    );
+    let e = load_environment(t.path(), "dev");
+    assert!(
+        matches!(e, Err(wisp_storage::StorageError::Invalid { .. })),
+        "{e:?}"
+    );
+}
