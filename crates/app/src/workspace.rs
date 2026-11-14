@@ -2839,9 +2839,12 @@ impl Workspace {
 
     pub fn save(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let Some(root) = self.owner_of(tab).and_then(|o| self.root_of(o)) else {
-            cx.emit(WorkspaceEvent::Notice("Open a collection to save".into()));
-            return Ok(());
+            anyhow::bail!("Open a collection to save");
         };
+        // The disk file is newer than the draft: the banner's choices decide, not Save.
+        if tab.read(cx).disk == DiskState::ChangedOnDisk {
+            anyhow::bail!("Changed on disk: choose Keep mine to overwrite, or Reload");
+        }
         let mut draft = tab.read(cx).draft.clone();
         let (rel, created) = match tab.read(cx).path.clone() {
             Some(rel) => (rel, false),
@@ -4589,6 +4592,88 @@ mod env_wiring_tests {
             collection: Some(ID.into()),
             environment: Some(env.into()),
         }
+    }
+
+    /// Open a fresh request file as a tab and return it with its relative path.
+    fn open_tab(fx: &Fx, cx: &mut TestAppContext) -> (Entity<RequestTab>, PathBuf) {
+        let rel = wisp_storage::ops::create_request(&fx.root, Path::new(""), "r").unwrap();
+        let r = rel.clone();
+        fx.ws.update(cx, |w, cx| w.open_request(&r, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        (tab, rel)
+    }
+
+    /// Dirty the tab, then change the file on disk behind its back.
+    fn conflict(fx: &Fx, tab: &Entity<RequestTab>, rel: &Path, cx: &mut TestAppContext) -> Vec<u8> {
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine.test/".into(), cx)
+        });
+        let mut theirs = load_request(&fx.root.join(rel)).unwrap();
+        theirs.url = "http://theirs.test/".into();
+        save_request(&fx.root.join(rel), &theirs).unwrap();
+        let root = fx.root.clone();
+        fx.ws.update(cx, |w, cx| w.apply_disk_state(tab, &root, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+        std::fs::read(fx.root.join(rel)).unwrap()
+    }
+
+    #[gpui::test]
+    fn save_disk_conflict_refuses_and_keeps_disk_file(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        let theirs = conflict(&fx, &tab, &rel, cx);
+        let (saved, path) = tab.read_with(cx, |t, _| (t.saved.clone(), t.path.clone()));
+        let res = fx.ws.update(cx, |w, cx| w.save(&tab, cx));
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("Keep mine"), "{err}");
+        assert_eq!(std::fs::read(fx.root.join(&rel)).unwrap(), theirs);
+        tab.read_with(cx, |t, _| {
+            assert!(t.is_dirty());
+            assert_eq!(t.disk, DiskState::ChangedOnDisk);
+            assert_eq!(t.saved, saved);
+            assert_eq!(t.path, path);
+        });
+    }
+
+    #[gpui::test]
+    fn save_disk_conflict_keep_mine_then_save_writes_draft(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        conflict(&fx, &tab, &rel, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        let on_disk = load_request(&fx.root.join(&rel)).unwrap();
+        assert_eq!(on_disk.url, "http://mine.test/");
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn save_disk_conflict_in_sync_save_writes(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine.test/".into(), cx)
+        });
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        let on_disk = load_request(&fx.root.join(&rel)).unwrap();
+        assert_eq!(on_disk.url, "http://mine.test/");
+    }
+
+    #[gpui::test]
+    fn save_disk_conflict_no_collection_is_an_error(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        let tab = fx
+            .ws
+            .update(cx, |w, cx| w.new_scratch_tab("http://x.test/".into(), cx));
+        let err = fx
+            .ws
+            .update(cx, |w, cx| w.save(&tab, cx))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "Open a collection to save");
     }
 
     #[gpui::test]
