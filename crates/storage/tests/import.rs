@@ -378,12 +378,25 @@ fn postman_and_openapi_host_port_with_later_at_warns() {
 
 #[test]
 fn host_port_cut_by_query_or_fragment_is_kept_with_warning() {
-    for url in ["http://localhost:8080?email=a@b.com", "https://u:12?34@h/x"] {
+    for (url, base, param) in [
+        (
+            "http://localhost:8080?email=a@b.com",
+            "http://localhost:8080",
+            ("email", "a@b.com"),
+        ),
+        ("https://u:12?34@h/x", "https://u:12", ("34@h/x", "")),
+    ] {
         let r = curl::parse(&format!("curl '{url}'")).unwrap();
         let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
             panic!()
         };
-        assert!(request.url.starts_with(url.split('?').next().unwrap()));
+        assert_eq!(request.url, base, "{url}");
+        let got: Vec<_> = request
+            .params
+            .iter()
+            .map(|p| (p.name.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(got, vec![param], "{url}");
         assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
         let n = r
             .warnings
@@ -476,4 +489,35 @@ fn postman_object_url_kept_whole_ignores_explicit_query() {
     assert_eq!(request.url, "http://localhost:8080?email=a@b.com&x=1");
     assert!(request.params.is_empty());
     assert_eq!(may_contain_warnings(&r).len(), 1);
+}
+
+#[test]
+fn templated_port_is_host_port_not_userinfo() {
+    for url in [
+        "http://localhost:{{port}}/api?email=a@b.com",
+        "http://{{host}}:{{port}}/users/me@example.com",
+    ] {
+        let r = curl::parse(&format!("curl '{url}'")).unwrap();
+        let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+            panic!()
+        };
+        assert!(
+            request.url.starts_with(url.split('?').next().unwrap()),
+            "{url}"
+        );
+        assert!(request.url.contains("{{port}}"), "{url}");
+        assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
+        assert!(r.environments.is_empty(), "{url}");
+        let r = postman_url(url);
+        let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+            panic!()
+        };
+        assert!(
+            request.url.starts_with(url.split('?').next().unwrap()),
+            "{url}"
+        );
+        assert!(request.url.contains("{{port}}"), "{url}");
+        assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
+        assert!(r.environments.is_empty(), "{url}");
+    }
 }

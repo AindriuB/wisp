@@ -286,6 +286,11 @@ fn authority_start(url: &str) -> usize {
     }
 }
 
+/// A non-empty all-digit port, or a templated one (`{{port}}`).
+fn is_port_like(p: &str) -> bool {
+    !p.is_empty() && (p.contains("{{") || p.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
 /// without it and the percent-decoded `(user, password)`.
 pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
@@ -301,9 +306,7 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         let seg = &rest[..first_end];
         // An empty port can never be a real port, so it counts as userinfo.
         let looks_like_userinfo = seg.split_once(':').is_some_and(|(h, p)| {
-            !h.is_empty()
-                && !h.starts_with('[')
-                && (p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+            !h.is_empty() && !h.starts_with('[') && (p.is_empty() || !is_port_like(p))
         });
         let Some(first_at) = rest.find('@').filter(|_| looks_like_userinfo) else {
             return (url.to_string(), None);
@@ -337,8 +340,7 @@ pub(crate) fn may_hold_credentials(url: &str) -> bool {
     !seg.contains('@')
         && !h.is_empty()
         && !seg.starts_with('[')
-        && !p.is_empty()
-        && p.bytes().all(|b| b.is_ascii_digit())
+        && is_port_like(p)
         && rest[end..].contains('@')
 }
 
