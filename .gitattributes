@@ -1,0 +1,2 @@
+# Fixtures are byte-compared (round-trip tests); keep LF on Windows checkouts.
+crates/storage/tests/fixtures/** text eol=lf
