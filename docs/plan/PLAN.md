@@ -22,7 +22,10 @@ than no plan.
 Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
 - **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
 - **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** **Complete (tasks 109-116); size gate passed, Windows 15,177,216 B of 15,500,000, headroom 322,784 B (run 43505214545).** Multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); 114 (OS keychain secret store on `keyring` 4, module keychain in wisp-storage; not yet linked into the app; Windows 15,256,576 B, 243,424 B headroom); 115 (keychain wiring: OS keychain in the app, secrets panel, confirmed bind/move flows; PR #55; Windows 15,171,072 B after opt-level "z" on wisp-storage); 116 (size gate: Windows +40,960 B over wave 2, Linux 25,806,344 B, macOS 11,601,328 B, all budgets met); see HISTORY. Next: task 99 (hardening), then the Windows test+clippy CI job (54-CI) last before the 0.2.0 tag.
+- **Wave 3:** **Complete (tasks 109-116); size gate passed, Windows 15,177,216 B of 15,500,000, headroom 322,784 B (run 43505214545).** Multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); 114 (OS keychain secret store on `keyring` 4, module keychain in wisp-storage; not yet linked into the app; Windows 15,256,576 B, 243,424 B headroom); 115 (keychain wiring: OS keychain in the app, secrets panel, confirmed bind/move flows; PR #55; Windows 15,171,072 B after opt-level "z" on wisp-storage); 116 (size gate: Windows +40,960 B over wave 2, Linux 25,806,344 B, macOS 11,601,328 B, all budgets met); see HISTORY. Next: hardening (see below), then the Windows test+clippy CI job (54-CI) last before the 0.2.0 tag.
+
+- **Hardening (task 99 split):** **Wave 1 complete (tasks 117-121, PRs #59-#63).** Done: 117 (cross-origin redirects keep only an allow-list of headers, the engine follows any redirect carrying another header and uses reqwest/curl method rules, `referer(false)`, engine errors carry no URL); 118 (more credential fragments, response headers redacted by name, nameless Set-Cookie, path vars, duplicate-key JSON dropped, resend of a redacted path var refused); 119 (importers keep a value literally only when it is one `{{name}}`, userinfo with raw `/`, `?`, `#` or lenient schemes goes to secrets, curl `--digest` imports as Digest); 120 (symlinks refused before open on every collection-file path); 121 (a failed reload clears active secrets); see HISTORY. The rest of task 99 is the post-0.2.0 backlog below.
+- **Next for 0.2.0, in order:** (1) the Windows test+clippy CI job (54-CI, 99-AC38); (2) the release: dry run with the size gate on the final head (99-AC39), tag, user hand test including the signed macOS keychain, then the AAR.
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -65,6 +68,42 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - The reserved-name rule also rejects display names like "CON.txt" whose file slug would be harmless (decided).
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
 
+### Hardening backlog (post-0.2.0)
+`docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC38 (Windows CI) and AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled.
+
+### Follow-ups from tasks 117-121 (hardening wave 1, not 0.2.0)
+🔒 marks a security-relevant item. Task 116's 57-1 to 57-3 are already listed in the task 116 section below.
+From PR #59 (task 117):
+- 59-3 (Low) engine.rs:1078 URL removal parses reqwest's Display text.
+- 59-4 (Low) engine.rs:795 replay clones the whole body for any custom header.
+- 59-5 (Nit) engine.rs:958 comment wording.
+From PR #60 (task 119):
+- 60-4 🔒 a username-only token with raw `/`, `?` or `#` stays in the URL; at least warn.
+- 60-5 🔒 curl.rs:600 `--negotiate -u :` claims kept-as-secrets but returns Inherit.
+- 60-6 a single-brace `{port}` plus a later `@` is treated as userinfo.
+- 60-7 🔒 a backslash lenient scheme is not split.
+- 60-8 postman.rs:297 `may_hold_credentials` is computed twice.
+- 60-9 curl.rs:596 the auth scheme is matched by string.
+- 🔒 `ftp:h/x@y` imports its credentials as Basic.
+- 🔒 a password with `/`, then `@`, then `?` is split at the wrong `@`.
+- curl `--basic` and `--anyauth` are not recognised, so `--digest --basic -u u:p` imports Digest though curl's last option wins (curl.rs:349-351).
+- 🔒 the curl extra-URL warning in the Maybe case still prints a `name:<digits>...@` URL, whose digits may be a password (curl.rs:409-415).
+From PR #61 (task 121):
+- 61-3 the test skips AC1's resolution clause and the plain-vars-kept claim.
+- 61-4 🔒 a cleared secret name can fall through to a same-named env or collection var.
+- No test pins the moment of clearing at the failure; the existing test checks state after the reload completes.
+From PR #62 (task 118). The task file recorded only the two notes below; 62-1 to 62-6 as numbered in the PR review are not otherwise written down here, so read the PR when scheduling.
+- 62-n1 the fragments are substring matches: importers now move headers like `X-Bypass-Cache` and `X-Assignment-Id` into the placeholder secrets env, and Text/XML history bodies containing words like "design", "signal" or "compass" are dropped whole. Consider word-boundary matching.
+- 62-n2 response header names share the unprefixed `redacted` namespace with request headers: a same-named request header with an intentionally empty value is disabled on resend, and WWW-Authenticate and the like appear in every resend notice.
+From PR #63 (task 120). The task file recorded 63-2 to 63-4; 63-5 is the behaviour change noted in HISTORY; 63-6 is in the PR review only.
+- 63-2 `ensure_ignore_line` confines from `environments/`, not the collection root; confine from the root.
+- 63-3 a refused `.gitignore` fails the save after `<env>.toml` was already written.
+- 63-4 tests assert `is_err` rather than `Invalid`; `ensure_marker_ignored` and a FIFO are untested.
+Internal-review suggestions:
+- engine.rs:714 the comment on `own_redirects` still describes the old trigger.
+- Tests that check `is_err` rather than the `Invalid` variant.
+- 118: a `raw.contains("42")` check is weak, and the non-empty `path.` note is not pinned.
+
 ### Follow-ups from task 116 (not 0.2.0 wave 3)
 From the review of PR #57:
 - 57-1 (Low) AC4's per-task split lumps 110-114 into one row; pull 114's own delta from PR #54's base run if needed.
@@ -76,7 +115,6 @@ From the user review of PR #55:
 - 55-6 file-mode is derived from load status, so a Loading or Error file-mode environment still calls keychain delete.
 - 55-7 (security, -> task 99, AC72) no data dir reads bindings from the shared /tmp/wisp-no-data-dir.
 - 55-8 the NewId failure notice does not name the operation.
-- 55-9 (security, -> task 99, AC73) a failed reload keeps the old secrets active while the status says not loaded.
 - 55-10 Move-to-file forget uses the cached id and is skipped silently when the id is not Known.
 - 55-11 a re-probe keeps a stale Ok until the new probe returns.
 - 55-12 too-large token banners are global and never cleared.
@@ -86,7 +124,6 @@ From the user review of PR #55:
 - 55-16 (nit) the value is cleared before the outcome is known.
 - 55-17 (nit) a folder-picker error is treated as cancel.
 - 55-18 a Send during post-move Loading clears the move mark, so an older in-flight save can store.
-- 55-19 (security, -> task 99, AC74) imported_names reads the file before the confinement check (follows symlinks, blocks on a FIFO).
 - 55-20 (nit) duplicate asserts.
 - 55-21 (security, -> task 99, AC75) the test Workspace::new resolves the real user data dir before it is swapped.
 
@@ -173,9 +210,7 @@ PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real
 - 50-P3b `import.rs:610` new test sits before the module's use lines (idiom nit).
 
 ### Follow-ups from task 86 (not for 0.1.1)
-- An API key sent in a custom header (for example `X-Api-Key`) still crosses origins on a redirect; only the headers reqwest strips are removed on a streamed resend.
 - The streamed resend checks only each file's length, not its contents, so a file edited to the same size between sends is resent with the new bytes.
-- `EngineError` messages include the request URL. Fix with `reqwest::Error::without_url()` so a URL carrying a secret does not reach the UI.
 
 ### Follow-ups from task 107 (not 0.2.0 wave 2)
 - [ACCEPTED residual, user 2026-11-10] AC10: copies/clones of a collection (same id) share history, OAuth2 tokens, the in-memory jar and cookies/<id>.json.
@@ -227,7 +262,6 @@ PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real
 - 52-22 cross-process env_lock, symlinked-root canonicalisation and check have no tests; vault_binding has no unit tests; no test for a non-regular `.wisp-binding` (e.g. a directory).
 - 52-24 (nit) tests' cx() leaks one tempdir per test -> return the TempDir with the ctx.
 - 52-P3e (-> task 99) TOCTOU: marker and secrets-file checks run before the open, and the reads/writes follow symlinks (fs.rs resolve) -> open with O_NOFOLLOW or verify the opened handle.
-- 52-P3f (-> task 99) ensure_marker_ignored / ensure_gitignore write through a symlinked environments/.gitignore (also on main) -> refuse a symlinked .gitignore.
 - 52-P3g (for 115's prompt text) FailReason::Unbound can't tell "never bound" from "previously bound here, marker missing", so the bind prompt can't warn that confirming gives this path's existing keychain secrets to the folder now there -> consider a distinct reason.
 
 PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/device gitdir refused before I/O, exact lexical match against `<canonical trusted common>/worktrees/<name>` before any I/O, Windows verbatim paths compared in Disk form; cfg(unix) on the symlink tests):
@@ -239,7 +273,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - 52-61 (nit) non-top-level collections, separate-git-dir and submodules never verify as additional checkouts -> document.
 - 52-62 (nit) HISTORY reads as if vars-only saves through a symlinked environments/ now work; they still fail, with a clearer message.
 - 52-W Windows code paths in vault_binding (simplify_verbatim, cfg(windows) tests, make_worktree git_style) are uncompiled and unrun; CI has no Windows test job (task 99 AC38).
-- 52-29 (-> task 99) migrate_to_store (and file-mode load) read the secrets file without check_secrets_path, storing a symlink target's values.
 - 52-30 (-> task 99, fold into AC53) migrate_to_file still merges store secrets into a git-tracked regular secrets file -> refuse or warn on tracked files.
 - 52-31 (-> task 99) copy check uses exists() (metadata errors read as gone, fails open); a read error blocks a real move; relies on the committed id rather than the old root's marker -> try_exists, fail closed except NotFound, use the marker nonce.
 - 52-32 lowercasing silently re-keys history, cookies and tokens of collections whose id already had uppercase (unreleased builds only) -> write the lowercase id back and move old paths, or note it.
@@ -252,7 +285,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - 52-N1 marker cross-registry read-modify-write race: fails closed (extra bind prompt only).
 - 52-N2 root list per id has no size cap (grows only via user-confirmed additional checkouts) -> cheap cap later.
 - 52-N3 a collection whose collection.toml is a symlink (dotfiles setups) now errors and history turns off; intended fail-closed, user-visible.
-- 52-43 (-> task 99) read_collection_id follows a symlinked collection.toml, so a crafted sibling link takes a victim's id without knowing it -> confine the read; missing stays None.
 - 52-44 (-> task 99) one stable registry id is written into every marker; a tracked marker shows modified and leaks a linkable per-user id -> per-root key (e.g. hash of registry id and root); warn on a tracked marker.
 - 52-45 (-> task 99) the attacker-controllable marker is read whole with no size or entry cap -> cap size from lstat, fail closed; drop malformed entries on write.
 - 52-46 LooksLikeCopy / IdBoundElsewhere / rebind docs still describe one root and point worktrees at assign_new_collection_id -> point at bind_additional_checkout / share_with_folder; fix the 52-37 link.
@@ -414,8 +446,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 
 ### Follow-ups from task 94 (not 0.2.0 wave 1)
 - [P3] 34-43 curl.rs:355: unknown options fail open; their argument can become the committed URL. Prefer the `://` positional, or fail with a Parse error naming the option.
-- [P3] 34-44 mod.rs:271: `split_userinfo` misses lenient forms `https:///u:p@h` and `http:/u:p@h` that reqwest accepts.
-- [P3] 34-45 mod.rs:358: the heuristic misses jwt, bearer, dpop, assertion and pass header names (to be fixed once in the shared `wisp_core::redact` list).
 - [P3] 34-46 curl.rs:404: the extra-URL warning cuts at `?` or `#` before stripping userinfo, leaking part of a password; echo only the host.
 - [P3] 34-50 curl.rs:1228: the new header-name tests skip terminated and whole-value checks; the "X Api Key" case passes without the fix.
 - [P3] 34-47 (Nit) curl.rs:1047: the every-option test omits preproxy, json and post-7.84 entries; iterate the const.
@@ -430,12 +460,10 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] `unique` in write.rs is quadratic in the number of colliding names; use a HashSet plus a per-base counter, as postman.rs does.
 - [P3] `key_string` (yaml.rs) silently collapses null, sequence and mapping keys.
 - [P3] 34-9 curl.rs:467: `-d` without Content-Type becomes text/plain; curl sends urlencoded.
-- [P3] 34-10 curl.rs:477: `--digest`/`--ntlm`/`--negotiate` with `-u` imported as Basic (security).
 - [P3] 34-11 curl.rs:401: warnings echo raw headers, extra URLs and fields (security).
 - [P3] 34-12 curl.rs:385: dropped constructs give no warning.
 - [P3] 34-13 write.rs:54: validate `folder_rel` before any write.
 - [P3] 34-14 yaml.rs:185: YAML merge keys stay literal; nameless parameters are dropped silently.
-- [P3] 34-15 openapi.rs:163: `substitute` is still quadratic within the 64 KiB cap.
 - [P3] 34-16 openapi.rs:526: the depth test never reaches `check_json_depth`.
 - [P3] 34-17 Cargo.toml:52: saphyr-parser lacks `default-features = false`.
 - [P3] 34-18 yaml.rs:84: `TooDeep` matches saphyr's error text; pin `=0.3.3`.
@@ -445,7 +473,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] 34-27 openapi.rs capped-names test accepts both Ok and TooLarge and asserts under 900 ms; pin one outcome, drop or loosen the timing assert.
 - [P3] 34-28 openapi.rs:27 visit work shares the 64 MiB example budget; large legitimate specs may fail with a vague error. Use a separate visit counter scaled to input.
 - [P3] 34-29 (Nit) openapi.rs:44 `capped_text` duplicates `truncate_bytes`; the two MAX_NAME_BYTES constants differ (100 vs 80).
-- [P3] mod.rs `secret_ref`: a value containing `{{` anywhere is kept literally, so a credential mixed with a ref (`Bearer live-tok {{x}}`) stays in TOML.
 - [P3] postman.rs: collection-variable keys go into secret names unsanitised; a key with `}}` or trailing whitespace makes an unresolvable ref.
 - [P3] `split_userinfo`: a password containing raw `/`, `?` or `#` stays in the URL (curl does not treat it as userinfo either).
 - [STYLE] mod.rs:441 test `split_userinfo_ignores_at_after_authority` sits above `use super::*;`.
@@ -471,7 +498,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] 33-6 `digest.rs:95`: the challenge locator matches `digest` inside a quoted value and gives up; params with bad whitespace are dropped.
 - [P3] 33-7 `engine.rs:613`: Digest refuses File bodies, though the engine can reopen and resend them; the message is wrong.
 - [P3] 33-8 `engine.rs:772`: an unsupported Digest algorithm or qop turns the 401 into an engine error that hides the response. Return the 401 with a warning, and truncate the echoed algorithm.
-- [P2, security] 33-9 `engine.rs:844`: a cross-origin hop keeps user-set `x-amz-*` and `Host` headers. Same family as the task-86 custom-header follow-up.
 - [P3] 33-11 `sigv4.rs:148`: `sign` returns `Result<_, String>` and `DigestError` hand-implements `Error`; derive thiserror errors per the conventions.
 - [P3] 33-12 `tests/auth.rs:146`: hand-made temp files leak on panic; use `tempfile::NamedTempFile`.
 - [P3] 33-13 `ui/request/auth.rs:219`: the access key field is unmasked while Debug redacts it.
@@ -481,7 +507,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [NOTE] `hash_file` reopens the file by path, leaving a gap between hash and send for a same-length replacement. Hashing is not covered by the request timeout and continues after a cancel.
 
 ### Follow-ups from task 93 (not 0.2.0 wave 1)
-- [P3] A `Set-Cookie` with no `name=` before the first `;` (e.g. `Set-Cookie: abc123token`) is stored in plaintext; Amendment 1 only redacts after the first `=`.
 - [P3] `history.rs:246`: data-dir creation failure shows "History entry dropped" instead of "History is off: <reason>" and never disables history.
 - [P3] `tests/history.rs` `evicts_oldest_over_the_byte_cap` does not assert bytes <= cap or that the survivors are the newest run.
 - [IDEA, user 2026-11-10] Opt-in setting to keep `Set-Cookie` values unredacted in history (developer tool); off by default.
@@ -492,7 +517,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] 35-9 (Nit) `history.rs:123`: `keep_var_ref` round-trips through `Auth::Bearer` to reach a private core helper; make core `keep_var_ref` pub; dedup names with `eq_ignore_ascii_case`.
 - [P3] `history.rs` `redact_json_body`: once anything is redacted the JSON body is re-serialised compactly (keys re-sorted, formatting lost, integers beyond i64/u64 become lossy f64).
 - [P3] `history.rs` `redact_json_body`: restoring masked `{{refs}}` uses one `text.replace` per ref, O(refs x body); do a single pass.
-- [P3] `history.rs`: path vars (`Request.path`) are not redacted.
 - [P3] 35-21 `history.rs:370`: `mask_bare_refs` is quadratic with allocation on bodies full of `{{` while both locks are held; scan forward over grammar chars only, then require `}}`.
 - [P3] 35-22 `history.rs:665`: duplicate ids in the index can delete files a surviving line still uses; skip deletion for ids still present.
 - [P3] 35-23 core `redact.rs:5`: public fixed-length array type; history repeats the body-matching logic inline. Expose a slice or `contains_credential_word`.
@@ -502,9 +526,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [NOTE] `history.rs`: `lock()` blocks without timeout while `APPEND_LOCK` is held, so a stalled second Wisp process stalls appends for every collection in this one.
 - [NOTE] Name heuristic over-redacts (e.g. `monkey`, `auth_url`, `token_url`); accepted.
 - [P2] CI builds only ubuntu and macos; the Windows `File::lock` bug in PR #35 would have shipped. Add at least a Windows `cargo check`/test job (or a cross `cargo check --target x86_64-pc-windows-msvc`).
-- [P3] 35-13 `history.rs:524`: name heuristic not applied to response headers (`X-Auth-Token`, `X-Subject-Token` stored).
-- [P3] 35-14 core `redact.rs`: `SECRET_FRAGMENTS` misses sig, pass, pwd, jwt, bearer, dpop, assertion (Azure SAS `sig=` stored). One shared list now serves history and (after #34) importers.
-- [P3] 35-15 `history.rs:399`: duplicate JSON key with a ref last keeps the earlier literal secret; detect duplicates and fail closed.
 - [P3] 35-16 `history.rs:159`: unquoted `{{ref}}` under a secret key is emptied instead of kept.
 - [P3] 35-17 `history.rs:511`: lock file opened with create and follows symlinks; use O_NOFOLLOW or a `symlink_metadata` check.
 - [P3] 35-19 (Nit) `tests/history.rs:355`: "1234" leak check can match the random hex entry id.
@@ -515,7 +536,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 ### Follow-ups from task 92 (not for 0.2.0 wave 1)
 - [P3] `ensure_collection_id` (`collection.rs:242-257`) has a read-modify-write race: two instances adding an ID at once means the last rename wins. `save_collection_defaults` has the same window.
 - [P3] `ensure_private_dir` (`data_dir.rs:92-101`): a trailing slash (e.g. `WISP_DATA_DIR="/x/link/"`) gets past the symlink refusal on macOS. Normalise before the lstat.
-- [NOTE] Hand-written IDs that differ only in case collide on case-insensitive file systems. Consider requiring lowercase.
 - [NOTE] An existing data dir wider than 0700 is not tightened (task 93 may care).
 
 ### Pane-scrollbar defects (tasks 46-49, fixed and hand-checked 2026-11-02)
@@ -605,7 +625,7 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 **History (15):** Concurrent writers could race rotation of `history.jsonl`; v1 has one writer.
 **Request files (17):** Method parsers unified in task 58 and `.toml` sidecar names are rejected. Task 85 closed sidecars aliasing sibling request files, trailing dot/space names, reserved device names and Unix hard links; hard links are not detected on Windows (std has no stable identity API). Windows `::$DATA` aliases are not covered. The drive-prefix check rejects any name with `:` as its second byte. Sidecar symlinks have a check-then-use race. `bare_relative_request_path_allows_inside_symlink` uses the process-global `set_current_dir`; safe today because all other tests use absolute paths, but a future relative-path test could flake.
 **Collection tree (18, walk fixed in 58):** the cycle rule is now ancestor-only with a 10,000-folder whole-walk budget; directory symlinks pointing outside the root are followed; a broken `folder.toml` fails the whole open; `scope_for` with a non-canonical absolute root returns no folders (callers pass relative paths).
-**Environments (19):** names with spaces are now rejected, so an existing environment with a space in its name will not load; on case-insensitive filesystems `Dev` and `dev` map to the same file. A symlinked `environments/dev.toml` loads but is not listed, because `file_type` does not follow links; one `file_type` error aborts the whole listing. The plain file is written before the secrets file, so a save that half-fails can lose a var that is moving between them.
+**Environments (19):** names with spaces are now rejected, so an existing environment with a space in its name will not load; on case-insensitive filesystems `Dev` and `dev` map to the same file. A symlinked `environments/dev.toml` is refused on load and save (task 120) but is still listed; one `file_type` error aborts the whole listing. The plain file is written before the secrets file, so a save that half-fails can lose a var that is moving between them.
 **Integration test (20, accepted):** the JSON body fixture has no comment because JSON cannot hold one.
 
 ## Next
