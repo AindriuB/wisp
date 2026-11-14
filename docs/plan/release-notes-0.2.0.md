@@ -23,7 +23,7 @@ Wisp is a portable, lightweight HTTP client with collections stored as TOML file
 - History never stores auth values, credential-bearing headers or Set-Cookie values, and Resend refuses entries that would need them.
 - Importers do not carry passwords from URLs or secret references into committed files, and they limit input size and nesting against hostile files.
 - Wisp refuses to follow symlinks out of a collection for secrets, environment and collection files, and a failed reload clears secrets that were loaded.
-- History and cookie files are private to your user. Keychain failures fail closed: the variables stay unresolved and Send is blocked.
+- History and cookie files are private to your user on macOS and Linux; on Windows they inherit the folder's permissions, so a portable folder is only as private as where you put it. Keychain failures fail closed: the variables stay unresolved and Send is blocked.
 
 ## Known limitations
 

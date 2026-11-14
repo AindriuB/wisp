@@ -124,6 +124,7 @@ Every item that adds a test names it in the PR description.
 - [x] AC73 (done, task 121) [55-9, security] A failed environment reload keeps the old secrets active while the status says not loaded; clear the active secrets on a failed reload so status and secrets agree.
 - [x] AC74 (done, task 120) [55-19, security] `imported_names` reads the secrets file before the confinement check, so it follows symlinks and blocks on a FIFO; run the confinement check first and open without following symlinks or blocking.
 - [ ] AC75 [55-21, security] The test `Workspace::new` resolves the real user data dir before it is swapped; resolve nothing from the real data dir under test.
+- [ ] AC76 🔒 Windows: set a restrictive owner-only ACL on the data dir, history and cookie files (today they inherit the destination folder's ACL; a shared portable folder exposes saved responses and cookies).
 
 **K — CI and release gate**
 - [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
