@@ -1212,6 +1212,7 @@ fn oversized_notice(e: &OpEnv, id: &CollectionId, data: &DataDir) -> String {
 #[cfg(test)]
 mod keychain_tests {
     use super::*;
+    #[cfg(unix)]
     use wisp_storage::collection::assign_new_collection_id;
     use wisp_storage::vault::{MemoryStore, secret_account};
 
@@ -1782,6 +1783,7 @@ mod keychain_tests {
         assert!(matches!(status(&a, &data, &m), LoadStatus::Store { .. }));
     }
 
+    #[cfg(unix)]
     fn make_worktree(main: &Path, wt: &Path, name: &str) {
         std::fs::create_dir_all(main.join(".git")).unwrap();
         let main = std::fs::canonicalize(main).unwrap();
