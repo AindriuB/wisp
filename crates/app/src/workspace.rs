@@ -1744,7 +1744,12 @@ impl Workspace {
             return Ok(());
         };
         match name {
-            Some(n) => self.load_env_at(ix, n.to_string(), true, cx),
+            Some(n) => {
+                // Re-selecting the active environment is a reload: a failure must clear its
+                // secrets, not restore them.
+                let same = c.active_env.as_ref().is_some_and(|e| e.name == n);
+                self.load_env_at(ix, n.to_string(), !same, cx)
+            }
             None => {
                 c.env_gen = generation;
                 c.active_env = None;
@@ -1834,6 +1839,19 @@ impl Workspace {
                 if switching {
                     c.active_env = previous.0;
                     c.env_status = previous.1;
+                    // The previous environment's own reload was cancelled by this switch. Fail
+                    // closed until a fresh reload lands.
+                    let pending = c
+                        .env_status
+                        .as_ref()
+                        .filter(|s| matches!(s.state, EnvState::Loading))
+                        .map(|s| s.env.clone());
+                    if let Some(prev) = pending {
+                        if let Some(env) = c.active_env.as_mut() {
+                            env.secrets.clear();
+                        }
+                        self.load_env_at(ix, prev, false, cx);
+                    }
                     cx.emit(WorkspaceEvent::Notice(
                         format!("Cannot switch environment: {e}").into(),
                     ));
@@ -4647,6 +4665,52 @@ mod env_wiring_tests {
             )
         });
         assert!(errored);
+    }
+
+    fn secret_count(fx: &Fx, cx: &mut TestAppContext) -> usize {
+        fx.ws.read_with(cx, |w, _| {
+            w.collections[0]
+                .active_env
+                .as_ref()
+                .map_or(0, |e| e.secrets.len())
+        })
+    }
+
+    fn is_state(fx: &Fx, cx: &mut TestAppContext, f: fn(&EnvState) -> bool) -> bool {
+        fx.ws.read_with(cx, |w, _| {
+            w.collections[0]
+                .env_status
+                .as_ref()
+                .is_some_and(|s| f(&s.state))
+        })
+    }
+
+    #[gpui::test]
+    fn reselecting_active_env_with_failed_load_clears_secrets(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        assert_eq!(secret_count(&fx, cx), 1);
+        std::fs::write(fx.root.join("environments/dev.toml"), "broken = [not valid").unwrap();
+        switch(&fx, "dev", cx);
+        assert_eq!(secret_count(&fx, cx), 0);
+        assert!(is_state(&fx, cx, |s| matches!(s, EnvState::Error(_))));
+    }
+
+    #[gpui::test]
+    fn failed_switch_during_pending_reload_reloads_previous(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        switch(&fx, "dev", cx);
+        // Start a reload of dev, then switch to a broken env before it lands.
+        fx.ws
+            .update(cx, |w, cx| w.load_env_at(0, "dev".into(), false, cx));
+        fx.ws
+            .update(cx, |w, cx| w.set_environment(Some("bad"), cx).unwrap());
+        cx.run_until_parked();
+        assert_eq!(env_name(&fx, cx).as_deref(), Some("dev"));
+        assert!(is_state(&fx, cx, |s| matches!(s, EnvState::Loaded { .. })));
+        assert_eq!(secret_count(&fx, cx), 1);
     }
 
     #[gpui::test]

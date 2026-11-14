@@ -41,3 +41,9 @@ cargo writes no JUnit XML here, so these are command checks.
 - crates/app/src/vault.rs (owned by task 120 in this wave).
 - 99-AC52 (history routing by cached id), AC72 (no-data-dir bindings), AC75 (test `Workspace::new` and the real data dir): deferred.
 - Any change to the switching path or to the notice wording beyond what AC1 needs.
+
+## PR #61 review round 1 (HEAD 7ce5d00)
+- 61-1 (Medium, security) workspace.rs:1843: re-selecting the active environment takes the switching path, so a failed load restores the refused secrets and the old Loaded status. Fixed: same name is a reload.
+- 61-2 (Medium, security) workspace.rs:1843: a failed switch while a reload of the previous env is pending restores old secrets with status stuck at Loading. Fixed: restore with secrets cleared and re-run its reload.
+- 61-3 (follow-up) test skips AC1's resolution clause and plain-vars-kept claim.
+- 61-4 (follow-up) a cleared secret name can fall through to a same-named env or collection var.
