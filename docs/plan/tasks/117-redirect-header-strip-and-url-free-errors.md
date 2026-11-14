@@ -62,3 +62,10 @@ cargo writes no JUnit XML here, so these are command checks. The test filter lin
 ## Review round 1 — findings (HEAD 9801aa3)
 - [P1] crates/core/src/engine.rs:722 (with :796-800, :985) — once any non-allow-listed user header is present the engine follows redirects itself, but `replay` is built only when `req.auth.is_some()`; with no auth it stays Replay::None, so on 307/308 the resend has an empty body and still reports Completed. Small file bodies (<= MEMORY_BODY_LIMIT, plan None) lose their body too. Breaks AC5. Fix: build replay whenever own_redirects is true. Input: POST Bytes "hello" + header X-Trace: 1, auth None, follow_redirects, 307 /first → /second → /second gets 0-byte body; same for a 100,000-byte File body.
 - [P2] crates/core/src/engine.rs:960-963 — the new trigger moves 301/302 of PUT/PATCH/DELETE from reqwest's rules to the engine's, which keeps method+body; one custom header changes the method on the second hop. Settled by the Decisions entry above. Input: PUT Bytes + X-Trace, no auth, 302 → before GET /second no body; now PUT /second empty body.
+
+## PR #59 review round 1 (HEAD 4b7a26c)
+- 59-1 (Medium, security) crates/core/src/engine.rs:725 — redirects reqwest still follows send a Referer carrying the previous URL and query to the new origin. Fix: `.referer(false)` in ClientCache; cross-origin test asserts no Referer.
+- 59-2 (Medium) crates/core/src/engine.rs:997 — POST→GET rewrite keeps a user-set Transfer-Encoding header. Fix: strip it with content-type/content-length when the body is dropped.
+- 59-3 (Low, follow-up) engine.rs:1078 URL removal parses reqwest Display text.
+- 59-4 (Low, follow-up) engine.rs:795 replay clones the whole body for any custom header.
+- 59-5 (Nit, follow-up) engine.rs:958 comment wording.

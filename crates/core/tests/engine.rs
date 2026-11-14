@@ -1155,10 +1155,16 @@ async fn method_redirect(
     let mut req = get(format!("{}/first", server.uri()));
     req.method = m;
     req.body = body;
-    req.headers = vec![Header {
-        name: "Content-Type".into(),
-        value: "text/plain".into(),
-    }];
+    req.headers = vec![
+        Header {
+            name: "Content-Type".into(),
+            value: "text/plain".into(),
+        },
+        Header {
+            name: "Transfer-Encoding".into(),
+            value: "chunked".into(),
+        },
+    ];
     if via_auth {
         req.auth = Some(wisp_core::auth::EngineAuth::Digest {
             username: "u".into(),
@@ -1235,8 +1241,43 @@ async fn engine_followed_redirects_use_reqwest_method_rules() {
                 if resend {
                     assert!(!got[1].headers.contains_key("content-type"), "{ctx}");
                     assert!(!got[1].headers.contains_key("content-length"), "{ctx}");
+                    assert!(!got[1].headers.contains_key("transfer-encoding"), "{ctx}");
                 }
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn a_cross_origin_redirect_sends_no_referer() {
+    for own in [false, true] {
+        let second = MockServer::start().await;
+        Mock::given(path("/second"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&second)
+            .await;
+        let first = MockServer::start().await;
+        Mock::given(path("/first"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/second", second.uri())),
+            )
+            .mount(&first)
+            .await;
+        let mut req = get(format!("{}/first?api_key=SECRETVAL", first.uri()));
+        if own {
+            req.headers = vec![Header {
+                name: "X-Trace".into(),
+                value: "1".into(),
+            }];
+        }
+        let evs = send_and_collect(req).await;
+        assert!(
+            matches!(evs.last().unwrap(), Event::Completed { .. }),
+            "{evs:?}"
+        );
+        let got = second.received_requests().await.unwrap();
+        assert_eq!(got.len(), 1, "own={own}");
+        assert!(!got[0].headers.contains_key("referer"), "own={own}");
     }
 }

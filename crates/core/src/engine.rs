@@ -995,9 +995,14 @@ async fn perform(
                 signing_hash = Some(sigv4::sha256_hex(&[]));
             }
             header_list.retain(|(n, _)| {
-                !["content-type", "content-length", "content-encoding"]
-                    .iter()
-                    .any(|s| n.eq_ignore_ascii_case(s))
+                ![
+                    "content-type",
+                    "content-length",
+                    "content-encoding",
+                    "transfer-encoding",
+                ]
+                .iter()
+                .any(|s| n.eq_ignore_ascii_case(s))
             });
         }
         digest_header = None;
