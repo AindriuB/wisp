@@ -266,17 +266,47 @@ const MAX_SECRET_BASE_BYTES: usize = 64;
 /// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
 /// without it and the percent-decoded `(user, password)`.
 pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
-    // Without a scheme the authority starts at the beginning. A `://` that
-    // only appears after the authority (in a path or query) is not a scheme.
-    let scheme_end = match url.find("://") {
-        _ if url.starts_with("//") => 2,
-        Some(i) if !url[..i].contains(['/', '?', '#', '@']) => i + 3,
-        _ => 0,
+    // Without a scheme the authority starts at the beginning. A scheme is
+    // letters then `:` and at least one `/` (lenient forms like `http:/h` and
+    // `https:///h` count); a `://` that only appears later is not a scheme.
+    let scheme_end = if url.starts_with("//") {
+        2
+    } else {
+        match url.find(':') {
+            Some(i)
+                if i > 0
+                    && url[..i]
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+                    && url[i + 1..].starts_with('/') =>
+            {
+                i + 1 + url[i + 1..].len() - url[i + 1..].trim_start_matches('/').len()
+            }
+            _ => 0,
+        }
     };
     let rest = &url[scheme_end..];
-    let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let Some(at) = rest[..auth_end].rfind('@') else {
-        return (url.to_string(), None);
+    let first_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let at = if let Some(at) = rest[..first_end].rfind('@') {
+        at
+    } else {
+        // A raw `/`, `?` or `#` inside the password moves the apparent end of
+        // the authority. A leading `user:pass` segment (not `host:port`)
+        // followed by a later `@` is treated as userinfo.
+        let seg = &rest[..first_end];
+        let looks_like_userinfo = seg
+            .split_once(':')
+            .is_some_and(|(h, p)| !h.is_empty() && !p.bytes().all(|b| b.is_ascii_digit()));
+        let Some(first_at) = rest.find('@').filter(|_| looks_like_userinfo) else {
+            return (url.to_string(), None);
+        };
+        let limit = rest[first_at..]
+            .find('/')
+            .map_or(rest.len(), |i| first_at + i);
+        match rest[..limit].rfind('@') {
+            Some(at) => at,
+            None => return (url.to_string(), None),
+        }
     };
     let info = &rest[..at];
     let (user, pass) = info.split_once(':').unwrap_or((info, ""));
@@ -314,11 +344,20 @@ fn sanitize_name(raw: &str) -> String {
     out
 }
 
+/// True when the whole trimmed value is exactly one `{{name}}` reference.
+fn is_single_ref(value: &str) -> bool {
+    value
+        .trim()
+        .strip_prefix("{{")
+        .and_then(|v| v.strip_suffix("}}"))
+        .is_some_and(|name| !name.trim().is_empty() && !name.contains(['{', '}']))
+}
+
 impl SecretSink {
     /// Keep `{{refs}}` and empty values; move a literal into the secrets
     /// environment and return a reference to it.
     pub(crate) fn secret_ref(&mut self, request: &str, field: &str, value: String) -> String {
-        if value.is_empty() || value.contains("{{") {
+        if value.is_empty() || is_single_ref(&value) {
             return value;
         }
         let base = sanitize_name(request);

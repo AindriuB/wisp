@@ -232,3 +232,72 @@ fn credentials_never_reach_committed_files() {
         }
     }
 }
+
+/// Import `cmd` with curl, write it, and assert no TOML other than the secrets
+/// file contains any needle; at least one needle must be in the secrets file.
+fn assert_no_leak(cmd: &str, needles: &[&str]) {
+    let r = curl::parse(cmd).unwrap();
+    let d = collection();
+    write(d.path(), Path::new(""), &r, "imported").unwrap();
+    let files = all_files(d.path());
+    for needle in needles {
+        for (path, text) in &files {
+            if path.to_string_lossy().ends_with(".secrets.toml") {
+                continue;
+            }
+            assert!(
+                !text.contains(needle),
+                "{needle} in {} ({cmd})",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn header_with_secret_and_reference_is_not_kept_literally() {
+    assert_no_leak(
+        "curl -H 'Authorization: Bearer SECRETVAL {{x}}' http://h/x",
+        &["SECRETVAL"],
+    );
+}
+
+#[test]
+fn password_with_url_delimiters_is_not_written() {
+    for url in [
+        "https://u:SEC/RET@h/x",
+        "https://u:SEC?RET@h/x",
+        "https://u:SEC#RET@h/x",
+    ] {
+        assert_no_leak(&format!("curl '{url}'"), &["SEC", "RET"]);
+    }
+}
+
+#[test]
+fn lenient_scheme_userinfo_is_not_written() {
+    for url in ["https:///u:SECRETVAL@h/x", "http:/u:SECRETVAL@h/x"] {
+        assert_no_leak(&format!("curl '{url}'"), &["SECRETVAL"]);
+    }
+}
+
+#[test]
+fn digest_ntlm_negotiate_credentials_stay_in_secrets() {
+    for opt in ["--digest", "--ntlm", "--negotiate"] {
+        let cmd = format!("curl {opt} -u user:SECRETVAL http://h/x");
+        assert_no_leak(&cmd, &["SECRETVAL"]);
+        let r = curl::parse(&cmd).unwrap();
+        let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+            panic!()
+        };
+        if opt == "--digest" {
+            assert!(matches!(
+                request.auth,
+                wisp_core::request::Auth::Digest { .. }
+            ));
+        } else {
+            assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
+            assert!(r.warnings.iter().any(|w| w.message.contains(opt)));
+        }
+        assert!(r.warnings.iter().all(|w| !w.message.contains("SECRETVAL")));
+    }
+}
