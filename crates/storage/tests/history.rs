@@ -716,3 +716,88 @@ fn timings_roundtrip_and_old_index_lines_load_as_none() {
     let listed = store.list().unwrap();
     assert_eq!((listed[0].dns_ms, listed[0].connect_ms), (None, None));
 }
+
+fn hdr(n: &str, v: &str) -> Header {
+    Header {
+        name: n.into(),
+        value: v.into(),
+    }
+}
+
+#[test]
+fn credential_named_response_headers_are_emptied() {
+    let (_d, data, store) = setup();
+    let mut n = plain("http://x");
+    n.response_headers = vec![
+        hdr("X-Auth-Token", "SECRETVAL"),
+        hdr("X-Subject-Token", "SECRETVAL"),
+        hdr("Content-Type", "text/plain"),
+    ];
+    let e = store.append(n, None).unwrap();
+    assert!(!raw_files(&data).contains("SECRETVAL"));
+    assert!(e.redacted.contains(&"X-Auth-Token".to_string()));
+    let h = store.load(&e.id).unwrap().response_headers;
+    assert_eq!(h[0].value, "");
+    assert_eq!(h[2].value, "text/plain");
+}
+
+#[test]
+fn set_cookie_without_name_is_emptied() {
+    let (_d, data, store) = setup();
+    let mut n = plain("http://x");
+    n.response_headers = vec![
+        hdr("Set-Cookie", "SECRETVAL; Path=/"),
+        hdr("Set-Cookie", "SECRETVAL"),
+    ];
+    let e = store.append(n, None).unwrap();
+    assert!(!raw_files(&data).contains("SECRETVAL"));
+    let h = store.load(&e.id).unwrap().response_headers;
+    assert_eq!(h[0].value, "; Path=/");
+}
+
+#[test]
+fn path_vars_are_redacted() {
+    let (_d, data, store) = setup();
+    let req = Request {
+        path: vec![
+            Var {
+                name: "token".into(),
+                value: "SECRETVAL".into(),
+            },
+            Var {
+                name: "id".into(),
+                value: "42".into(),
+            },
+            Var {
+                name: "api_key".into(),
+                value: "{{k}}".into(),
+            },
+        ],
+        ..Request::default()
+    };
+    let e = store.append(new_entry(req), None).unwrap();
+    let raw = raw_files(&data);
+    assert!(!raw.contains("SECRETVAL") && raw.contains("42"));
+    assert!(e.redacted.contains(&"path.token".to_string()));
+    assert!(!e.redacted.contains(&"path.api_key".to_string()));
+}
+
+#[test]
+fn json_body_with_duplicate_keys_is_dropped() {
+    let (_d, data, store) = setup();
+    for body in [
+        r#"{"token":"SECRETVAL","token":"{{t}}"}"#,
+        r#"{"a":[{"x":"SECRETVAL","x":1}]}"#,
+    ] {
+        let req = Request {
+            body: Body::Json(TextBody {
+                content: body.into(),
+                ..TextBody::default()
+            }),
+            ..Request::default()
+        };
+        let e = store.append(new_entry(req), None).unwrap();
+        assert!(!raw_files(&data).contains("SECRETVAL"));
+        assert!(e.redacted.contains(&"body".to_string()));
+    }
+}

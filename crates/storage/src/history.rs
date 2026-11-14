@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use wisp_core::redact::{SECRET_FRAGMENTS, is_credential_name as is_secret_name};
+use wisp_core::redact::{contains_credential_fragment, is_credential_name as is_secret_name};
 use wisp_core::request::{ApiKeyLocation, Auth, Body, PartValue, Request};
 use wisp_core::{ErrorKind, Header, Method};
 
@@ -327,6 +327,11 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
             note(&mut names, format!("params.{}", p.name));
         }
     }
+    for v in &mut out.path {
+        if is_secret_name(&v.name) && scrub(&mut v.value) {
+            note(&mut names, format!("path.{}", v.name));
+        }
+    }
     for v in &mut out.vars {
         if is_secret_name(&v.name) && scrub(&mut v.value) {
             note(&mut names, format!("vars.{}", v.name));
@@ -351,12 +356,9 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
             }
         }
         Body::Json(b) => redact_json_body(&mut b.content, &mut names),
-        Body::Text(b) | Body::Xml(b) => {
-            let lower = b.content.to_lowercase();
-            if SECRET_FRAGMENTS.iter().any(|f| lower.contains(f)) {
-                b.content.clear();
-                note(&mut names, "body".into());
-            }
+        Body::Text(b) | Body::Xml(b) if contains_credential_fragment(&b.content) => {
+            b.content.clear();
+            note(&mut names, "body".into());
         }
         _ => {}
     }
@@ -417,6 +419,55 @@ fn mask_bare_refs(text: &str) -> (String, Vec<String>) {
     (out, refs)
 }
 
+/// Parses any JSON, failing on a duplicate key in any object (serde_json's `Value` keeps the last).
+struct NoDupKeys;
+
+impl<'de> Deserialize<'de> for NoDupKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = NoDupKeys;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("JSON without duplicate keys")
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<NoDupKeys, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<NoDupKeys, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<NoDupKeys, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<NoDupKeys, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<NoDupKeys, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_unit<E>(self) -> Result<NoDupKeys, E> {
+                Ok(NoDupKeys)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<NoDupKeys, A::Error> {
+                while a.next_element::<NoDupKeys>()?.is_some() {}
+                Ok(NoDupKeys)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<NoDupKeys, A::Error> {
+                let mut seen = std::collections::HashSet::new();
+                while let Some(k) = a.next_key::<String>()? {
+                    if !seen.insert(k) {
+                        return Err(serde::de::Error::custom("duplicate key"));
+                    }
+                    a.next_value::<NoDupKeys>()?;
+                }
+                Ok(NoDupKeys)
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
 /// Redact credential-named keys in a JSON body template. Bodies are text templates, so
 /// `{{ref}}` in value position is masked for the parse and restored unquoted. A body that
 /// still does not parse is dropped (fail closed) and `body` is recorded.
@@ -425,6 +476,11 @@ fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
         return;
     }
     let (masked, refs) = mask_bare_refs(content);
+    if serde_json::from_str::<NoDupKeys>(&masked).is_err() {
+        content.clear();
+        note(names, "body".into());
+        return;
+    }
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&masked) else {
         content.clear();
         note(names, "body".into());
@@ -452,24 +508,40 @@ fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
     }
 }
 
-/// Empty the value of every `Set-Cookie` header; true when any value changed.
+/// Empty the value of every `Set-Cookie` header; true when any value changed. `name=value`
+/// keeps the name; a nameless `token; Path=/` has the part before the first `;` emptied.
 fn redact_set_cookies(headers: &mut [Header]) -> bool {
     let mut changed = false;
     for h in headers {
         if !h.name.eq_ignore_ascii_case("set-cookie") {
             continue;
         }
-        let Some(eq) = h.value.find('=') else {
-            continue;
-        };
         let end = h.value.find(';').unwrap_or(h.value.len());
-        if end <= eq + 1 {
+        let head = &h.value[..end];
+        let keep = match head.find('=') {
+            Some(eq) => eq + 1,
+            None => 0,
+        };
+        if end <= keep {
             continue;
         }
-        h.value = format!("{}{}", &h.value[..=eq], &h.value[end..]);
+        h.value = format!("{}{}", &h.value[..keep], &h.value[end..]);
         changed = true;
     }
     changed
+}
+
+/// Empty the value of every non-cookie response header with a credential-like name.
+fn redact_credential_headers(headers: &mut [Header], names: &mut Vec<String>) {
+    for h in headers {
+        if !h.name.eq_ignore_ascii_case("set-cookie")
+            && is_secret_name(&h.name)
+            && !h.value.is_empty()
+        {
+            h.value.clear();
+            note(names, h.name.clone());
+        }
+    }
 }
 
 fn millis(d: Duration) -> u64 {
@@ -560,6 +632,7 @@ impl HistoryStore {
         if redact_set_cookies(&mut response_headers) {
             redacted.push("Set-Cookie".into());
         }
+        redact_credential_headers(&mut response_headers, &mut redacted);
         let (bin, req) = {
             let [a, b] = self.body_files(&id);
             (a, b)
