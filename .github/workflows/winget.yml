@@ -1,0 +1,85 @@
+name: winget
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the v prefix, e.g. 0.1.0"
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - "packaging/winget/**"
+      - "scripts/release/winget-manifest.sh"
+      - ".github/workflows/winget.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      INPUT_VERSION: ${{ inputs.version }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Generate manifest from release assets
+        if: github.event_name != 'pull_request'
+        run: |
+          if [ "$EVENT_NAME" = release ]; then
+            tag="$RELEASE_TAG"
+          else
+            tag="v${INPUT_VERSION#v}"
+          fi
+          version="${tag#v}"
+          mkdir -p "$RUNNER_TEMP/sums"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p SHA256SUMS -D "$RUNNER_TEMP/sums"
+          scripts/release/winget-manifest.sh "$version" "$RUNNER_TEMP/sums/SHA256SUMS" "$RUNNER_TEMP/out"
+          echo "MANIFEST_ROOT=$RUNNER_TEMP/out/manifests" >> "$GITHUB_ENV"
+          committed="packaging/winget/manifests/a/AindriuB/Wisp/$version"
+          if [ -d "$committed" ]; then
+            diff -r "$committed" "$RUNNER_TEMP/out/manifests/a/AindriuB/Wisp/$version"
+            echo "::notice::generated manifest is byte-identical to the committed $version manifest"
+          else
+            echo "::notice::no committed manifest for $version yet; commit the artifact"
+          fi
+      - name: Use committed manifests
+        if: github.event_name == 'pull_request'
+        run: echo "MANIFEST_ROOT=$GITHUB_WORKSPACE/packaging/winget/manifests" >> "$GITHUB_ENV"
+      - name: Validate
+        run: |
+          dirs="$(find "$MANIFEST_ROOT" -name '*.installer.yaml' -exec dirname {} \; | sort -u)"
+          mapfile -t dirarr <<< "$dirs"
+          [ -n "$dirs" ] || { echo "no manifests under $MANIFEST_ROOT" >&2; exit 1; }
+          if command -v winget >/dev/null 2>&1; then
+            for d in "${dirarr[@]}"; do winget validate --manifest "$(cygpath -w "$d")"; done
+            echo "::notice::validated with winget validate --manifest"
+          else
+            python -m pip install --disable-pip-version-check check-jsonschema==0.29.4
+            base=https://raw.githubusercontent.com/microsoft/winget-cli/v1.6.3482/schemas/JSON/manifests/v1.6.0
+            for d in "${dirarr[@]}"; do
+              for f in "$d"/*.yaml; do
+                case "$f" in
+                  *.installer.yaml) s=installer ;;
+                  *.locale.*.yaml) s=defaultLocale ;;
+                  *) s=version ;;
+                esac
+                check-jsonschema --schemafile "$base/manifest.$s.1.6.0.json" "$f"
+              done
+            done
+            echo "::notice::winget not on PATH; validated against pinned winget-cli v1.6.3482 JSON schemas with check-jsonschema 0.29.4"
+          fi
+      - name: Upload manifest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: winget-manifest
+          path: ${{ runner.temp }}/out/manifests

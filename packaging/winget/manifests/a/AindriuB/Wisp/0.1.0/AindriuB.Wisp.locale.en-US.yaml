@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: AindriuB.Wisp
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: AindriuB
+PackageName: Wisp
+PackageUrl: https://github.com/AindriuB/wisp
+License: Apache-2.0
+ShortDescription: A portable, lightweight HTTP client.
+Moniker: wisp
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: AindriuB.Wisp
+PackageVersion: 0.1.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: Wisp-0.1.0-windows-x64\wisp.exe
+    PortableCommandAlias: wisp
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/AindriuB/wisp/releases/download/v0.1.0/Wisp-0.1.0-windows-x64.zip
+    InstallerSha256: B69691E0698E5C930CA4F3D3B3F810658300A28C1BB35B36B055AE6BC719EB89
+ManifestType: installer
+ManifestVersion: 1.6.0
