@@ -7,8 +7,8 @@ set -euo pipefail
 unset CDPATH
 
 # Defined once; the user confirms both (see packaging/winget/README.md).
-PACKAGE_IDENTIFIER="AindriuB.Wisp"
-PUBLISHER="AindriuB"
+PACKAGE_IDENTIFIER="${PACKAGE_IDENTIFIER:-AindriuB.Wisp}"
+PUBLISHER="${PUBLISHER:-AindriuB}"
 
 version="${1:-}"; sums="${2:-}"; out="${3:-}"
 [ -n "$version" ] && [ -n "$sums" ] && [ -n "$out" ] || {
@@ -26,16 +26,19 @@ url="https://github.com/AindriuB/wisp/releases/download/v${version}/${zip}"
 here="$(cd "$(dirname "$0")" && pwd)"
 tpl="$here/../../packaging/winget/templates"
 name="${PACKAGE_IDENTIFIER#*.}"
+pubdir="${PACKAGE_IDENTIFIER%%.*}"
 letter="$(printf '%s' "$PACKAGE_IDENTIFIER" | cut -c1 | tr '[:upper:]' '[:lower:]')"
-dir="$out/manifests/$letter/$PUBLISHER/$name/$version"
+dir="$out/manifests/$letter/$pubdir/$name/$version"
 mkdir -p "$dir"
 
+# Escape a value for the replacement side of a sed s||| command.
+esc() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 render() {
-  sed -e "s|@PACKAGE_IDENTIFIER@|$PACKAGE_IDENTIFIER|g" \
-      -e "s|@PUBLISHER@|$PUBLISHER|g" \
-      -e "s|@VERSION@|$version|g" \
-      -e "s|@URL@|$url|g" \
-      -e "s|@SHA256@|$sha|g" "$1" > "$2"
+  sed -e "s|@PACKAGE_IDENTIFIER@|$(esc "$PACKAGE_IDENTIFIER")|g" \
+      -e "s|@PUBLISHER@|$(esc "$PUBLISHER")|g" \
+      -e "s|@VERSION@|$(esc "$version")|g" \
+      -e "s|@URL@|$(esc "$url")|g" \
+      -e "s|@SHA256@|$(esc "$sha")|g" "$1" > "$2"
 }
 render "$tpl/version.yaml.template"      "$dir/$PACKAGE_IDENTIFIER.yaml"
 render "$tpl/installer.yaml.template"    "$dir/$PACKAGE_IDENTIFIER.installer.yaml"

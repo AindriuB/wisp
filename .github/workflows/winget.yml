@@ -57,14 +57,15 @@ jobs:
       - name: Validate
         run: |
           dirs="$(find "$MANIFEST_ROOT" -name '*.installer.yaml' -exec dirname {} \; | sort -u)"
+          mapfile -t dirarr <<< "$dirs"
           [ -n "$dirs" ] || { echo "no manifests under $MANIFEST_ROOT" >&2; exit 1; }
           if command -v winget >/dev/null 2>&1; then
-            for d in $dirs; do winget validate --manifest "$(cygpath -w "$d")"; done
+            for d in "${dirarr[@]}"; do winget validate --manifest "$(cygpath -w "$d")"; done
             echo "::notice::validated with winget validate --manifest"
           else
             python -m pip install --disable-pip-version-check check-jsonschema==0.29.4
             base=https://raw.githubusercontent.com/microsoft/winget-cli/v1.6.3482/schemas/JSON/manifests/v1.6.0
-            for d in $dirs; do
+            for d in "${dirarr[@]}"; do
               for f in "$d"/*.yaml; do
                 case "$f" in
                   *.installer.yaml) s=installer ;;
