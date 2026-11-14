@@ -125,8 +125,9 @@ mod tests {
     fn location_rules() {
         let exe = Path::new("/app");
         let os = Path::new("/os");
-        let ov = Path::new("/ov");
-        assert_eq!(location(exe, true, Some(os), Some(ov)), Some("/ov".into()));
+        // `/ov` has no drive letter, so it is not absolute on Windows.
+        let ov = std::env::temp_dir().join("ov");
+        assert_eq!(location(exe, true, Some(os), Some(&ov)), Some(ov.clone()));
         assert_eq!(
             location(exe, false, Some(os), Some(Path::new("rel"))),
             Some("/os/wisp".into())

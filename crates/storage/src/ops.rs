@@ -737,6 +737,11 @@ mod tests {
         d
     }
 
+    /// `/`-separated, so the expected strings hold on Windows too.
+    fn slashed(p: &Path) -> String {
+        p.to_string_lossy().replace('\\', "/")
+    }
+
     /// Flatten the opened tree to `path:name` strings.
     fn tree(root: &Path) -> Vec<String> {
         fn walk(nodes: &[Node], out: &mut Vec<String>) {
@@ -747,11 +752,11 @@ mod tests {
                         name,
                         children,
                     } => {
-                        out.push(format!("{}/ {name}", path.display()));
+                        out.push(format!("{}/ {name}", slashed(path)));
                         walk(children, out);
                     }
-                    Node::Request(m) => out.push(format!("{} {}", m.path.display(), m.name)),
-                    Node::Invalid { path, .. } => out.push(format!("{} INVALID", path.display())),
+                    Node::Request(m) => out.push(format!("{} {}", slashed(&m.path), m.name)),
+                    Node::Invalid { path, .. } => out.push(format!("{} INVALID", slashed(path))),
                 }
             }
         }
