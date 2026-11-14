@@ -301,3 +301,26 @@ fn digest_ntlm_negotiate_credentials_stay_in_secrets() {
         assert!(r.warnings.iter().all(|w| !w.message.contains("SECRETVAL")));
     }
 }
+
+#[test]
+fn ambiguous_host_port_password_is_refused() {
+    for url in [
+        "https://u:1234/abcd@h/x",
+        "https://u:/SECPW@h/x",
+        "https://u:12?34@h/x",
+    ] {
+        let cmd = format!("curl '{url}'");
+        let err = curl::parse(&cmd).unwrap_err().to_string();
+        assert!(!err.contains("SECPW") && !err.contains("abcd") && !err.contains("34"));
+    }
+}
+
+#[test]
+fn ipv6_host_with_at_in_path_is_not_userinfo() {
+    let r = curl::parse("curl 'http://[::1]:8080/a@b'").unwrap();
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert!(request.url.contains("[::1]:8080"), "{}", request.url);
+    assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
+}

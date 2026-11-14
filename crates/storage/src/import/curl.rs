@@ -406,6 +406,10 @@ fn set_url(f: &mut Flags, url: String) {
     if f.url.is_none() {
         f.url = Some(url);
     } else {
+        if super::has_ambiguous_userinfo(&url) {
+            f.warn("an extra URL is not imported".into());
+            return;
+        }
         let (url, _) = super::split_userinfo(&url);
         let url = url.split(['?', '#']).next().unwrap_or_default().to_string();
         f.warn(format!("extra URL `{url}` is not imported"));
@@ -443,6 +447,12 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
         .ok_or_else(|| ImportError::Parse("no URL in the curl command".into()))?;
     // Userinfo first: a password may hold `?` or `#`, which would otherwise
     // start the query.
+    if super::has_ambiguous_userinfo(url_raw.trim()) {
+        return Err(ImportError::Parse(
+            "the URL may contain credentials that cannot be told apart from its host; not imported"
+                .into(),
+        ));
+    }
     let (url_raw, userinfo) = super::split_userinfo(url_raw.trim());
     let (url, mut params) = split_query(&url_raw);
     if userinfo.is_some() && f.user.is_some() {

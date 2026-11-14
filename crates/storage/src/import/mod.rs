@@ -263,13 +263,12 @@ pub(crate) fn form_decode(s: &str) -> String {
 /// name times many credential headers stays cheap.
 const MAX_SECRET_BASE_BYTES: usize = 64;
 
-/// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
-/// without it and the percent-decoded `(user, password)`.
-pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
+/// Byte offset where the authority of `[scheme://]host...` starts.
+fn authority_start(url: &str) -> usize {
     // Without a scheme the authority starts at the beginning. A scheme is
     // letters then `:` and at least one `/` (lenient forms like `http:/h` and
     // `https:///h` count); a `://` that only appears later is not a scheme.
-    let scheme_end = if url.starts_with("//") {
+    if url.starts_with("//") {
         2
     } else {
         match url.find(':') {
@@ -284,7 +283,13 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
             }
             _ => 0,
         }
-    };
+    }
+}
+
+/// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
+/// without it and the percent-decoded `(user, password)`.
+pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
+    let scheme_end = authority_start(url);
     let rest = &url[scheme_end..];
     let first_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let at = if let Some(at) = rest[..first_end].rfind('@') {
@@ -294,9 +299,9 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         // the authority. A leading `user:pass` segment (not `host:port`)
         // followed by a later `@` is treated as userinfo.
         let seg = &rest[..first_end];
-        let looks_like_userinfo = seg
-            .split_once(':')
-            .is_some_and(|(h, p)| !h.is_empty() && !p.bytes().all(|b| b.is_ascii_digit()));
+        let looks_like_userinfo = seg.split_once(':').is_some_and(|(h, p)| {
+            !h.is_empty() && !h.starts_with('[') && !p.bytes().all(|b| b.is_ascii_digit())
+        });
         let Some(first_at) = rest.find('@').filter(|_| looks_like_userinfo) else {
             return (url.to_string(), None);
         };
@@ -314,6 +319,20 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         format!("{}{}", &url[..scheme_end], &rest[at + 1..]),
         Some((percent_decode(user), percent_decode(pass))),
     )
+}
+
+/// True when the first segment looks like `host:port` (or `host:`) but a later
+/// `@` means it could be `user:pass` whose password holds a raw `/`, `?` or `#`.
+/// The URL cannot be split safely; importers refuse it.
+pub(crate) fn has_ambiguous_userinfo(url: &str) -> bool {
+    let rest = &url[authority_start(url)..];
+    let seg = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    !seg.contains('@')
+        && !seg.starts_with('[')
+        && seg
+            .split_once(':')
+            .is_some_and(|(h, p)| !h.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && rest[seg.len()..].contains('@')
 }
 
 /// Literal credentials gathered by an importer; they go to the secrets
