@@ -37,6 +37,12 @@ render() { # <size> <svg> <out>
 for z in 16 24 32 48; do render "$z" "$src/wisp-small.svg" "$gen/png/wisp-$z.png"; done
 for z in 64 128 256 512 1024; do render "$z" "$src/wisp.svg" "$gen/png/wisp-$z.png"; done
 
+# MSIX logos (names match packaging/msix/AppxManifest.xml.template); same size cut.
+mkdir -p "$gen/msix"
+render 44  "$src/wisp-small.svg" "$gen/msix/Square44x44Logo.png"
+render 50  "$src/wisp.svg"       "$gen/msix/StoreLogo.png"
+render 150 "$src/wisp.svg"       "$gen/msix/Square150x150Logo.png"
+
 # .icns
 set_="$tmp/wisp.iconset"; mkdir -p "$set_"
 p="$gen/png/wisp"
@@ -74,6 +80,6 @@ if [ "$mode" = check ]; then
   exit "$fail"
 fi
 
-rm -rf "$src/png" "$src/AppIcon.icon" "$src/wisp.icns" "$src/wisp.ico"
+rm -rf "$src/png" "$src/msix" "$src/AppIcon.icon" "$src/wisp.icns" "$src/wisp.ico"
 cp -R "$gen/." "$src/"
 echo "regenerated assets/icon"
