@@ -219,6 +219,10 @@ const MAX_NAME_BYTES: usize = 100;
 /// Longest server URL accepted after variable substitution.
 const MAX_URL_BYTES: usize = 64 * 1024;
 
+/// Longest server variable name imported, in bytes. Longer ones are skipped
+/// so that every lookup in `substitute` is bounded.
+const MAX_VAR_NAME_BYTES: usize = 256;
+
 /// Replace `{name}` placeholders in one pass over the original URL; text
 /// substituted in is never rescanned.
 fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String, ImportError> {
@@ -262,9 +266,14 @@ fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String
             break;
         };
         let name = &url[after_at..close];
-        if name.len() <= max_key && vars.contains_key(name) {
-            #[cfg(test)]
+        // Names are at most `MAX_VAR_NAME_BYTES`, so a lookup compares at most
+        // that many bytes; count them whether or not the lookup succeeds.
+        let looked_up = name.len() <= max_key;
+        #[cfg(test)]
+        if looked_up {
             bump_by(&SUBST_STEPS, name.len());
+        }
+        if looked_up && vars.contains_key(name) {
             out.push_str(&text(vars[name].get("default")));
             rest = &url[close + 1..];
             base = close + 1;
@@ -308,6 +317,24 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
     for (i, s) in servers.iter().enumerate().take(MAX_ENVIRONMENTS) {
         let mut url = text(s.get("url"));
         if let Some(vars) = s.get("variables").and_then(Value::as_object) {
+            let kept;
+            let vars = if vars.keys().any(|k| k.len() > MAX_VAR_NAME_BYTES) {
+                result.warn(
+                    &root,
+                    format!(
+                        "server {}: skipped a server variable with an over-long name",
+                        i + 1
+                    ),
+                );
+                kept = vars
+                    .iter()
+                    .filter(|(k, _)| k.len() <= MAX_VAR_NAME_BYTES)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                &kept
+            } else {
+                vars
+            };
             url = substitute(&url, vars)?;
         } else if url.len() > MAX_URL_BYTES {
             return Err(ImportError::TooLarge(format!(
@@ -1003,6 +1030,33 @@ mod tests {
                 &c[..c.len().min(40)]
             );
         }
+    }
+
+    #[test]
+    fn over_long_variable_names_are_skipped_and_linear() {
+        let name = "{".repeat(65_000);
+        let url = format!("{}}}", "{".repeat(64_990));
+        let with = serde_json::json!({
+            "openapi": "3.1.0", "paths": {},
+            "servers": [{"url": url, "variables": {name.clone(): {"default": "X"}}}]
+        });
+        let without = serde_json::json!({
+            "openapi": "3.1.0", "paths": {},
+            "servers": [{"url": url, "variables": {}}]
+        });
+        SUBST_STEPS.with(|c| c.set(0));
+        let r = parse(with.to_string().as_bytes()).unwrap();
+        let n = SUBST_STEPS.with(|c| c.get());
+        assert!(n <= 4 * url.len(), "{n} bytes for url of {}", url.len());
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.message.contains("over-long name") && !w.message.contains("{{{{"))
+        );
+        let expected = substitute_old(&url, &serde_json::Map::new()).unwrap();
+        assert_eq!(r.environments[0].vars[0].value, expected);
+        let r2 = parse(without.to_string().as_bytes()).unwrap();
+        assert_eq!(r2.environments[0].vars[0].value, expected);
     }
 
     #[test]
