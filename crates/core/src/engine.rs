@@ -954,7 +954,7 @@ async fn perform(
         }
         let code = resp.status().as_u16();
         // 307/308 keep method and body. With own_redirects the rules match reqwest's: 303 turns
-        // any non-HEAD method into GET, 301/302 turn POST/PUT/PATCH/DELETE into GET, all
+        // any non-HEAD method into GET, 301/302 turn only POST into GET, all
         // without a body.
         let keeps_body = match code {
             307 | 308 => true,
@@ -962,13 +962,7 @@ async fn perform(
                 if code == 303 {
                     method == reqwest::Method::HEAD
                 } else {
-                    !matches!(
-                        method,
-                        reqwest::Method::POST
-                            | reqwest::Method::PUT
-                            | reqwest::Method::PATCH
-                            | reqwest::Method::DELETE
-                    )
+                    method != reqwest::Method::POST
                 }
             }
             _ => break resp,

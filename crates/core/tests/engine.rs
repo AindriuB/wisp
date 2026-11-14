@@ -1202,9 +1202,9 @@ async fn a_custom_header_redirect_resends_the_body_on_307_and_308() {
 async fn engine_followed_redirects_use_reqwest_method_rules() {
     let cases: [(Method, &str, u16, &str); 14] = [
         (Method::Post, "POST", 301, "GET"),
-        (Method::Put, "PUT", 301, "GET"),
-        (Method::Patch, "PATCH", 302, "GET"),
-        (Method::Delete, "DELETE", 302, "GET"),
+        (Method::Put, "PUT", 301, "PUT"),
+        (Method::Patch, "PATCH", 302, "PATCH"),
+        (Method::Delete, "DELETE", 302, "DELETE"),
         (Method::Post, "POST", 303, "GET"),
         (Method::Put, "PUT", 303, "GET"),
         (Method::Delete, "DELETE", 303, "GET"),
