@@ -20,13 +20,42 @@ const MAX_EXAMPLE_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(test)]
 thread_local! {
     static PARAM_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static MERGE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static KEY_OPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static SUBST_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 fn bump(c: &'static std::thread::LocalKey<std::cell::Cell<usize>>) {
-    c.with(|c| c.set(c.get() + 1));
+    bump_by(c, 1);
+}
+
+#[cfg(test)]
+fn bump_by(c: &'static std::thread::LocalKey<std::cell::Cell<usize>>, n: usize) {
+    c.with(|c| c.set(c.get() + n));
+}
+
+/// Parameter-merge key: name and location. Under test every hash and
+/// comparison is counted, so a lookup that scans linearly shows up.
+#[derive(Clone, Copy)]
+struct ParamKey<'a>(&'a str, &'a str);
+
+impl PartialEq for ParamKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        bump(&KEY_OPS);
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+
+impl Eq for ParamKey<'_> {}
+
+impl std::hash::Hash for ParamKey<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        #[cfg(test)]
+        bump(&KEY_OPS);
+        self.0.hash(state);
+        self.1.hash(state);
+    }
 }
 
 fn spend(budget: &mut usize, n: usize) -> Result<(), ImportError> {
@@ -198,27 +227,50 @@ fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String
         return Err(too_long());
     }
     let mut out = String::new();
+    // Longest variable name that can match; longer candidates are skipped
+    // without hashing them.
+    let max_key = vars.keys().map(String::len).max().unwrap_or(0);
     let mut rest = url;
-    while let Some(open) = rest.find('{') {
+    // Absolute offset of the next `}` at or after the cursor; `Some(None)`
+    // once a search found none, so nothing left can match.
+    let mut close_at: Option<Option<usize>> = None;
+    let mut base = 0; // offset of `rest` within `url`
+    while let Some(open) = {
+        let found = rest.find('{');
         #[cfg(test)]
-        bump(&SUBST_STEPS);
+        bump_by(&SUBST_STEPS, found.unwrap_or(rest.len()) + 1);
+        found
+    } {
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
-        match after.find('}') {
-            Some(close) if vars.contains_key(&after[..close]) => {
-                out.push_str(&text(vars[&after[..close]].get("default")));
-                rest = &after[close + 1..];
-            }
-            None => {
-                // No `}` anywhere ahead: nothing left can match.
-                out.push('{');
-                rest = after;
-                break;
-            }
+        let after_at = base + open + 1;
+        let close = match close_at {
+            Some(c) if c.is_none_or(|c| c >= after_at) => c,
             _ => {
-                out.push('{');
-                rest = after;
+                let c = after.find('}').map(|k| after_at + k);
+                #[cfg(test)]
+                bump_by(&SUBST_STEPS, c.map_or(after.len(), |c| c - after_at) + 1);
+                close_at = Some(c);
+                c
             }
+        };
+        let Some(close) = close else {
+            // No `}` anywhere ahead: nothing left can match.
+            out.push('{');
+            rest = after;
+            break;
+        };
+        let name = &url[after_at..close];
+        if name.len() <= max_key && vars.contains_key(name) {
+            #[cfg(test)]
+            bump_by(&SUBST_STEPS, name.len());
+            out.push_str(&text(vars[name].get("default")));
+            rest = &url[close + 1..];
+            base = close + 1;
+        } else {
+            out.push('{');
+            rest = after;
+            base = after_at;
         }
         if out.len() > MAX_URL_BYTES {
             return Err(too_long());
@@ -431,7 +483,7 @@ fn operation(
     // Path-level parameters first; an operation parameter replaces one with
     // the same name and location.
     let mut params: Vec<&Value> = Vec::new();
-    let mut index: HashMap<(&str, &str), usize> = HashMap::new();
+    let mut index: HashMap<ParamKey, usize> = HashMap::new();
     for list in [item.get("parameters"), op.get("parameters")] {
         for p in list.and_then(Value::as_array).into_iter().flatten() {
             #[cfg(test)]
@@ -440,14 +492,12 @@ fn operation(
             let Some(p) = deref(doc, p, &at, result, budget)? else {
                 continue;
             };
-            let key = (
+            let key = ParamKey(
                 p.get("name").and_then(Value::as_str).unwrap_or(""),
                 p.get("in").and_then(Value::as_str).unwrap_or(""),
             );
             // Hashing and comparing the key costs its length on every visit.
             spend(budget, key.0.len() + key.1.len())?;
-            #[cfg(test)]
-            bump(&MERGE_STEPS);
             if let Some(&i) = index.get(&key) {
                 params[i] = p;
             } else {
@@ -785,13 +835,14 @@ mod tests {
         let doc = format!(
             r#"{{"openapi":"3.0.0","paths":{{"/a":{{"parameters":[{params}],"get":{{"parameters":[{params}]}}}}}}}}"#
         );
-        MERGE_STEPS.with(|c| c.set(0));
+        KEY_OPS.with(|c| c.set(0));
         let r = parse(doc.as_bytes()).unwrap();
         assert_eq!(requests(&r.items)[0].params.len(), 60_000);
-        // One index lookup per parameter in the path and operation lists.
-        let steps = MERGE_STEPS.with(|c| c.get());
-        let bound = 2 * 60_000 + 1;
-        assert!(steps <= bound, "{steps} merge steps, bound {bound}");
+        // Each visit hashes its key a constant number of times (lookup,
+        // insert, table growth) and compares it with at most a few keys.
+        let ops = KEY_OPS.with(|c| c.get());
+        let bound = 2 * 60_000 * 8;
+        assert!(ops <= bound, "{ops} key operations, bound {bound}");
     }
 
     #[test]
@@ -833,21 +884,124 @@ mod tests {
     fn brace_heavy_url_is_linear() {
         let vars = serde_json::json!({"z": {}});
         let vars = vars.as_object().unwrap();
-        SUBST_STEPS.with(|c| c.set(0));
+        let steps = |url: &str| {
+            SUBST_STEPS.with(|c| c.set(0));
+            let r = substitute(url, vars);
+            (r, SUBST_STEPS.with(|c| c.get()))
+        };
+        // Bytes scanned, `find` included: a few passes over the input.
         let big = format!("{}{}", "{".repeat(30_000), "a".repeat(30_000));
-        assert_eq!(substitute(&big, vars).unwrap(), big);
+        let (r, n) = steps(&big);
+        assert_eq!(r.unwrap(), big);
+        assert!(n <= 3 * big.len(), "big: {n} bytes scanned");
         let closed = format!("{}}}", "{".repeat(60_000));
-        assert_eq!(substitute(&closed, vars).unwrap(), closed);
+        let (r, n) = steps(&closed);
+        assert_eq!(r.unwrap(), closed);
+        assert!(n <= 3 * closed.len(), "closed: {n} bytes scanned");
         let over = format!("{}{}", "{".repeat(65_000), "a".repeat(1024 * 1024));
         assert!(matches!(
             substitute(&over, vars),
             Err(ImportError::TooLarge(_))
         ));
-        // One scan step per `{` in the inputs that are scanned at all (the
-        // oversize input is rejected up front), plus one for the final pass.
-        let steps = SUBST_STEPS.with(|c| c.get());
-        let bound = (30_000 + 60_000) + 3;
-        assert!(steps <= bound, "{steps} scan steps, bound {bound}");
+    }
+
+    /// The pre-linear implementation, kept as the oracle.
+    fn substitute_old(
+        url: &str,
+        vars: &serde_json::Map<String, Value>,
+    ) -> Result<String, ImportError> {
+        let too_long = || ImportError::TooLarge(format!("server URL over {MAX_URL_BYTES} bytes"));
+        if url.len() > MAX_URL_BYTES {
+            return Err(too_long());
+        }
+        let mut out = String::new();
+        let mut rest = url;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('}') {
+                Some(close) if vars.contains_key(&after[..close]) => {
+                    out.push_str(&text(vars[&after[..close]].get("default")));
+                    rest = &after[close + 1..];
+                }
+                None => {
+                    out.push('{');
+                    rest = after;
+                    break;
+                }
+                _ => {
+                    out.push('{');
+                    rest = after;
+                }
+            }
+            if out.len() > MAX_URL_BYTES {
+                return Err(too_long());
+            }
+        }
+        out.push_str(rest);
+        if out.len() > MAX_URL_BYTES {
+            return Err(too_long());
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn substitute_matches_the_old_implementation() {
+        let vars = serde_json::json!({
+            "a": {"default": "A"},
+            "ab": {"default": "{a}"},
+            "x{y": {"default": "XY"},
+            "{": {"default": "OPEN"},
+            "": {"default": "EMPTY"},
+            "é": {"default": "ü"},
+            "n": {}
+        });
+        let vars = vars.as_object().unwrap();
+        let big = "{a}".repeat(30_000);
+        let cases = [
+            "",
+            "plain",
+            "{",
+            "}",
+            "{}",
+            "{{}",
+            "{{}}",
+            "{a",
+            "a}",
+            "{a}",
+            "{a}{a}",
+            "{{a}}",
+            "{{{a}",
+            "{a}}",
+            "{x{y}",
+            "{x{y}}",
+            "{{x{y}",
+            "{x{y",
+            "{ab}",
+            "{ab}{a}",
+            "{{}}{",
+            "{é}",
+            "é{é}é",
+            "{n}",
+            "{missing}{a}",
+            "{a}{",
+            "{a}{missing",
+            "}{a}",
+            "{{{{}",
+            "a{b{c}d}e",
+            "{x{y}{a}",
+            "https://{a}/{ab}/{é}",
+            &big,
+            &big[..big.len() - 1],
+        ];
+        for c in cases {
+            assert_eq!(
+                format!("{:?}", substitute(c, vars)),
+                format!("{:?}", substitute_old(c, vars)),
+                "input {:?}",
+                &c[..c.len().min(40)]
+            );
+        }
     }
 
     #[test]
