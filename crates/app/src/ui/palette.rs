@@ -225,7 +225,7 @@ impl PaletteView {
             _ => None,
         };
         move |window, cx| {
-            let accent = cx.theme().accent_foreground;
+            let accent = cx.theme().primary;
             let muted = cx.theme().muted_foreground;
             let highlights = ranges.iter().map(move |r| {
                 (

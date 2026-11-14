@@ -563,8 +563,12 @@ impl Sidebar {
         let selected = self.selected.as_deref() == Some(row.path.as_path());
         let is_active = active == Some(row.path.as_path());
         let theme = cx.theme();
-        let (hover, active_bg, muted) =
-            (theme.list_hover, theme.list_active, theme.muted_foreground);
+        let (hover, active_bg, muted, ring) = (
+            theme.list_hover,
+            theme.list_active,
+            theme.muted_foreground,
+            theme.ring,
+        );
         let id: SharedString = format!("row-{}", row.path.display()).into();
         let base = div()
             .id(id)
@@ -576,8 +580,11 @@ impl Sidebar {
             .pl(px(8.0 + 14.0 * row.depth as f32))
             .pr_2()
             .cursor_pointer()
+            .border_l_2()
+            .border_color(gpui::transparent_black())
             .hover(move |s| s.bg(hover))
-            .when(is_active || selected, |d| d.bg(active_bg));
+            .when(selected, |d| d.bg(hover).border_color(ring))
+            .when(is_active, |d| d.bg(active_bg));
         let row_c = row.clone();
         let this = cx.entity().downgrade();
         let base = base.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
