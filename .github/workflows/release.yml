@@ -101,7 +101,7 @@ jobs:
       # It must leave the signed exe in ${{ runner.temp }}/signed-exe.
       - name: Sign Windows exe (SignPath)
         if: runner.os == 'Windows' && env.WISP_WINDOWS_SIGN == 'signpath'
-        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}

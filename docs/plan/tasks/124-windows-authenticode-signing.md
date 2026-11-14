@@ -98,3 +98,11 @@ certificate is used.
 - Requiring signing on tag pushes. Once SignPath is live, that is a one-line
   follow-up.
 - A self-signed or test certificate.
+
+## Review round 1 — findings (HEAD 4684e93)
+
+- [P2] scripts/release/sign-windows/verify.ps1:31 — the `signtool /v | Select-String 'timestamp'` check always passes and nothing proves an RFC 3161 timestamp (AC3); TimeStamperCertificate is also set by a legacy countersignature. Fix: decode PKCS#7 with SignedCms, require unsigned attribute 1.3.6.1.4.1.311.3.3.1.
+- [STYLE] .github/workflows/release.yml:104 pin comment `# v2` -> `# v2.3`.
+- [NOTE, follow-up] release.yml:13-14 permissions lack `actions: read` (needed by SignPath if the repo goes private).
+- [NOTE, follow-up] workflow_dispatch on any ref can submit for signing; set a branch/ref policy in SignPath.
+- [NOTE, follow-up] verify.ps1:41 prints but does not check the expected signer.
