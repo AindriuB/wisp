@@ -4236,7 +4236,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_path_var_is_dropped_and_the_resend_is_refused() {
+    fn sanitize_redacted_drops_a_redacted_path_var_and_refuses_the_resend() {
         let mut d = draft();
         d.method = Method::Delete;
         d.url = "http://example.test/sessions/{token}".into();
