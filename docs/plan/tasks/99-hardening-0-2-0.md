@@ -15,7 +15,7 @@
 - K: .github/workflows/ci.yml
 
 ## Status 2026-11-14
-Hardening wave 1 (tasks 117-121) closed the ticked ACs below. AC38 (Windows CI) and AC39 (size gate in the release dry run) stay open for 0.2.0. Every other unticked AC is deferred past 0.2.0 by triage, and this file is now the post-0.2.0 hardening backlog. Where an AC's text disagrees with HISTORY or the retired-to-git task files 117-121 (for example AC31's refusal wording), HISTORY wins.
+Hardening wave 1 (tasks 117-121) closed the ticked ACs below. AC38 (Windows CI) is done (tasks 122/123); AC39 (size gate in the release dry run) stays open for 0.2.0. Every other unticked AC is deferred past 0.2.0 by triage, and this file is now the post-0.2.0 hardening backlog. Where an AC's text disagrees with HISTORY or the retired-to-git task files 117-121 (for example AC31's refusal wording), HISTORY wins.
 
 ## Goal
 Close every security-relevant review follow-up from 0.2.0 wave 1 in one pass rather than in PR fix rounds (user request 2026-11-10). That covers credential leakage, redaction gaps, path and file safety, unbounded work or memory, races and locking, and data loss, plus every P2 and a Windows CI job. **This file is a collection and will be split by the planner when scheduled.** Each lettered group has disjoint files, so each can become one subtask. H is one group because `write.rs` calls into `mod.rs` and both are exercised by `tests/import.rs`.
@@ -127,7 +127,9 @@ Every item that adds a test names it in the PR description.
 - [ ] AC76 🔒 Windows: set a restrictive owner-only ACL on the data dir, history and cookie files (today they inherit the destination folder's ACL; a shared portable folder exposes saved responses and cookies).
 
 **K — CI and release gate**
-- [ ] AC38 [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
+- [x] AC38 (done, tasks 122/123) [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
+- [ ] AC77 🔒 [123] Windows: `sidecar_rejects_8dot3_short_name_of_sibling_toml` passes silently when 8.3 names are off. Print a visible skip message and give CI a deterministic setup that enables 8.3 names, so the test runs for real.
+- [ ] AC78 🔒 [123] Windows: `same_file_entry` always returns false, so the hard-link check is a no-op there. Implement it with the file's volume serial number and file index.
 - [ ] AC39 Size gate: the Windows release binary from the measure run on the final merged head is at most 15,500,000 B.
 
 ## Checks
