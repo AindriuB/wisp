@@ -557,6 +557,7 @@ mod tests {
         assert!(!children.iter().any(|n| matches!(n, Node::Invalid { .. })));
     }
 
+    #[cfg(unix)]
     fn open_bounded(root: &Path) -> CollectionTree {
         let root = root.to_path_buf();
         let (tx, rx) = std::sync::mpsc::channel();

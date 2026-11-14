@@ -260,6 +260,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn temp_count(dir: &Path) -> usize {
         std::fs::read_dir(dir)
             .unwrap()
