@@ -498,26 +498,40 @@ fn templated_port_is_host_port_not_userinfo() {
         "http://{{host}}:{{port}}/users/me@example.com",
     ] {
         let r = curl::parse(&format!("curl '{url}'")).unwrap();
-        let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
-            panic!()
-        };
-        assert!(
-            request.url.starts_with(url.split('?').next().unwrap()),
-            "{url}"
-        );
-        assert!(request.url.contains("{{port}}"), "{url}");
-        assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
-        assert!(r.environments.is_empty(), "{url}");
+        assert_eq!(may_contain_warnings(&r).len(), 1, "{url}");
         let r = postman_url(url);
-        let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
-            panic!()
-        };
-        assert!(
-            request.url.starts_with(url.split('?').next().unwrap()),
-            "{url}"
-        );
-        assert!(request.url.contains("{{port}}"), "{url}");
-        assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
-        assert!(r.environments.is_empty(), "{url}");
+        assert_eq!(may_contain_warnings(&r).len(), 1, "{url}");
+    }
+}
+
+#[test]
+fn templated_urls_are_kept_without_auth_or_secrets() {
+    for url in [
+        "{{protocol}}://{{host}}/users/me@example.com",
+        "{{protocol}}://{{host}}:{{port}}/api?email=a@b.com",
+        "{{base}}/users/me@example.com",
+        "http://{{host}}/users/me@example.com",
+        "http://localhost:{{port}}/api?email=a@b.com",
+        "{{base}}?email=a@b.com",
+    ] {
+        let path = url.split('?').next().unwrap();
+        for r in [
+            curl::parse(&format!("curl '{url}'")).unwrap(),
+            postman_url(url),
+        ] {
+            let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+                panic!()
+            };
+            assert!(request.url.starts_with(path), "{url}: {}", request.url);
+            assert!(!request.url.contains("example.com") || path.contains("example.com"));
+            assert!(
+                matches!(request.auth, wisp_core::request::Auth::Inherit),
+                "{url}"
+            );
+            assert!(r.environments.is_empty(), "{url}");
+            if !url.contains('?') {
+                assert_eq!(request.url, url, "{url}");
+            }
+        }
     }
 }

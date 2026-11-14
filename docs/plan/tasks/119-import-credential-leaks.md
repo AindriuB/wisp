@@ -100,3 +100,6 @@ AC2 before the round 2 rewrite:
 
 ## Attempt 1 — failed (verify, HEAD dd49945)
 - AC5 — crates/storage/src/import/mod.rs:303-307 `looks_like_userinfo` treats a `host:port` segment whose port is not all digits as userinfo, including a templated port, so `http://localhost:{{port}}/api?email=a@b.com` or `http://{{host}}:{{port}}/users/me@example.com` is rewritten to `http://b.com` / `http://example.com` with host and path moved into secrets and Basic auth added; on main these were kept. Suggestion: tests/import.rs:386 checks curl `https://u:12?34@h/x` only by prefix.
+
+## Attempt 2 — failed (verify, HEAD f75e526)
+- AC5 — crates/storage/src/import/mod.rs:266-288 `authority_start` returns 0 for a templated scheme (`{` is not a scheme char), so the first segment becomes `{{protocol}}:` with an empty port and `looks_like_userinfo` (:308-310) treats it as userinfo: curl `'{{protocol}}://{{host}}/users/me@example.com'` imports as url `example.com` with `//{{host}}/users/me` in secrets and Basic auth; `'{{protocol}}://{{host}}:{{port}}/api?email=a@b.com'` imports as `b.com`. On main the `find("://")` detection kept both unchanged. Postman reaches the same code via split_url.

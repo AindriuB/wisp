@@ -265,9 +265,16 @@ const MAX_SECRET_BASE_BYTES: usize = 64;
 
 /// Byte offset where the authority of `[scheme://]host...` starts.
 fn authority_start(url: &str) -> usize {
-    // Without a scheme the authority starts at the beginning. A scheme is
-    // letters then `:` and at least one `/` (lenient forms like `http:/h` and
-    // `https:///h` count); a `://` that only appears later is not a scheme.
+    // `://` first, whatever the scheme text (a template like `{{protocol}}`
+    // included), as long as nothing that ends an authority comes before it.
+    if let Some(i) = url.find("://")
+        && !url[..i].contains(['/', '?', '#', '@'])
+    {
+        let after = &url[i + 3..];
+        return i + 3 + after.len() - after.trim_start_matches('/').len();
+    }
+    // Lenient forms (`//h`, `http:/h`, `https:///h`) only when there is no
+    // `://`; a bare scheme is letters then `:` and at least one `/`.
     if url.starts_with("//") {
         2
     } else {
@@ -308,7 +315,10 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         let looks_like_userinfo = seg.split_once(':').is_some_and(|(h, p)| {
             !h.is_empty() && !h.starts_with('[') && (p.is_empty() || !is_port_like(p))
         });
-        let Some(first_at) = rest.find('@').filter(|_| looks_like_userinfo) else {
+        // A template is not a password: never userinfo when the segment or the
+        // text before the authority holds `{{`.
+        let templated = seg.contains("{{") || url[..scheme_end].contains("{{");
+        let Some(first_at) = rest.find('@').filter(|_| looks_like_userinfo && !templated) else {
             return (url.to_string(), None);
         };
         let limit = rest[first_at..]
