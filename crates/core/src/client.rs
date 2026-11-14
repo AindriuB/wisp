@@ -53,6 +53,7 @@ impl ClientCache {
         let mut builder = reqwest::Client::builder()
             .tls_backend_rustls()
             .tls_certs_only(roots)
+            .referer(false)
             .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS)
             .dns_resolver(Arc::new(TimedResolver))
             .connector_layer(TimingLayer(self.timings.clone()))
