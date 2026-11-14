@@ -437,3 +437,32 @@ fn postman_host_port_cut_by_question_mark_is_kept_with_warning() {
     assert_eq!(request.url, "https://u:12?34@h/x");
     assert_eq!(may_contain_warnings(&r).len(), 1);
 }
+
+#[test]
+fn postman_host_port_then_path_keeps_params_and_path_var() {
+    let r = postman_url("http://localhost:8080/users/:id?email=a@b.com&x=1");
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, "http://localhost:8080/users/{id}");
+    let names: Vec<_> = request.params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["email", "x"]);
+    assert_eq!(request.path.len(), 1);
+    assert_eq!(request.path[0].name, "id");
+}
+
+#[test]
+fn postman_object_url_kept_whole_ignores_explicit_query() {
+    let r = postman::parse(
+        br#"{"info":{"name":"c","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+        "item":[{"name":"r","request":{"method":"GET","url":{"raw":"http://localhost:8080?email=a@b.com&x=1",
+        "query":[{"key":"email","value":"a@b.com"},{"key":"x","value":"1"}]}}}]}"#,
+    )
+    .unwrap();
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, "http://localhost:8080?email=a@b.com&x=1");
+    assert!(request.params.is_empty());
+    assert_eq!(may_contain_warnings(&r).len(), 1);
+}

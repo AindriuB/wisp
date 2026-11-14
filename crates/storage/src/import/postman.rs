@@ -217,7 +217,8 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
     ImportItem::Request { name, request: req }
 }
 
-/// URL string or object into (url without query, params, path vars).
+/// URL string or object into (url, params, path vars). The query is cut off
+/// into params, except for a kept `name:<digits>?...@` URL (see `split_url`).
 fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>) {
     match url {
         Some(Value::String(s)) => split_url(s, &[], None),
@@ -289,14 +290,24 @@ fn split_url(
     let userinfo_text = info
         .as_ref()
         .map(|_| &raw[scheme_end..scheme_end + removed]);
-    // A kept `name:<digits>` authority may hide a password: keep the whole URL.
-    let keep_whole = info.is_none() && super::may_hold_credentials(raw);
+    // A `name:<digits>` authority that ends at `?` or `#` may hide a password:
+    // keep the whole URL. When it ends at `/` the query is cut as usual.
+    let keep_whole = info.is_none()
+        && super::may_hold_credentials(raw)
+        && raw[scheme_end..]
+            .find(['/', '?', '#'])
+            .is_some_and(|i| !raw[scheme_end + i..].starts_with('/'));
     let (base, q) = if keep_whole {
         (stripped.as_str(), "")
     } else {
         stripped.split_once('?').unwrap_or((stripped.as_str(), ""))
     };
-    let params = query.unwrap_or_else(|| parse_query(q));
+    // A kept URL already carries its query: an explicit array would send it twice.
+    let params = if keep_whole {
+        Vec::new()
+    } else {
+        query.unwrap_or_else(|| parse_query(q))
+    };
     // Find where the path starts: after the scheme and host.
     let after_scheme = base.find("://").map_or(0, |i| i + 3);
     let host_end = if base[after_scheme..].starts_with("{{") {
