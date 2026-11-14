@@ -2,7 +2,7 @@
 
 /// Name fragments that mark a header, param, var or field as credential-bearing
 /// (matched case-insensitively anywhere in the name).
-pub const SECRET_FRAGMENTS: [&str; 10] = [
+pub const SECRET_FRAGMENTS: [&str; 17] = [
     "auth",
     "token",
     "secret",
@@ -13,7 +13,20 @@ pub const SECRET_FRAGMENTS: [&str; 10] = [
     "passwd",
     "credential",
     "signature",
+    "sig",
+    "pass",
+    "pwd",
+    "jwt",
+    "bearer",
+    "dpop",
+    "assertion",
 ];
+
+/// True when `text`, lowercased, contains any of [`SECRET_FRAGMENTS`] (for free-form bodies).
+pub fn contains_credential_fragment(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    SECRET_FRAGMENTS.iter().any(|f| lower.contains(f))
+}
 
 /// True when `name`, trimmed and lowercased, contains any of [`SECRET_FRAGMENTS`].
 pub fn is_credential_name(name: &str) -> bool {
@@ -24,6 +37,23 @@ pub fn is_credential_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_fragments_are_credential_names() {
+        for name in [
+            "x-sig",
+            "my_pass",
+            "db_pwd",
+            "id-jwt",
+            "bearer_x",
+            "DPoP",
+            "saml_assertion",
+        ] {
+            assert!(is_credential_name(name), "{name}");
+        }
+        assert!(contains_credential_fragment("a Bearer b"));
+        assert!(!contains_credential_fragment("hello"));
+    }
 
     #[test]
     fn credential_names() {
