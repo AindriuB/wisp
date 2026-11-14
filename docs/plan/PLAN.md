@@ -92,13 +92,21 @@ From PR #61 (task 121):
 - 61-3 the test skips AC1's resolution clause and the plain-vars-kept claim.
 - 61-4 🔒 a cleared secret name can fall through to a same-named env or collection var.
 - No test pins the moment of clearing at the failure; the existing test checks state after the reload completes.
-From PR #62 (task 118). The task file recorded only the two notes below; 62-1 to 62-6 as numbered in the PR review are not otherwise written down here, so read the PR when scheduling.
+From PR #62 (task 118):
+- 62-1 (Low) 🔒 history.rs:635: secrets written by earlier builds stay in existing history files until eviction. Fix: a one-time scrub on open, or record it as a residual.
+- 62-2 (Low) 🔒 history.rs:535: response headers are checked by name only, so a token in a Location URL is stored. Fix: pass Location, Content-Location and Refresh through redact_url.
+- 62-3 (Low) tests/history.rs:755: the Set-Cookie test skips the redacted note and the second header, and the path test skips {{ref}} being kept. Fix: add the three asserts.
+- 62-4 (Nit) history.rs:479: the JSON body is parsed twice and the two error branches are identical. Fix: one visitor that builds the Value.
+- 62-5 (Nit) redact.rs:17: the fragments overlap (pass covers password, sig covers signature). Fix: drop or comment.
+- 62-6 (Nit) workspace.rs:714: the sanitize_redacted doc omits path vars. Fix: extend the doc.
 - 62-n1 the fragments are substring matches: importers now move headers like `X-Bypass-Cache` and `X-Assignment-Id` into the placeholder secrets env, and Text/XML history bodies containing words like "design", "signal" or "compass" are dropped whole. Consider word-boundary matching.
 - 62-n2 response header names share the unprefixed `redacted` namespace with request headers: a same-named request header with an intentionally empty value is disabled on resend, and WWW-Authenticate and the like appear in every resend notice.
-From PR #63 (task 120). The task file recorded 63-2 to 63-4; 63-5 is the behaviour change noted in HISTORY; 63-6 is in the PR review only.
+From PR #63 (task 120):
 - 63-2 `ensure_ignore_line` confines from `environments/`, not the collection root; confine from the root.
 - 63-3 a refused `.gitignore` fails the save after `<env>.toml` was already written.
 - 63-4 tests assert `is_err` rather than `Invalid`; `ensure_marker_ignored` and a FIFO are untested.
+- 63-5 (Low) environment.rs:99: the listing follows links, so a symlinked <env>.toml is still listed but always fails to load. Fix: list with symlink_metadata. (The behaviour change is already in HISTORY.)
+- 63-6 (Nit) environment.rs:68: read_plain_text takes an unused _root. Fix: drop the parameter.
 Internal-review suggestions:
 - engine.rs:714 the comment on `own_redirects` still describes the old trigger.
 - Tests that check `is_err` rather than the `Invalid` variant.
