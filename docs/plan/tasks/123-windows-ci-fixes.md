@@ -27,7 +27,10 @@ Context below. After that, the criteria freeze.
   - In storage-safety follow-ups, `sidecar_rejects_8dot3_short_name_of_sibling_toml`
     should return early when `B~1.TOM` does not exist.
   - 52-47: `canonicalize` on Windows volumes.
-- 122's failure list: <orchestrator fills in>
+- 122's failure list: 122's first Windows run 43612434572 (PR #67) failed at
+  Clippy with `clippy::collapsible_if` at crates/storage/src/vault_binding.rs:405,
+  which stopped `wisp-storage` compiling. The test step did not run, so the rest
+  of the list was found iteratively by this task (see PR #71).
 - docs/conventions.md#tests and #errors — the test and error rules for the fixes.
 
 ## Acceptance
@@ -39,6 +42,13 @@ Context below. After that, the criteria freeze.
   (8.3 names off, for example); or a Windows-only product fix of at most about
   20 lines inside a `cfg(windows)` block. The PR description lists each fix
   with its kind.
+  *Note (2026-11-14, orchestrator):* a fifth allowed kind is a
+  test-portability fix: a test or test helper made OS-neutral (absolute-path
+  fixtures via `temp_dir()`, path-separator normalisation, and pinning fixture
+  line endings via `.gitattributes`). Owns already allows `#[cfg(test)]` edits
+  and `.gitattributes`. The fixes at crates/app/src/settings.rs:378,
+  crates/storage/src/data_dir.rs:128, crates/storage/src/ops.rs:740 and
+  /.gitattributes:2 are this kind.
 - [ ] AC3 No test is deleted, `#[ignore]`d or wrapped in `cfg(not(windows))`
   just to hide a failure. A Windows-only product bug that needs more than AC2's
   small fix is reported as a successor task and the work stops. It is not
