@@ -15,6 +15,49 @@ use super::{
 /// document; shared `$ref`s are copied once per use.
 const MAX_EXAMPLE_BYTES: usize = 64 * 1024 * 1024;
 
+// Work counters read by the linear-work tests; thread-local so parallel
+// tests do not see each other's counts.
+#[cfg(test)]
+thread_local! {
+    static PARAM_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static KEY_OPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SUBST_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn bump(c: &'static std::thread::LocalKey<std::cell::Cell<usize>>) {
+    bump_by(c, 1);
+}
+
+#[cfg(test)]
+fn bump_by(c: &'static std::thread::LocalKey<std::cell::Cell<usize>>, n: usize) {
+    c.with(|c| c.set(c.get() + n));
+}
+
+/// Parameter-merge key: name and location. Under test every hash and
+/// comparison is counted, so a lookup that scans linearly shows up.
+#[derive(Clone, Copy)]
+struct ParamKey<'a>(&'a str, &'a str);
+
+impl PartialEq for ParamKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(test)]
+        bump(&KEY_OPS);
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+
+impl Eq for ParamKey<'_> {}
+
+impl std::hash::Hash for ParamKey<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        #[cfg(test)]
+        bump(&KEY_OPS);
+        self.0.hash(state);
+        self.1.hash(state);
+    }
+}
+
 fn spend(budget: &mut usize, n: usize) -> Result<(), ImportError> {
     *budget = budget.checked_sub(n).ok_or_else(|| {
         ImportError::TooLarge("work over budget while resolving $refs and parameters".into())
@@ -176,6 +219,10 @@ const MAX_NAME_BYTES: usize = 100;
 /// Longest server URL accepted after variable substitution.
 const MAX_URL_BYTES: usize = 64 * 1024;
 
+/// Longest server variable name imported, in bytes. Longer ones are skipped
+/// so that every lookup in `substitute` is bounded.
+const MAX_VAR_NAME_BYTES: usize = 256;
+
 /// Replace `{name}` placeholders in one pass over the original URL; text
 /// substituted in is never rescanned.
 fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String, ImportError> {
@@ -184,25 +231,56 @@ fn substitute(url: &str, vars: &serde_json::Map<String, Value>) -> Result<String
         return Err(too_long());
     }
     let mut out = String::new();
+    // Longest variable name that can match; longer candidates are skipped
+    // without hashing them.
+    let max_key = vars.keys().map(String::len).max().unwrap_or(0);
     let mut rest = url;
-    while let Some(open) = rest.find('{') {
+    // Absolute offset of the next `}` at or after the cursor, found once and
+    // reused until the cursor passes it. A search that finds none ends the
+    // loop, since nothing left can match.
+    let mut close_at: Option<usize> = None;
+    let mut base = 0; // offset of `rest` within `url`
+    while let Some(open) = {
+        let found = rest.find('{');
+        #[cfg(test)]
+        bump_by(&SUBST_STEPS, found.unwrap_or(rest.len()) + 1);
+        found
+    } {
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
-        match after.find('}') {
-            Some(close) if vars.contains_key(&after[..close]) => {
-                out.push_str(&text(vars[&after[..close]].get("default")));
-                rest = &after[close + 1..];
-            }
-            None => {
-                // No `}` anywhere ahead: nothing left can match.
-                out.push('{');
-                rest = after;
-                break;
-            }
+        let after_at = base + open + 1;
+        let close = match close_at {
+            Some(c) if c >= after_at => Some(c),
             _ => {
-                out.push('{');
-                rest = after;
+                let c = after.find('}').map(|k| after_at + k);
+                #[cfg(test)]
+                bump_by(&SUBST_STEPS, c.map_or(after.len(), |c| c - after_at) + 1);
+                close_at = c;
+                c
             }
+        };
+        let Some(close) = close else {
+            // No `}` anywhere ahead: nothing left can match.
+            out.push('{');
+            rest = after;
+            break;
+        };
+        let name = &url[after_at..close];
+        // Names are at most `MAX_VAR_NAME_BYTES`, so a lookup compares at most
+        // that many bytes; count them whether or not the lookup succeeds.
+        let looked_up = name.len() <= max_key;
+        #[cfg(test)]
+        if looked_up {
+            bump_by(&SUBST_STEPS, name.len());
+        }
+        if looked_up && vars.contains_key(name) {
+            out.push_str(&text(vars[name].get("default")));
+            rest = &url[close + 1..];
+            base = close + 1;
+        } else {
+            out.push('{');
+            rest = after;
+            base = after_at;
         }
         if out.len() > MAX_URL_BYTES {
             return Err(too_long());
@@ -239,6 +317,24 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
     for (i, s) in servers.iter().enumerate().take(MAX_ENVIRONMENTS) {
         let mut url = text(s.get("url"));
         if let Some(vars) = s.get("variables").and_then(Value::as_object) {
+            let kept;
+            let vars = if vars.keys().any(|k| k.len() > MAX_VAR_NAME_BYTES) {
+                result.warn(
+                    &root,
+                    format!(
+                        "server {}: skipped a server variable with an over-long name",
+                        i + 1
+                    ),
+                );
+                kept = vars
+                    .iter()
+                    .filter(|(k, _)| k.len() <= MAX_VAR_NAME_BYTES)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                &kept
+            } else {
+                vars
+            };
             url = substitute(&url, vars)?;
         } else if url.len() > MAX_URL_BYTES {
             return Err(ImportError::TooLarge(format!(
@@ -415,14 +511,16 @@ fn operation(
     // Path-level parameters first; an operation parameter replaces one with
     // the same name and location.
     let mut params: Vec<&Value> = Vec::new();
-    let mut index: HashMap<(&str, &str), usize> = HashMap::new();
+    let mut index: HashMap<ParamKey, usize> = HashMap::new();
     for list in [item.get("parameters"), op.get("parameters")] {
         for p in list.and_then(Value::as_array).into_iter().flatten() {
+            #[cfg(test)]
+            bump(&PARAM_VISITS);
             spend(budget, VISIT_COST)?;
             let Some(p) = deref(doc, p, &at, result, budget)? else {
                 continue;
             };
-            let key = (
+            let key = ParamKey(
                 p.get("name").and_then(Value::as_str).unwrap_or(""),
                 p.get("in").and_then(Value::as_str).unwrap_or(""),
             );
@@ -663,7 +761,7 @@ mod tests {
 
     #[test]
     fn shared_ref_parameter_names_are_charged() {
-        let t = std::time::Instant::now();
+        PARAM_VISITS.with(|c| c.set(0));
         let big = "n".repeat(3 * 1024 * 1024);
         let refs = vec![r##"{"$ref":"#/components/parameters/P"}"##; 3000].join(",");
         let doc = format!(
@@ -675,7 +773,11 @@ mod tests {
             "{:?}",
             r.map(|r| r.warnings)
         );
-        assert!(t.elapsed().as_secs() < 2);
+        // Each visit charges the 3 MiB name, so the 64 MiB budget allows at
+        // most MAX / name_len visits (plus the one that trips it).
+        let visits = PARAM_VISITS.with(|c| c.get());
+        let bound = MAX_EXAMPLE_BYTES / big.len() + 2;
+        assert!(visits <= bound, "{visits} visits, bound {bound}");
     }
 
     #[test]
@@ -761,10 +863,14 @@ mod tests {
         let doc = format!(
             r#"{{"openapi":"3.0.0","paths":{{"/a":{{"parameters":[{params}],"get":{{"parameters":[{params}]}}}}}}}}"#
         );
-        let t = std::time::Instant::now();
+        KEY_OPS.with(|c| c.set(0));
         let r = parse(doc.as_bytes()).unwrap();
         assert_eq!(requests(&r.items)[0].params.len(), 60_000);
-        assert!(t.elapsed().as_secs() < 2);
+        // Each visit hashes its key a constant number of times (lookup,
+        // insert, table growth) and compares it with at most a few keys.
+        let ops = KEY_OPS.with(|c| c.get());
+        let bound = 2 * 60_000 * 8;
+        assert!(ops <= bound, "{ops} key operations, bound {bound}");
     }
 
     #[test]
@@ -806,17 +912,151 @@ mod tests {
     fn brace_heavy_url_is_linear() {
         let vars = serde_json::json!({"z": {}});
         let vars = vars.as_object().unwrap();
-        let start = std::time::Instant::now();
+        let steps = |url: &str| {
+            SUBST_STEPS.with(|c| c.set(0));
+            let r = substitute(url, vars);
+            (r, SUBST_STEPS.with(|c| c.get()))
+        };
+        // Bytes scanned, `find` included: a few passes over the input.
         let big = format!("{}{}", "{".repeat(30_000), "a".repeat(30_000));
-        assert_eq!(substitute(&big, vars).unwrap(), big);
+        let (r, n) = steps(&big);
+        assert_eq!(r.unwrap(), big);
+        assert!(n <= 3 * big.len(), "big: {n} bytes scanned");
         let closed = format!("{}}}", "{".repeat(60_000));
-        assert_eq!(substitute(&closed, vars).unwrap(), closed);
+        let (r, n) = steps(&closed);
+        assert_eq!(r.unwrap(), closed);
+        assert!(n <= 3 * closed.len(), "closed: {n} bytes scanned");
         let over = format!("{}{}", "{".repeat(65_000), "a".repeat(1024 * 1024));
         assert!(matches!(
             substitute(&over, vars),
             Err(ImportError::TooLarge(_))
         ));
-        assert!(start.elapsed().as_millis() < 500);
+    }
+
+    /// The pre-linear implementation, kept as the oracle.
+    fn substitute_old(
+        url: &str,
+        vars: &serde_json::Map<String, Value>,
+    ) -> Result<String, ImportError> {
+        let too_long = || ImportError::TooLarge(format!("server URL over {MAX_URL_BYTES} bytes"));
+        if url.len() > MAX_URL_BYTES {
+            return Err(too_long());
+        }
+        let mut out = String::new();
+        let mut rest = url;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('}') {
+                Some(close) if vars.contains_key(&after[..close]) => {
+                    out.push_str(&text(vars[&after[..close]].get("default")));
+                    rest = &after[close + 1..];
+                }
+                None => {
+                    out.push('{');
+                    rest = after;
+                    break;
+                }
+                _ => {
+                    out.push('{');
+                    rest = after;
+                }
+            }
+            if out.len() > MAX_URL_BYTES {
+                return Err(too_long());
+            }
+        }
+        out.push_str(rest);
+        if out.len() > MAX_URL_BYTES {
+            return Err(too_long());
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn substitute_matches_the_old_implementation() {
+        let vars = serde_json::json!({
+            "a": {"default": "A"},
+            "ab": {"default": "{a}"},
+            "x{y": {"default": "XY"},
+            "{": {"default": "OPEN"},
+            "": {"default": "EMPTY"},
+            "é": {"default": "ü"},
+            "n": {}
+        });
+        let vars = vars.as_object().unwrap();
+        let big = "{a}".repeat(30_000);
+        let cases = [
+            "",
+            "plain",
+            "{",
+            "}",
+            "{}",
+            "{{}",
+            "{{}}",
+            "{a",
+            "a}",
+            "{a}",
+            "{a}{a}",
+            "{{a}}",
+            "{{{a}",
+            "{a}}",
+            "{x{y}",
+            "{x{y}}",
+            "{{x{y}",
+            "{x{y",
+            "{ab}",
+            "{ab}{a}",
+            "{{}}{",
+            "{é}",
+            "é{é}é",
+            "{n}",
+            "{missing}{a}",
+            "{a}{",
+            "{a}{missing",
+            "}{a}",
+            "{{{{}",
+            "a{b{c}d}e",
+            "{x{y}{a}",
+            "https://{a}/{ab}/{é}",
+            &big,
+            &big[..big.len() - 1],
+        ];
+        for c in cases {
+            assert_eq!(
+                format!("{:?}", substitute(c, vars)),
+                format!("{:?}", substitute_old(c, vars)),
+                "input {:?}",
+                &c[..c.len().min(40)]
+            );
+        }
+    }
+
+    #[test]
+    fn over_long_variable_names_are_skipped_and_linear() {
+        let name = "{".repeat(65_000);
+        let url = format!("{}}}", "{".repeat(64_990));
+        let with = serde_json::json!({
+            "openapi": "3.1.0", "paths": {},
+            "servers": [{"url": url, "variables": {name.clone(): {"default": "X"}}}]
+        });
+        let without = serde_json::json!({
+            "openapi": "3.1.0", "paths": {},
+            "servers": [{"url": url, "variables": {}}]
+        });
+        SUBST_STEPS.with(|c| c.set(0));
+        let r = parse(with.to_string().as_bytes()).unwrap();
+        let n = SUBST_STEPS.with(|c| c.get());
+        assert!(n <= 4 * url.len(), "{n} bytes for url of {}", url.len());
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.message.contains("over-long name") && !w.message.contains("{{{{"))
+        );
+        let expected = substitute_old(&url, &serde_json::Map::new()).unwrap();
+        assert_eq!(r.environments[0].vars[0].value, expected);
+        let r2 = parse(without.to_string().as_bytes()).unwrap();
+        assert_eq!(r2.environments[0].vars[0].value, expected);
     }
 
     #[test]
