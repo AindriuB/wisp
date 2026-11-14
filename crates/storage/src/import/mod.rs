@@ -293,9 +293,10 @@ fn authority_start(url: &str) -> usize {
     }
 }
 
-/// A non-empty all-digit port, or a templated one (`{{port}}`).
+/// A non-empty all-digit port. A templated port (`{{port}}`) is not one: a
+/// template is plain host:port and never takes part in the ambiguity checks.
 fn is_port_like(p: &str) -> bool {
-    !p.is_empty() && (p.contains("{{") || p.bytes().all(|b| b.is_ascii_digit()))
+    !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
@@ -312,8 +313,14 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         // followed by a later `@` is treated as userinfo.
         let seg = &rest[..first_end];
         // An empty port can never be a real port, so it counts as userinfo.
+        // `http:h/x@y` is a scheme with no slash (host `h`), not userinfo.
         let looks_like_userinfo = seg.split_once(':').is_some_and(|(h, p)| {
-            !h.is_empty() && !h.starts_with('[') && (p.is_empty() || !is_port_like(p))
+            !h.is_empty()
+                && !h.starts_with('[')
+                && !["http", "https", "ws", "wss"]
+                    .iter()
+                    .any(|s| h.eq_ignore_ascii_case(s))
+                && (p.is_empty() || !is_port_like(p))
         });
         // A template is not a password: never userinfo when the segment or the
         // text before the authority holds `{{`.

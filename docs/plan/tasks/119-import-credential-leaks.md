@@ -103,3 +103,8 @@ AC2 before the round 2 rewrite:
 
 ## Attempt 2 — failed (verify, HEAD f75e526)
 - AC5 — crates/storage/src/import/mod.rs:266-288 `authority_start` returns 0 for a templated scheme (`{` is not a scheme char), so the first segment becomes `{{protocol}}:` with an empty port and `looks_like_userinfo` (:308-310) treats it as userinfo: curl `'{{protocol}}://{{host}}/users/me@example.com'` imports as url `example.com` with `//{{host}}/users/me` in secrets and Basic auth; `'{{protocol}}://{{host}}:{{port}}/api?email=a@b.com'` imports as `b.com`. On main the `find("://")` detection kept both unchanged. Postman reaches the same code via split_url.
+
+## Attempt 3 — failed (verify, HEAD 08db144)
+- AC5 — postman.rs:296-298 with mod.rs:297 — `keep_whole` and the may-contain-credentials warning key off `is_port_like`, which accepted a templated port, so Postman `http://localhost:{{port}}?email=a@b.com`, `http://{{host}}:{{port}}?email=a@b.com` and `{{host}}:{{port}}?email=a@b.com` kept the whole URL with empty params (and dropped an explicit query array); main gave url `http://localhost:{{port}}` with params `[email=a@b.com]`. Fix: the ambiguity, keep-whole and warning logic applies only to a non-empty all-digit port; a templated segment is plain host:port.
+- AC5 — mod.rs:283-315 — `http:h/x@y` (scheme with no slash) imported as url `y` with Basic auth `http`/`h/x` in secrets; main kept it unchanged. Fix: only `http:/` and `https:///`-style forms are lenient; a scheme with no slash keeps main's behaviour.
+- Added permanent test `url_shapes_import_as_on_main` (tests/import.rs): a table of URL shapes through curl and Postman asserting url, params, path vars, auth and secrets equal main's (7ec7505).

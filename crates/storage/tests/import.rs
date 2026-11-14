@@ -535,3 +535,123 @@ fn templated_urls_are_kept_without_auth_or_secrets() {
         }
     }
 }
+
+/// url, params, path vars, auth and secrets of every request in `r`.
+fn describe(r: &ImportResult) -> String {
+    use wisp_storage::import::ImportItem;
+    fn walk(items: &[ImportItem], out: &mut Vec<String>) {
+        for i in items {
+            match i {
+                ImportItem::Folder { items, .. } => walk(items, out),
+                ImportItem::Request { request: q, .. } => {
+                    let kv = |v: &[wisp_core::request::KeyValue]| -> Vec<String> {
+                        v.iter()
+                            .map(|p| format!("{}={}", p.name, p.value))
+                            .collect()
+                    };
+                    let path: Vec<String> = q
+                        .path
+                        .iter()
+                        .map(|p| format!("{}={}", p.name, p.value))
+                        .collect();
+                    out.push(format!(
+                        "url={} params={:?} path={path:?} auth={:?}",
+                        q.url,
+                        kv(&q.params),
+                        q.auth
+                    ));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&r.items, &mut out);
+    for e in &r.environments {
+        let s: Vec<String> = e
+            .secrets
+            .iter()
+            .map(|v| format!("{}={}", v.name, v.value))
+            .collect();
+        out.push(format!("secrets={s:?}"));
+    }
+    out.join(" | ")
+}
+
+/// AC5: URL shapes import exactly as on main (7ec7505), through curl and
+/// Postman. Rows are (input, curl output, Postman output).
+#[test]
+fn url_shapes_import_as_on_main() {
+    let table: &[(&str, &str, &str)] = &[
+        (
+            "{{base}}/x",
+            "url={{base}}/x params=[] path=[] auth=Inherit",
+            "url={{base}}/x params=[] path=[] auth=Inherit",
+        ),
+        (
+            "{{base}}?email=a@b.com",
+            "url={{base}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+            "url={{base}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+        ),
+        (
+            "{{protocol}}://{{host}}:{{port}}/p?q=a@b",
+            "url={{protocol}}://{{host}}:{{port}}/p params=[\"q=a@b\"] path=[] auth=Inherit",
+            "url={{protocol}}://{{host}}:{{port}}/p params=[\"q=a@b\"] path=[] auth=Inherit",
+        ),
+        (
+            "http://localhost:{{port}}?email=a@b.com",
+            "url=http://localhost:{{port}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+            "url=http://localhost:{{port}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+        ),
+        (
+            "http://{{host}}:{{port}}?email=a@b.com",
+            "url=http://{{host}}:{{port}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+            "url=http://{{host}}:{{port}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+        ),
+        (
+            "{{host}}:{{port}}?email=a@b.com",
+            "url={{host}}:{{port}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+            "url={{host}}:{{port}} params=[\"email=a@b.com\"] path=[] auth=Inherit",
+        ),
+        (
+            "http://h/p@q",
+            "url=http://h/p@q params=[] path=[] auth=Inherit",
+            "url=http://h/p@q params=[] path=[] auth=Inherit",
+        ),
+        (
+            "//h/x",
+            "url=//h/x params=[] path=[] auth=Inherit",
+            "url=//h/x params=[] path=[] auth=Inherit",
+        ),
+        (
+            "http://user@h/x",
+            "url=http://h/x params=[] path=[] auth=Basic { username: \"{{get_x_username}}\", password: \"<redacted>\" } | secrets=[\"get_x_username=user\"]",
+            "url=http://h/x params=[] path=[] auth=Basic { username: \"{{a_username}}\", password: \"<redacted>\" } | secrets=[\"a_username=user\"]",
+        ),
+        (
+            "http://[::1]:8080/a@b",
+            "url=http://[::1]:8080/a@b params=[] path=[] auth=Inherit",
+            "url=http://[::1]:8080/a@b params=[] path=[] auth=Inherit",
+        ),
+        (
+            "http://h:8080/a@b",
+            "url=http://h:8080/a@b params=[] path=[] auth=Inherit",
+            "url=http://h:8080/a@b params=[] path=[] auth=Inherit",
+        ),
+        (
+            "http:h/x@y",
+            "url=http:h/x@y params=[] path=[] auth=Inherit",
+            "url=http:h/x@y params=[] path=[] auth=Inherit",
+        ),
+        (
+            "http://localhost:8080/users/:id?email=a@b.com&x=1",
+            "url=http://localhost:8080/users/:id params=[\"email=a@b.com\", \"x=1\"] path=[] auth=Inherit",
+            "url=http://localhost:8080/users/{id} params=[\"email=a@b.com\", \"x=1\"] path=[\"id=\"] auth=Inherit",
+        ),
+    ];
+    for (input, curl_want, postman_want) in table {
+        let c = curl::parse(&format!("curl '{input}'")).unwrap();
+        assert_eq!(describe(&c), *curl_want, "curl {input}");
+        let p = postman_url(input);
+        assert_eq!(describe(&p), *postman_want, "postman {input}");
+    }
+}
