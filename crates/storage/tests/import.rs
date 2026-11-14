@@ -303,16 +303,77 @@ fn digest_ntlm_negotiate_credentials_stay_in_secrets() {
 }
 
 #[test]
-fn ambiguous_host_port_password_is_refused() {
-    for url in [
-        "https://u:/SECPW@h/x",
-        "https://u:?x@h/x",
-        "https://u:#x@h/x",
+fn empty_port_password_goes_to_secrets() {
+    for (url, needle) in [
+        ("https://u:/SECPW@h/x", "SECPW"),
+        ("https://u:?SECPW@h/x", "SECPW"),
+        ("https://u:#SECPW@h/x", "SECPW"),
     ] {
-        let cmd = format!("curl '{url}'");
-        let err = curl::parse(&cmd).unwrap_err().to_string();
-        assert!(!err.contains("SECPW") && !err.contains("u:") && !err.contains('x'));
+        assert_no_leak(&format!("curl '{url}'"), &[needle]);
     }
+}
+
+/// Write `r` and assert no TOML other than the secrets file holds `needle`.
+fn assert_result_no_leak(r: &ImportResult, needle: &str) {
+    let d = collection();
+    write(d.path(), Path::new(""), r, "imported").unwrap();
+    for (path, text) in &all_files(d.path()) {
+        if !path.to_string_lossy().ends_with(".secrets.toml") {
+            assert!(!text.contains(needle), "{needle} in {}", path.display());
+        }
+    }
+}
+
+fn postman_url(url: &str) -> ImportResult {
+    postman::parse(
+        format!(
+            r#"{{"info":{{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}},
+            "item":[{{"name":"A","request":{{"method":"GET","url":"{url}"}}}}]}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap()
+}
+
+fn openapi_url(url: &str) -> ImportResult {
+    openapi::parse(
+        format!(
+            r#"{{"openapi":"3.0.0","info":{{"title":"t","version":"1"}},
+            "servers":[{{"url":"{url}"}}],"paths":{{"/p":{{"get":{{"responses":{{"200":{{"description":"ok"}}}}}}}}}}}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap()
+}
+
+fn may_contain_warnings(r: &ImportResult) -> Vec<&str> {
+    r.warnings
+        .iter()
+        .map(|w| w.message.as_str())
+        .filter(|m| m.contains("may contain credentials"))
+        .collect()
+}
+
+#[test]
+fn postman_and_openapi_empty_port_password_goes_to_secrets() {
+    assert_result_no_leak(&postman_url("https://u:/SECPW@h/x"), "SECPW");
+    assert_result_no_leak(&openapi_url("https://u:/SECPW@h/x"), "SECPW");
+}
+
+#[test]
+fn postman_and_openapi_host_port_with_later_at_warns() {
+    let url = "http://localhost:8080/users/me@example.com";
+    for r in [postman_url(url), openapi_url(url)] {
+        let w = may_contain_warnings(&r);
+        assert_eq!(w.len(), 1);
+        assert!(!w[0].contains("8080") && !w[0].contains("example"));
+    }
+    let r = postman_url(url);
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, url);
+    assert_eq!(openapi_url(url).environments[0].vars[0].value, url);
 }
 
 #[test]

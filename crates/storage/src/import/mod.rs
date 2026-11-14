@@ -299,8 +299,11 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         // the authority. A leading `user:pass` segment (not `host:port`)
         // followed by a later `@` is treated as userinfo.
         let seg = &rest[..first_end];
+        // An empty port can never be a real port, so it counts as userinfo.
         let looks_like_userinfo = seg.split_once(':').is_some_and(|(h, p)| {
-            !h.is_empty() && !h.starts_with('[') && !p.bytes().all(|b| b.is_ascii_digit())
+            !h.is_empty()
+                && !h.starts_with('[')
+                && (p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
         });
         let Some(first_at) = rest.find('@').filter(|_| looks_like_userinfo) else {
             return (url.to_string(), None);
@@ -321,49 +324,22 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
     )
 }
 
-/// Classification of a first authority segment `name:<port>` with a later `@`.
-#[derive(PartialEq)]
-enum PortAt {
-    No,
-    /// Empty port: clearly a broken password.
-    Broken,
-    /// Non-empty digits then `/`, `?` or `#`: taken as host:port, but may be
-    /// credentials.
-    Maybe,
-}
-
-fn port_at(url: &str) -> PortAt {
+/// True for `name:<digits>` then `/`, `?` or `#` and a later `@`: kept as
+/// host:port, but the digits may be a password. Importers warn without naming
+/// any part of the URL.
+pub(crate) fn may_hold_credentials(url: &str) -> bool {
     let rest = &url[authority_start(url)..];
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let seg = &rest[..end];
     let Some((h, p)) = seg.split_once(':') else {
-        return PortAt::No;
+        return false;
     };
-    if seg.contains('@')
-        || seg.starts_with('[')
-        || h.is_empty()
-        || !p.bytes().all(|b| b.is_ascii_digit())
-        || !rest[end..].contains('@')
-    {
-        return PortAt::No;
-    }
-    if p.is_empty() {
-        PortAt::Broken
-    } else {
-        PortAt::Maybe
-    }
-}
-
-/// True for forms that are clearly a `user:pass` whose password holds a raw
-/// `/`, `?` or `#`: an empty port with a later `@`. The URL cannot be split safely; importers refuse it.
-pub(crate) fn has_ambiguous_userinfo(url: &str) -> bool {
-    port_at(url) == PortAt::Broken
-}
-
-/// True for `name:<digits>` then `/`, `?` or `#` and a later `@`: kept as host:port, but the digits may be
-/// a password; importers warn without naming any part of the URL.
-pub(crate) fn may_hold_credentials(url: &str) -> bool {
-    port_at(url) == PortAt::Maybe
+    !seg.contains('@')
+        && !h.is_empty()
+        && !seg.starts_with('[')
+        && !p.is_empty()
+        && p.bytes().all(|b| b.is_ascii_digit())
+        && rest[end..].contains('@')
 }
 
 /// Literal credentials gathered by an importer; they go to the secrets

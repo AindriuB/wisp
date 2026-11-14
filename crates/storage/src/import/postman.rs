@@ -153,6 +153,7 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
         Some(r) => url_of(r.get("url")),
         None => (String::new(), Vec::new(), Vec::new()),
     };
+    let maybe_creds = super::may_hold_credentials(&url);
     let (url, userinfo) = super::split_userinfo(&url);
     let name = if name.is_empty() {
         request_name(method_name(method), &url)
@@ -162,6 +163,12 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
     let mut at_path = path.to_vec();
     at_path.push(name.clone());
     let at = at_path.join(" / ");
+    if maybe_creds {
+        cx.result.warn(
+            &at,
+            "the URL may contain credentials; check it before committing",
+        );
+    }
     if !method_text.is_empty() && parse_method(&method_text).is_none() {
         cx.result.warn(
             &at,
