@@ -2394,3 +2394,25 @@ fn symlinked_collection_toml_yields_no_id() {
             .is_none()
     );
 }
+
+// ---- PR #63: symlinked plain env file ----
+
+#[cfg(unix)]
+#[test]
+fn symlinked_plain_env_file_is_refused_not_loaded_as_vars() {
+    let t = tempfile::tempdir().unwrap();
+    let dir = t.path().join("environments");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("prod.secrets.toml"), "[vars]\nk = \"SECRETVAL\"\n").unwrap();
+    std::os::unix::fs::symlink(dir.join("prod.secrets.toml"), dir.join("dev.toml")).unwrap();
+    let e = load_environment_with(t.path(), "dev", None, &NoStores, &cx());
+    assert!(
+        matches!(e, Err(wisp_storage::StorageError::Invalid { .. })),
+        "{e:?}"
+    );
+    let e = load_environment(t.path(), "dev");
+    assert!(
+        matches!(e, Err(wisp_storage::StorageError::Invalid { .. })),
+        "{e:?}"
+    );
+}

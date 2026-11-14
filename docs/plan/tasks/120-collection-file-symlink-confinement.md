@@ -56,3 +56,9 @@ cargo writes no JUnit XML here, so these are command checks.
 - crates/storage/src/vault_binding.rs and crates/app/src/workspace.rs (not edited).
 - 99-AC53 to AC56, AC59, AC60, AC62 to AC67 and AC72 (binding and TOCTOU items, deferred), including the double `sp.exists()` in `save_environment` (99-AC66).
 - `ensure_collection_id` and `save_collection_defaults` locking (99-AC4).
+
+## PR #63 review round 1 (HEAD 1749979)
+- 63-1 (Medium, security) crates/storage/src/vault.rs:430 and environment.rs plain load: the plain `<env>.toml` was read through a symlink; `dev.toml` -> `prod.secrets.toml` loaded secrets as plain vars. FIXED: a symlinked or non-regular `<env>.toml` is refused (Invalid) on load and save.
+- 63-2 (follow-up) ensure_ignore_line confines from environments/, not the root.
+- 63-3 (follow-up) a refused .gitignore fails the save after <env>.toml was already written.
+- 63-4 (follow-up) tests assert is_err rather than Invalid; ensure_marker_ignored and FIFO untested.

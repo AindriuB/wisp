@@ -47,6 +47,32 @@ pub(crate) fn check_name(root: &Path, name: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Refuse a plain `<name>.toml` that is itself a symlink or not a regular file
+/// (it could alias a sibling secrets file or a file outside the collection).
+/// `Ok(false)` when absent. A symlinked `environments/` directory is the
+/// binding check's concern, not this one.
+pub(crate) fn check_plain_file(pp: &Path) -> Result<bool, StorageError> {
+    match std::fs::symlink_metadata(pp) {
+        Ok(m) if m.is_file() => Ok(true),
+        Ok(_) => Err(StorageError::Invalid {
+            path: pp.to_path_buf(),
+            key: "path".into(),
+            message: "environment file must be a regular file, not a symbolic link".into(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io(pp, e)),
+    }
+}
+
+/// Read `<name>.toml` after [`check_plain_file`]. A missing file is `Io(NotFound)`.
+pub(crate) fn read_plain_text(_root: &Path, pp: &Path) -> Result<String, StorageError> {
+    if check_plain_file(pp)? {
+        Ok(fs::read_to_string(pp)?)
+    } else {
+        Err(io(pp, std::io::ErrorKind::NotFound.into()))
+    }
+}
+
 pub(crate) fn io(path: &Path, source: std::io::Error) -> StorageError {
     StorageError::Io {
         path: path.to_path_buf(),
@@ -120,7 +146,7 @@ pub fn secrets_file_names(root: &Path, name: &str) -> Vec<String> {
 pub fn load_environment(root: &Path, name: &str) -> Result<Environment, StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
-    let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
+    let doc = codec::parse(&pp, &read_plain_text(root, &pp)?)?;
     let vars = codec::read_vars(doc.as_table(), "vars", &pp)?;
     // Only file mode reads `<name>.secrets.toml`; store, unknown and
     // unreadable modes yield no secrets (use `vault::load_environment_with`).
@@ -264,7 +290,7 @@ pub fn save_environment_locked(
 fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), StorageError> {
     let pp = plain_path(root, &env.name);
     let mut plain_doc = None;
-    if pp.exists() {
+    if check_plain_file(&pp)? {
         let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
         // An unreadable mode (e.g. a non-string `secrets`) is not file mode:
         // fail closed, never write a secrets file.

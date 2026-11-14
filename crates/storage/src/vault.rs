@@ -427,7 +427,7 @@ pub fn load_environment_with(
 ) -> Result<LoadedEnvironment, StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
-    let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
+    let doc = codec::parse(&pp, &crate::environment::read_plain_text(root, &pp)?)?;
     let mode = read_mode(&doc, &pp)?;
     let names = read_names(&doc, &pp)?;
     let vars = codec::read_vars(doc.as_table(), "vars", &pp)?;
@@ -649,7 +649,7 @@ pub fn rebind(data: &DataDir, id: &CollectionId, new_root: &Path) -> Result<(), 
 fn read_plain(root: &Path, name: &str) -> Result<(PathBuf, DocumentMut), StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
-    let doc = codec::parse(&pp, &fs::read_to_string(&pp)?)?;
+    let doc = codec::parse(&pp, &crate::environment::read_plain_text(root, &pp)?)?;
     Ok((pp, doc))
 }
 
