@@ -263,20 +263,78 @@ pub(crate) fn form_decode(s: &str) -> String {
 /// name times many credential headers stays cheap.
 const MAX_SECRET_BASE_BYTES: usize = 64;
 
+/// Byte offset where the authority of `[scheme://]host...` starts.
+fn authority_start(url: &str) -> usize {
+    // `://` first, whatever the scheme text (a template like `{{protocol}}`
+    // included), as long as nothing that ends an authority comes before it.
+    if let Some(i) = url.find("://")
+        && !url[..i].contains(['/', '?', '#', '@'])
+    {
+        let after = &url[i + 3..];
+        return i + 3 + after.len() - after.trim_start_matches('/').len();
+    }
+    // Lenient forms (`//h`, `http:/h`, `https:///h`) only when there is no
+    // `://`; a bare scheme is letters then `:` and at least one `/`.
+    if url.starts_with("//") {
+        2
+    } else {
+        match url.find(':') {
+            Some(i)
+                if i > 0
+                    && url[..i]
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+                    && url[i + 1..].starts_with('/') =>
+            {
+                i + 1 + url[i + 1..].len() - url[i + 1..].trim_start_matches('/').len()
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// A non-empty all-digit port. A templated port (`{{port}}`) is not one: a
+/// template is plain host:port and never takes part in the ambiguity checks.
+fn is_port_like(p: &str) -> bool {
+    !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
 /// without it and the percent-decoded `(user, password)`.
 pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
-    // Without a scheme the authority starts at the beginning. A `://` that
-    // only appears after the authority (in a path or query) is not a scheme.
-    let scheme_end = match url.find("://") {
-        _ if url.starts_with("//") => 2,
-        Some(i) if !url[..i].contains(['/', '?', '#', '@']) => i + 3,
-        _ => 0,
-    };
+    let scheme_end = authority_start(url);
     let rest = &url[scheme_end..];
-    let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let Some(at) = rest[..auth_end].rfind('@') else {
-        return (url.to_string(), None);
+    let first_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let at = if let Some(at) = rest[..first_end].rfind('@') {
+        at
+    } else {
+        // A raw `/`, `?` or `#` inside the password moves the apparent end of
+        // the authority. A leading `user:pass` segment (not `host:port`)
+        // followed by a later `@` is treated as userinfo.
+        let seg = &rest[..first_end];
+        // An empty port can never be a real port, so it counts as userinfo.
+        // `http:h/x@y` is a scheme with no slash (host `h`), not userinfo.
+        let looks_like_userinfo = seg.split_once(':').is_some_and(|(h, p)| {
+            (!h.is_empty() || scheme_end > 0)
+                && !h.starts_with('[')
+                && !["http", "https", "ws", "wss"]
+                    .iter()
+                    .any(|s| h.eq_ignore_ascii_case(s))
+                && (p.is_empty() || !is_port_like(p))
+        });
+        // A template is not a password: never userinfo when the segment or the
+        // text before the authority holds `{{`.
+        let templated = seg.contains("{{") || url[..scheme_end].contains("{{");
+        let Some(first_at) = rest.find('@').filter(|_| looks_like_userinfo && !templated) else {
+            return (url.to_string(), None);
+        };
+        let limit = rest[first_at..]
+            .find(['/', '?', '#'])
+            .map_or(rest.len(), |i| first_at + i);
+        match rest[..limit].rfind('@') {
+            Some(at) => at,
+            None => return (url.to_string(), None),
+        }
     };
     let info = &rest[..at];
     let (user, pass) = info.split_once(':').unwrap_or((info, ""));
@@ -284,6 +342,23 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
         format!("{}{}", &url[..scheme_end], &rest[at + 1..]),
         Some((percent_decode(user), percent_decode(pass))),
     )
+}
+
+/// True for `name:<digits>` then `/`, `?` or `#` and a later `@`: kept as
+/// host:port, but the digits may be a password. Importers warn without naming
+/// any part of the URL.
+pub(crate) fn may_hold_credentials(url: &str) -> bool {
+    let rest = &url[authority_start(url)..];
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let seg = &rest[..end];
+    let Some((h, p)) = seg.split_once(':') else {
+        return false;
+    };
+    !seg.contains('@')
+        && (!h.is_empty() || authority_start(url) > 0)
+        && !seg.starts_with('[')
+        && is_port_like(p)
+        && rest[end..].contains('@')
 }
 
 /// Literal credentials gathered by an importer; they go to the secrets
@@ -314,11 +389,20 @@ fn sanitize_name(raw: &str) -> String {
     out
 }
 
+/// True when the whole trimmed value is exactly one `{{name}}` reference.
+fn is_single_ref(value: &str) -> bool {
+    value
+        .trim()
+        .strip_prefix("{{")
+        .and_then(|v| v.strip_suffix("}}"))
+        .is_some_and(|name| !name.trim().is_empty() && !name.contains(['{', '}']))
+}
+
 impl SecretSink {
     /// Keep `{{refs}}` and empty values; move a literal into the secrets
     /// environment and return a reference to it.
     pub(crate) fn secret_ref(&mut self, request: &str, field: &str, value: String) -> String {
-        if value.is_empty() || value.contains("{{") {
+        if value.is_empty() || is_single_ref(&value) {
             return value;
         }
         let base = sanitize_name(request);

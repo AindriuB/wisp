@@ -148,10 +148,10 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
     } else {
         parse_method(&method_text).unwrap_or(Method::Get)
     };
-    let (url, params, path_vars) = match raw {
+    let (url, params, path_vars, maybe_creds) = match raw {
         Some(Value::String(s)) => split_url(s, &[], None),
         Some(r) => url_of(r.get("url")),
-        None => (String::new(), Vec::new(), Vec::new()),
+        None => (String::new(), Vec::new(), Vec::new(), false),
     };
     let (url, userinfo) = super::split_userinfo(&url);
     let name = if name.is_empty() {
@@ -162,6 +162,12 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
     let mut at_path = path.to_vec();
     at_path.push(name.clone());
     let at = at_path.join(" / ");
+    if maybe_creds {
+        cx.result.warn(
+            &at,
+            "the URL may contain credentials; check it before committing",
+        );
+    }
     if !method_text.is_empty() && parse_method(&method_text).is_none() {
         cx.result.warn(
             &at,
@@ -210,8 +216,9 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
     ImportItem::Request { name, request: req }
 }
 
-/// URL string or object into (url without query, params, path vars).
-fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>) {
+/// URL string or object into (url, params, path vars). The query is cut off
+/// into params, except for a kept `name:<digits>?...@` URL (see `split_url`).
+fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>, bool) {
     match url {
         Some(Value::String(s)) => split_url(s, &[], None),
         Some(o @ Value::Object(_)) => {
@@ -265,7 +272,7 @@ fn url_of(url: Option<&Value>) -> (String, Vec<KeyValue>, Vec<Var>) {
             });
             split_url(&raw, array(o.get("variable")), explicit)
         }
-        _ => (String::new(), Vec::new(), Vec::new()),
+        _ => (String::new(), Vec::new(), Vec::new(), false),
     }
 }
 
@@ -273,9 +280,35 @@ fn split_url(
     raw: &str,
     variables: &[Value],
     query: Option<Vec<KeyValue>>,
-) -> (String, Vec<KeyValue>, Vec<Var>) {
-    let (base, q) = raw.split_once('?').unwrap_or((raw, ""));
-    let params = query.unwrap_or_else(|| parse_query(q));
+) -> (String, Vec<KeyValue>, Vec<Var>, bool) {
+    // The credentials flag is decided on the raw URL: the query is cut below.
+    let maybe_creds = super::may_hold_credentials(raw);
+    // Userinfo comes off before the query is cut: a raw `?` in a password must
+    // not leak into params. It is put back afterwards for `request_item`.
+    let (stripped, info) = super::split_userinfo(raw);
+    let removed = raw.len() - stripped.len();
+    let scheme_end = super::authority_start(raw);
+    let userinfo_text = info
+        .as_ref()
+        .map(|_| &raw[scheme_end..scheme_end + removed]);
+    // A `name:<digits>` authority that ends at `?` or `#` may hide a password:
+    // keep the whole URL. When it ends at `/` the query is cut as usual.
+    let keep_whole = info.is_none()
+        && super::may_hold_credentials(raw)
+        && raw[scheme_end..]
+            .find(['/', '?', '#'])
+            .is_some_and(|i| !raw[scheme_end + i..].starts_with('/'));
+    let (base, q) = if keep_whole {
+        (stripped.as_str(), "")
+    } else {
+        stripped.split_once('?').unwrap_or((stripped.as_str(), ""))
+    };
+    // A kept URL already carries its query: an explicit array would send it twice.
+    let params = if keep_whole {
+        Vec::new()
+    } else {
+        query.unwrap_or_else(|| parse_query(q))
+    };
     // Find where the path starts: after the scheme and host.
     let after_scheme = base.find("://").map_or(0, |i| i + 3);
     let host_end = if base[after_scheme..].starts_with("{{") {
@@ -314,7 +347,11 @@ fn split_url(
             _ => seg.to_string(),
         })
         .collect();
-    (format!("{head}{}", segs.join("/")), params, vars)
+    let mut url = format!("{head}{}", segs.join("/"));
+    if let Some(u) = userinfo_text {
+        url.insert_str(scheme_end.min(url.len()), u);
+    }
+    (url, params, vars, maybe_creds)
 }
 
 fn body_of(cx: &mut Ctx, body: Option<&Value>, headers: &[KeyValue], at: &str) -> Body {
