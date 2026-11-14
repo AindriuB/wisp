@@ -1134,3 +1134,109 @@ async fn a_connect_error_is_reported_without_url_or_secret() {
         other => panic!("unexpected {other:?}"),
     }
 }
+
+/// Sends `m` with a Bytes body and a Content-Type to a server that answers `/first` with `status`
+/// and `/second` with 200; the engine follows because of an `X-Trace` header or Digest auth.
+async fn method_redirect(
+    m: Method,
+    status: u16,
+    body: PreparedBody,
+    via_auth: bool,
+) -> Vec<wiremock::Request> {
+    let server = MockServer::start().await;
+    Mock::given(path("/first"))
+        .respond_with(ResponseTemplate::new(status).insert_header("location", "/second"))
+        .mount(&server)
+        .await;
+    Mock::given(path("/second"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let mut req = get(format!("{}/first", server.uri()));
+    req.method = m;
+    req.body = body;
+    req.headers = vec![Header {
+        name: "Content-Type".into(),
+        value: "text/plain".into(),
+    }];
+    if via_auth {
+        req.auth = Some(wisp_core::auth::EngineAuth::Digest {
+            username: "u".into(),
+            password: "p".into(),
+        });
+    } else {
+        req.headers.push(Header {
+            name: "X-Trace".into(),
+            value: "1".into(),
+        });
+    }
+    let evs = send_and_collect(req).await;
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    let got = server.received_requests().await.unwrap();
+    assert_eq!(got.len(), 2, "{got:?}");
+    got
+}
+
+#[tokio::test]
+async fn a_custom_header_redirect_resends_the_body_on_307_and_308() {
+    for status in [307, 308] {
+        for body in [
+            PreparedBody::Bytes(b"hello".to_vec()),
+            PreparedBody::File(temp_file(&format!("hdr{status}"), &pattern(1000))),
+        ] {
+            let want = match &body {
+                PreparedBody::Bytes(b) => b.clone(),
+                _ => pattern(1000),
+            };
+            let got = method_redirect(Method::Post, status, body, false).await;
+            assert_eq!(got[1].method.as_str(), "POST");
+            assert_eq!(got[1].body, want, "{status}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn engine_followed_redirects_use_reqwest_method_rules() {
+    let cases: [(Method, &str, u16, &str); 14] = [
+        (Method::Post, "POST", 301, "GET"),
+        (Method::Put, "PUT", 301, "GET"),
+        (Method::Patch, "PATCH", 302, "GET"),
+        (Method::Delete, "DELETE", 302, "GET"),
+        (Method::Post, "POST", 303, "GET"),
+        (Method::Put, "PUT", 303, "GET"),
+        (Method::Delete, "DELETE", 303, "GET"),
+        (Method::Options, "OPTIONS", 303, "GET"),
+        (Method::Get, "GET", 301, "GET"),
+        (Method::Head, "HEAD", 302, "HEAD"),
+        (Method::Head, "HEAD", 303, "HEAD"),
+        (Method::Options, "OPTIONS", 302, "OPTIONS"),
+        (Method::Put, "PUT", 307, "PUT"),
+        (Method::Patch, "PATCH", 308, "PATCH"),
+    ];
+    for via_auth in [false, true] {
+        for (m, first, status, second) in cases {
+            let body = if matches!(m, Method::Get | Method::Head | Method::Options) {
+                PreparedBody::None
+            } else {
+                PreparedBody::Bytes(b"payload".to_vec())
+            };
+            let resend = body != PreparedBody::None;
+            let got = method_redirect(m, status, body, via_auth).await;
+            let ctx = format!("{first} {status} auth={via_auth}");
+            assert_eq!(got[0].method.as_str(), first, "{ctx}");
+            assert_eq!(got[1].method.as_str(), second, "{ctx}");
+            if resend && second != "GET" {
+                assert_eq!(got[1].body, b"payload", "{ctx}");
+            } else {
+                assert!(got[1].body.is_empty(), "{ctx}");
+                if resend {
+                    assert!(!got[1].headers.contains_key("content-type"), "{ctx}");
+                    assert!(!got[1].headers.contains_key("content-length"), "{ctx}");
+                }
+            }
+        }
+    }
+}

@@ -792,9 +792,9 @@ async fn perform(
             Pending::Segments(segments)
         }
     };
-    let mut replay = match (&req.auth, &pending) {
-        (Some(_), Pending::Bytes(b)) => Replay::Bytes(b.clone()),
-        (Some(_), Pending::Segments(s)) => Replay::Specs(s.iter().map(SegmentSpec::of).collect()),
+    let mut replay = match (req.auth.is_some() || own_redirects, &pending) {
+        (true, Pending::Bytes(b)) => Replay::Bytes(b.clone()),
+        (true, Pending::Segments(s)) => Replay::Specs(s.iter().map(SegmentSpec::of).collect()),
         _ => Replay::None,
     };
     let mut signing_hash = match &req.auth {
@@ -953,14 +953,23 @@ async fn perform(
             break resp;
         }
         let code = resp.status().as_u16();
-        // 307/308 keep method and body. With own_redirects, 303 turns any non-HEAD method into
-        // GET and 301/302 turn POST into GET, both without a body. Other methods keep their
-        // method and body on 301/302, which RFC 9110 allows (reqwest rewrites more of them).
+        // 307/308 keep method and body. With own_redirects the rules match reqwest's: 303 turns
+        // any non-HEAD method into GET, 301/302 turn POST/PUT/PATCH/DELETE into GET, all
+        // without a body.
         let keeps_body = match code {
             307 | 308 => true,
             301..=303 if own_redirects => {
-                !(method == reqwest::Method::POST && code != 303
-                    || code == 303 && method != reqwest::Method::HEAD)
+                if code == 303 {
+                    method == reqwest::Method::HEAD
+                } else {
+                    !matches!(
+                        method,
+                        reqwest::Method::POST
+                            | reqwest::Method::PUT
+                            | reqwest::Method::PATCH
+                            | reqwest::Method::DELETE
+                    )
+                }
             }
             _ => break resp,
         };
