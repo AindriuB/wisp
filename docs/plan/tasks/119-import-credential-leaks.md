@@ -7,7 +7,7 @@
 - crates/storage/src/import/mod.rs (including its inline tests)
 - crates/storage/src/import/curl.rs (including its inline tests)
 - crates/storage/tests/import.rs
-- crates/storage/src/import/postman.rs and crates/storage/src/import/openapi.rs — only the call sites where a URL is split/imported and their warnings (plus inline tests for those)
+- crates/storage/src/import/postman.rs and crates/storage/src/import/openapi.rs — only the call sites where a URL is split/imported and their warnings (plus inline tests for those); in postman.rs also `url_of` and `split_url` and their inline tests (see Decisions, round 3)
 
 ## Goal
 An imported collection is meant to be committed, so any credential the importers leave in a request or environment TOML is a credential in git. Three shared helper gaps leave one there: a value with `{{` anywhere is kept literally, and URL userinfo survives when the password holds `/`, `?` or `#`, or when the URL uses a lenient scheme form. Separately, curl's `--digest`, `--ntlm` and `--negotiate` with `-u` import as Basic, which sends the password in a form those schemes avoid. Carried from task 99 AC30, AC31, AC44, AC18.
@@ -25,6 +25,7 @@ An imported collection is meant to be committed, so any credential the importers
   - Empty port (`name:` then `/`, `?` or `#`): never a real port, so the shared `split_userinfo` treats it as userinfo and moves it into secrets for every importer; it is not refused.
   - Tests, curl: `https://u:SEC/RET@h/x`, `https://u:SEC?RET@h/x` and `https://u:SEC#RET@h/x` leave no `SEC`, `RET` or the password in any request or plain environment TOML; `http://localhost:8080?email=a@b.com` and `https://u:12?34@h/x` import with the URL unchanged and the warning; `https://u:?x@h/x` and `https://u:#x@h/x` leave their userinfo in no TOML other than the secrets file.
   - Tests, for curl, Postman and OpenAPI each: `https://u:/SECPW@h/x` writes no `SECPW` to any TOML other than the secrets file (it goes to secrets), and `http://localhost:8080/users/me@example.com` imports unchanged with the warning.
+  - Tests, Postman (round 3): `https://u:?SECPW@h/x` and `https://u:ab?SECPW@h/x` leave no `SECPW` or password fragment in any TOML other than the secrets file; `https://u:12?34@h/x` imports with the URL kept and the may-contain-credentials warning.
 - [ ] AC3 (99-AC44) `https:///u:SECRETVAL@h/x` and `http:/u:SECRETVAL@h/x` have their userinfo stripped into secrets (or are refused with a warning). A test with each asserts no request or plain environment TOML contains `SECRETVAL`.
 - [ ] AC4 (99-AC18) curl `--digest -u user:SECRETVAL URL` imports `Auth::Digest` with both fields as secret refs. `--ntlm` or `--negotiate` with `-u` imports no auth, keeps both credentials in the secrets environment, and adds a warning that names the option and no value. Tested for all three options; no TOML other than the secrets file contains `SECRETVAL`.
 - [ ] AC5 Existing import behaviour is otherwise unchanged: every existing test in crates/storage/src/import/** and crates/storage/tests/import.rs passes. Where AC1 changes an expected value, the test is updated and the PR description names it.
@@ -52,7 +53,7 @@ cargo writes no JUnit XML here, so these are command checks.
 - No Windows-only code is expected; the Windows CI job (54-CI) lands later.
 
 ## Out of scope
-- crates/storage/src/import/write.rs is not edited. In postman.rs and openapi.rs, anything beyond the URL split/import call sites and their warnings (AC2). If another inline test there fails because of the fix, stop and report.
+- crates/storage/src/import/write.rs is not edited. In postman.rs and openapi.rs, anything beyond the URL split/import call sites and their warnings (AC2), and in postman.rs `url_of` and `split_url`. If another inline test there fails because of the fix, stop and report.
 - 99-AC19, AC20, AC42, AC43 (curl warning text, test-only and unknown-option items), and every F, G and other H item from task 99 (deferred).
 - Making `import::write` transactional.
 
@@ -60,6 +61,7 @@ cargo writes no JUnit XML here, so these are command checks.
 - 2026-11-14 (user decision, after review round 1 of PR #60) — A URL whose first authority segment is `name:<digits>`, the digit part non-empty, followed later by `@` (e.g. `http://localhost:8080/users/me@example.com`, indistinguishable from `https://u:1234/abcd@h/x`) is treated as host:port and kept; the import adds a warning naming no part of the URL or userinfo, saying the URL may contain credentials and should be checked before committing. Only clearly broken forms are refused, with an error naming no userinfo: an empty port (`u:/SECPW@h`) and a digit run cut by `?` or `#` (`u:12?34@h`). Reason: refusing every port+`@` URL blocked legitimate imports; the residual case (a password of only digits before its first raw `/`) is accepted and surfaced by the warning.
   - Correction 2026-11-14 (orchestrator, consistent with the user's "keep URL, warn" choice): a non-empty digit run cut by `?` or `#` (`u:12?34@h`, and also the legitimate `http://localhost:8080?email=a@b.com`) is just as ambiguous as one cut by `/`, so it is kept as host:port with the same warning, not refused. Only the empty-port form (`u:/SECPW@h`, `u:?x@h`, `u:#x@h`) is refused.
 - 2026-11-14 (user decisions, review round 2 of PR #60) — (a) The orchestrator's correction is accepted: a non-empty digit run cut by `/`, `?` or `#` with a later `@` is kept with the no-value warning. (b) The empty-port form (`u:` then `/`, `?` or `#` and a later `@`, e.g. `https://u:/SECPW@h/x`) can never be a real port, so the shared `split_userinfo` treats it as userinfo and moves it into secrets for every importer; curl stops refusing it. This supersedes the empty-port refusal in the entry above. (c) The Postman and OpenAPI importers emit the same no-value "may contain credentials" warning as curl for a kept `name:<digits>…@` URL. Owns widened to the postman.rs and openapi.rs URL call sites and their warnings.
+- 2026-11-14 (user decision, after review round 3 of PR #60) — One more round. Owns widened to postman.rs `url_of` and `split_url` (and their inline tests), so userinfo is split off the raw URL before the query is cut at `?`. AC2 gains Postman tests: `https://u:?SECPW@h/x` and `https://u:ab?SECPW@h/x` (no `SECPW` or password fragment in any non-secrets TOML), and `https://u:12?34@h/x` (kept with the may-contain-credentials warning, consistent with the accepted correction).
 
 ## Review round 1 — findings (HEAD 605f9e8)
 - [P2] crates/storage/src/import/mod.rs:296-299 — the fallback guard `looks_like_userinfo` treats a segment as `host:port` whenever the part after the first `:` is all digits, including empty, so when a password's first raw `/`, `?`, `#` follows only digits or comes right after the colon, userinfo stays in the URL and is written to the request TOML (breaks AC2: no password in any written TOML, or the URL is refused with a warning). Fix: when a later `@` exists but the segment looks like host:port, refuse the URL with a warning that names no part of the userinfo, or handle the empty-port case. Inputs: `curl 'https://u:1234/abcd@h/x'` → url keeps the password; `curl 'https://u:/SECPW@h/x'` → url keeps it; `curl 'https://u:12?34@h/x'` → url `https://u:12` and `34@h/x` into query params.
@@ -72,6 +74,12 @@ cargo writes no JUnit XML here, so these are command checks.
   - Settled by Decisions 2026-11-14 round 2 (b) and (c). AC2 rewritten.
 - [STYLE] mod.rs:358, :363 — doc comments run to 105/107 chars; wrap at ~80 like their neighbours.
 - [P3, follow-up] curl.rs:409-415 — the extra-URL warning in the Maybe case still prints the URL (its digits may be a password).
+- [P3, follow-up] curl.rs:349-351 — `--basic`/`--anyauth` not recognised.
+
+## Review round 3 — findings (HEAD f6c3798)
+- [P2] postman.rs:284 `split_url` (reached from `url_of` :223/:273, before `split_userinfo` at :157) cuts the query at the first `?` before userinfo handling, so a password containing raw `?` is written to the request TOML and the empty-port/digit-run checks never fire for `?`.
+  - Settled by Decisions 2026-11-14 round 3: Owns widened to `url_of`/`split_url`; AC2 Postman tests added.
+- [P3, follow-up] curl.rs:409-411 — the extra-URL warning prints a `name:<digits>…@` URL.
 - [P3, follow-up] curl.rs:349-351 — `--basic`/`--anyauth` not recognised.
 
 ## Appendix: superseded
