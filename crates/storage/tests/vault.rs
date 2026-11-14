@@ -1919,10 +1919,10 @@ fn git_style(p: std::path::PathBuf) -> std::path::PathBuf {
     #[cfg(windows)]
     {
         let s = p.to_string_lossy().into_owned();
-        if let Some(rest) = s.strip_prefix(r"\\?\") {
-            if !rest.starts_with("UNC") {
-                return std::path::PathBuf::from(rest.replace('\\', "/"));
-            }
+        if let Some(rest) = s.strip_prefix(r"\\?\")
+            && !rest.starts_with("UNC")
+        {
+            return std::path::PathBuf::from(rest.replace('\\', "/"));
         }
     }
     p
@@ -2285,6 +2285,7 @@ fn share_with_folder_needs_the_same_id() {
     assert!(share_with_folder(&c.data, &id(), a.path(), b.path()).is_err());
 }
 
+#[cfg(unix)]
 fn file_mode_env(vars: Vec<Var>, secrets: Vec<Var>) -> Environment {
     Environment {
         name: "dev".into(),

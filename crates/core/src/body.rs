@@ -389,6 +389,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn files_in(dir: &std::path::Path) -> Vec<PathBuf> {
         std::fs::read_dir(dir)
             .map(|r| r.map(|e| e.unwrap().path()).collect())
