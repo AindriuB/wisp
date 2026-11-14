@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-14 | 122-127 | Windows CI job, clippy and portability fixes, SignPath signing, winget, MSIX, CRLF fix, 0.2.0 prep | ## 2026-11-14 — Windows distribution wave (tasks 122-127) and 0.2.0 prep |
 | 2026-11-14 | 121 | failed reload clears active secrets | ## 2026-11-14 — Failed reload clears active secrets (task 121) |
 | 2026-11-14 | 120 | symlink refusal before open on collection-file paths | ## 2026-11-14 — Symlink confinement for collection files (task 120) |
 | 2026-11-14 | 119 | importer userinfo and secret_ref leaks, digest/ntlm, URL-shape regression table | ## 2026-11-14 — Import credential leaks (task 119) |

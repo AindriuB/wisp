@@ -295,6 +295,8 @@ To cut a release: make sure the workspace version is the one you want, tag `v<ve
 
 To test without a tag: `gh workflow run release.yml --ref <branch> -f draft_release=true` builds the same assets and creates a draft `dryrun-<run_id>`. Check it, then remove it with `gh release delete dryrun-<run_id> --yes` (`--cleanup-tag` prints a harmless HTTP 422 because a draft has no tag). With `draft_release` false a dispatch run creates no release.
 
+Windows distribution channels have their own guides: `packaging/winget/README.md` (winget manifests), `scripts/release/sign-windows/README.md` (SignPath Authenticode signing) and `packaging/msix/STORE-SUBMISSION.md` (the MSIX and Microsoft Store submission).
+
 ### macOS signing and notarisation
 
 The macOS build job signs `Wisp.app` with the Developer ID Application certificate (team `UB89GDN343`) and the hardened runtime, submits the zip to Apple with `notarytool`, and staples the ticket. `scripts/release/macos-keychain.sh` creates and removes a temporary keychain on the runner, and `scripts/release/sign-macos.sh` signs, notarises and staples. Five repository secrets drive it: `APPLE_DEVELOPER_ID_P12`, `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID` (an App Store Connect API key authenticates `notarytool`). These are names only; the values live in the repository's secret store. `APPLE_TEAM_ID` is a plain `env` value in the workflow, not a secret. `notarytool` waits at most 90 minutes; the first submission for the account took about 19 minutes.

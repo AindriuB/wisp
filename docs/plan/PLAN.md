@@ -25,7 +25,13 @@ Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple col
 - **Wave 3:** **Complete (tasks 109-116); size gate passed, Windows 15,177,216 B of 15,500,000, headroom 322,784 B (run 43505214545).** Multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); 114 (OS keychain secret store on `keyring` 4, module keychain in wisp-storage; not yet linked into the app; Windows 15,256,576 B, 243,424 B headroom); 115 (keychain wiring: OS keychain in the app, secrets panel, confirmed bind/move flows; PR #55; Windows 15,171,072 B after opt-level "z" on wisp-storage); 116 (size gate: Windows +40,960 B over wave 2, Linux 25,806,344 B, macOS 11,601,328 B, all budgets met); see HISTORY. Next: hardening (see below), then the Windows test+clippy CI job (54-CI) last before the 0.2.0 tag.
 
 - **Hardening (task 99 split):** **Wave 1 complete (tasks 117-121, PRs #59-#63).** Done: 117 (cross-origin redirects keep only an allow-list of headers, the engine follows any redirect carrying another header and uses reqwest/curl method rules, `referer(false)`, engine errors carry no URL); 118 (more credential fragments, response headers redacted by name, nameless Set-Cookie, path vars, duplicate-key JSON dropped, resend of a redacted path var refused); 119 (importers keep a value literally only when it is one `{{name}}`, userinfo with raw `/`, `?`, `#` or lenient schemes goes to secrets, curl `--digest` imports as Digest); 120 (symlinks refused before open on every collection-file path); 121 (a failed reload clears active secrets); see HISTORY. The rest of task 99 is the post-0.2.0 backlog below.
-- **Next for 0.2.0, in order:** (1) the Windows test+clippy CI job (54-CI, 99-AC38); (2) the release: dry run with the size gate on the final head (99-AC39), tag, user hand test including the signed macOS keychain, then the AAR.
+- **Windows distribution (tasks 122-127, PRs #65-#71):** **Complete.** Windows CI (54-CI, 99-AC38) is green, so wave 3 and the Windows work are done. Also landed: SignPath signing (124), winget manifests (125), unsigned MSIX artifact (126), winget CRLF fix (127) and the 0.2.0 prep (version, README, release notes); see HISTORY.
+- **Next for 0.2.0, in order:** (1) the release dry run with the size gate (99-AC39) to produce a release candidate; (2) the user's hand test, including the signed macOS keychain; (3) tag v0.2.0 at the tested commit; (4) publish; (5) the AAR (never committed).
+
+**User setup (optional channels):** none of these block 0.2.0.
+- SignPath Foundation application, then the repository secret and variables (`scripts/release/sign-windows/README.md`).
+- Confirm the winget PackageIdentifier and open the winget-pkgs PR after 0.2.0 is published (`packaging/winget/README.md`).
+- Partner Center account, the `MSIX_*` repository variables and Store submission (`packaging/msix/STORE-SUBMISSION.md`).
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
@@ -69,7 +75,26 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
 
 ### Hardening backlog (post-0.2.0)
-`docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC38 (Windows CI) and AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled.
+`docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled.
+
+### Follow-ups from tasks 122-127 (Windows distribution, not 0.2.0)
+- winget (125): `winget.yml:47` and the README hardcode the `AindriuB/Wisp` path, so the AC4 byte check is skipped silently when the identifier changes.
+- winget (125): a prerelease publish runs `winget.yml` and fails.
+- winget (125): `GH_TOKEN` is job-level; move it to the Generate step.
+- winget (125): a CRLF `SHA256SUMS` fails with an unclear message.
+- winget (125): YAML-special characters in Publisher are not escaped.
+- SignPath (124): `actions: read` is needed in `release.yml` permissions if the repo goes private.
+- SignPath (124): set a ref/branch policy in SignPath, because `workflow_dispatch` on any ref can submit for signing.
+- verify.ps1 (124): the expected signer is not checked; only the first WIN_CERTIFICATE is read and NumberOfRvaAndSizes is not checked.
+- MSIX (126): `--` in the display name breaks the manifest's XML comment.
+- MSIX (126): the STORE-SUBMISSION wording on zip vs Store data separation is wrong: existing AppData files are shared, and new ones go to a private per-package location.
+- MSIX (126): `generate.sh:8` has a stale header and an existing line was edited.
+- MSIX (126): `pack.ps1` matches "error" anywhere in the output.
+- MSIX (126): `Copy-Item` with the `*.png` wildcard does not error on no match.
+- `release.yml`: two pre-existing SC2012 actionlint notes.
+- Windows CI (123) 🔒: the 8.3 test passes silently when 8.3 names are off; add a visible skip message and a deterministic CI setup that enables 8.3 names (task 99 AC77).
+- Windows CI (123) 🔒: `same_file_entry` always returns false on Windows, so the hard-link check is a no-op there (task 99 AC78).
+- README and release notes: the History and importer-hardening bullets were written from index rows only; check them against HISTORY.
 
 ### Follow-ups from tasks 117-121 (hardening wave 1, not 0.2.0)
 🔒 marks a security-relevant item. Task 116's 57-1 to 57-3 are already listed in the task 116 section below.
@@ -146,7 +171,7 @@ From the AC9 hand check:
 - Tell users a stale keychain prompt can remain after a timeout (it outlives the app process).
 
 ### Follow-ups from task 114 (not 0.2.0 wave 3)
-- (a) keyring 4's platform errors are opaque, so `map_error` classifies by Debug text; real Windows errors are still unseen (Windows CI has no test job).
+- (a) keyring 4's platform errors are opaque, so `map_error` classifies by Debug text; real Windows errors are still unseen (the Windows CI job runs tests, but the keychain is not exercised there).
 - (b) Linux `Locked`/`Prompt` raised by create_item, and PromptDisconnected/Unavailable, arrive as PlatformFailure and map to Other (fails closed).
 - (c) The Windows TooLarge row (0x800706F7) is defensive only: the store returns TooLong above 2560 B before any OS call, and a real OS failure would be 1783.
 - (d) `extract_code` tries the first "0x" anywhere before "code: ", so a macOS message containing "0x" could override the OSStatus.
@@ -176,7 +201,7 @@ PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real
 - 54-18 (nit, tests) the lexically plausible UNC test never matches the trusted dir, so it passes without the guard.
 - 54-N1 the 54-13 regression test passed before the fix (old code swallowed the read error); no test proves a bound worktree's gitdir/commondir is never opened.
 - 54-D1 document on `vault::bind_additional_checkout`: a new folder is one-click verifiable only as a worktree of a bound main checkout (bound worktrees do not anchor).
-- 54-CI add a Windows `cargo test` + clippy job to CI: Windows-only code in vault_binding/keychain has never been compiled under test or linted (54-15 and 54-16 were found by reading).
+- 54-CI (done, tasks 122/123): the Windows `cargo test` + clippy job exists.
 
 ### Follow-ups from task 113 (not 0.2.0 wave 3)
 - collections.rs:66-72 re-derives names and walks collection_root(i) instead of using OpenCollection::name() and Workspace::collections; drift risk.
@@ -280,7 +305,7 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - 52-58..52-60 (nits, tests) symlinked_dot_git_is_refused asserts only is_err; the dangling-link test doesn't assert the target stayed absent; missing tests for an in-folder symlink gitdir, worktree-to-worktree, relative paths and a mismatched id.
 - 52-61 (nit) non-top-level collections, separate-git-dir and submodules never verify as additional checkouts -> document.
 - 52-62 (nit) HISTORY reads as if vars-only saves through a symlinked environments/ now work; they still fail, with a clearer message.
-- 52-W Windows code paths in vault_binding (simplify_verbatim, cfg(windows) tests, make_worktree git_style) are uncompiled and unrun; CI has no Windows test job (task 99 AC38).
+- 52-W Windows code paths in vault_binding (simplify_verbatim, cfg(windows) tests, make_worktree git_style) are uncompiled and unrun; the Windows CI job (tasks 122/123) now compiles and runs them.
 - 52-30 (-> task 99, fold into AC53) migrate_to_file still merges store secrets into a git-tracked regular secrets file -> refuse or warn on tracked files.
 - 52-31 (-> task 99) copy check uses exists() (metadata errors read as gone, fails open); a read error blocks a real move; relies on the committed id rather than the old root's marker -> try_exists, fail closed except NotFound, use the marker nonce.
 - 52-32 lowercasing silently re-keys history, cookies and tokens of collections whose id already had uppercase (unreleased builds only) -> write the lowercase id back and move old paths, or note it.
