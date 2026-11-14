@@ -456,13 +456,8 @@ pub fn load_environment_with(
         }
     };
     let failed = |reason: FailReason| finish(Vec::new(), LoadStatus::Failed { reason });
-    let file_secrets = || -> Result<Vec<Var>, StorageError> {
-        if sp.exists() {
-            crate::environment::load_vars(&sp)
-        } else {
-            Ok(Vec::new())
-        }
-    };
+    let file_secrets =
+        || -> Result<Vec<Var>, StorageError> { crate::environment::load_secrets_file(root, &sp) };
 
     let kind = match mode {
         Mode::File => return Ok(finish(file_secrets()?, LoadStatus::File)),
@@ -747,11 +742,7 @@ pub fn migrate_to_store(
         return Err(invalid(&pp, "secrets", "environment is not in file mode"));
     }
     let sp = secrets_path(root, name);
-    let secrets = if sp.exists() {
-        crate::environment::load_vars(&sp)?
-    } else {
-        Vec::new()
-    };
+    let secrets = crate::environment::load_secrets_file(root, &sp)?;
     check_bind(ctx, id, root)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;

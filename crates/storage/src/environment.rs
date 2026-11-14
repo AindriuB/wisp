@@ -94,6 +94,28 @@ pub(crate) fn load_vars(path: &Path) -> Result<Vec<wisp_core::request::Var>, Sto
     codec::read_vars(doc.as_table(), "vars", path)
 }
 
+/// Read `<name>.secrets.toml` after the confinement check: a symlinked or
+/// non-regular file is refused before it is opened; a missing file is empty.
+pub(crate) fn load_secrets_file(
+    root: &Path,
+    sp: &Path,
+) -> Result<Vec<wisp_core::request::Var>, StorageError> {
+    if fs::confined_regular_file(root, sp, "secrets file")? {
+        load_vars(sp)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// The variable names in `<name>.secrets.toml`, read only after the
+/// confinement check. Empty when the file is missing, refused or unreadable.
+/// Values are never returned.
+pub fn secrets_file_names(root: &Path, name: &str) -> Vec<String> {
+    load_secrets_file(root, &secrets_path(root, name))
+        .map(|v| v.into_iter().map(|v| v.name).collect())
+        .unwrap_or_default()
+}
+
 /// Load an environment: vars from `<name>.toml`, secrets from `<name>.secrets.toml`.
 pub fn load_environment(root: &Path, name: &str) -> Result<Environment, StorageError> {
     check_name(root, name)?;
@@ -107,8 +129,8 @@ pub fn load_environment(root: &Path, name: &str) -> Result<Environment, StorageE
         Ok(crate::vault::Mode::File)
     );
     let sp = secrets_path(root, name);
-    let secrets = if is_file && sp.exists() {
-        load_vars(&sp)?
+    let secrets = if is_file {
+        load_secrets_file(root, &sp)?
     } else {
         Vec::new()
     };
@@ -164,6 +186,7 @@ pub(crate) fn ensure_marker_ignored(dir: &Path) -> Result<(), StorageError> {
 
 fn ensure_ignore_line(dir: &Path, line: &str) -> Result<(), StorageError> {
     let path = dir.join(".gitignore");
+    fs::confined_regular_file(dir, &path, ".gitignore")?;
     if !path.exists() {
         return fs::atomic_write(&path, format!("{line}\n").as_bytes());
     }
