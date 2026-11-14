@@ -321,18 +321,49 @@ pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
     )
 }
 
-/// True when the first segment looks like `host:port` (or `host:`) but a later
-/// `@` means it could be `user:pass` whose password holds a raw `/`, `?` or `#`.
-/// The URL cannot be split safely; importers refuse it.
-pub(crate) fn has_ambiguous_userinfo(url: &str) -> bool {
+/// Classification of a first authority segment `name:<port>` with a later `@`.
+#[derive(PartialEq)]
+enum PortAt {
+    No,
+    /// Empty port, or a digit run cut by `?`/`#`: clearly a broken password.
+    Broken,
+    /// Non-empty digits then `/`: taken as host:port, but may be credentials.
+    Maybe,
+}
+
+fn port_at(url: &str) -> PortAt {
     let rest = &url[authority_start(url)..];
-    let seg = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    !seg.contains('@')
-        && !seg.starts_with('[')
-        && seg
-            .split_once(':')
-            .is_some_and(|(h, p)| !h.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-        && rest[seg.len()..].contains('@')
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let seg = &rest[..end];
+    let Some((h, p)) = seg.split_once(':') else {
+        return PortAt::No;
+    };
+    if seg.contains('@')
+        || seg.starts_with('[')
+        || h.is_empty()
+        || !p.bytes().all(|b| b.is_ascii_digit())
+        || !rest[end..].contains('@')
+    {
+        return PortAt::No;
+    }
+    if p.is_empty() || !rest[end..].starts_with('/') {
+        PortAt::Broken
+    } else {
+        PortAt::Maybe
+    }
+}
+
+/// True for forms that are clearly a `user:pass` whose password holds a raw
+/// `/`, `?` or `#`: an empty port, or a digit run cut by `?` or `#`, with a
+/// later `@`. The URL cannot be split safely; importers refuse it.
+pub(crate) fn has_ambiguous_userinfo(url: &str) -> bool {
+    port_at(url) == PortAt::Broken
+}
+
+/// True for `name:<digits>/...@...`: kept as host:port, but the digits may be
+/// a password; importers warn without naming any part of the URL.
+pub(crate) fn may_hold_credentials(url: &str) -> bool {
+    port_at(url) == PortAt::Maybe
 }
 
 /// Literal credentials gathered by an importer; they go to the secrets

@@ -453,6 +453,9 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
                 .into(),
         ));
     }
+    if super::may_hold_credentials(url_raw.trim()) {
+        f.warn("the URL may contain credentials; check it before committing".into());
+    }
     let (url_raw, userinfo) = super::split_userinfo(url_raw.trim());
     let (url, mut params) = split_query(&url_raw);
     if userinfo.is_some() && f.user.is_some() {

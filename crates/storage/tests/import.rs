@@ -304,15 +304,28 @@ fn digest_ntlm_negotiate_credentials_stay_in_secrets() {
 
 #[test]
 fn ambiguous_host_port_password_is_refused() {
-    for url in [
-        "https://u:1234/abcd@h/x",
-        "https://u:/SECPW@h/x",
-        "https://u:12?34@h/x",
-    ] {
+    for url in ["https://u:/SECPW@h/x", "https://u:12?34@h/x"] {
         let cmd = format!("curl '{url}'");
         let err = curl::parse(&cmd).unwrap_err().to_string();
         assert!(!err.contains("SECPW") && !err.contains("abcd") && !err.contains("34"));
     }
+}
+
+#[test]
+fn host_port_with_later_at_is_kept_with_warning() {
+    let r = curl::parse("curl 'http://localhost:8080/users/me@example.com'").unwrap();
+    let wisp_storage::import::ImportItem::Request { request, .. } = &r.items[0] else {
+        panic!()
+    };
+    assert_eq!(request.url, "http://localhost:8080/users/me@example.com");
+    assert!(matches!(request.auth, wisp_core::request::Auth::Inherit));
+    let w: Vec<_> = r
+        .warnings
+        .iter()
+        .filter(|w| w.message.contains("may contain credentials"))
+        .collect();
+    assert_eq!(w.len(), 1);
+    assert!(!w[0].message.contains("8080") && !w[0].message.contains("example"));
 }
 
 #[test]
