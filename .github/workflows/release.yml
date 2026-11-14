@@ -131,6 +131,24 @@ jobs:
             echo "::error::wisp.exe is $size bytes, over the 15500000 limit"
             exit 1
           fi
+      # Store identity comes from repository variables; an unset one makes pack.ps1
+      # emit a placeholder notice and use a marked placeholder value.
+      - name: Build MSIX (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: packaging/msix/pack.ps1 -Exe "target/${{ matrix.target }}/release/${{ matrix.binary }}" -OutDir msix-out
+      # Not pkg-*: the release job must not attach it or list it in SHA256SUMS.
+      - name: Upload MSIX (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msix-windows-x64
+          path: msix-out/*.msix
+          if-no-files-found: error
       - name: Select macOS signing mode
         if: runner.os == 'macOS'
         shell: bash
