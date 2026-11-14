@@ -20,6 +20,11 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-14 | 121 | failed reload clears active secrets | ## 2026-11-14 — Failed reload clears active secrets (task 121) |
+| 2026-11-14 | 120 | symlink refusal before open on collection-file paths | ## 2026-11-14 — Symlink confinement for collection files (task 120) |
+| 2026-11-14 | 119 | importer userinfo and secret_ref leaks, digest/ntlm, URL-shape regression table | ## 2026-11-14 — Import credential leaks (task 119) |
+| 2026-11-14 | 118 | credential fragments, response header and path var redaction, duplicate-key JSON, resend refusal | ## 2026-11-14 — History redaction gaps (task 118) |
+| 2026-11-14 | 117 | cross-origin redirect header allow-list, reqwest method rules, URL-free engine errors | ## 2026-11-14 — Redirect header strip and URL-free engine errors (task 117) |
 | 2026-11-13 | 116 | Wave-3 size gate passed: Windows 15,177,216 B of 15,500,000, Linux 25,806,344 B, macOS 11,601,328 B | ## 2026-11-13 — Wave-3 size gate and measure (task 116) |
 | 2026-11-12 | 115 | OS keychain wired into the app: background env loads, secrets panel, confirmed bind/move flows, refresh-token index; size gate met by opt-level "z" on wisp-storage (Windows 15,171,072 B); AC9 macOS hand check | ## 2026-11-12 — Keychain wiring (task 115) |
 | 2026-11-12 | 114 | keyring 4 keychain SecretStore, fail-closed error mapping, headless results, sizes | ## 2026-11-12 — OS keychain secret store (task 114) |
