@@ -22,12 +22,12 @@ exists: existing clients are large and memory-heavy.
   set from Milestone 0 measurements (see Budgets).
 - **v1 platforms:** macOS Apple silicon, Windows x64, Linux x64
   (Wayland or X11; GPUI needs a Vulkan-capable driver).
-- **License and version.** Apache-2.0 (`LICENSE`, `NOTICE`), version 0.1.1,
+- **License and version.** Apache-2.0 (`LICENSE`, `NOTICE`), version 0.2.0,
   both set once in `[workspace.package]` and inherited by every crate.
   `THIRD-PARTY-NOTICES` is generated and committed (see
-  `docs/conventions.md#dependencies`). The 0.1.1 release targets are
+  `docs/conventions.md#dependencies`). The 0.2.0 release targets are
   `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`;
-  Intel macOS is not released in 0.1.0.
+  Intel macOS is not released (dropped for 0.1.0).
 
 ## Components
 
@@ -36,9 +36,9 @@ here listens on a port.
 
 | Component | Directory | Owns |
 |---|---|---|
-| `core` | `crates/core` | Request/response model, variable and path-param resolution, auth, the `Engine` (reqwest on tokio, rustls only), body store |
-| `storage` | `crates/storage` | Reading and writing collections, environments and body files; file watcher |
-| `app` | `crates/app` | GPUI and `gpui-component` UI; the binary |
+| `core` | `crates/core` | Request/response model, variable and path-param resolution, auth (Basic, Bearer, API key, Digest, AWS SigV4, OAuth2), the `Engine` (reqwest on tokio, rustls only), body store, in-memory cookie jars |
+| `storage` | `crates/storage` | Reading and writing collections, environments and body files; file watcher; request history, cookie persistence and the per-user data dir; secret stores (OS keychain through `keyring`); curl, Postman and OpenAPI importers |
+| `app` | `crates/app` | GPUI and `gpui-component` UI, including the workspace that holds up to 8 open collections; the binary |
 
 The packages are `wisp-core`, `wisp-storage` and `wisp-app` (binary `wisp`);
 see `conventions.md#naming`.
@@ -53,8 +53,10 @@ worktree scripts installed from the agent-kit repo, and `agents/` and
 ## How they talk
 
 Dependencies point one way: `app` depends on `core` and `storage`; `storage`
-may depend on `core` for the model types; `core` depends on neither. A later
-`cli/` crate will link `core` and `storage` directly.
+may depend on `core` for the model types; `core` depends on neither. A read-only
+`wisp-cli` is planned for 0.3.0 and would link `core` and `storage` directly; see
+[`plan/specs/2026-11-14-wisp-0-3-0.md`](plan/specs/2026-11-14-wisp-0-3-0.md)
+(open in PR #73).
 
 ### The Engine
 
@@ -66,9 +68,12 @@ let id = engine.submit(Command::Send(prepared));
 engine.submit(Command::Cancel(id));
 ```
 
-- Commands are `Send(PreparedRequest)` and `Cancel(RequestId)`. Events are
-  `Started`, `Headers`, `Progress` (at most one per 100 ms), `Completed`,
-  `Failed` (typed error) and `Cancelled`.
+- Commands are `Send(PreparedRequest)`, `Cancel(RequestId)`, and, for OAuth2
+  authorization-code login, `AuthorizeStart { .. }` and `AuthorizeCancel(RequestId)`.
+  Events are `Started`, `Headers`, `Progress` (at most one per 100 ms),
+  `Completed`, `Failed` (typed error) and `Cancelled`, plus `AuthUrl`,
+  `AuthCompleted` and `AuthFailed` for an authorization. No token, code or
+  verifier crosses the command or event boundary.
 - Every command and event is plain data and `serde`-serialisable. No GPUI types
   and no locks appear in the API, so a socket transport (a daemon with clients)
   can be added later without changing them.
@@ -80,7 +85,7 @@ engine.submit(Command::Cancel(id));
   pages and the body is freed when its tab closes.
 - One `reqwest::Client` is kept per settings combination (TLS verify, proxy,
   redirect policy) for connection pooling. The cookie jar is per collection and
-  in memory only.
+  in memory; saving it to the per-user data dir is an opt-in per collection.
 - Redirects: Basic, Bearer and ApiKey requests use reqwest's redirect path,
   except that a streamed body on a 307/308 is followed by the engine too.
   For Digest and AWS SigV4 the engine follows redirects itself (up to 9),
@@ -108,7 +113,14 @@ A plain library (`wisp-storage`), tested without a window. It provides:
   save, with `*.secrets.toml` written 0600 and git-ignored.
 - A `Watcher` emitting `Changed(path)` with 100 ms per-path coalescing. Consumers
   must re-check the disk.
-- An append-only history log in `.wisp/history.jsonl`.
+- Request history in the per-user data dir under `history/<collection-id>/`
+  (`index.jsonl` plus capped body files), with auth and secret-bearing header
+  values redacted when an entry is made; and cookie persistence in
+  `cookies/<collection-id>.json`, on only while that file exists.
+- `SecretStore` and an OS-keychain store (`keyring`), for environments that
+  opt in with `secrets = "<kind>"`; `*.secrets.toml` stays the default.
+- Importers for a curl command, a Postman v2.1 collection and an OpenAPI 3
+  document (JSON or YAML), which report what they cannot convert as warnings.
 
 Writes go through `toml_edit` and atomic file replacement, so comments and key
 order survive a save. The fixture test in `crates/storage/tests/` proves the
@@ -284,7 +296,7 @@ this section.
 |---|---|
 | `Wisp-<v>-macos-arm64.zip` | `Wisp.app/`, `LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES` |
 | `Wisp-<v>-windows-x64.zip` | `wisp.exe` and the three notice files |
-| `Wisp-<v>-linux-x64.tar.gz` | `wisp` (mode 0755, owner 0/0) and the three notice files |
+| `Wisp-<v>-linux-x64.tar.gz` | `wisp` (mode 0755, owner 0/0), `icons/`, `share/` (launcher and icons) and the three notice files |
 | `SHA256SUMS` | one `sha256sum -c` line per archive |
 
 The Windows release `wisp.exe` is a GUI-subsystem executable (`windows_subsystem = "windows"` in release builds, so no console window from Explorer, and stderr goes nowhere there) with a static CRT (`+crt-static` in `.cargo/config.toml`, so no VC++ runtime is needed); measured size is 13,630,464 B, within the 16 MiB budget.
@@ -301,13 +313,13 @@ Windows distribution channels have their own guides: `packaging/winget/README.md
 
 The macOS build job signs `Wisp.app` with the Developer ID Application certificate (team `UB89GDN343`) and the hardened runtime, submits the zip to Apple with `notarytool`, and staples the ticket. `scripts/release/macos-keychain.sh` creates and removes a temporary keychain on the runner, and `scripts/release/sign-macos.sh` signs, notarises and staples. Five repository secrets drive it: `APPLE_DEVELOPER_ID_P12`, `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID` (an App Store Connect API key authenticates `notarytool`). These are names only; the values live in the repository's secret store. `APPLE_TEAM_ID` is a plain `env` value in the workflow, not a secret. `notarytool` waits at most 90 minutes; the first submission for the account took about 19 minutes.
 
-Fallback rules: a `workflow_dispatch` run without the secrets signs ad-hoc and prints a notice, so forks and dry runs still build; a `v*` tag push without the secrets fails; a run with only some of the secrets fails. Windows and Linux are unaffected, and the Windows executable is still unsigned.
+Fallback rules: a `workflow_dispatch` run without the secrets signs ad-hoc and prints a notice, so forks and dry runs still build; a `v*` tag push without the secrets fails; a run with only some of the secrets fails. Linux is unaffected. The Windows executable is Authenticode-signed through SignPath when all five SignPath settings are present, left unsigned with a notice when none are, and the build fails when only some are (see `scripts/release/sign-windows/README.md`).
 
 ### App icon
 
 The sources are in `assets/icon/`: `wisp.svg` (large sizes, with sparkles), `wisp-small.svg` (16 to 48 px, simplified), `wisp-layer.svg` and the layered Icon Composer document `AppIcon.icon/`, and `wisp-mono.svg`, which is kept as a reference and used by nothing. `scripts/icon/generate.sh` renders every output with resvg 0.49.0; `generate.sh --check` regenerates into a scratch directory and fails if the committed outputs differ, and it does not flag stale extra files. The committed outputs are the PNGs in `assets/icon/png/` (16 to 1024), `wisp.ico` and `wisp.icns`.
 
-macOS: `package.sh` compiles `AppIcon.icon` with `actool` into `Assets.car`, so the system derives the dark, tinted and clear appearances, and puts `wisp.icns` in the bundle as the fallback; `Info.plist` carries `CFBundleIconFile` and `CFBundleIconName`. The macOS runner must have a full Xcode with Icon Composer support, and the Xcode version is not pinned. Xcode 27.2 `actool` ignores explicit tinted images, which is why the icon is layered rather than supplied as three variants. Windows: `crates/app/build.rs` embeds `wisp.ico` through the `winresource` build-dependency (MIT), and GPUI uses it for the window class. Linux: the 48 to 512 px PNGs go in the tar. A Linux window icon and a `.desktop` file are not done. The macOS binary size is unchanged.
+macOS: `package.sh` compiles `AppIcon.icon` with `actool` into `Assets.car`, so the system derives the dark, tinted and clear appearances, and puts `wisp.icns` in the bundle as the fallback; `Info.plist` carries `CFBundleIconFile` and `CFBundleIconName`. The macOS runner must have a full Xcode with Icon Composer support, and the Xcode version is not pinned. Xcode 27.2 `actool` ignores explicit tinted images, which is why the icon is layered rather than supplied as three variants. Windows: `crates/app/build.rs` embeds `wisp.ico` through the `winresource` build-dependency (MIT), and GPUI uses it for the window class. Linux: the 48 to 512 px PNGs go in the tar. The Linux tar also carries `share/applications/io.github.aindriub.wisp.desktop` and hicolor icons (copy `share/` into `~/.local/share`). The macOS binary size is unchanged.
 
 ### App lifecycle
 
@@ -335,5 +347,5 @@ All dated 2026-10-29; rationale in the spec's Decisions table.
   multiline bodies) and a single SQLite file (opaque in git).
 - Cargo workspace with a UI-free service-shaped core. Rejected: a single crate,
   and a daemon with clients, though the serialisable API keeps the latter open.
-- `{name}` path params, not `:name`. Importers will convert later.
+- `{name}` path params, not `:name`. The Postman importer converts `:name`.
 - No scripting in v1.
