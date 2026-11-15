@@ -770,6 +770,8 @@ struct Walker<'a> {
     trail: Vec<String>,
     /// Variables with a use in a place the report hides; their listed value is hidden too.
     hidden_vars: HashSet<String>,
+    /// Variables rendered as `Hidden` when expanded (set only on the listing walker).
+    hide_names: HashSet<String>,
     use_idx: HashMap<String, usize>,
 }
 
@@ -791,6 +793,7 @@ impl<'a> Walker<'a> {
             uses: Vec::new(),
             trail: Vec::new(),
             hidden_vars: HashSet::new(),
+            hide_names: HashSet::new(),
             use_idx: HashMap::new(),
         }
     }
@@ -905,7 +908,7 @@ impl<'a> Walker<'a> {
                     stack.push(name.to_string());
                     let v = self.expand(value, loc, stack);
                     stack.pop();
-                    if is_credential_name(name) {
+                    if is_credential_name(name) || self.hide_names.contains(name) {
                         out.hide(&v, name);
                     } else {
                         out.append(&v);
@@ -944,6 +947,12 @@ impl<'a> Walker<'a> {
             match userinfo_cut(&req.url) {
                 // Userinfo written in the template: hide only what it uses.
                 Some(cut) => {
+                    // A `{{` left in the authority can supply an `@`: the cut is unsure.
+                    let tail = &req.url[cut..];
+                    let auth_end = tail.find(['/', '?', '#']).unwrap_or(tail.len());
+                    if tail[..auth_end].contains("{{") {
+                        self.taint_since(mark);
+                    }
                     let mut w = Walker::new(req, self.scope);
                     w.subst(&req.url[..cut], &Location::Url);
                     self.hidden_vars.extend(w.trail);
@@ -1155,7 +1164,7 @@ impl<'a> Walker<'a> {
     ) -> Acc {
         let mark = self.trail.len();
         let acc = self.subst(raw, &Location::Auth);
-        if matches!(kind, FieldKind::Sensitive | FieldKind::Username) {
+        if matches!(kind, FieldKind::Sensitive | FieldKind::Username) || holds_hidden(&acc.parts) {
             self.taint_since(mark);
         }
         let value = match kind {
@@ -1379,7 +1388,35 @@ impl<'a> Walker<'a> {
 
     // ---- variables ----
 
+    /// `hidden_vars` plus credential-named variables, closed over what their values use.
+    fn hidden_closure(&self) -> HashSet<String> {
+        let mut set = self.hidden_vars.clone();
+        set.extend(
+            self.uses
+                .iter()
+                .filter(|u| is_credential_name(&u.name))
+                .map(|u| u.name.clone()),
+        );
+        let mut todo: Vec<String> = set.iter().cloned().collect();
+        while let Some(n) = todo.pop() {
+            for (raw, source) in lookup_all(self.req, self.scope, &n) {
+                if matches!(source, VarSource::Secret) {
+                    continue;
+                }
+                let mut w = Walker::new(self.req, self.scope);
+                w.expand(raw, &Location::Var(n.clone()), &mut vec![n.clone()]);
+                for m in w.trail {
+                    if set.insert(m.clone()) {
+                        todo.push(m);
+                    }
+                }
+            }
+        }
+        set
+    }
+
     fn variables(&self) -> Vec<VarReport> {
+        let hidden = self.hidden_closure();
         let mut out = Vec::new();
         for u in &self.uses {
             if u.name.starts_with('$') {
@@ -1406,12 +1443,13 @@ impl<'a> Walker<'a> {
             } else {
                 // A throwaway walker: its problems are already reported at the use sites.
                 let mut w = Walker::new(self.req, self.scope);
+                w.hide_names = hidden.clone();
                 let acc = w.expand(
                     raw,
                     &Location::Var(u.name.clone()),
                     &mut vec![u.name.clone()],
                 );
-                if self.hidden_vars.contains(&u.name) && !acc.parts.is_empty() {
+                if hidden.contains(&u.name) && !acc.parts.is_empty() {
                     hidden_credential()
                 } else {
                     finish(&acc.parts, Some(&u.name))
@@ -1427,6 +1465,15 @@ impl<'a> Walker<'a> {
         }
         out
     }
+}
+
+fn holds_hidden(parts: &[ShownPart]) -> bool {
+    parts.iter().any(|p| {
+        matches!(
+            p,
+            ShownPart::Hidden(HideReason::Credential | HideReason::Userinfo)
+        )
+    })
 }
 
 fn hides_userinfo(parts: &[ShownPart]) -> bool {

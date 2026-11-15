@@ -976,3 +976,63 @@ fn a_variable_used_only_in_a_shown_field_stays_shown() {
     let v = r.variables.iter().find(|v| v.name == "s").unwrap();
     assert_eq!(text(&v.value), PLAIN);
 }
+
+#[test]
+fn a_variable_nested_in_a_credential_variable_in_a_url_query_is_hidden() {
+    let mut f = Fx::new(req("http://h/?q={{token}}"));
+    f.req.vars = vec![var("token", "{{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_variable_nested_in_a_credential_variable_in_a_url_path_is_hidden() {
+    let mut f = Fx::new(req("http://h/x/{{token}}"));
+    f.req.vars = vec![var("token", "{{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_variable_nested_in_a_credential_variable_in_a_plain_auth_field_is_hidden() {
+    let mut f = with_auth(Auth::AwsSigV4 {
+        access_key: "a".into(),
+        secret_key: "k".into(),
+        session_token: String::new(),
+        region: "{{token}}".into(),
+        service: "svc".into(),
+    });
+    f.req.vars = vec![var("token", "{{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_variable_nested_in_a_credential_variable_in_an_oauth_client_id_is_hidden() {
+    let mut f = with_auth(Auth::OAuth2ClientCredentials {
+        token_url: "http://idp/token".into(),
+        client_id: "{{client_token}}".into(),
+        client_secret: "x".into(),
+        scope: String::new(),
+        client_auth: ClientAuth::default(),
+    });
+    f.req.vars = vec![var("client_token", "{{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_variable_supplying_an_at_after_a_literal_at_hides_the_url_variables() {
+    let mut f = Fx::new(req("http://x@{{h}}/"));
+    f.req.vars = vec![var("h", "{{s}}@host")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_shown_variable_does_not_expand_a_hidden_nested_variable() {
+    let mut f = with_auth(Auth::Bearer {
+        token: "{{s}}".into(),
+    });
+    f.req.body = Body::Json(TextBody {
+        content: r#"{"a":"{{x}}"}"#.into(),
+        sidecar: None,
+    });
+    f.req.vars = vec![var("x", "{{s}}")];
+    assert!(!plain_var_leaks(f));
+}
