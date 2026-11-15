@@ -44,6 +44,8 @@ fn new_entry(req: Request) -> NewEntry {
             name: "X".into(),
             value: "y".into(),
         }],
+        environment: None,
+        assertions: Vec::new(),
     }
 }
 
@@ -876,5 +878,71 @@ fn stored_request_carries_no_assertions_or_their_values() {
             !index.contains(canary) && !stored.contains(canary),
             "{canary}"
         );
+    }
+}
+
+#[test]
+fn entry_from_0_2_0_line_loads_without_provenance() {
+    let line = r#"{"id":"e1","at":5,"method":"Get","url":"u","outcome":"Completed","status":200,"body_stored":false,"body_truncated":false,"redacted":[]}"#;
+    let e: wisp_storage::history::HistoryEntry = serde_json::from_str(line).unwrap();
+    assert_eq!(e.environment, None);
+    assert!(e.assertions.is_empty());
+}
+
+fn rec(
+    label: &str,
+    state: wisp_storage::history::AssertionState,
+) -> wisp_storage::history::AssertionRecord {
+    wisp_storage::history::AssertionRecord {
+        label: label.into(),
+        hash: "0123456789abcdef".into(),
+        state,
+    }
+}
+
+#[test]
+fn provenance_round_trips() {
+    use wisp_storage::history::AssertionState::*;
+    let (_d, _data, store) = setup();
+    let mut n = plain("http://x/");
+    n.environment = Some("staging".into());
+    n.assertions = vec![rec("a", Pass), rec("b", Fail), rec("c", Skipped)];
+    let written = store.append(n, None).unwrap();
+    let read = store.list().unwrap();
+    assert_eq!(read, vec![written.clone()]);
+    assert_eq!(read[0].environment.as_deref(), Some("staging"));
+    assert_eq!(read[0].assertions.len(), 3);
+}
+
+#[test]
+fn provenance_canary_values_never_stored() {
+    use wisp_core::assert::{Assertion, AssertionResult, Expected, Op, Verdict};
+    use wisp_storage::history::AssertionRecord;
+    let (_d, data, store) = setup();
+    let a = Assertion::Status {
+        op: Op::Equals,
+        expected: Expected::Int(424242),
+    };
+    let r = AssertionResult {
+        label: a.label(),
+        verdict: Verdict::Fail {
+            actual: Some("ACTUAL-CANARY HEADER-CANARY".into()),
+        },
+    };
+    let mut n = plain("http://x/");
+    n.assertions = vec![AssertionRecord::from_result(&a, &r)];
+    n.environment = Some("staging".into());
+    store.append(n, None).unwrap();
+    let dir = data.history_dir(&cid("abcdef0123456789"));
+    for d in [dir.clone(), dir.join("bodies")] {
+        for f in std::fs::read_dir(&d).unwrap() {
+            let p = f.unwrap().path();
+            if p.is_file() {
+                let t = std::fs::read_to_string(&p).unwrap();
+                for c in ["424242", "ACTUAL-CANARY", "HEADER-CANARY"] {
+                    assert!(!t.contains(c), "{c} in {p:?}");
+                }
+            }
+        }
     }
 }
