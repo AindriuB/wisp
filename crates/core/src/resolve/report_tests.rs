@@ -1089,3 +1089,69 @@ fn a_variable_bomb_costs_bounded_work() {
     let (_, work) = super::report::explain_counted(&f.req, &f.scope());
     assert!(work <= 3 * super::engine::MAX_EXPANSIONS, "work {work}");
 }
+
+#[test]
+fn a_shadowed_variable_bomb_costs_bounded_work() {
+    let mut f = Fx::new(req("http://h"));
+    // The bomb sits in a shadowed lower layer; the winning layer's values are cheap.
+    let mut low: Vec<Var> = (0..8)
+        .map(|i| {
+            var(
+                &format!("b{i}"),
+                &format!("{{{{b{}}}}}{{{{b{}}}}}", i + 1, i + 1),
+            )
+        })
+        .collect();
+    low.push(var("b8", "x"));
+    let hidden: Vec<String> = (0..2000).map(|i| format!("h{i}")).collect();
+    low.extend(hidden.iter().map(|h| var(h, "{{b0}}")));
+    f.coll.vars = low;
+    f.req.vars = hidden.iter().map(|h| var(h, "a")).collect();
+    let refs: String = hidden.iter().map(|h| format!("{{{{{h}}}}}")).collect();
+    f.req.body = Body::Form(vec![kv("password", &refs, true)]);
+    let (_, work) = super::report::explain_counted(&f.req, &f.scope());
+    assert!(work <= 3 * super::engine::MAX_EXPANSIONS, "work {work}");
+}
+
+#[test]
+fn a_value_cut_by_the_listing_budget_is_never_a_shortened_text() {
+    let mut f = Fx::new(req("http://h"));
+    let mut vars = vec![var("x", "y"), var("h", &"{{x}}".repeat(1300))];
+    for i in 0..4 {
+        vars.push(var(
+            &format!("a{i}"),
+            &format!("{{{{a{}}}}}{{{{h}}}}", i + 1),
+        ));
+    }
+    vars.push(var("a4", "{{h}}"));
+    vars.push(var("zz_hidden", "SECRETPFX{{x}}SECRETSFX"));
+    vars.push(var("zz_hidden2", "{{x}}SECRETSFX"));
+    vars.push(var("zz_shown", "plain-{{zz_hidden}}-tail"));
+    f.req.vars = vars;
+    f.req.headers = vec![kv("X-A", "{{a0}}", true), kv("X-B", "{{zz_shown}}", true)];
+    f.req.body = Body::Form(vec![kv("password", "{{zz_hidden}}{{zz_hidden2}}", true)]);
+    let r = f.report();
+    let dump = format!("{:?}", r.variables);
+    assert!(
+        !dump.contains("SECRETPFX") && !dump.contains("SECRETSFX"),
+        "{dump}"
+    );
+    let get = |n: &str| {
+        r.variables
+            .iter()
+            .find(|v| v.name == n)
+            .unwrap()
+            .value
+            .clone()
+    };
+    assert_eq!(
+        get("zz_hidden2"),
+        Shown(vec![ShownPart::Hidden(HideReason::Credential)])
+    );
+    assert_ne!(get("zz_shown").plain_text().as_deref(), Some("plain-"));
+    assert!(
+        get("zz_shown").plain_text().is_none(),
+        "{:?}",
+        get("zz_shown")
+    );
+}

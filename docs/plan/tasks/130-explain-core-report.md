@@ -99,3 +99,10 @@ context strip (wave 2, 2B) and `wisp-cli explain` (2D) both consume this type.
 - 83-1 [Medium] report.rs:1405 — hidden_closure and variables() start a fresh 10k-expansion walker per hidden var per layer, including shadowed layers; explain can hang where send is instant. Fix: closure by var_refs reachability (no expansion), one shared budget; add a "variable bomb" test that counts operations (no timing asserts).
 - 83-2 [Medium] report.rs:1352 — multipart part names are expanded in explain but sent literally by the engine (false UnresolvedVar, phantom uses). Fix: treat the name as literal; credential-named literal still hides value variables (AC13(d)). Test: part named `{{missing}}` gives no UnresolvedVar and no var use.
 - Lows 83-3..83-8 and Nit 83-9: follow-ups, not this round.
+
+## PR #83 review round 2 — findings
+
+Reviewed HEAD 2eeadd2.
+
+- [P2] report_tests.rs:1072-1091 — `a_variable_bomb_costs_bounded_work` passes with either half of the 83-1 fix reverted. Fix: shadowed-layer 2^8 bomb, cheap winning layer, ~2000 hidden names, work <= 3*MAX_EXPANSIONS.
+- [P3] report.rs:1439-1476 — once the shared listing budget runs out, later values are cut short with no marker; a hidden variable with a cut value that has no parts is listed as `Shown([])`. Fix: hidden-set variables always Hidden(Credential); non-hidden cut values Hidden(TooLong).

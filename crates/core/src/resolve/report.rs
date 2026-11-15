@@ -1468,8 +1468,12 @@ impl<'a> Walker<'a> {
                     &Location::Var(u.name.clone()),
                     &mut vec![u.name.clone()],
                 );
-                if hidden.contains(&u.name) && !acc.parts.is_empty() {
+                let cut = w.stop;
+                if hidden.contains(&u.name) && (cut || !acc.parts.is_empty()) {
                     hidden_credential()
+                } else if cut {
+                    // The shared budget ran out: never list a silently shortened value.
+                    Shown(vec![ShownPart::Hidden(HideReason::TooLong)])
                 } else {
                     finish(&acc.parts, Some(&u.name))
                 }
