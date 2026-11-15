@@ -88,3 +88,6 @@ land in 2D once tasks 130, 132 and 133 have merged.
 - [P2] crates/cli/src/cmd/inspect.rs:35-60 — `safe_url` prints userinfo when ASCII tab/LF/CR sit inside the URL or C0/space lead or trail it (WHATWG strips tab/LF/CR everywhere and trims leading/trailing C0+space before parsing). Inputs, all parsed by url 2.5.8 as user u, pw p, host h: `" http://u:p@h/x"`, `"\thttp://u:p@h/x"`, `"\u{1}http://u:p@h/x"`, `"ht\ttp://u:p@h/x"`, `"http:\t//u:p@h/x"`, `"http:/\t/u:p@h/x"`, `"http:/\n\\u:p@h"`.
 - [P2] crates/cli/src/cmd/inspect.rs:39-49 — regression from round 1: a templated scheme isn't recognised, so `"{{scheme}}://u:p@h/x"` prints unchanged (round 1 gave `"{{scheme}}://h/x"`).
 - [P3] the tests cover neither case above.
+
+## Outcome
+Merged as PR #80 (b3a2575); PASS and APPROVE at 10c3f5c. `wisp-cli` with `inspect`, versioned JSON DTOs and `scripts/check-boundaries.sh`. Boundary-check decisions (a)-(d) are in HISTORY. Residual accepted: `{{base}}//u:p@h` keeps userinfo. Lows 80-7 to 80-18 are follow-ups in PLAN.

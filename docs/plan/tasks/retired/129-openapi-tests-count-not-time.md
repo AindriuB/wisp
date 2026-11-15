@@ -69,3 +69,6 @@ deterministic by asserting a bound on counted work, so they prove the same
 - [NOTE] Equivalence held over 300,000 fuzz cases.
 - [NOTE] AC7/AC8 mutation proofs re-confirmed; AC9 depends on which form was applied — record it (AC11).
 - [NOTE] PR description is stale — AC11.
+
+## Outcome
+Merged as PR #78 (eaee115). The three openapi wall-clock tests now assert counted work, `substitute` is linear in bytes scanned, and server variables with names over 256 bytes are skipped at import with a warning. The three flakes are removed from `known-flakes.md`.

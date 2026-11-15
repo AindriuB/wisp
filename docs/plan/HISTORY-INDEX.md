@@ -20,6 +20,12 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-15 | 135 | wisp-cli crate, inspect, check-boundaries.sh | ## 2026-11-15 — wisp-cli scaffold and inspect (task 135) |
+| 2026-11-15 | 134 | create_collection, create_environment storage functions | ## 2026-11-15 — Create collection and environment (task 134) |
+| 2026-11-15 | 132 | environment_info, SecretsMode::Unknown, suggest_confirm | ## 2026-11-15 — Environment info and the suggest_confirm hint (task 132) |
+| 2026-11-15 | 131 | [[assert]] evaluate and codec, fingerprint, regex limits | ## 2026-11-15 — Assertions in core and storage (task 131) |
+| 2026-11-15 | 130 | ResolutionReport, explain, explain_auth, credential hiding decisions | ## 2026-11-15 — Core explain report (task 130) |
+| 2026-11-15 | 129 | openapi wall-clock tests count work, substitute linear | ## 2026-11-15 — The three openapi wall-clock tests count work (task 129) |
 | 2026-11-14 | theme-palette | Wisp Light and Dark themes in theme.json, WCAG AA contrast tests, banner tint, overlay scrim, sidebar cursor, header selection, palette accent | ## 2026-11-14 — Wisp Light and Wisp Dark themes (task theme-palette) |
 | 2026-11-14 | 128 | Save refuses to overwrite a file changed on disk; no-collection save is an Err; also #75 architecture.md and #73 0.3.0 spec | ## 2026-11-14 — Save refuses to overwrite a file changed on disk (task 128) |
 | 2026-11-14 | 122-127 | Windows CI job, clippy and portability fixes, SignPath signing, winget, MSIX, CRLF fix, 0.2.0 prep | ## 2026-11-14 — Windows distribution wave (tasks 122-127) and 0.2.0 prep |
