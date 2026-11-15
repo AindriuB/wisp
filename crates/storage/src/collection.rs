@@ -10,11 +10,11 @@ use wisp_core::resolve::Scope;
 
 use crate::{STATE_DIR, StorageError, codec, fs};
 
-const COLLECTION_FILE: &str = "collection.toml";
-const FOLDER_FILE: &str = "folder.toml";
-const ENV_DIR: &str = "environments";
+pub(crate) const COLLECTION_FILE: &str = "collection.toml";
+pub(crate) const FOLDER_FILE: &str = "folder.toml";
+pub(crate) const ENV_DIR: &str = "environments";
 /// Most folders one walk may visit; links can make one folder appear many times.
-const MAX_FOLDERS: usize = 10_000;
+pub(crate) const MAX_FOLDERS: usize = 10_000;
 
 /// Name and method of one request, read without loading its body.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,7 +134,7 @@ fn write_order(table: &mut Table, order: &[String]) {
     }
 }
 
-fn read_doc(path: &Path) -> Result<Option<DocumentMut>, StorageError> {
+pub(crate) fn read_doc(path: &Path) -> Result<Option<DocumentMut>, StorageError> {
     match std::fs::read_to_string(path) {
         Ok(text) => codec::parse(path, &text).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -142,7 +142,7 @@ fn read_doc(path: &Path) -> Result<Option<DocumentMut>, StorageError> {
     }
 }
 
-fn read_format(doc: &DocumentMut, path: &Path) -> Result<u32, StorageError> {
+pub(crate) fn read_format(doc: &DocumentMut, path: &Path) -> Result<u32, StorageError> {
     let n = doc
         .get("format")
         .ok_or_else(|| invalid(path, "format", "missing"))?
