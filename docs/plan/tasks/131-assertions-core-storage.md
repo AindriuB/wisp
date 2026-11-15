@@ -30,7 +30,7 @@ task 137 (they need `crates/app` edits).
 - Worktree `wt-new.sh . 131 assertions-core-storage`; `CARGO_TARGET_DIR=/Users/Andrew/workspace/wisp/target/wt-131`
 
 ## Acceptance
-- [ ] AC1 `core::assert` defines `Assertion` (`Status`, `Header`, `Json`, `Unrecognised { raw: String, reason }`), `Op`, `Expected`, `AssertionResult { label, verdict }`, `Verdict { Pass, Fail { actual: Option<String> }, Skipped { reason } }`, `Assertion::label()`, `Assertion::fingerprint()` (first 8 bytes of SHA-256 over kind, target, op and expected, 16 lowercase hex characters) and `pub fn evaluate(&[Assertion], &Facts) -> Vec<AssertionResult>` with `Facts { status: u16, headers, body: Option<&[u8]> }`. `Fail.actual` is at most 80 characters.
+- [ ] AC1 `core::assert` defines `Assertion` (`Status`, `Header`, `Json`, `Unrecognised { raw: String, reason }`), `Op`, `Expected`, `AssertionResult { label, verdict }`, `Verdict { Pass, Fail { actual: Option<String> }, Skipped { reason } }`, `Assertion::label()`, `Assertion::fingerprint()` (first 8 bytes of SHA-256 over kind, target (header name or JSON path) and op only, never the expected value, 16 lowercase hex characters; see Decisions 2026-11-15 (2)) and `pub fn evaluate(&[Assertion], &Facts) -> Vec<AssertionResult>` with `Facts { status: u16, headers, body: Option<&[u8]> }`. `Fail.actual` is at most 80 characters.
 - [ ] AC2 The validity matrix holds exactly: each kind and operator has a pass and a fail test; header names are case-insensitive and any of several same-name values may pass; `equals` is type-strict (200 vs "200" fails); `exists` takes an optional bool defaulting to true.
 - [ ] AC3 JSON path accepts `$`, `.name`, `['name']`, `[n]` only; wildcard, filter, recursion, slice and negative index are rejected (tests for each). Path at most 256 characters and 16 segments.
 - [ ] AC4 Limits: regex at most 256 characters, compiled with a size limit; JSON assertions on a body over `MAX_JSON_BODY` (1 MiB, a test in storage asserts it equals `BODY_CAP`) are `Skipped` with a body-size reason; a non-JSON body gives a distinct reason; the body is parsed once per `evaluate`; entries after the 50th are `Skipped` with a limit reason; `Unrecognised` is `Skipped` "not supported by this version" or "malformed".
@@ -61,3 +61,19 @@ task 137 (they need `crates/app` edits).
 - `HistoryEntry.environment`/`.assertions`, `NewEntry` fields, the index write: task 137.
 - `validate` findings for assertions: task 133. `DirtySections`, editor, Checks pane: wave 2.
 - `crates/core/src/resolve/**`, `model.rs` (task 130); `openapi.rs` (task 129).
+
+## Decisions
+- 2026-11-15 (user, after code review round 1 of PR #84):
+  (1) An unknown key on a known assertion kind (e.g. `kind="status" op="equals" value=200 negate=true`) makes the entry "not supported": shown, kept verbatim on save, never evaluated, so a newer Wisp's modifiers can't produce a wrong verdict here. Keys outside the validity matrix that are known keys of another kind (e.g. `name` on status, `path` on header) make it malformed (spec:180).
+  (2) The assertion fingerprint hashes kind, target (header name / JSON path) and operator only, never the expected value, so a stored hash can't be a hash of a response value. AC1 amended.
+
+## Review round 1 — findings (HEAD 65d3a8b)
+- [P2] codec.rs:749-768 write_assertions gives positions only to the first old.len() tables; reused tables past that and rebuilt Unrecognised entries keep stale positions, so reorder/insert reorders on disk (inputs: insert 301 then 300 at 0 → 300,301,202,201,203; append an Unrecognised → written before status). Fix: assign positions to every written table in order.
+- [P2] codec.rs:766-767 moving an entry repositions only the parent [[assert]], not its child tables ([assert.x]/[[assert.x]]), so a newer version's sub-table moves to a different entry. Fix: move child tables with their parent.
+- [P2] assert.rs:455-462 (with :404-411) header `matches` recompiles the regex per header value (50 assertions × 100 headers → 6.5 s in release; a rejected pattern still 82 ms each). Fix: compile each pattern once per evaluation (cache rejection too).
+- [P2] codec.rs:650-656 target keys read only for header/json, so `status` with `name`/`path` loads as valid — settled by Decision (1)'s malformed rule.
+- [P2→decision] codec.rs:642-666 unknown keys on known kinds ignored — settled by Decision (1).
+- [SPEC] assert.rs:195-226 fingerprint hashes expected value (spec:197 vs :210-211) — settled by Decision (2).
+- [P3] codec.rs:756-761 `value = nan` never equals itself, so unchanged load+save rebuilds the entry and drops its comments — fix (compare bit patterns or treat NaN specially).
+- [P3] codec.rs:735-737 `assert = []` (non-array-of-tables) makes every save silently skip writing assertions — fix: error or replace with [[assert]] after the user adds one (choose the error if replacing could lose data).
+- [P3] tests/assert_codec.rs:114 assertion is always true — fix.
