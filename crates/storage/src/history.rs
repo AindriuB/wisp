@@ -141,8 +141,42 @@ fn redact_query(q: &str, names: &mut Vec<String>) -> String {
     pairs.join("&")
 }
 
+/// The WHATWG parser deletes ASCII tab, CR and LF anywhere in a URL, so `https:\t/u:p@h/`
+/// names a userinfo. Redact a copy with them removed; if that changed anything, store the
+/// redacted copy, else the original unchanged. Every URL redaction path goes through here.
+fn redact_ignoring_newlines(
+    value: &str,
+    names: &mut Vec<String>,
+    redact: fn(&str, &mut Vec<String>) -> String,
+) -> String {
+    let stripped: String = value
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+        .collect();
+    let mut found = Vec::new();
+    let redacted = redact(&stripped, &mut found);
+    if redacted == stripped {
+        return value.to_string();
+    }
+    for n in found {
+        note(names, n);
+    }
+    redacted
+}
+
 /// Redact userinfo and credential-named query values in a URL template.
 fn redact_url(url: &str, names: &mut Vec<String>) -> String {
+    redact_ignoring_newlines(url, names, redact_url_stripped)
+}
+
+/// Redact userinfo at every place a `Refresh` value could start an authority (see
+/// [`redact_refresh_stripped`]).
+fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
+    redact_ignoring_newlines(value, found, redact_refresh_stripped)
+}
+
+/// Redact userinfo and credential-named query values in a URL template.
+fn redact_url_stripped(url: &str, names: &mut Vec<String>) -> String {
     let (rest, fragment) = match url.find('#') {
         Some(i) => (&url[..i], &url[i..]),
         None => (url, ""),
@@ -628,7 +662,7 @@ fn redact_credential_headers(headers: &mut [Header], names: &mut Vec<String>) {
 /// not parsed down to one target URL: that is how a second `url=`, text after a closing
 /// quote or a whitespace separator slipped past. Over-redacting is safe; credential-free
 /// values come back unchanged.
-fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
+fn redact_refresh_stripped(value: &str, found: &mut Vec<String>) -> String {
     let b = value.as_bytes();
     let is_slash = |c: u8| matches!(c, b'/' | b'\\');
     let skip_ws = |mut i: usize| {

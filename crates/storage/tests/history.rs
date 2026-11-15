@@ -1379,3 +1379,59 @@ fn refresh_query_credentials_are_redacted_by_legacy_scrub() {
         assert!(hist_dir(&data).join(".scrubbed-1").exists());
     }
 }
+
+const CONTROL_CHAR_HEADERS: [(&str, &str); 6] = [
+    ("Location", "https:\t/alice:secret@h/"),
+    ("Location", "https:/\t/alice:secret@h/"),
+    ("Location", "ht\ttps:/alice:secret@h/"),
+    ("Refresh", "0; url=https:\t/alice:secret@h/"),
+    ("Location", "https://ali\r\nce:sec\r\nret@h/"),
+    ("Content-Location", "https:\n//alice:secret@h/"),
+];
+
+#[test]
+fn tab_cr_lf_inside_a_url_do_not_hide_userinfo_on_append() {
+    for (name, value) in CONTROL_CHAR_HEADERS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+    }
+}
+
+#[test]
+fn tab_cr_lf_inside_a_url_do_not_hide_userinfo_in_legacy_scrub() {
+    for (name, value) in CONTROL_CHAR_HEADERS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+    }
+}
+
+#[test]
+fn credential_free_location_with_a_tab_is_byte_identical() {
+    let (_d, data, store) = setup();
+    let mut ne = plain("http://a/");
+    ne.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "https://h/a\tb".into(),
+    }];
+    store.append(ne, Some(b"b")).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(text.contains(r"https://h/a\tb"));
+}
