@@ -1437,3 +1437,79 @@ fn credential_free_location_with_a_tab_is_byte_identical() {
     all_text(&hist_dir(&data), &mut text);
     assert!(text.contains(r"https://h/a\tb"));
 }
+
+fn leading_whitespace_headers() -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    for prefix in (0u8..=b' ')
+        .map(|b| char::from(b).to_string())
+        .chain([" \t \r\n".to_string()])
+    {
+        for name in ["Location", "Content-Location"] {
+            for url in [
+                "https:/alice:secret@h/",
+                "https:alice:secret@h/",
+                "https://alice:secret@h/",
+                "//alice:secret@h/",
+                r"\\alice:secret@h/",
+            ] {
+                headers.push((name, format!("{prefix}{url}")));
+            }
+        }
+    }
+    headers
+}
+
+#[test]
+fn leading_whitespace_does_not_hide_userinfo_on_append() {
+    for (name, value) in leading_whitespace_headers() {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.clone(),
+        }];
+        let entry = store.append(ne, None).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
+        assert!(entry.redacted.iter().any(|n| n == name));
+    }
+}
+
+#[test]
+fn leading_whitespace_does_not_hide_userinfo_in_legacy_scrub() {
+    for (name, value) in leading_whitespace_headers() {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), None).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let marker = hist_dir(&data).join(".scrubbed-1");
+        if marker.exists() {
+            fs::remove_file(&marker).unwrap();
+        }
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
+        assert!(hist_dir(&data).join(".scrubbed-1").exists());
+    }
+}
+
+#[test]
+fn leading_whitespace_in_credential_free_locations_is_unchanged() {
+    let (_d, _data, store) = setup();
+    for value in [" https:/h/path", " \t\r\nhttps://h/p?q=a@b", " //h/path"] {
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Location".into(),
+            value: value.into(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        let loaded = store.load(&e.id).unwrap();
+        assert_eq!(loaded.response_headers[0].value, value);
+    }
+}

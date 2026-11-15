@@ -103,10 +103,14 @@ fn is_special_scheme(scheme: &str) -> bool {
 /// Offset where the authority begins: after `scheme://`, or after a leading `//` (also `\\`
 /// and mixed forms, which the WHATWG parser treats as slashes) for scheme-relative URLs.
 fn authority_start(base: &str) -> usize {
+    // WHATWG ignores leading C0 controls and space; keep offsets in the original value.
+    let trimmed = base.trim_start_matches(|c| c <= '\u{20}');
+    let offset = base.len() - trimmed.len();
+    let base = trimmed;
     let slashes = |s: &str| s.bytes().take_while(|b| matches!(b, b'/' | b'\\')).count();
     let lead = slashes(base);
     if lead >= 2 {
-        return lead;
+        return offset + lead;
     }
     if let Some((scheme, rest)) = base.split_once(':')
         && !scheme.is_empty()
@@ -117,10 +121,10 @@ fn authority_start(base: &str) -> usize {
         let n = slashes(rest);
         // Special schemes have an authority after any number of slashes, even none.
         if n >= 2 || is_special_scheme(scheme) {
-            return scheme.len() + 1 + n;
+            return offset + scheme.len() + 1 + n;
         }
     }
-    base.find("://").map_or(0, |i| i + 3)
+    offset + base.find("://").map_or(0, |i| i + 3)
 }
 
 /// Redact the value of every credential-named `name=value` pair in a query string.
