@@ -710,7 +710,8 @@ fn credential_names_userinfo_and_long_values_are_hidden() {
     f.req.vars = vec![var("password", "hunter2"), var("ok", "fine")];
     f.req.url = "https://user:pw@h/{{password}}/{{ok}}".into();
     let r = f.report();
-    assert_eq!(r.url.0[0], ShownPart::Hidden(HideReason::Userinfo));
+    // `password` is a credential name used in the URL: the whole URL is hidden.
+    assert_eq!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
     let s = format!("{r:?}");
     for leak in ["pw@", "plain-literal", "abc", "hunter2"] {
         assert!(!s.contains(leak), "{leak} leaked: {s}");
@@ -782,6 +783,7 @@ fn a_secret_value_never_reaches_the_report() {
     for s in [format!("{r:?}"), format!("{r:#?}")] {
         assert!(!s.contains(MARK), "{s}");
     }
+    // `sec` is a secret, never expanded: it shows as its marker.
     assert!(r.url.0.contains(&ShownPart::Secret {
         name: "sec".into(),
         resolved: true
@@ -1178,4 +1180,684 @@ fn a_value_cut_by_the_listing_budget_is_never_a_shortened_text() {
         "{:?}",
         get("zz_shown")
     );
+}
+
+// ---- hidden set applied everywhere (task 151) ----
+
+const CANARY: &str = "CANARYFOO";
+
+/// `foo` is hidden by `Authorization: Bearer {{foo}}`; `edit` adds the place under test.
+fn canary_report(edit: impl FnOnce(&mut Fx)) -> (ResolutionReport, String) {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", CANARY)];
+    f.req.headers = vec![kv("Authorization", "Bearer {{foo}}", true)];
+    edit(&mut f);
+    let r = f.report();
+    let dump = format!("{r:?}");
+    (r, dump)
+}
+
+#[test]
+fn a_second_header_expanding_a_hidden_variable_is_hidden() {
+    let (r, dump) = canary_report(|f| f.req.headers.push(kv("X-Other", "{{foo}}", true)));
+    assert!(!dump.contains(CANARY), "{dump}");
+    let h = r
+        .headers
+        .iter()
+        .find(|h| h.name.0 == [ShownPart::Text("X-Other".into())]);
+    assert_eq!(
+        h.expect("header").value.0,
+        vec![ShownPart::Hidden(HideReason::Credential)]
+    );
+}
+
+#[test]
+fn a_hidden_variable_in_a_param_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.params = vec![kv("note", "{{foo}}", true)]);
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_an_inline_query_value_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.url = "http://h/?q={{foo}}".into());
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_a_path_segment_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.url = "http://h/{{foo}}/x".into());
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_a_plain_auth_field_is_hidden() {
+    let (_, dump) = canary_report(|f| {
+        f.req.auth = Auth::AwsSigV4 {
+            access_key: "a".into(),
+            secret_key: "k".into(),
+            session_token: String::new(),
+            region: "{{foo}}".into(),
+            service: "svc".into(),
+        }
+    });
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_a_form_body_field_is_hidden_with_no_byte_count() {
+    let (r, dump) = canary_report(|f| f.req.body = Body::Form(vec![kv("note", "{{foo}}", true)]));
+    assert!(!dump.contains(CANARY), "{dump}");
+    assert_eq!(r.body.bytes, None);
+}
+
+#[test]
+fn a_hidden_variable_in_a_header_name_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.headers.push(kv("{{foo}}", "v", true)));
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_closure_only_variable_is_hidden_where_expanded_directly() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("token", "{{s}}"), var("s", CANARY)];
+    f.req.auth = Auth::Bearer {
+        token: "{{token}}".into(),
+    };
+    f.req.headers = vec![kv("X-S", "{{s}}", true)];
+    assert!(!format!("{:?}", f.report()).contains(CANARY));
+}
+
+#[test]
+fn a_variable_used_only_in_shown_places_stays_shown() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", "SECRETISH"), var("r", "REGIONTEXT")];
+    f.req.auth = Auth::AwsSigV4 {
+        access_key: "a".into(),
+        secret_key: "k".into(),
+        session_token: String::new(),
+        region: "{{r}}".into(),
+        service: "svc".into(),
+    };
+    f.req.headers = vec![kv("Authorization", "Bearer {{foo}}", true)];
+    let r = f.report();
+    let dump = format!("{r:?}");
+    assert!(!dump.contains("SECRETISH"));
+    assert_eq!(dump.matches("REGIONTEXT").count(), 2, "{dump}");
+    let v = r.variables.iter().find(|v| v.name == "r").expect("r");
+    assert_eq!(v.value.plain_text().as_deref(), Some("REGIONTEXT"));
+}
+
+#[test]
+fn hiding_does_not_feed_back_into_the_set() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", CANARY), var("bar", "BARTEXT")];
+    f.req.headers = vec![
+        kv("Authorization", "Bearer {{foo}}", true),
+        kv("X", "{{foo}}-{{bar}}", true),
+    ];
+    let r = f.report();
+    let x = r
+        .headers
+        .iter()
+        .find(|h| h.name.0 == [ShownPart::Text("X".into())]);
+    assert!(flat(&x.expect("X").value).contains("BARTEXT"));
+    let v = r.variables.iter().find(|v| v.name == "bar").expect("bar");
+    assert_eq!(v.value.plain_text().as_deref(), Some("BARTEXT"));
+    assert!(!format!("{r:?}").contains(CANARY));
+}
+
+#[test]
+fn a_problem_inside_a_hidden_variable_is_still_reported() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", "{{nope}}")];
+    f.req.headers = vec![
+        kv("Authorization", "Bearer {{foo}}", true),
+        kv("X-Other", "{{foo}}", true),
+    ];
+    let r = f.report();
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| matches!(p, Problem::UnresolvedVar { name, .. } if name == "nope"))
+    );
+}
+
+// ---- review round 1 (task 151) ----
+
+#[test]
+fn a_hidden_variable_supplying_a_query_mark_does_not_expose_a_credential_value() {
+    for (url, v) in [
+        ("http://h/{{q}}token=LITCANARY", var("q", "?")),
+        ("http://h/?a=1{{amp}}token=LITCANARY", var("amp", "&")),
+        (
+            "http://h/{{base}}&api_key=LITCANARY",
+            var("base", "http://h/?v=1"),
+        ),
+    ] {
+        let name = v.name.clone();
+        let (_, dump) = canary_report(|f| {
+            f.req.url = url.into();
+            f.coll.vars.push(v);
+            f.req
+                .headers
+                .push(kv("X-Other", &format!("{{{{{name}}}}}"), true));
+            f.req
+                .headers
+                .push(kv("Authorization", &format!("{{{{{name}}}}}"), true));
+        });
+        assert!(!dump.contains("LITCANARY"), "{url}: {dump}");
+    }
+}
+
+#[test]
+fn a_hidden_variable_supplying_an_at_sign_does_not_expose_the_password() {
+    let (_, dump) = canary_report(|f| {
+        f.req.url = "http://alice:LITCANARY{{at}}h.example/".into();
+        f.coll.vars.push(var("at", "@"));
+        f.req.headers.push(kv("Authorization", "{{at}}", true));
+    });
+    assert!(!dump.contains("LITCANARY"), "{dump}");
+}
+
+#[test]
+fn a_userinfo_sub_walk_bomb_costs_bounded_work() {
+    let mut f = Fx::new(req("http://alice:{{b0}}@h/"));
+    let mut vars: Vec<Var> = (0..13)
+        .map(|i| {
+            var(
+                &format!("b{i}"),
+                &format!("{{{{b{}}}}}{{{{b{}}}}}", i + 1, i + 1),
+            )
+        })
+        .collect();
+    vars.push(var("b13", "x"));
+    f.coll.vars = vars;
+    f.req.headers = vec![kv("Authorization", "Bearer {{b0}}", true)];
+    let (_, work) = super::report::explain_counted(&f.req, &f.scope());
+    let max = super::engine::MAX_EXPANSIONS;
+    assert!(work <= 3 * max, "work {work}");
+}
+
+#[test]
+fn problem_text_from_a_hidden_variable_is_masked() {
+    let (r, dump) = canary_report(|f| {
+        f.req.url = "http://h/{{foo}}".into();
+        f.coll.vars = vec![var("foo", "{CANARYFOO}")];
+    });
+    assert!(!dump.contains(CANARY), "{dump}");
+    assert!(r.problems.iter().any(|p| matches!(
+        p,
+        Problem::MissingPathParam { name } if name == "<hidden>"
+    )));
+}
+
+#[test]
+fn pattern_warning_text_from_a_hidden_variable_is_masked() {
+    let (r, dump) = canary_report(|f| {
+        f.req.url = "http://h/{{foo}}".into();
+        f.coll.vars = vec![var("foo", "{id:CANARYFOO(}")];
+        f.req.path = vec![var("id", "x")];
+    });
+    assert!(!dump.contains(CANARY), "{dump}");
+    assert!(!r.warnings.is_empty());
+}
+
+// ---- review round 2 (task 151) ----
+
+#[test]
+fn path_placeholder_text_returning_in_the_render_does_not_expose_a_credential() {
+    let (_, dump) = canary_report(|f| {
+        f.req.url = "http://{{s}}{id:a=b}{{q}}token=LITCANARY".into();
+        f.coll.vars.push(var("s", "h/"));
+        f.coll.vars.push(var("q", "?"));
+        f.req.path = vec![var("id", "a=b")];
+        f.req.headers.push(kv("Authorization", "{{s}}{{q}}", true));
+    });
+    assert!(!dump.contains("LITCANARY"), "{dump}");
+    let (_, dump) = canary_report(|f| {
+        f.req.url = "http://alice:LITCANARY{{sep}}{id:x=y}".into();
+        f.coll.vars.push(var("sep", "@h/"));
+        f.req.path = vec![var("id", "v")];
+        f.req.headers.push(kv("Authorization", "{{sep}}", true));
+    });
+    assert!(!dump.contains("LITCANARY"), "{dump}");
+}
+
+#[test]
+fn a_url_without_a_hidden_variable_still_renders() {
+    let (r, _) = canary_report(|f| {
+        f.req.url = "http://h/{{plain}}".into();
+        f.coll.vars.push(var("plain", "ok"));
+    });
+    assert_eq!(text(&r.url), "http://h/ok");
+}
+
+fn work_of(url: &str, vars: Vec<Var>, auth_header: bool) -> usize {
+    let mut f = Fx::new(req(url));
+    f.coll.vars = vars;
+    if auth_header {
+        f.req.headers = vec![kv("Authorization", "Bearer {{c}}", true)];
+    }
+    super::report::explain_counted(&f.req, &f.scope()).1
+}
+
+fn repeat(n: usize, name: &str) -> String {
+    format!("{{{{{name}}}}}").repeat(n)
+}
+
+#[test]
+fn the_userinfo_sub_walk_shares_the_expansion_budget() {
+    let vars = || {
+        vec![
+            var("c", &repeat(100, "d")),
+            var("d", &repeat(98, "e")),
+            var("g", &repeat(98, "e")),
+            var("e", ""),
+        ]
+    };
+    let max = super::engine::MAX_EXPANSIONS;
+    let work = work_of("http://alice:{{c}}{{g}}@h/", vars(), true);
+    assert!(work <= 3 * max, "work {work}");
+    // The userinfo walk is counted: compare with the same expansions outside userinfo.
+    let small = || {
+        vec![
+            var("c", &repeat(10, "d")),
+            var("d", &repeat(10, "e")),
+            var("e", ""),
+        ]
+    };
+    let with = work_of("http://alice:{{c}}@h/", small(), true);
+    let without = work_of("http://{{c}}.h/", small(), true);
+    assert!(
+        with >= without + 111,
+        "sub-walk not counted: {with} vs {without}"
+    );
+}
+
+#[test]
+fn a_secret_only_url_keeps_its_part_by_part_rendering() {
+    // `key` is credential-named, so its value is hidden by name as on main; the rest of
+    // the URL still shows. A neutral name shows the Secret marker.
+    for (url, marker) in [
+        ("https://h/p?key={{sec}}&page=1", false),
+        ("https://h/p?q={{sec}}&page=1", true),
+    ] {
+        let mut f = Fx::new(req(url));
+        f.env = Some(Environment {
+            name: "e".into(),
+            vars: vec![],
+            secrets: vec![var("sec", "CANARY-1")],
+        });
+        let r = f.report();
+        assert_ne!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
+        assert_eq!(
+            r.url.0.contains(&ShownPart::Secret {
+                name: "sec".into(),
+                resolved: true
+            }),
+            marker
+        );
+        assert!(format!("{:?}", r.url).contains("page=1"), "{:?}", r.url);
+        assert!(!format!("{r:?}").contains("CANARY-1"));
+    }
+}
+
+#[test]
+fn a_secret_nested_in_a_hidden_plain_variable_hides_the_whole_url() {
+    let mut f = Fx::new(req("https://h/p?key={{nested}}&page=1"));
+    f.env = Some(Environment {
+        name: "e".into(),
+        vars: vec![],
+        secrets: vec![var("sec", "CANARY-2")],
+    });
+    f.req.vars = vec![var("nested", "pre-{{sec}}")];
+    f.req.headers = vec![kv("X-Nested", "{{nested}}", true)];
+    f.req.auth = Auth::Bearer {
+        token: "{{nested}}".into(),
+    };
+    let r = f.report();
+    assert_eq!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
+    assert!(!format!("{r:?}").contains("CANARY-2"));
+}
+
+#[test]
+fn hidden_oauth_url_separators_do_not_expose_literal_credentials() {
+    for (url, separator) in [
+        ("https://alice:OAUTHCANARY{{sep}}idp.test/", "@"),
+        ("https://idp.test/{{sep}}token=OAUTHCANARY", "?"),
+        ("https://idp.test/?x=1{{sep}}token=OAUTHCANARY", "&"),
+        ("https://idp.test/?token{{sep}}OAUTHCANARY", "="),
+    ] {
+        for auth_code in [false, true] {
+            let mut f = Fx::new(req("https://api.test/"));
+            f.coll.vars = vec![var("sep", separator)];
+            f.req.headers = vec![kv("Authorization", "{{sep}}", true)];
+            f.req.auth = if auth_code {
+                Auth::OAuth2AuthCode {
+                    auth_url: url.into(),
+                    token_url: url.into(),
+                    client_id: "id".into(),
+                    client_secret: "s".into(),
+                    scope: "".into(),
+                    client_auth: ClientAuth::default(),
+                    redirect_port: 0,
+                }
+            } else {
+                Auth::OAuth2ClientCredentials {
+                    token_url: url.into(),
+                    client_id: "id".into(),
+                    client_secret: "s".into(),
+                    scope: "".into(),
+                    client_auth: ClientAuth::default(),
+                }
+            };
+            let r = f.report();
+            for dump in [format!("{r:?}"), format!("{r:#?}")] {
+                assert!(!dump.contains("OAUTHCANARY"));
+                assert!(!dump.contains("alice"));
+            }
+            for field in r.auth.fields.iter().filter(|f| f.name.ends_with("_url")) {
+                assert_eq!(
+                    field.value.0,
+                    vec![ShownPart::Hidden(HideReason::Credential)]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn hidden_derived_path_locations_do_not_expose_names() {
+    for path_value in ["{{known}}{{missing}}", "{{known}}{{"] {
+        let mut f = Fx::new(req("https://h/{{segment}}"));
+        f.coll.vars = vec![var("segment", "{PATHCANARY}"), var("known", "ok")];
+        f.req.headers = vec![kv("Authorization", "{{segment}}", true)];
+        f.req.path = vec![var("PATHCANARY", path_value)];
+        let r = f.report();
+        for dump in [format!("{r:?}"), format!("{r:#?}")] {
+            assert!(!dump.contains("PATHCANARY"));
+        }
+        assert!(r.problems.iter().any(|p| matches!(p,
+            Problem::UnresolvedVar { location: Location::PathParam(name), .. }
+            | Problem::Syntax { location: Location::PathParam(name), .. }
+            if name == "<hidden>"
+        )));
+        let known = r.variables.iter().find(|v| v.name == "known").unwrap();
+        assert!(
+            known
+                .locations
+                .contains(&Location::PathParam("<hidden>".into()))
+        );
+    }
+}
+
+#[test]
+fn literal_path_locations_still_identify_the_parameter() {
+    let mut f = Fx::new(req("https://h/{id}"));
+    f.coll.vars = vec![var("known", "ok")];
+    f.req.path = vec![var("id", "{{known}}{{missing}}")];
+    let r = f.report();
+    assert!(r.problems.iter().any(|p| matches!(p,
+        Problem::UnresolvedVar { name, location: Location::PathParam(path) }
+        if name == "missing" && path == "id"
+    )));
+    assert!(
+        r.variables
+            .iter()
+            .find(|v| v.name == "known")
+            .unwrap()
+            .locations
+            .contains(&Location::PathParam("id".into()))
+    );
+}
+
+#[test]
+fn oauth_urls_preserve_ordinary_text_and_opaque_secret_markers() {
+    let mut f = Fx::new(req("https://api.test/"));
+    f.coll.vars = vec![var("host", "idp.test")];
+    f.env = Some(Environment {
+        name: "e".into(),
+        vars: vec![],
+        secrets: vec![var("sec", "OAUTHSECRETCANARY")],
+    });
+    f.req.auth = Auth::OAuth2AuthCode {
+        auth_url: "https://{{host}}/authorize".into(),
+        token_url: "https://idp.test/?q={{sec}}&page=1".into(),
+        client_id: "id".into(),
+        client_secret: "{{sec}}".into(),
+        scope: "".into(),
+        client_auth: ClientAuth::default(),
+        redirect_port: 0,
+    };
+    let r = f.report();
+    assert_eq!(text(&r.auth.fields[0].value), "https://idp.test/authorize");
+    assert!(r.auth.fields[1].value.0.contains(&ShownPart::Secret {
+        name: "sec".into(),
+        resolved: true,
+    }));
+    assert!(flat(&r.auth.fields[1].value).contains("page=1"));
+    assert!(!format!("{r:?}").contains("OAUTHSECRETCANARY"));
+}
+
+#[test]
+fn hiding_a_query_separator_does_not_create_path_parameters() {
+    for real_path in [false, true] {
+        let url = if real_path {
+            "https://h/{id}{{q}}token={LITCANARY}"
+        } else {
+            "https://h/{{q}}token={LITCANARY}"
+        };
+        let mut f = Fx::new(req(url));
+        f.coll.vars = vec![var("q", "?")];
+        f.req.headers = vec![kv("Authorization", "{{q}}", true)];
+        f.req.path = vec![var("id", "42"), var("LITCANARY", "PATHVALUECANARY")];
+        f.req.params = vec![kv("page", "1", true)];
+        let r = f.report();
+        for dump in [format!("{r:?}"), format!("{r:#?}")] {
+            assert!(!dump.contains("LITCANARY"));
+            assert!(!dump.contains("PATHVALUECANARY"));
+        }
+        let paths: Vec<_> = r
+            .params
+            .iter()
+            .filter(|p| p.kind == ParamKind::Path)
+            .collect();
+        assert_eq!(paths.len(), usize::from(real_path));
+        if real_path {
+            assert_eq!(
+                paths[0].name.0,
+                vec![ShownPart::Hidden(HideReason::Credential)]
+            );
+            assert_eq!(
+                paths[0].value.0,
+                vec![ShownPart::Hidden(HideReason::Credential)]
+            );
+        }
+        let query = r
+            .params
+            .iter()
+            .find(|p| p.kind == ParamKind::Query)
+            .unwrap();
+        assert_eq!(text(&query.name), "page");
+        assert_eq!(text(&query.value), "1");
+    }
+}
+
+#[test]
+fn redacted_header_names_keep_their_discovered_override_identity() {
+    for (collection_name, request_name) in [
+        ("X-Same", "{{h}}"),
+        ("{{h}}", "x-same"),
+        ("{{h}}", "{{other}}"),
+    ] {
+        let mut f = Fx::new(req("https://h/"));
+        f.coll.vars = vec![var("h", "X-Same"), var("other", "x-same")];
+        f.coll.headers = vec![kv(collection_name, "old", true)];
+        f.req.headers = vec![
+            kv(request_name, "new", true),
+            kv("Authorization", "{{h}}{{other}}", true),
+        ];
+        let r = f.report();
+        assert_eq!(r.headers.len(), 2);
+        assert_eq!(r.headers[0].origin, Origin::Request);
+        assert_eq!(r.headers[0].overridden, vec![Origin::Collection]);
+        assert!(!format!("{:?}", r.headers).contains("old"));
+    }
+}
+
+#[test]
+fn a_hidden_content_type_name_does_not_add_a_synthetic_duplicate() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("h", "Content-Type")];
+    f.req.headers = vec![
+        kv("{{h}}", "application/custom", true),
+        kv("Authorization", "{{h}}", true),
+    ];
+    f.req.body = Body::Json(TextBody {
+        content: "{}".into(),
+        sidecar: None,
+    });
+    let r = f.report();
+    assert_eq!(r.headers.len(), 2);
+    assert_eq!(r.headers[0].origin, Origin::Request);
+    assert_eq!(r.headers[0].synthetic, None);
+}
+
+#[test]
+fn synthetic_auth_overrides_a_hidden_header_name_by_its_discovered_identity() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("h", "Authorization")];
+    f.req.headers = vec![kv("{{h}}", "HEADERCANARY", true)];
+    f.req.auth = Auth::Bearer {
+        token: "{{h}}".into(),
+    };
+    let r = f.report();
+    assert_eq!(r.headers.len(), 1);
+    assert_eq!(r.headers[0].origin, Origin::Auth);
+    assert_eq!(r.headers[0].overridden, vec![Origin::Request]);
+    assert!(!format!("{r:?}").contains("HEADERCANARY"));
+}
+
+#[test]
+fn distinct_hidden_header_names_keep_distinct_identities() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("a", "X-First"), var("b", "X-Second")];
+    f.req.headers = vec![kv("{{a}}", "one", true), kv("{{b}}", "two", true)];
+    f.req.auth = Auth::Bearer {
+        token: "{{a}}{{b}}".into(),
+    };
+    let r = f.report();
+    assert_eq!(r.headers.len(), 3);
+    assert!(r.headers.iter().all(|h| h.overridden.is_empty()));
+    assert_eq!(r.headers[0].origin, Origin::Request);
+    assert_eq!(r.headers[1].origin, Origin::Request);
+}
+
+#[test]
+fn a_templated_api_key_header_keeps_its_override_identity() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("h", "X-Custom")];
+    f.coll.headers = vec![kv("x-custom", "old", true)];
+    f.req.auth = Auth::ApiKey {
+        name: "{{h}}".into(),
+        value: "{{h}}".into(),
+        location: ApiKeyLocation::Header,
+    };
+    let r = f.report();
+    assert_eq!(r.headers.len(), 1);
+    assert_eq!(r.headers[0].origin, Origin::Auth);
+    assert_eq!(r.headers[0].overridden, vec![Origin::Collection]);
+}
+
+#[test]
+fn a_discovery_cutoff_cannot_expose_unclassified_variables() {
+    for seed_name in ["api_key", "seed"] {
+        for sensitive_first in [false, true] {
+            let max = super::engine::MAX_EXPANSIONS;
+            let mut f = Fx::new(req(&format!(
+                "https://h/{{{{{seed_name}}}}}{{{{early}}}}{}",
+                "{{pad}}".repeat(max)
+            )));
+            f.coll.vars = vec![
+                var(seed_name, "seed"),
+                var("pad", ""),
+                var("early", "EARLYCANARY"),
+                var("late", "LATECANARY"),
+                var("at", "@"),
+            ];
+            let sensitive = kv("Authorization", "{{early}}{{late}}", true);
+            let ordinary = kv("X-Other", "{{early}}{{late}}", true);
+            f.req.headers = if sensitive_first {
+                vec![sensitive, ordinary]
+            } else {
+                vec![ordinary, sensitive]
+            };
+            f.req.body = Body::Json(TextBody {
+                content: "{{late}}".into(),
+                sidecar: None,
+            });
+            f.req.auth = Auth::OAuth2ClientCredentials {
+                token_url: "https://alice:OAUTHCANARY{{at}}idp.test/".into(),
+                client_id: "id".into(),
+                client_secret: "{{late}}".into(),
+                scope: "".into(),
+                client_auth: ClientAuth::default(),
+            };
+            let (r, work) = super::report::explain_counted(&f.req, &f.scope());
+            for dump in [format!("{r:?}"), format!("{r:#?}")] {
+                assert!(!dump.contains("EARLYCANARY"));
+                assert!(!dump.contains("LATECANARY"));
+                assert!(!dump.contains("OAUTHCANARY"));
+            }
+            let ordinary = r
+                .headers
+                .iter()
+                .find(|h| h.name.plain_text().as_deref() == Some("X-Other"))
+                .unwrap();
+            assert!(
+                ordinary
+                    .value
+                    .0
+                    .contains(&ShownPart::Hidden(HideReason::Credential))
+            );
+            assert_eq!(
+                r.variables
+                    .iter()
+                    .find(|v| v.name == "early")
+                    .unwrap()
+                    .value
+                    .0,
+                vec![ShownPart::Hidden(HideReason::Credential)]
+            );
+            assert_eq!(r.body.bytes, None);
+            assert!(r.problems.iter().any(|p| matches!(p,
+                Problem::Syntax { message, .. } if message == "variable expansion too large"
+            )));
+            assert!(work <= 3 * max, "work {work}");
+        }
+    }
+}
+
+#[test]
+fn a_userinfo_discovery_cutoff_hides_unclassified_listed_values() {
+    let max = super::engine::MAX_EXPANSIONS;
+    let mut f = Fx::new(req(&format!(
+        "https://alice:{}{{{{late}}}}@h/",
+        "{{pad}}".repeat(max * 3 / 5)
+    )));
+    f.coll.vars = vec![var("pad", ""), var("late", "USERINFOCANARY")];
+    let (r, work) = super::report::explain_counted(&f.req, &f.scope());
+    for dump in [format!("{r:?}"), format!("{r:#?}")] {
+        assert!(!dump.contains("USERINFOCANARY"));
+    }
+    assert_eq!(
+        r.variables
+            .iter()
+            .find(|v| v.name == "late")
+            .unwrap()
+            .value
+            .0,
+        vec![ShownPart::Hidden(HideReason::Credential)]
+    );
+    assert!(work <= 3 * max, "work {work}");
 }

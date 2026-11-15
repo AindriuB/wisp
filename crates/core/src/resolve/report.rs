@@ -321,23 +321,52 @@ pub fn explain(req: &Request, scope: &Scope) -> ResolutionReport {
 
 /// `explain`, plus the number of reference visits it spent (for tests that bound the work).
 pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport, usize) {
+    // Discovery walk: finds the uses, problems, warnings and the hidden set.
     let mut w = Walker::new(req, scope);
-    let mut params = Vec::new();
-    let url = w.build_url(&mut params);
-    let mut headers = w.merged_headers();
-    let (auth, effect) = w.auth();
-    if let Some((name, value)) = effect.header {
-        set_header(
-            &mut headers,
-            &name,
-            value,
-            Origin::Auth,
-            Some(Synthetic::Auth(auth.kind)),
-        );
+    let mut rendered = w.render();
+    let (hidden, closure_work) = w.hidden_closure();
+    // Render again with the final hidden set when it names anything. The render walker
+    // also lists the variables, so both share one expansion budget. Its problems and
+    // warnings are dropped: the discovery walk already reported them.
+    let mut rw = Walker::new(req, scope);
+    rw.render_only = true;
+    // A cutoff can conceal later sensitive uses, so no plain variable is known safe.
+    rw.hide_all_vars = w.classification_incomplete;
+    // Only a plain variable in the hidden set can move the URL cuts: a secret is never
+    // expanded, so it stays an opaque marker.
+    let url_hidden = w.classification_incomplete || w.uses_hidden_plain(&w.url_trail, &hidden);
+    if !hidden.is_empty() || w.classification_incomplete {
+        rw.hide_names = hidden.clone();
+        rw.header_keys = w.header_keys.clone();
+        if url_hidden {
+            rw.hidden_path_params = Some(
+                rendered
+                    .params
+                    .iter()
+                    .filter(|p| p.kind == ParamKind::Path)
+                    .map(|p| ParamReport {
+                        name: hidden_credential(),
+                        value: hidden_credential(),
+                        ..p.clone()
+                    })
+                    .collect(),
+            );
+        }
+        rendered = rw.render();
+        // A hidden variable used anywhere in the URL can move the query and userinfo
+        // cuts: show none of the URL.
+        if url_hidden {
+            rendered.url = hidden_credential();
+        }
     }
-    let query_extra: Vec<_> = effect.query.into_iter().collect();
-    let url = finish_url(&append_query(url, &query_extra).parts);
-    let body = w.build_body(&mut headers);
+    let Rendered {
+        url,
+        params,
+        headers,
+        auth,
+        body,
+        ..
+    } = rendered;
     let s = &req.settings;
     let settings = SettingsReport {
         timeout: match s.timeout {
@@ -353,8 +382,24 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         follow_redirects: bool_setting(s.follow_redirects, true),
         verify_tls: bool_setting(s.verify_tls, true),
     };
-    let (variables, listing_work) = w.variables();
-    let work = w.expansions + listing_work;
+    let (mut variables, listing_work) = w.variables(&hidden, &mut rw);
+    if url_hidden {
+        for v in &mut variables {
+            for loc in &mut v.locations {
+                mask_location(loc);
+            }
+        }
+    }
+    let work = w.expansions + closure_work + listing_work;
+    // Free text in a path-parameter problem can come from a hidden variable's value.
+    let (problems, warnings) = if url_hidden {
+        (
+            w.problems.into_iter().map(mask_problem).collect(),
+            w.warnings.into_iter().map(mask_warning).collect(),
+        )
+    } else {
+        (w.problems, w.warnings)
+    };
     let report = ResolutionReport {
         environment: scope.environment.map(|e| EnvReport {
             name: e.name.clone(),
@@ -375,10 +420,85 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         settings,
         body,
         variables,
-        problems: w.problems,
-        warnings: w.warnings,
+        problems,
+        warnings,
     };
     (report, work)
+}
+
+/// Stands in for problem text that may have come from a hidden variable's value.
+const HIDDEN_TEXT: &str = "<hidden>";
+
+fn mask_location(location: &mut Location) {
+    if let Location::PathParam(name) = location {
+        *name = HIDDEN_TEXT.into();
+    }
+}
+
+fn mask_problem(mut p: Problem) -> Problem {
+    match &mut p {
+        Problem::MissingPathParam { name } => *name = HIDDEN_TEXT.into(),
+        Problem::UnresolvedVar { location, .. } => mask_location(location),
+        Problem::Syntax { location, message } => {
+            mask_location(location);
+            if message.starts_with("invalid path parameter") {
+                *message = format!("invalid path parameter `{HIDDEN_TEXT}`");
+            }
+        }
+        _ => {}
+    }
+    p
+}
+
+fn mask_warning(w: ReportWarning) -> ReportWarning {
+    match w {
+        ReportWarning::PatternMismatch { .. } => ReportWarning::PatternMismatch {
+            name: HIDDEN_TEXT.into(),
+            pattern: HIDDEN_TEXT.into(),
+        },
+        ReportWarning::InvalidPattern { .. } => ReportWarning::InvalidPattern {
+            name: HIDDEN_TEXT.into(),
+            pattern: HIDDEN_TEXT.into(),
+            message: HIDDEN_TEXT.into(),
+        },
+    }
+}
+
+struct Rendered {
+    url: Shown,
+    params: Vec<ParamReport>,
+    headers: Vec<HeaderBuild>,
+    auth: AuthReport,
+    body: BodyReport,
+}
+
+impl Walker<'_> {
+    fn render(&mut self) -> Rendered {
+        let mut params = Vec::new();
+        let url = self.build_url(&mut params);
+        let mut headers = self.merged_headers();
+        let (auth, effect) = self.auth();
+        if let Some((name, value)) = effect.header {
+            self.set_header(
+                &mut headers,
+                &name,
+                value,
+                Origin::Auth,
+                Some(Synthetic::Auth(auth.kind)),
+            );
+        }
+        let query_extra: Vec<_> = effect.query.into_iter().collect();
+        let raw = append_query(url, &query_extra).parts;
+        let url = finish_url(&raw);
+        let body = self.build_body(&mut headers);
+        Rendered {
+            url,
+            params,
+            headers,
+            auth,
+            body,
+        }
+    }
 }
 
 /// Explain only the effective auth. Expands the auth fields and nothing else.
@@ -718,12 +838,12 @@ struct HeaderBuild {
 /// Insert a header, replacing any with the same name (case-insensitive) and recording it.
 fn set_header(
     out: &mut Vec<HeaderBuild>,
+    key: String,
     name: &Acc,
     value: Shown,
     origin: Origin,
     synthetic: Option<Synthetic>,
 ) {
-    let key = name.key();
     let mut rep = HeaderReport {
         name: finish(&name.parts, None),
         value,
@@ -771,14 +891,28 @@ struct Walker<'a> {
     warnings: Vec<ReportWarning>,
     expansions: usize,
     stop: bool,
+    /// A limit prevented discovery from classifying every use, even if a later subst resets stop.
+    classification_incomplete: bool,
+    /// Incomplete discovery cannot establish which plain variables are safe to display.
+    hide_all_vars: bool,
     seen: HashSet<String>,
     uses: Vec<VarUse>,
     /// Every variable name noted so far, in order (a variable can repeat).
     trail: Vec<String>,
     /// Variables with a use in a place the report hides; their listed value is hidden too.
     hidden_vars: HashSet<String>,
-    /// Variables rendered as `Hidden` when expanded (set only on the listing walker).
+    /// Variables rendered as `Hidden` when expanded (set only on the render walker, which
+    /// also lists the variables).
     hide_names: HashSet<String>,
+    /// The render walker only builds the report: it skips taint tracking and sub-walks.
+    render_only: bool,
+    /// Variables the URL used (names noted while building it).
+    url_trail: Vec<String>,
+    /// Discovery identities, replayed for merging even when displayed names are hidden.
+    header_keys: Vec<String>,
+    header_cursor: usize,
+    /// Preserve discovery's path selection when the entire URL must be hidden.
+    hidden_path_params: Option<Vec<ParamReport>>,
     use_idx: HashMap<String, usize>,
 }
 
@@ -796,13 +930,51 @@ impl<'a> Walker<'a> {
             warnings: Vec::new(),
             expansions: 0,
             stop: false,
+            classification_incomplete: false,
+            hide_all_vars: false,
             seen: HashSet::new(),
             uses: Vec::new(),
             trail: Vec::new(),
             hidden_vars: HashSet::new(),
             hide_names: HashSet::new(),
+            render_only: false,
+            url_trail: Vec::new(),
+            header_keys: Vec::new(),
+            header_cursor: 0,
+            hidden_path_params: None,
             use_idx: HashMap::new(),
         }
+    }
+
+    fn set_header(
+        &mut self,
+        out: &mut Vec<HeaderBuild>,
+        name: &Acc,
+        value: Shown,
+        origin: Origin,
+        synthetic: Option<Synthetic>,
+    ) {
+        let key = if self.render_only {
+            // Both passes visit the same enabled headers, auth and body type in order.
+            let key = self.header_keys[self.header_cursor].clone();
+            self.header_cursor += 1;
+            key
+        } else {
+            let key = name.key();
+            self.header_keys.push(key.clone());
+            key
+        };
+        set_header(out, key, name, value, origin, synthetic);
+    }
+
+    fn uses_hidden_plain(&self, trail: &[String], hidden: &HashSet<String>) -> bool {
+        trail.iter().any(|n| {
+            hidden.contains(n)
+                && !matches!(
+                    lookup(self.req, self.scope, n),
+                    Some((_, VarSource::Secret))
+                )
+        })
     }
 
     fn problem(&mut self, p: Problem) {
@@ -813,6 +985,9 @@ impl<'a> Walker<'a> {
 
     /// Hide the listed value of every variable noted since `mark`.
     fn taint_since(&mut self, mark: usize) {
+        if self.render_only {
+            return;
+        }
         let names: Vec<String> = self.trail[mark..].to_vec();
         self.hidden_vars.extend(names);
     }
@@ -842,6 +1017,7 @@ impl<'a> Walker<'a> {
 
     fn too_large(&mut self, loc: &Location) {
         self.stop = true;
+        self.classification_incomplete = true;
         self.problem(Problem::Syntax {
             location: loc.clone(),
             message: "variable expansion too large".into(),
@@ -907,6 +1083,7 @@ impl<'a> Walker<'a> {
                         name: name.to_string(),
                     });
                 } else if stack.len() >= MAX_DEPTH {
+                    self.classification_incomplete = true;
                     self.problem(Problem::Syntax {
                         location: Location::Var(name.to_string()),
                         message: format!("variables nested deeper than {MAX_DEPTH}"),
@@ -915,7 +1092,10 @@ impl<'a> Walker<'a> {
                     stack.push(name.to_string());
                     let v = self.expand(value, loc, stack);
                     stack.pop();
-                    if is_credential_name(name) || self.hide_names.contains(name) {
+                    if self.hide_all_vars
+                        || is_credential_name(name)
+                        || self.hide_names.contains(name)
+                    {
                         out.hide(&v, name);
                     } else {
                         out.append(&v);
@@ -945,32 +1125,47 @@ impl<'a> Walker<'a> {
     fn build_url(&mut self, params: &mut Vec<ParamReport>) -> Acc {
         let req = self.req;
         let mark = self.trail.len();
-        let url = self.subst(&req.url, &Location::Url);
-        let url = self.apply_path_params(url, params);
-        if hide_query_values(&url.parts) != url.parts {
-            self.taint_since(mark);
-        }
-        if hides_userinfo(&url.parts) {
-            match userinfo_cut(&req.url) {
-                // Userinfo written in the template: hide only what it uses.
-                Some(cut) => {
-                    // A `{{` left in the authority can supply an `@`: the cut is unsure.
-                    let tail = &req.url[cut..];
-                    let auth_end = tail.find(['/', '?', '#']).unwrap_or(tail.len());
-                    let head = &req.url[..cut];
-                    // A cut inside a `{{…}}` reference leaves it unclosed in the prefix.
-                    let inside = head.rfind("{{") > head.rfind("}}");
-                    if inside || tail[..auth_end].contains("{{") {
-                        self.taint_since(mark);
-                    }
-                    let mut w = Walker::new(req, self.scope);
-                    w.subst(&req.url[..cut], &Location::Url);
-                    self.hidden_vars.extend(w.trail);
-                }
-                // Userinfo produced by a variable's value.
-                None => self.taint_since(mark),
+        let url = if let Some(path_params) = self.hidden_path_params.take() {
+            params.extend(path_params);
+            Acc {
+                parts: hidden_credential().0,
+                ..Acc::default()
             }
-        }
+        } else {
+            let url = self.subst(&req.url, &Location::Url);
+            let url = self.apply_path_params(url, params);
+            if !self.render_only && hide_query_values(&url.parts) != url.parts {
+                self.taint_since(mark);
+            }
+            if !self.render_only && hides_userinfo(&url.parts) {
+                match userinfo_cut(&req.url) {
+                    // Userinfo written in the template: hide only what it uses.
+                    Some(cut) => {
+                        // A `{{` left in the authority can supply an `@`: the cut is unsure.
+                        let tail = &req.url[cut..];
+                        let auth_end = tail.find(['/', '?', '#']).unwrap_or(tail.len());
+                        let head = &req.url[..cut];
+                        // A cut inside a `{{…}}` reference leaves it unclosed in the prefix.
+                        let inside = head.rfind("{{") > head.rfind("}}");
+                        if inside || tail[..auth_end].contains("{{") {
+                            self.taint_since(mark);
+                        }
+                        let mut w = Walker::new(req, self.scope);
+                        w.expansions = self.expansions;
+                        w.subst(&req.url[..cut], &Location::Url);
+                        self.expansions = w.expansions;
+                        self.classification_incomplete |= w.classification_incomplete;
+                        self.hidden_vars.extend(w.trail);
+                    }
+                    // Userinfo produced by a variable's value.
+                    None => self.taint_since(mark),
+                }
+            }
+            if !self.render_only {
+                self.url_trail = self.trail[mark..].to_vec();
+            }
+            url
+        };
         let mut pairs: Vec<Pair> = Vec::new();
         for p in req.params.iter().filter(|p| p.enabled) {
             let loc = Location::Param(p.name.clone());
@@ -1136,7 +1331,7 @@ impl<'a> Walker<'a> {
                 if is_credential_hidden(&shown) {
                     self.taint_since(vmark);
                 }
-                set_header(&mut out, &name, shown, origin, None);
+                self.set_header(&mut out, &name, shown, origin, None);
             }
         }
         out
@@ -1180,7 +1375,14 @@ impl<'a> Walker<'a> {
         let value = match kind {
             FieldKind::Plain => finish(&acc.parts, None),
             FieldKind::Url => {
-                let shown = finish_url(&acc.parts);
+                // Hiding an expanded separator can move the userinfo or query cuts.
+                let shown = if self.hide_all_vars
+                    || self.uses_hidden_plain(&self.trail[mark..], &self.hide_names)
+                {
+                    hidden_credential()
+                } else {
+                    finish_url(&acc.parts)
+                };
                 if shown.0.iter().any(|p| {
                     matches!(
                         p,
@@ -1378,7 +1580,7 @@ impl<'a> Walker<'a> {
             name.text("Content-Type");
             let mut value = Acc::default();
             value.text(ct);
-            set_header(
+            self.set_header(
                 headers,
                 &name,
                 finish(&value.parts, None),
@@ -1432,11 +1634,9 @@ impl<'a> Walker<'a> {
         (set, work)
     }
 
-    fn variables(&self) -> (Vec<VarReport>, usize) {
-        let (hidden, closure_work) = self.hidden_closure();
-        // One throwaway walker for every listed value, so they share one expansion budget.
-        // Its problems are already reported at the use sites.
-        let mut w = Walker::new(self.req, self.scope);
+    /// `w` is the render walker: its budget is shared by every listed value. Its
+    /// problems are already reported at the use sites. Returns the work `w` spent too.
+    fn variables(&self, hidden: &HashSet<String>, w: &mut Walker) -> (Vec<VarReport>, usize) {
         w.hide_names = hidden.clone();
         let mut out = Vec::new();
         for u in &self.uses {
@@ -1469,7 +1669,7 @@ impl<'a> Walker<'a> {
                     &mut vec![u.name.clone()],
                 );
                 let cut = w.stop;
-                if hidden.contains(&u.name) && (cut || !acc.parts.is_empty()) {
+                if (w.hide_all_vars || hidden.contains(&u.name)) && (cut || !acc.parts.is_empty()) {
                     hidden_credential()
                 } else if cut {
                     // The shared budget ran out: never list a silently shortened value.
@@ -1486,7 +1686,7 @@ impl<'a> Walker<'a> {
                 locations: u.locations.clone(),
             });
         }
-        (out, closure_work + w.expansions)
+        (out, w.expansions)
     }
 }
 
