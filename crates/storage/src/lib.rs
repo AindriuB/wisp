@@ -12,6 +12,7 @@ pub mod import;
 pub mod keychain;
 pub mod ops;
 pub mod request;
+pub mod validate;
 pub mod vault;
 pub mod vault_binding;
 pub mod watcher;
