@@ -33,18 +33,25 @@ fn rel(p: &Path) -> String {
 
 /// Origin and path of a URL template: no userinfo, query or fragment.
 pub fn safe_url(url: &str) -> String {
-    let end = url.find(['?', '#']).unwrap_or(url.len());
-    let u = &url[..end];
+    // The WHATWG parser drops tab/LF/CR anywhere and trims C0 controls and
+    // space at both ends before it looks for the authority; do the same.
+    let norm: String = url
+        .trim_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let end = norm.find(['?', '#']).unwrap_or(norm.len());
+    let u = &norm[..end];
     let is_sep = |c: char| c == '/' || c == '\\';
     let scheme_len = u
         .find(':')
         .filter(|&i| {
             let sch = &u[..i];
-            sch.starts_with(|c: char| c.is_ascii_alphabetic())
+            let literal = sch.starts_with(|c: char| c.is_ascii_alphabetic())
                 && sch
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
-                && u[i + 1..].starts_with(is_sep)
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+            (literal || sch.contains("{{")) && u[i + 1..].starts_with(is_sep)
         })
         .map(|i| i + 1);
     let after = scheme_len.unwrap_or(0);
@@ -222,5 +229,21 @@ mod tests {
         assert_eq!(safe_url("http:///u:p@h/x"), "http:///h/x");
         assert_eq!(safe_url("http:/\\u:p@h/x"), "http:/\\h/x");
         assert_eq!(safe_url("\\\\u:p@h/x"), "\\\\h/x");
+    }
+
+    #[test]
+    fn ignored_characters_do_not_hide_userinfo() {
+        assert_eq!(safe_url(" http://u:p@h/x"), "http://h/x");
+        assert_eq!(safe_url("\thttp://u:p@h/x"), "http://h/x");
+        assert_eq!(safe_url("\u{1}http://u:p@h/x"), "http://h/x");
+        assert_eq!(safe_url("ht\ttp://u:p@h/x"), "http://h/x");
+        assert_eq!(safe_url("http:\t//u:p@h/x"), "http://h/x");
+        assert_eq!(safe_url("http:/\t/u:p@h/x"), "http://h/x");
+        assert_eq!(safe_url("http:/\n\\u:p@h"), "http:/\\h");
+    }
+
+    #[test]
+    fn templated_scheme_is_recognised() {
+        assert_eq!(safe_url("{{scheme}}://u:p@h/x"), "{{scheme}}://h/x");
     }
 }

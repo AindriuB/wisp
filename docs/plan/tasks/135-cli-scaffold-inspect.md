@@ -82,3 +82,9 @@ land in 2D once tasks 130, 132 and 133 have merged.
 ## Review round 2 — findings
 (reviewed HEAD 7c2f625)
 - [P2] crates/cli/src/cmd/inspect.rs:38-46 — 80-2 only partly fixed. `safe_url` still prints userinfo when the scheme is followed by one slash, three slashes, or backslashes: `http:/u:p@h/x`, `http:///u:p@h/x`, `http:/\u:p@h/x` print unchanged. The WHATWG parser (reqwest::Url::parse, used by the engine at crates/core/src/engine.rs:697) reads all three as userinfo `u:p` at host `h`.
+
+## Review round 3 — findings
+(reviewed HEAD 5d6df98)
+- [P2] crates/cli/src/cmd/inspect.rs:35-60 — `safe_url` prints userinfo when ASCII tab/LF/CR sit inside the URL or C0/space lead or trail it (WHATWG strips tab/LF/CR everywhere and trims leading/trailing C0+space before parsing). Inputs, all parsed by url 2.5.8 as user u, pw p, host h: `" http://u:p@h/x"`, `"\thttp://u:p@h/x"`, `"\u{1}http://u:p@h/x"`, `"ht\ttp://u:p@h/x"`, `"http:\t//u:p@h/x"`, `"http:/\t/u:p@h/x"`, `"http:/\n\\u:p@h"`.
+- [P2] crates/cli/src/cmd/inspect.rs:39-49 — regression from round 1: a templated scheme isn't recognised, so `"{{scheme}}://u:p@h/x"` prints unchanged (round 1 gave `"{{scheme}}://h/x"`).
+- [P3] the tests cover neither case above.
