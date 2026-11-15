@@ -924,7 +924,7 @@ impl<'a> Walker<'a> {
                     cur.append(out, &path[last..range.start]);
                     cur.skip(&path[range.clone()]);
                     last = range.end;
-                    let v = self.path_param(&inner, &mut cache, params);
+                    let v = self.path_param(inner, &mut cache, params);
                     out.append(&v);
                 }
             }
