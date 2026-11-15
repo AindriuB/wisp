@@ -116,3 +116,6 @@ Launch with a temp `WISP_DATA_DIR` and `WISP_KEYCHAIN_SERVICE=wisp-themereview`,
 - Any other root.rs change, including 0.3.0 work in the same file.
 - Restyling other components or changing layout/spacing beyond the 2px row border.
 - New crates or new workspace dependencies.
+
+## Outcome
+Merged as PR for branch task/theme-palette at 17d1e22. Wisp Light and Wisp Dark themes landed; cargo test --workspace 1057 passed, clippy and fmt clean, code review clean. Follow-ups are in PLAN.md.

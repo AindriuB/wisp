@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-14 | theme-palette | Wisp Light and Dark themes in theme.json, WCAG AA contrast tests, banner tint, overlay scrim, sidebar cursor, header selection, palette accent | ## 2026-11-14 — Wisp Light and Wisp Dark themes (task theme-palette) |
 | 2026-11-14 | 128 | Save refuses to overwrite a file changed on disk; no-collection save is an Err; also #75 architecture.md and #73 0.3.0 spec | ## 2026-11-14 — Save refuses to overwrite a file changed on disk (task 128) |
 | 2026-11-14 | 122-127 | Windows CI job, clippy and portability fixes, SignPath signing, winget, MSIX, CRLF fix, 0.2.0 prep | ## 2026-11-14 — Windows distribution wave (tasks 122-127) and 0.2.0 prep |
 | 2026-11-14 | 121 | failed reload clears active secrets | ## 2026-11-14 — Failed reload clears active secrets (task 121) |
