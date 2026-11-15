@@ -919,18 +919,36 @@ fn provenance_canary_values_never_stored() {
     use wisp_core::assert::{Assertion, AssertionResult, Expected, Op, Verdict};
     use wisp_storage::history::AssertionRecord;
     let (_d, data, store) = setup();
-    let a = Assertion::Status {
+    let a = Assertion::Header {
+        name: "X-Check".into(),
+        op: Op::Equals,
+        expected: Expected::Str("EXPECTED-CANARY".into()),
+    };
+    let status = Assertion::Status {
         op: Op::Equals,
         expected: Expected::Int(424242),
     };
     let r = AssertionResult {
         label: a.label(),
         verdict: Verdict::Fail {
-            actual: Some("ACTUAL-CANARY HEADER-CANARY".into()),
+            actual: Some("ACTUAL-CANARY".into()),
         },
     };
-    let mut n = plain("http://x/");
-    n.assertions = vec![AssertionRecord::from_result(&a, &r)];
+    let rs = AssertionResult {
+        label: status.label(),
+        verdict: Verdict::Fail {
+            actual: Some("STATUS-ACTUAL-CANARY".into()),
+        },
+    };
+    let mut n = new_entry(Request {
+        url: "http://x/".into(),
+        assertions: vec![a.clone(), status.clone()],
+        ..Request::default()
+    });
+    n.assertions = vec![
+        AssertionRecord::from_result(&a, &r),
+        AssertionRecord::from_result(&status, &rs),
+    ];
     n.environment = Some("staging".into());
     store.append(n, None).unwrap();
     let dir = data.history_dir(&cid("abcdef0123456789"));
@@ -939,7 +957,12 @@ fn provenance_canary_values_never_stored() {
             let p = f.unwrap().path();
             if p.is_file() {
                 let t = std::fs::read_to_string(&p).unwrap();
-                for c in ["424242", "ACTUAL-CANARY", "HEADER-CANARY"] {
+                for c in [
+                    "424242",
+                    "EXPECTED-CANARY",
+                    "ACTUAL-CANARY",
+                    "STATUS-ACTUAL-CANARY",
+                ] {
                     assert!(!t.contains(c), "{c} in {p:?}");
                 }
             }
