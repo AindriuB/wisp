@@ -1638,3 +1638,133 @@ fn oauth_urls_preserve_ordinary_text_and_opaque_secret_markers() {
     assert!(flat(&r.auth.fields[1].value).contains("page=1"));
     assert!(!format!("{r:?}").contains("OAUTHSECRETCANARY"));
 }
+
+#[test]
+fn hiding_a_query_separator_does_not_create_path_parameters() {
+    for real_path in [false, true] {
+        let url = if real_path {
+            "https://h/{id}{{q}}token={LITCANARY}"
+        } else {
+            "https://h/{{q}}token={LITCANARY}"
+        };
+        let mut f = Fx::new(req(url));
+        f.coll.vars = vec![var("q", "?")];
+        f.req.headers = vec![kv("Authorization", "{{q}}", true)];
+        f.req.path = vec![var("id", "42"), var("LITCANARY", "PATHVALUECANARY")];
+        f.req.params = vec![kv("page", "1", true)];
+        let r = f.report();
+        for dump in [format!("{r:?}"), format!("{r:#?}")] {
+            assert!(!dump.contains("LITCANARY"));
+            assert!(!dump.contains("PATHVALUECANARY"));
+        }
+        let paths: Vec<_> = r
+            .params
+            .iter()
+            .filter(|p| p.kind == ParamKind::Path)
+            .collect();
+        assert_eq!(paths.len(), usize::from(real_path));
+        if real_path {
+            assert_eq!(
+                paths[0].name.0,
+                vec![ShownPart::Hidden(HideReason::Credential)]
+            );
+            assert_eq!(
+                paths[0].value.0,
+                vec![ShownPart::Hidden(HideReason::Credential)]
+            );
+        }
+        let query = r
+            .params
+            .iter()
+            .find(|p| p.kind == ParamKind::Query)
+            .unwrap();
+        assert_eq!(text(&query.name), "page");
+        assert_eq!(text(&query.value), "1");
+    }
+}
+
+#[test]
+fn redacted_header_names_keep_their_discovered_override_identity() {
+    for (collection_name, request_name) in [
+        ("X-Same", "{{h}}"),
+        ("{{h}}", "x-same"),
+        ("{{h}}", "{{other}}"),
+    ] {
+        let mut f = Fx::new(req("https://h/"));
+        f.coll.vars = vec![var("h", "X-Same"), var("other", "x-same")];
+        f.coll.headers = vec![kv(collection_name, "old", true)];
+        f.req.headers = vec![
+            kv(request_name, "new", true),
+            kv("Authorization", "{{h}}{{other}}", true),
+        ];
+        let r = f.report();
+        assert_eq!(r.headers.len(), 2);
+        assert_eq!(r.headers[0].origin, Origin::Request);
+        assert_eq!(r.headers[0].overridden, vec![Origin::Collection]);
+        assert!(!format!("{:?}", r.headers).contains("old"));
+    }
+}
+
+#[test]
+fn a_hidden_content_type_name_does_not_add_a_synthetic_duplicate() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("h", "Content-Type")];
+    f.req.headers = vec![
+        kv("{{h}}", "application/custom", true),
+        kv("Authorization", "{{h}}", true),
+    ];
+    f.req.body = Body::Json(TextBody {
+        content: "{}".into(),
+        sidecar: None,
+    });
+    let r = f.report();
+    assert_eq!(r.headers.len(), 2);
+    assert_eq!(r.headers[0].origin, Origin::Request);
+    assert_eq!(r.headers[0].synthetic, None);
+}
+
+#[test]
+fn synthetic_auth_overrides_a_hidden_header_name_by_its_discovered_identity() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("h", "Authorization")];
+    f.req.headers = vec![kv("{{h}}", "HEADERCANARY", true)];
+    f.req.auth = Auth::Bearer {
+        token: "{{h}}".into(),
+    };
+    let r = f.report();
+    assert_eq!(r.headers.len(), 1);
+    assert_eq!(r.headers[0].origin, Origin::Auth);
+    assert_eq!(r.headers[0].overridden, vec![Origin::Request]);
+    assert!(!format!("{r:?}").contains("HEADERCANARY"));
+}
+
+#[test]
+fn distinct_hidden_header_names_keep_distinct_identities() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("a", "X-First"), var("b", "X-Second")];
+    f.req.headers = vec![kv("{{a}}", "one", true), kv("{{b}}", "two", true)];
+    f.req.auth = Auth::Bearer {
+        token: "{{a}}{{b}}".into(),
+    };
+    let r = f.report();
+    assert_eq!(r.headers.len(), 3);
+    assert!(r.headers.iter().all(|h| h.overridden.is_empty()));
+    assert_eq!(r.headers[0].origin, Origin::Request);
+    assert_eq!(r.headers[1].origin, Origin::Request);
+}
+
+#[test]
+fn a_templated_api_key_header_keeps_its_override_identity() {
+    let mut f = Fx::new(req("https://h/"));
+    f.coll.vars = vec![var("h", "X-Custom")];
+    f.coll.headers = vec![kv("x-custom", "old", true)];
+    f.req.auth = Auth::ApiKey {
+        name: "{{h}}".into(),
+        value: "{{h}}".into(),
+        location: ApiKeyLocation::Header,
+    };
+    let r = f.report();
+    assert_eq!(r.headers.len(), 1);
+    assert_eq!(r.headers[0].origin, Origin::Auth);
+    assert_eq!(r.headers[0].overridden, vec![Origin::Collection]);
+}
