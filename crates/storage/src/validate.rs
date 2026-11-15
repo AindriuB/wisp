@@ -202,11 +202,62 @@ fn walk(
         {
             continue;
         }
+        if !request_files_ok(&abs, &child_rel, report) {
+            continue;
+        }
         match request::load_request(&abs) {
             Ok(req) => assertions(&child_rel, &req.assertions, report),
             Err(e) => report.error(&child_rel, &e),
         }
     }
+}
+
+/// Largest request TOML the check will read (1 MiB).
+const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+
+/// Check by metadata only that `abs` and the sidecar it names are regular files within the size
+/// caps. A failure is a warning and the request is not read.
+fn request_files_ok(abs: &Path, rel: &Path, report: &mut Report) -> bool {
+    if !regular_within(abs, MAX_REQUEST_BYTES) {
+        report.add(
+            rel,
+            None,
+            "not a regular file or too large; not checked",
+            Severity::Warning,
+        );
+        return false;
+    }
+    let Ok(Some(doc)) = collection::read_doc(abs) else {
+        return true;
+    };
+    let name = doc
+        .get("body")
+        .and_then(|b| b.as_table_like())
+        .and_then(|b| b.get("file"))
+        .and_then(|f| f.as_str());
+    let Some(name) = name else {
+        return true;
+    };
+    let plain = !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != "..";
+    if plain {
+        let side = abs.parent().unwrap_or(Path::new("")).join(name);
+        let cap = crate::history::BODY_CAP as u64;
+        // A missing sidecar is left for `load_request` to report.
+        if side.exists() && !regular_within(&side, cap) {
+            report.add(
+                rel,
+                Some("body.file"),
+                "body file is not a regular file or too large; not checked",
+                Severity::Warning,
+            );
+            return false;
+        }
+    }
+    true
+}
+
+fn regular_within(path: &Path, cap: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= cap)
 }
 
 fn assertions(path: &Path, list: &[Assertion], report: &mut Report) {

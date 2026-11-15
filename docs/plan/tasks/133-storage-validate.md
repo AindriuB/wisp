@@ -51,3 +51,11 @@ Reviewed HEAD 7db89b3.
 - [P2] crates/storage/src/validate.rs:45-57 (used at :193, :254) — `Report::error` drops the StorageError's own path and files the finding under the file being visited, so errors in a secrets file or sidecar body are reported against the wrong file with wrong line numbers. Inputs: (1) environments/dev.toml = `[vars]\na = "1"\n`, environments/dev.secrets.toml = `\n\n[[[\n` -> finding path dev.toml "line 3: invalid key"; (2) a.toml with `[body] type="text" file="missing.txt"`, no missing.txt -> path a.toml "cannot read: entity not found". Fix: use the error's path with the root stripped when it is inside root; otherwise keep the current path.
 - [P2] validate.rs:264-271 — `Mode::Unknown` falls into the `Ok(_)` arm and is reported as a harmless Warning ("secrets are held in a secret store"), while the app fails to load it (vault.rs:471 FailReason::UnknownStoreKind). Input: environments/typo.toml = `secrets = "keychian"\n`. Fix (orchestrator decision: severity Error, matching vault.rs): a separate Unknown arm with its own Error finding on key `secrets`, never echoing the mode string.
 - [P3, follow-up] validate.rs:10-11/:204 MAX_ASSERTIONS copied instead of importing wisp_core::assert::MAX_ASSERTIONS; warning text hides that entries after the 50th are skipped; :212 compares literal "malformed" instead of ParseError::Malformed.reason().
+
+## PR #86 review round 1 — findings
+
+Reviewed HEAD c4154fd.
+
+- 86-1 [Medium, security] validate.rs:205 — validate loads every request via load_request, which reads each body sidecar whole with no size cap; open_collection never does. Decision: before loading, check by metadata (no read) that the request file and every sidecar it references are regular files (closes 86-4, FIFOs block forever) and within a size cap (1 MiB request TOML; history::BODY_CAP for sidecars). An oversize or non-regular file gets a Warning finding (relative path, fixed message, no content) and is not read. Sidecar names come from a cheap parse of the request TOML.
+- 86-2 [Medium] validate.rs:173 — cycle skip, MAX_FOLDERS cap and truncated stop, broken link and read_dir error paths untested. Add cfg(unix) tests for each.
+- 86-3, 86-5 Low and 86-6 Nit: follow-ups. 86-4 Low closed by the 86-1 check.

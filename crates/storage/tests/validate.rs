@@ -238,3 +238,144 @@ fn unknown_secret_store_kind_is_an_error() {
     assert_eq!(f.key.as_deref(), Some("secrets"));
     assert!(!f.message.contains("keychian"));
 }
+
+/// Run `validate` on a thread so a read that blocks forever fails the test instead of hanging it.
+fn validate_in_time(root: &Path) -> Report {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root = root.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(validate(&root));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(20))
+        .expect("validate did not return")
+}
+
+fn collection_root() -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    w(d.path(), "collection.toml", "format = 1\n");
+    d
+}
+
+#[test]
+fn oversize_sidecar_is_not_read() {
+    let d = collection_root();
+    let r = d.path();
+    w(
+        r,
+        "big.toml",
+        &format!("{GOOD}\n[body]\ntype = \"text\"\nfile = \"big.body.txt\"\n"),
+    );
+    // Sparse: large by length, no disk cost.
+    let f = fs::File::create(r.join("big.body.txt")).unwrap();
+    f.set_len(8 * 1024 * 1024 * 1024).unwrap();
+    let rep = validate_in_time(r);
+    assert!(has(&rep, "big.toml", Severity::Warning), "{rep:?}");
+    assert!(!has(&rep, "big.toml", Severity::Error));
+}
+
+#[test]
+fn oversize_request_file_is_not_read() {
+    let d = collection_root();
+    let f = fs::File::create(d.path().join("huge.toml")).unwrap();
+    f.set_len(8 * 1024 * 1024 * 1024).unwrap();
+    let rep = validate_in_time(d.path());
+    assert!(has(&rep, "huge.toml", Severity::Warning), "{rep:?}");
+}
+
+#[cfg(unix)]
+fn mkfifo(p: &Path) {
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(p)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_request_and_fifo_sidecar_do_not_block() {
+    let d = collection_root();
+    let r = d.path();
+    mkfifo(&r.join("pipe.toml"));
+    w(
+        r,
+        "side.toml",
+        &format!("{GOOD}\n[body]\ntype = \"text\"\nfile = \"side.body.txt\"\n"),
+    );
+    mkfifo(&r.join("side.body.txt"));
+    let rep = validate_in_time(r);
+    assert!(has(&rep, "pipe.toml", Severity::Warning), "{rep:?}");
+    assert!(has(&rep, "side.toml", Severity::Warning), "{rep:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn ancestor_symlink_loop_is_skipped() {
+    let d = collection_root();
+    let r = d.path();
+    w(r, "a/ok.toml", GOOD);
+    std::os::unix::fs::symlink(r, r.join("a/loop")).unwrap();
+    let rep = validate_in_time(r);
+    assert!(!rep.truncated);
+    assert!(rep.findings.is_empty(), "{rep:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_link_is_a_finding() {
+    let d = collection_root();
+    let r = d.path();
+    std::os::unix::fs::symlink(r.join("nowhere"), r.join("dangling")).unwrap();
+    let rep = validate(r);
+    assert!(has(&rep, "dangling", Severity::Error), "{rep:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn folder_cap_truncates_like_open_collection() {
+    let d = collection_root();
+    let r = d.path();
+    // Two links per level into the next: 2^15 paths to one leaf, far over the folder cap.
+    for i in 0..15 {
+        fs::create_dir_all(r.join(format!("l{i}"))).unwrap();
+        for n in ["a", "b"] {
+            std::os::unix::fs::symlink(format!("../l{}", i + 1), r.join(format!("l{i}/{n}")))
+                .unwrap();
+        }
+    }
+    fs::create_dir_all(r.join("l15")).unwrap();
+    let rep = validate_in_time(r);
+    assert!(rep.truncated, "{rep:?}");
+    let cut: Vec<_> = rep
+        .findings
+        .iter()
+        .filter(|f| f.message.contains("folders"))
+        .collect();
+    assert_eq!(cut.len(), 1, "{rep:?}");
+    // Same cap as the scan: its error names the same number.
+    let cap = "10000";
+    assert!(cut[0].message.contains(cap));
+    let err = wisp_storage::collection::open_collection(r).unwrap_err();
+    assert!(err.to_string().contains(cap));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directory_is_a_finding() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = collection_root();
+    let r = d.path();
+    w(r, "locked/x.toml", GOOD);
+    let locked = r.join("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&locked).is_ok() {
+        // Running as root: the mode does not stop the read.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let rep = validate(r);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(has(&rep, "locked", Severity::Error), "{rep:?}");
+}
