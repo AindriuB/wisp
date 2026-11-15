@@ -117,5 +117,10 @@ Launch with a temp `WISP_DATA_DIR` and `WISP_KEYCHAIN_SERVICE=wisp-themereview`,
 - Restyling other components or changing layout/spacing beyond the 2px row border.
 - New crates or new workspace dependencies.
 
-## Outcome
-Merged as PR for branch task/theme-palette at 17d1e22. Wisp Light and Wisp Dark themes landed; cargo test --workspace 1057 passed, clippy and fmt clean, code review clean. Follow-ups are in PLAN.md.
+## Status
+PR #79 is open and under review; not merged. An earlier version of this file said "Merged at 17d1e22" and was retired too early (finding 79-7). Retire it only when the PR merges.
+
+## Review round 1
+Fixed: 79-1 (open sidebar row painted with the clamped `list_active`), 79-2 (header cell, same cause), 79-3 (contrast test ignored the library's 20%/30% alpha clamp), 79-7 (premature record).
+
+Lows left as follow-ups: 79-4 (`eprintln!` instead of `tracing::warn`), 79-5 (`apply` reparses theme.json on every call), 79-6 (stacked overlays double-dim), the banner test does not call `banner_bg`, and the bad-JSON test asserts nothing.

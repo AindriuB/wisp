@@ -18,6 +18,7 @@ in the same commit.
 -->
 
 ## 2026-11-14 — Wisp Light and Wisp Dark themes (task theme-palette)
+Status: PR #79 is open and under review, not merged; review round 1 fixed 79-1, 79-2, 79-3 and this premature record (79-7).
 Wisp has its own "Wisp Light" and "Wisp Dark" themes (`crates/app/src/theme.json`, compiled in and installed by `theme::apply`) in place of gpui-component's default shadcn neutral themes. The dark page is slate #1b1d24 instead of near-black #0a0a0a, the accent is periwinkle, and every text, status, focus and banner pairing passes WCAG 2.1 AA; tests in `theme.rs` recompute contrast from the JSON. Styling fixes: tinted warning banners (were 1.9:1), a scrim behind overlays, the sidebar keyboard cursor distinct from the open request, header-cell selection using the selected-row fill, and command-palette matches in the accent. Design review: https://claude.ai/artifact/5BopKcZS1a1wJkX6kMpZC5
 **Cost:** No new crates (serde_json was already a workspace dependency); `theme.json` is 13.8 KB and the Windows release size was not re-measured. The review copy could not be screenshotted, so the macOS hand test in both themes is still to do. Two test weaknesses are open in PLAN.md. The id is non-numeric because 0.3.0 work was claiming numeric ids in parallel.
 
