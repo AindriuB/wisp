@@ -587,6 +587,33 @@ fn redact_credential_headers(headers: &mut [Header], names: &mut Vec<String>) {
     }
 }
 
+/// Run every response header that can carry a URL through [`redact_url`].
+fn redact_url_headers(headers: &mut [Header], names: &mut Vec<String>) {
+    for h in headers {
+        let n = &h.name;
+        if n.eq_ignore_ascii_case("location")
+            || n.eq_ignore_ascii_case("content-location")
+            || n.eq_ignore_ascii_case("refresh")
+        {
+            let mut found = Vec::new();
+            let redacted = redact_url(&h.value, &mut found);
+            if redacted != h.value {
+                h.value = redacted;
+                note(names, h.name.clone());
+            }
+        }
+    }
+}
+
+/// Redact a response header list as it is stored.
+fn redact_response_headers(headers: &mut [Header], names: &mut Vec<String>) {
+    if redact_set_cookies(headers) {
+        note(names, "Set-Cookie".into());
+    }
+    redact_credential_headers(headers, names);
+    redact_url_headers(headers, names);
+}
+
 fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -607,16 +634,105 @@ pub struct HistoryStore {
     dir: PathBuf,
     max_entries: usize,
     max_bytes: u64,
+    lock_wait: Duration,
 }
 
+/// Longest an append or clear waits for the cross-process lock.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// Present in a history dir once entries from older builds have been re-redacted.
+const SCRUB_MARKER: &str = ".scrubbed-1";
+
 impl HistoryStore {
-    /// Does no I/O.
+    /// Re-redacts an existing history dir once (see [`SCRUB_MARKER`]); a dir that does not
+    /// exist yet is left alone. Failures are logged and retried on the next open.
     pub fn open(data: &DataDir, id: &CollectionId) -> HistoryStore {
-        HistoryStore {
+        let store = HistoryStore {
             dir: data.history_dir(id),
             max_entries: MAX_ENTRIES,
             max_bytes: MAX_BYTES,
+            lock_wait: LOCK_WAIT,
+        };
+        if store.dir.is_dir()
+            && !store.dir.join(SCRUB_MARKER).exists()
+            && let Err(e) = store.scrub_legacy()
+        {
+            tracing::warn!(error = %e, "history scrub failed");
         }
+        store
+    }
+
+    /// Shorten the lock wait. For tests.
+    #[doc(hidden)]
+    pub fn with_lock_wait(mut self, wait: Duration) -> HistoryStore {
+        self.lock_wait = wait;
+        self
+    }
+
+    /// Re-run the current redaction over entries older builds wrote, then drop the marker.
+    fn scrub_legacy(&self) -> Result<(), StorageError> {
+        let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_lock = self.lock_file()?;
+        let index = self.index();
+        let bytes = match fs::read(&index) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(io(&index, e)),
+        };
+        let mut changed = false;
+        let mut text = Vec::with_capacity(bytes.len());
+        for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+            let mut out = line.to_vec();
+            if let Ok(mut entry) = serde_json::from_slice::<HistoryEntry>(line) {
+                let mut names = Vec::new();
+                let url = redact_url(&entry.url, &mut names);
+                if url != entry.url {
+                    entry.url = url;
+                    for n in names {
+                        note(&mut entry.redacted, n);
+                    }
+                    if let Ok(v) = serde_json::to_vec(&entry) {
+                        out = v;
+                        changed = true;
+                    }
+                }
+            }
+            text.extend_from_slice(&out);
+            text.push(b'\n');
+        }
+        if let Ok(rd) = fs::read_dir(self.bodies()) {
+            for f in rd.flatten() {
+                let path = f.path();
+                let name = f.file_name().to_string_lossy().into_owned();
+                let Some(stem) = name.strip_suffix(".req.json") else {
+                    continue;
+                };
+                if !valid_id(stem) {
+                    continue;
+                }
+                let raw = fs::read(&path).map_err(|e| io(&path, e))?;
+                let Ok(mut file) = serde_json::from_slice::<ReqFile>(&raw) else {
+                    continue;
+                };
+                let mut names = Vec::new();
+                let (request, req_names) = redact_request(&file.request);
+                file.request = request;
+                names.extend(req_names);
+                redact_response_headers(&mut file.response_headers, &mut names);
+                let json = serde_json::to_vec(&file).map_err(|e| StorageError::History {
+                    message: e.to_string(),
+                })?;
+                let before = serde_json::from_slice::<ReqFile>(&raw)
+                    .ok()
+                    .and_then(|f| serde_json::to_vec(&f).ok());
+                if before.as_deref() != Some(json.as_slice()) {
+                    atomic_write_private(&path, &json)?;
+                }
+            }
+        }
+        if changed {
+            atomic_write_private(&index, &text)?;
+        }
+        atomic_write_private(&self.dir.join(SCRUB_MARKER), b"1")
     }
 
     /// Lower the caps. For tests.
@@ -659,9 +775,32 @@ impl HistoryStore {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
+        // Never follow a symlink planted at the lock path.
+        if let Ok(meta) = fs::symlink_metadata(&path)
+            && meta.file_type().is_symlink()
+        {
+            return Err(StorageError::Invalid {
+                path,
+                key: "path".to_string(),
+                message: "is a symlink".to_string(),
+            });
+        }
         let f = opts.open(&path).map_err(|e| io(&path, e))?;
-        f.lock().map_err(|e| io(&path, e))?;
-        Ok(DirLock(f))
+        let start = std::time::Instant::now();
+        loop {
+            match f.try_lock() {
+                Ok(()) => return Ok(DirLock(f)),
+                Err(fs::TryLockError::WouldBlock) => {
+                    if start.elapsed() >= self.lock_wait {
+                        return Err(StorageError::History {
+                            message: format!("timed out waiting for lock {}", path.display()),
+                        });
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(fs::TryLockError::Error(e)) => return Err(io(&path, e)),
+            }
+        }
     }
 
     /// Store one finished request. `body` is cut to [`BODY_CAP`] bytes.
@@ -672,10 +811,7 @@ impl HistoryStore {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let (request, mut redacted) = redact_request(&new.request);
         let mut response_headers = new.response_headers;
-        if redact_set_cookies(&mut response_headers) {
-            redacted.push("Set-Cookie".into());
-        }
-        redact_credential_headers(&mut response_headers, &mut redacted);
+        redact_response_headers(&mut response_headers, &mut redacted);
         let (bin, req) = {
             let [a, b] = self.body_files(&id);
             (a, b)
@@ -825,8 +961,12 @@ impl HistoryStore {
             }
             atomic_write_private(&self.index(), &text)?;
         }
+        // A kept line may repeat a dropped id; its files stay.
+        let kept: std::collections::HashSet<&str> =
+            entries.iter().map(|(id, _)| id.as_str()).collect();
         let doomed = dropped
             .iter()
+            .filter(|(id, _)| !kept.contains(id.as_str()))
             .flat_map(|(id, _)| self.body_files(id))
             .chain(orphans);
         for p in doomed {

@@ -969,3 +969,162 @@ fn provenance_canary_values_never_stored() {
         }
     }
 }
+
+fn hist_dir(data: &DataDir) -> std::path::PathBuf {
+    data.history_dir(&cid("abcdef0123456789"))
+}
+
+#[test]
+fn evict_keeps_files_of_an_id_that_survives() {
+    let (_d, data, store) = setup();
+    let store = store.with_caps(2, u64::MAX);
+    let e = store.append(plain("http://a/"), Some(b"hi")).unwrap();
+    let index = hist_dir(&data).join("index.jsonl");
+    let line = fs::read_to_string(&index).unwrap();
+    // Oldest and newest share an id; a middle line forces the oldest out.
+    let mid = line.replace(&e.id, &"1".repeat(32));
+    fs::write(&index, format!("{line}{mid}{line}")).unwrap();
+    store.append(plain("http://b/"), None).unwrap();
+    assert!(store.load(&e.id).is_ok());
+    assert!(bodies_dir(&data).join(format!("{}.bin", e.id)).exists());
+}
+
+#[test]
+fn append_times_out_when_the_lock_is_held() {
+    let (_d, data, store) = setup();
+    let store = store.with_lock_wait(Duration::from_millis(200));
+    store.append(plain("http://a/"), None).unwrap();
+    let lock = hist_dir(&data).with_extension("lock");
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .unwrap();
+    f.lock().unwrap();
+    let index = hist_dir(&data).join("index.jsonl");
+    let before = fs::read(&index).unwrap();
+    let t = std::time::Instant::now();
+    assert!(store.append(plain("http://b/"), None).is_err());
+    assert!(t.elapsed() < Duration::from_secs(5));
+    assert_eq!(fs::read(&index).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn append_refuses_a_symlinked_lock() {
+    let (d, data, store) = setup();
+    let target = d.path().join("outside");
+    fs::write(&target, b"keep").unwrap();
+    let mtime = fs::metadata(&target).unwrap().modified().unwrap();
+    let lock = hist_dir(&data).with_extension("lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &lock).unwrap();
+    assert!(store.append(plain("http://a/"), None).is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"keep");
+    assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), mtime);
+}
+
+#[test]
+fn clear_and_append_race_leaves_no_orphans() {
+    let (_d, data, store) = setup();
+    for _ in 0..10 {
+        let a = store.clone();
+        let b = store.clone();
+        let t1 = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let _ = a.append(plain("http://a/"), Some(b"x"));
+            }
+        });
+        let t2 = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let _ = b.clear();
+            }
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+        let listed: Vec<String> = store.list().unwrap().into_iter().map(|e| e.id).collect();
+        if let Ok(rd) = fs::read_dir(bodies_dir(&data)) {
+            for f in rd.flatten() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                let stem = name.split('.').next().unwrap().to_string();
+                assert!(listed.contains(&stem), "orphan {name}");
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn load_works_for_listed_entries_when_the_index_rewrite_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, data, store) = setup();
+    let store = store.with_caps(2, u64::MAX);
+    store.append(plain("http://a/"), Some(b"1")).unwrap();
+    store.append(plain("http://b/"), Some(b"2")).unwrap();
+    let dir = hist_dir(&data);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let r = store.append(plain("http://c/"), Some(b"3"));
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    r.unwrap();
+    for e in store.list().unwrap() {
+        store.load(&e.id).unwrap();
+    }
+}
+
+#[test]
+fn location_headers_are_redacted() {
+    let (_d, data, store) = setup();
+    let mut n = plain("http://a/");
+    n.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "http://user:pw123@h/cb?access_token=tok789&x=1".into(),
+    }];
+    let e = store.append(n, None).unwrap();
+    let raw = fs::read_to_string(bodies_dir(&data).join(format!("{}.req.json", e.id))).unwrap();
+    assert!(!raw.contains("tok789") && !raw.contains("pw123") && !raw.contains("user:"));
+    assert!(raw.contains("x=1"));
+}
+
+fn all_text(dir: &std::path::Path, out: &mut String) {
+    for f in fs::read_dir(dir).unwrap().flatten() {
+        let p = f.path();
+        if p.is_dir() {
+            all_text(&p, out);
+        } else {
+            out.push_str(&String::from_utf8_lossy(&fs::read(&p).unwrap()));
+        }
+    }
+}
+
+#[test]
+fn open_scrubs_old_entries_once() {
+    let (_d, data, store) = setup();
+    let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+    let dir = hist_dir(&data);
+    let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+    v["request"]["headers"] = serde_json::json!([
+        {"name": "X-Api-Key", "value": "hdrsecret1", "enabled": true}
+    ]);
+    v["response_headers"] = serde_json::json!([
+        {"name": "Location", "value": "http://h/cb?token=locsecret2"}
+    ]);
+    fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+    let index = dir.join("index.jsonl");
+    let line = fs::read_to_string(&index)
+        .unwrap()
+        .replace("http://a/", "http://a/?api_key=idxsecret3");
+    fs::write(&index, line).unwrap();
+
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    let mut text = String::new();
+    all_text(&dir, &mut text);
+    for s in ["hdrsecret1", "locsecret2", "idxsecret3"] {
+        assert!(!text.contains(s), "{s} survived");
+    }
+    let m = |p: &std::path::Path| fs::metadata(p).unwrap().modified().unwrap();
+    let (mi, mr) = (m(&index), m(&req));
+    std::thread::sleep(Duration::from_millis(20));
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    assert_eq!((m(&index), m(&req)), (mi, mr));
+}
