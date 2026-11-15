@@ -343,9 +343,8 @@ fn explain_matches_resolve_for_plain_fixtures() {
             .filter(|p| p.kind == ParamKind::Query)
             .collect();
         assert_eq!(query.len(), enabled.len(), "fixture {i}: params");
-        match &p.body {
-            PreparedBody::Bytes(b) => assert_eq!(r.body.bytes, Some(b.len()), "fixture {i}: body"),
-            _ => {}
+        if let PreparedBody::Bytes(b) = &p.body {
+            assert_eq!(r.body.bytes, Some(b.len()), "fixture {i}: body");
         }
         compared += 1;
     }
@@ -482,17 +481,15 @@ fn credential_query_pairs_inline_in_urls_are_hidden() {
         flat(&r.url),
         "http://h/p?a=1&access_token=<Hidden(Credential)>&b=2#f"
     );
-    for auth in [Auth::OAuth2ClientCredentials {
+    f.req.url = "http://h".into();
+    f.req.auth = Auth::OAuth2ClientCredentials {
         token_url: format!("http://t/x?client_secret={SENTINEL}&k=1"),
         client_id: "id".into(),
         client_secret: "s".into(),
         scope: "sc".into(),
         client_auth: ClientAuth::default(),
-    }] {
-        f.req.url = "http://h".into();
-        f.req.auth = auth;
-        assert!(!leaks(&f));
-    }
+    };
+    assert!(!leaks(&f));
     f.req.auth = Auth::OAuth2AuthCode {
         auth_url: format!("http://t/a?access_token={SENTINEL}"),
         token_url: format!("http://t/x?api_key={SENTINEL}"),
