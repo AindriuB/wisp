@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::assert::Assertion;
 use crate::model::Method;
 
 /// A named variable.
@@ -317,6 +318,8 @@ pub struct Request {
     pub body: Body,
     pub vars: Vec<Var>,
     pub settings: RequestSettings,
+    #[serde(default)]
+    pub assertions: Vec<Assertion>,
 }
 
 impl Default for Request {
@@ -332,6 +335,7 @@ impl Default for Request {
             body: Body::None,
             vars: Vec::new(),
             settings: RequestSettings::default(),
+            assertions: Vec::new(),
         }
     }
 }
