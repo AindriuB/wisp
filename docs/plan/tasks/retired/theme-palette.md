@@ -118,7 +118,7 @@ Launch with a temp `WISP_DATA_DIR` and `WISP_KEYCHAIN_SERVICE=wisp-themereview`,
 - New crates or new workspace dependencies.
 
 ## Status
-PR #79 is open and under review; not merged. An earlier version of this file said "Merged at 17d1e22" and was retired too early (finding 79-7). Retire it only when the PR merges.
+Merged as PR #79 (4323fbe). An earlier version of this file said "Merged at 17d1e22" and was retired too early (finding 79-7); it was un-retired until the PR merged.
 
 ## Review round 1
 Fixed: 79-1 (open sidebar row painted with the clamped `list_active`), 79-2 (header cell, same cause), 79-3 (contrast test ignored the library's 20%/30% alpha clamp), 79-7 (premature record).
