@@ -432,14 +432,24 @@ fn explain_keychain_secret_shadows_lower_scope() {
         "a.toml",
         &req("A", "\n[[headers]]\nname = \"X-T\"\nvalue = \"{{tok}}\"\n"),
     );
-    for args in [
-        vec!["explain", p(&d), "a.toml", "--env", "prod"],
-        vec!["explain", p(&d), "a.toml", "--env", "prod", "--json"],
-    ] {
-        let o = bin(&args);
-        let t = String::from_utf8_lossy(&o.stdout).into_owned();
-        assert!(!t.contains("FALLBACK-CANARY"), "{t}");
-        assert!(t.contains("tok"), "{t}");
-        assert!(t.contains("secret") || t.contains("Secret"), "{t}");
-    }
+    let note = "keychain: not loaded by the CLI";
+    let o = bin(&["explain", p(&d), "a.toml", "--env", "prod"]);
+    assert_eq!(o.status.code(), Some(0));
+    let t = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(!t.contains("FALLBACK-CANARY"), "{t}");
+    assert!(t.lines().any(|l| l.trim() == note), "{t}");
+    assert!(t.lines().any(|l| l.trim() == "secret tok (not set)"), "{t}");
+    let o = bin(&["explain", p(&d), "a.toml", "--env", "prod", "--json"]);
+    assert_eq!(o.status.code(), Some(0));
+    let t = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(!t.contains("FALLBACK-CANARY"), "{t}");
+    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+    assert_eq!(v["environment"]["keychain"], note, "{t}");
+    let s = &v["environment"]["secrets"][0];
+    assert_eq!(s["name"], "tok", "{t}");
+    assert_eq!(s["present"], false, "{t}");
+    let part = &v["headers"][0]["value"][0];
+    assert_eq!(part["kind"], "secret", "{t}");
+    assert_eq!(part["name"], "tok", "{t}");
+    assert_eq!(part["resolved"], false, "{t}");
 }
