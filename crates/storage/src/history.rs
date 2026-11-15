@@ -609,6 +609,39 @@ fn redact_credential_headers(headers: &mut [Header], names: &mut Vec<String>) {
     }
 }
 
+/// Redact the URL of a `Refresh` value, parsed like HTML `<meta http-equiv=refresh>`: after
+/// the first `;` or `,` come optional whitespace, `url`, `=` and one optional quote.
+fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
+    let Some(sep) = value.find([';', ',']) else {
+        return value.to_string();
+    };
+    let rest = &value[sep + 1..];
+    let mut pos = sep + 1 + (rest.len() - rest.trim_start().len());
+    let after = &value[pos..];
+    if after.len() >= 3 && after.is_char_boundary(3) && after[..3].eq_ignore_ascii_case("url") {
+        let t = after[3..].trim_start();
+        if let Some(t) = t.strip_prefix('=') {
+            pos = value.len() - t.trim_start().len();
+        }
+    }
+    let url = &value[pos..];
+    let (quote, body_start) = match url.chars().next() {
+        Some(q @ ('\'' | '"')) => (Some(q), pos + 1),
+        _ => (None, pos),
+    };
+    let body = &value[body_start..];
+    let (target, tail) = match quote.and_then(|q| body.find(q)) {
+        Some(i) => body.split_at(i),
+        None => (body, ""),
+    };
+    format!(
+        "{}{}{}",
+        &value[..body_start],
+        redact_url(target, found),
+        tail
+    )
+}
+
 /// Run every response header that can carry a URL through [`redact_url`].
 fn redact_url_headers(headers: &mut [Header], names: &mut Vec<String>) {
     for h in headers {
@@ -618,18 +651,11 @@ fn redact_url_headers(headers: &mut [Header], names: &mut Vec<String>) {
             || n.eq_ignore_ascii_case("refresh")
         {
             let mut found = Vec::new();
-            // `Refresh: 0; url=<target>` carries the URL after `url=`.
-            let split = if n.eq_ignore_ascii_case("refresh") {
-                h.value.to_ascii_lowercase().find("url=").map(|i| i + 4)
+            let redacted = if n.eq_ignore_ascii_case("refresh") {
+                redact_refresh(&h.value, &mut found)
             } else {
-                None
-            }
-            .unwrap_or(0);
-            let redacted = format!(
-                "{}{}",
-                &h.value[..split],
-                redact_url(&h.value[split..], &mut found)
-            );
+                redact_url(&h.value, &mut found)
+            };
             if redacted != h.value {
                 h.value = redacted;
                 note(names, h.name.clone());

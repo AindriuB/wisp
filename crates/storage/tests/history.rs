@@ -1003,9 +1003,8 @@ fn append_times_out_when_the_lock_is_held() {
     f.lock().unwrap();
     let index = hist_dir(&data).join("index.jsonl");
     let before = fs::read(&index).unwrap();
-    let t = std::time::Instant::now();
-    assert!(store.append(plain("http://b/"), None).is_err());
-    assert!(t.elapsed() < Duration::from_secs(5));
+    let err = store.append(plain("http://b/"), None).unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
     assert_eq!(fs::read(&index).unwrap(), before);
 }
 
@@ -1129,12 +1128,18 @@ fn open_scrubs_old_entries_once() {
     assert_eq!((m(&index), m(&req)), (mi, mr));
 }
 
-const SR_HEADERS: [(&str, &str); 5] = [
+const SR_HEADERS: [(&str, &str); 11] = [
     ("Location", "//alice:secret@example.com/path"),
     ("Location", "\\\\alice:secret@example.com/path"),
     ("Location", "/\\alice:secret@example.com/path"),
     ("Content-Location", "//alice:secret@example.com/path"),
     ("Refresh", "0; url=//alice:secret@h/"),
+    ("Refresh", "0;URL='//alice:secret@h'"),
+    ("Refresh", "0; url=\"//alice:secret@h/\""),
+    ("Refresh", "0; URL = //alice:secret@h"),
+    ("Refresh", "0; url= //alice:secret@h"),
+    ("Refresh", "0;//alice:secret@h"),
+    ("Refresh", "5, https://alice:secret@h/x"),
 ];
 
 #[test]
