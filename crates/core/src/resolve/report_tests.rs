@@ -710,7 +710,8 @@ fn credential_names_userinfo_and_long_values_are_hidden() {
     f.req.vars = vec![var("password", "hunter2"), var("ok", "fine")];
     f.req.url = "https://user:pw@h/{{password}}/{{ok}}".into();
     let r = f.report();
-    assert_eq!(r.url.0[0], ShownPart::Hidden(HideReason::Userinfo));
+    // `password` is a credential name used in the URL: the whole URL is hidden.
+    assert_eq!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
     let s = format!("{r:?}");
     for leak in ["pw@", "plain-literal", "abc", "hunter2"] {
         assert!(!s.contains(leak), "{leak} leaked: {s}");
@@ -782,10 +783,8 @@ fn a_secret_value_never_reaches_the_report() {
     for s in [format!("{r:?}"), format!("{r:#?}")] {
         assert!(!s.contains(MARK), "{s}");
     }
-    assert!(r.url.0.contains(&ShownPart::Secret {
-        name: "sec".into(),
-        resolved: true
-    }));
+    // The query value uses `sec`, so the whole URL is hidden.
+    assert_eq!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
     assert_eq!(r.body.bytes, None);
     // Each auth variant too.
     for auth in [
@@ -1374,8 +1373,6 @@ fn a_userinfo_sub_walk_bomb_costs_bounded_work() {
     let (_, work) = super::report::explain_counted(&f.req, &f.scope());
     let max = super::engine::MAX_EXPANSIONS;
     assert!(work <= 3 * max, "work {work}");
-    // The userinfo sub-walk is counted (about 500 expansions; without it work was 5572).
-    assert!(work >= 6000, "sub-walk work not counted: {work}");
 }
 
 #[test]
@@ -1400,4 +1397,76 @@ fn pattern_warning_text_from_a_hidden_variable_is_masked() {
     });
     assert!(!dump.contains(CANARY), "{dump}");
     assert!(!r.warnings.is_empty());
+}
+
+// ---- review round 2 (task 151) ----
+
+#[test]
+fn path_placeholder_text_returning_in_the_render_does_not_expose_a_credential() {
+    let (_, dump) = canary_report(|f| {
+        f.req.url = "http://{{s}}{id:a=b}{{q}}token=LITCANARY".into();
+        f.coll.vars.push(var("s", "h/"));
+        f.coll.vars.push(var("q", "?"));
+        f.req.path = vec![var("id", "a=b")];
+        f.req.headers.push(kv("Authorization", "{{s}}{{q}}", true));
+    });
+    assert!(!dump.contains("LITCANARY"), "{dump}");
+    let (_, dump) = canary_report(|f| {
+        f.req.url = "http://alice:LITCANARY{{sep}}{id:x=y}".into();
+        f.coll.vars.push(var("sep", "@h/"));
+        f.req.path = vec![var("id", "v")];
+        f.req.headers.push(kv("Authorization", "{{sep}}", true));
+    });
+    assert!(!dump.contains("LITCANARY"), "{dump}");
+}
+
+#[test]
+fn a_url_without_a_hidden_variable_still_renders() {
+    let (r, _) = canary_report(|f| {
+        f.req.url = "http://h/{{plain}}".into();
+        f.coll.vars.push(var("plain", "ok"));
+    });
+    assert_eq!(text(&r.url), "http://h/ok");
+}
+
+fn work_of(url: &str, vars: Vec<Var>, auth_header: bool) -> usize {
+    let mut f = Fx::new(req(url));
+    f.coll.vars = vars;
+    if auth_header {
+        f.req.headers = vec![kv("Authorization", "Bearer {{c}}", true)];
+    }
+    super::report::explain_counted(&f.req, &f.scope()).1
+}
+
+fn repeat(n: usize, name: &str) -> String {
+    format!("{{{{{name}}}}}").repeat(n)
+}
+
+#[test]
+fn the_userinfo_sub_walk_shares_the_expansion_budget() {
+    let vars = || {
+        vec![
+            var("c", &repeat(100, "d")),
+            var("d", &repeat(98, "e")),
+            var("g", &repeat(98, "e")),
+            var("e", ""),
+        ]
+    };
+    let max = super::engine::MAX_EXPANSIONS;
+    let work = work_of("http://alice:{{c}}{{g}}@h/", vars(), true);
+    assert!(work <= 3 * max, "work {work}");
+    // The userinfo walk is counted: compare with the same expansions outside userinfo.
+    let small = || {
+        vec![
+            var("c", &repeat(10, "d")),
+            var("d", &repeat(10, "e")),
+            var("e", ""),
+        ]
+    };
+    let with = work_of("http://alice:{{c}}@h/", small(), true);
+    let without = work_of("http://{{c}}.h/", small(), true);
+    assert!(
+        with >= without + 111,
+        "sub-walk not counted: {with} vs {without}"
+    );
 }

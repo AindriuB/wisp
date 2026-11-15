@@ -324,7 +324,6 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
     // Discovery walk: finds the uses, problems, warnings and the hidden set.
     let mut w = Walker::new(req, scope);
     let mut rendered = w.render();
-    let discovery_cuts = rendered.url_cuts;
     let (hidden, closure_work) = w.hidden_closure();
     // Render again with the final hidden set when it names anything. The render walker
     // also lists the variables, so both share one expansion budget. Its problems and
@@ -334,9 +333,9 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
     if !hidden.is_empty() {
         rw.hide_names = hidden.clone();
         rendered = rw.render();
-        // A hidden variable that supplied a `?`, `&`, `=` or `@` moved the query and
-        // userinfo cuts the discovery layout found: show none of the URL.
-        if rendered.url_cuts < discovery_cuts {
+        // A hidden variable used anywhere in the URL can move the query and userinfo
+        // cuts: show none of the URL.
+        if w.url_trail.iter().any(|n| hidden.contains(n)) {
             rendered.url = hidden_credential();
         }
     }
@@ -364,7 +363,7 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         verify_tls: bool_setting(s.verify_tls, true),
     };
     let (variables, listing_work) = w.variables(&hidden, &mut rw);
-    let work = w.expansions + w.sub_work + closure_work + listing_work;
+    let work = w.expansions + closure_work + listing_work;
     // Free text in a path-parameter problem can come from a hidden variable's value.
     let mask = w.url_trail.iter().any(|n| hidden.contains(n));
     let (problems, warnings) = if mask {
@@ -439,8 +438,6 @@ struct Rendered {
     headers: Vec<HeaderBuild>,
     auth: AuthReport,
     body: BodyReport,
-    /// Count of `?`, `&`, `=` and `@` in the URL's text before any hiding.
-    url_cuts: usize,
 }
 
 impl Walker<'_> {
@@ -460,14 +457,9 @@ impl Walker<'_> {
         }
         let query_extra: Vec<_> = effect.query.into_iter().collect();
         let raw = append_query(url, &query_extra).parts;
-        let url_cuts = text_only(&raw)
-            .chars()
-            .filter(|c| matches!(c, '?' | '&' | '=' | '@'))
-            .count();
         let url = finish_url(&raw);
         let body = self.build_body(&mut headers);
         Rendered {
-            url_cuts,
             url,
             params,
             headers,
@@ -880,8 +872,6 @@ struct Walker<'a> {
     render_only: bool,
     /// Variables the URL used (names noted while building it).
     url_trail: Vec<String>,
-    /// Expansions spent by sub-walkers, outside `expansions`' budget.
-    sub_work: usize,
     use_idx: HashMap<String, usize>,
 }
 
@@ -906,7 +896,6 @@ impl<'a> Walker<'a> {
             hide_names: HashSet::new(),
             render_only: false,
             url_trail: Vec::new(),
-            sub_work: 0,
             use_idx: HashMap::new(),
         }
     }
@@ -1073,8 +1062,9 @@ impl<'a> Walker<'a> {
                         self.taint_since(mark);
                     }
                     let mut w = Walker::new(req, self.scope);
+                    w.expansions = self.expansions;
                     w.subst(&req.url[..cut], &Location::Url);
-                    self.sub_work += w.expansions;
+                    self.expansions = w.expansions;
                     self.hidden_vars.extend(w.trail);
                 }
                 // Userinfo produced by a variable's value.
