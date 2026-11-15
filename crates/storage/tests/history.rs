@@ -1513,3 +1513,97 @@ fn leading_whitespace_in_credential_free_locations_is_unchanged() {
         assert_eq!(loaded.response_headers[0].value, value);
     }
 }
+
+fn encoded_query_headers() -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    for name in [
+        "%74oken",
+        "to%6ben",
+        "%54%4F%4b%45%4e",
+        "access%5Ftoken",
+        "api%5fkey",
+        "%FF%74oken",
+        "%GG%74oken",
+        "%26token%3D",
+    ] {
+        for header in ["Location", "Content-Location", "Refresh"] {
+            let prefix = if header == "Refresh" { "0; url=" } else { "" };
+            headers.push((
+                header,
+                format!("{prefix}https://example.com/?{name}=secret&x=%2f+z#frag"),
+            ));
+        }
+    }
+    headers
+}
+
+#[test]
+fn encoded_query_names_are_matched_on_append() {
+    for (name, value) in encoded_query_headers() {
+        let (_d, data, store) = setup();
+        let mut ne = plain("https://example.com/?%74oken=secret");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.clone(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        let loaded = store.load(&e.id).unwrap();
+        assert_eq!(
+            loaded.response_headers[0].value,
+            value.replace("=secret", "=")
+        );
+        assert!(e.redacted.iter().any(|n| n == name));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+#[test]
+fn encoded_query_names_are_matched_in_legacy_scrub() {
+    for (name, value) in encoded_query_headers() {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), None).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["request"]["url"] = serde_json::json!("https://example.com/?%74oken=secret");
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let index = hist_dir(&data).join("index.jsonl");
+        let raw = fs::read_to_string(&index)
+            .unwrap()
+            .replace("http://a/", "https://example.com/?%74oken=secret");
+        fs::write(&index, raw).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let reopened = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let loaded = reopened.load(&e.id).unwrap();
+        assert_eq!(
+            loaded.response_headers[0].value,
+            value.replace("=secret", "=")
+        );
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+        assert!(hist_dir(&data).join(".scrubbed-1").exists());
+    }
+}
+
+#[test]
+fn query_name_decoding_preserves_other_pairs_and_variable_references() {
+    let (_d, _data, store) = setup();
+    for query in [
+        "%70age=2&x=%2f+z",
+        "%GG=value&%=end&%7=short&%FF=value",
+        "to+ken=value&%2574oken=value",
+        "%74oken={{token}}&api%5fkey={{key}}",
+    ] {
+        let value = format!("https://example.com/?{query}");
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Location".into(),
+            value: value.clone(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        assert_eq!(store.load(&e.id).unwrap().response_headers[0].value, value);
+    }
+}

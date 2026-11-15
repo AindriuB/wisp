@@ -127,12 +127,35 @@ fn authority_start(base: &str) -> usize {
     offset + base.find("://").map_or(0, |i| i + 3)
 }
 
+/// Decode a form query name once for matching, leaving malformed escapes literal.
+fn decode_query_name(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                char::from(bytes[i + 1]).to_digit(16),
+                char::from(bytes[i + 2]).to_digit(16),
+            )
+        {
+            decoded.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
+        }
+        decoded.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
 /// Redact the value of every credential-named `name=value` pair in a query string.
 fn redact_query(q: &str, names: &mut Vec<String>) -> String {
     let pairs: Vec<String> = q
         .split('&')
         .map(|pair| match pair.split_once('=') {
-            Some((n, v)) if is_secret_name(n) => {
+            Some((n, v)) if is_secret_name(&decode_query_name(n)) => {
                 let mut v = v.to_string();
                 if scrub(&mut v) {
                     note(names, format!("query.{n}"));
