@@ -465,6 +465,86 @@ pub fn create_request(root: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(rel)
 }
 
+/// Write `bytes` to `abs` with create-new semantics: an existing entry of any
+/// kind (dangling symlink included) is refused and never overwritten.
+fn write_new(abs: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(abs)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                exists_err(abs)
+            } else {
+                io(abs, e)
+            }
+        })?;
+    if let Err(e) = f.write_all(bytes).and_then(|()| f.sync_all()) {
+        drop(f);
+        let _ = std::fs::remove_file(abs);
+        return Err(io(abs, e));
+    }
+    Ok(())
+}
+
+fn entry_exists(p: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(p) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io(p, e)),
+    }
+}
+
+/// Start a collection in `dir`: create it if missing (its parent must exist)
+/// and write `collection.toml` with `format = 1`. Returns the file's path.
+pub fn create_collection(dir: &Path) -> Result<PathBuf> {
+    let file = dir.join(COLLECTION_FILE);
+    if entry_exists(&file)? {
+        return Err(exists_err(&file));
+    }
+    match std::fs::create_dir(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+        Err(e) => return Err(io(dir, e)),
+    }
+    write_new(&file, b"format = 1\n")?;
+    Ok(file)
+}
+
+/// Create an empty environment `<name>` under `root/environments/`. Refuses
+/// when its plain or secrets file exists, or `environments` is a symlink.
+pub fn create_environment(root: &Path, name: &str) -> Result<PathBuf> {
+    crate::environment::check_name(root, name)?;
+    let rootc = canon_root(root)?;
+    let env_dir = rootc.join(ENV_DIR);
+    let mut made = false;
+    match std::fs::symlink_metadata(&env_dir) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => {
+            return Err(invalid(
+                &env_dir,
+                "must be a real directory inside the collection",
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => made = true,
+        Err(e) => return Err(io(&env_dir, e)),
+    }
+    let pp = crate::environment::plain_path(&rootc, name);
+    let sp = crate::environment::secrets_path(&rootc, name);
+    if entry_exists(&pp)? {
+        return Err(exists_err(&pp));
+    }
+    if entry_exists(&sp)? {
+        return Err(exists_err(&sp));
+    }
+    if made {
+        std::fs::create_dir(&env_dir).map_err(|e| io(&env_dir, e))?;
+    }
+    write_new(&pp, b"")?;
+    Ok(pp)
+}
+
 /// Create a folder named after `name` in `parent`.
 pub fn create_folder(root: &Path, parent: &Path, name: &str) -> Result<PathBuf> {
     check_name(name)?;
