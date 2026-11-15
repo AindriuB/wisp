@@ -79,6 +79,14 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 ### Hardening backlog (post-0.2.0)
 `docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled.
 
+### Follow-ups from task theme-palette (PR #79 open, under review; not 0.2.0)
+- 79-4: `eprintln!` instead of `tracing::warn`.
+- 79-5: `apply` reparses theme.json on every call.
+- 79-6: stacked overlays double-dim.
+- Hand test on macOS in both Wisp themes is still to do (the review copy could not be screenshotted).
+- The banner contrast test rebuilds the tint instead of calling `banner_bg` (`theme.rs:341`).
+- `install_keeps_defaults_on_bad_json` asserts nothing when there is no `Theme` global (`theme.rs:363`).
+
 ### Follow-ups from task 128 (Save and disk conflicts, not 0.2.0)
 - 🔒 data loss: Save checks only watcher-processed state. An external edit saved over before the watcher event lands is overwritten; it needs a re-read or stat at write time. Ties to the 0.3.0 spec's open question 1.
 - 🔒 data loss: on a clean tab, an external edit that leaves the file unparseable is Ignored (`draft.rs:76-80`), so no banner shows and a later save overwrites it.

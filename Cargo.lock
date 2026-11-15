@@ -8620,6 +8620,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "serde_json",
  "tempfile",
  "toml_edit 0.22.27",
  "tracing",
