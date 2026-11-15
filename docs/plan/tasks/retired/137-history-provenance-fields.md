@@ -47,3 +47,6 @@ into 2A), and before H1 (both edit `history.rs`).
 Reviewed HEAD d8a17cd.
 - [SPEC] AC4 "response header value" was ambiguous. Settled by the 2026-11-15 decision above; AC4 reworded.
 - [P2] crates/storage/tests/history.rs:918-948 `provenance_canary_values_never_stored` — HEADER-CANARY sits inside a Status assertion's actual text, so no header assertion goes through `AssertionRecord::from_result`. Fix: use an `Assertion::Header` whose expected value and failing actual are both canaries, and make the stored request carry that assertion so the `.req.json` drop path is exercised.
+
+## Outcome
+Merged as PR #89 (2e9c5a8); PASS and APPROVE at 7a0e6b3. History records provenance fields. Decision: AC4 "header value" means values inside a header assertion; non-credential response headers stay in `<id>.req.json` as in 0.2.0. Lows are follow-ups in PLAN.

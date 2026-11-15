@@ -59,3 +59,6 @@ Reviewed HEAD c4154fd.
 - 86-1 [Medium, security] validate.rs:205 — validate loads every request via load_request, which reads each body sidecar whole with no size cap; open_collection never does. Decision: before loading, check by metadata (no read) that the request file and every sidecar it references are regular files (closes 86-4, FIFOs block forever) and within a size cap (1 MiB request TOML; history::BODY_CAP for sidecars). An oversize or non-regular file gets a Warning finding (relative path, fixed message, no content) and is not read. Sidecar names come from a cheap parse of the request TOML.
 - 86-2 [Medium] validate.rs:173 — cycle skip, MAX_FOLDERS cap and truncated stop, broken link and read_dir error paths untested. Add cfg(unix) tests for each.
 - 86-3, 86-5 Low and 86-6 Nit: follow-ups. 86-4 Low closed by the 86-1 check.
+
+## Outcome
+Merged as PR #86 (4ae651d); PASS and APPROVE at 5d14179. `storage validate` reports findings for a collection. `Mode::Unknown` secrets is an Error; findings are filed under the erroring file's own root-stripped path; the request file (1 MiB, `MAX_REQUEST_BYTES`) and its `body.file` sidecar (`history::BODY_CAP`) are metadata-checked first, regular files only, and an oversize or non-regular file is a Warning and is not read. Lows are follow-ups in PLAN.

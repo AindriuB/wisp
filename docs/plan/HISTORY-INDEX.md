@@ -20,6 +20,10 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-15 | 138 | wisp-core opt-level z, Windows headroom 320,736 B | ## 2026-11-15 — wisp-core built at opt-level z (task 138) |
+| 2026-11-15 | 137 | history provenance fields, AC4 header decision | ## 2026-11-15 — History provenance fields (task 137) |
+| 2026-11-15 | 136 | measure wave 1, wisp-cli size budget, theme cost | ## 2026-11-15 — Measure wave 1 (task 136) |
+| 2026-11-15 | 133 | storage validate, finding paths, size and file-type pre-checks | ## 2026-11-15 — Storage validate (task 133) |
 | 2026-11-15 | 135 | wisp-cli crate, inspect, check-boundaries.sh | ## 2026-11-15 — wisp-cli scaffold and inspect (task 135) |
 | 2026-11-15 | 134 | create_collection, create_environment storage functions | ## 2026-11-15 — Create collection and environment (task 134) |
 | 2026-11-15 | 132 | environment_info, SecretsMode::Unknown, suggest_confirm | ## 2026-11-15 — Environment info and the suggest_confirm hint (task 132) |

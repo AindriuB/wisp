@@ -45,3 +45,6 @@ Reviewed HEAD 0001494.
 - [P2] scripts/measure/results/wave-1-size.json:5,9,11 — macOS/Linux deltas recorded as null and "no baseline" though run 43622975912 (commit a02a779) measured macOS 11,601,344 B and Linux 25,812,488 B; no baseline commit recorded (AC5 asks for per-target baseline commit and GUI delta).
 - [P2] same file :5 — baseline is not the one the task file's Context requires: theme-palette merged first (4323fbe, PR #79), so the baseline must be a measure run on 4323fbe; none exists. The recorded +265,216 B also includes theme #79, 128 and 129.
 - [P3, follow-up] measure.yml "Check CLI size limit" — a non-integer limit passes silently (`[` exit 2 inside `if`).
+
+## Outcome
+Merged as PR #88 (707646f); verified at 76e2935. Measure wave 1: Windows GUI 15,447,040 B at the wave-1 head against baseline 4323fbe (run 43701286044); wave 1 itself cost +29,184 B on Windows. `wisp-cli` is 552,512 / 567,296 / 662,104 B (mac/win/linux) against a 4 MiB budget. Lows are follow-ups in PLAN.
