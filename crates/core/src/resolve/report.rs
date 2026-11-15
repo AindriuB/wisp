@@ -316,6 +316,11 @@ pub struct ResolutionReport {
 
 /// Explain `req` in `scope`.
 pub fn explain(req: &Request, scope: &Scope) -> ResolutionReport {
+    explain_counted(req, scope).0
+}
+
+/// `explain`, plus the number of reference visits it spent (for tests that bound the work).
+pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport, usize) {
     let mut w = Walker::new(req, scope);
     let mut params = Vec::new();
     let url = w.build_url(&mut params);
@@ -348,8 +353,9 @@ pub fn explain(req: &Request, scope: &Scope) -> ResolutionReport {
         follow_redirects: bool_setting(s.follow_redirects, true),
         verify_tls: bool_setting(s.verify_tls, true),
     };
-    let variables = w.variables();
-    ResolutionReport {
+    let (variables, listing_work) = w.variables();
+    let work = w.expansions + listing_work;
+    let report = ResolutionReport {
         environment: scope.environment.map(|e| EnvReport {
             name: e.name.clone(),
             secrets: e
@@ -371,7 +377,8 @@ pub fn explain(req: &Request, scope: &Scope) -> ResolutionReport {
         variables,
         problems: w.problems,
         warnings: w.warnings,
-    }
+    };
+    (report, work)
 }
 
 /// Explain only the effective auth. Expands the auth fields and nothing else.
@@ -1349,7 +1356,9 @@ impl<'a> Walker<'a> {
                 let mut total = Some(0usize);
                 for p in parts.iter().filter(|p| p.enabled) {
                     if let PartValue::Text(t) = &p.value {
-                        let n = self.subst(&p.name, &loc);
+                        // The engine sends the part name as written, without expanding it.
+                        let mut n = Acc::default();
+                        n.text(&p.name);
                         let vmark = self.trail.len();
                         let v = self.subst(t, &loc);
                         if is_credential_hidden(&finish_for(&v.parts, &n.parts)) {
@@ -1392,7 +1401,7 @@ impl<'a> Walker<'a> {
     // ---- variables ----
 
     /// `hidden_vars` plus credential-named variables, closed over what their values use.
-    fn hidden_closure(&self) -> HashSet<String> {
+    fn hidden_closure(&self) -> (HashSet<String>, usize) {
         let mut set = self.hidden_vars.clone();
         set.extend(
             self.uses
@@ -1400,26 +1409,35 @@ impl<'a> Walker<'a> {
                 .filter(|u| is_credential_name(&u.name))
                 .map(|u| u.name.clone()),
         );
+        // Reachability over the variable graph: each name is scanned once, nothing is expanded.
+        let mut work = 0usize;
         let mut todo: Vec<String> = set.iter().cloned().collect();
         while let Some(n) = todo.pop() {
             for (raw, source) in lookup_all(self.req, self.scope, &n) {
                 if matches!(source, VarSource::Secret) {
                     continue;
                 }
-                let mut w = Walker::new(self.req, self.scope);
-                w.expand(raw, &Location::Var(n.clone()), &mut vec![n.clone()]);
-                for m in w.trail {
-                    if set.insert(m.clone()) {
-                        todo.push(m);
+                for r in template::var_refs(raw) {
+                    work += 1;
+                    if r.terminated
+                        && !r.name.is_empty()
+                        && !r.name.starts_with('$')
+                        && set.insert(r.name.clone())
+                    {
+                        todo.push(r.name);
                     }
                 }
             }
         }
-        set
+        (set, work)
     }
 
-    fn variables(&self) -> Vec<VarReport> {
-        let hidden = self.hidden_closure();
+    fn variables(&self) -> (Vec<VarReport>, usize) {
+        let (hidden, closure_work) = self.hidden_closure();
+        // One throwaway walker for every listed value, so they share one expansion budget.
+        // Its problems are already reported at the use sites.
+        let mut w = Walker::new(self.req, self.scope);
+        w.hide_names = hidden.clone();
         let mut out = Vec::new();
         for u in &self.uses {
             if u.name.starts_with('$') {
@@ -1444,9 +1462,7 @@ impl<'a> Walker<'a> {
                     resolved: !raw.is_empty(),
                 }])
             } else {
-                // A throwaway walker: its problems are already reported at the use sites.
-                let mut w = Walker::new(self.req, self.scope);
-                w.hide_names = hidden.clone();
+                w.stop = false;
                 let acc = w.expand(
                     raw,
                     &Location::Var(u.name.clone()),
@@ -1466,7 +1482,7 @@ impl<'a> Walker<'a> {
                 locations: u.locations.clone(),
             });
         }
-        out
+        (out, closure_work + w.expansions)
     }
 }
 

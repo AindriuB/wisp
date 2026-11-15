@@ -1050,3 +1050,42 @@ fn a_shown_variable_does_not_expand_a_hidden_nested_variable() {
     f.req.vars = vec![var("x", "{{s}}")];
     assert!(!plain_var_leaks(f));
 }
+
+#[test]
+fn a_multipart_part_name_is_literal_text() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.body = Body::Multipart(vec![Part {
+        name: "{{missing}}".into(),
+        value: PartValue::Text("v".into()),
+        enabled: true,
+    }]);
+    let r = f.report();
+    assert!(
+        !r.problems
+            .iter()
+            .any(|p| matches!(p, Problem::UnresolvedVar { .. }))
+    );
+    assert!(r.variables.iter().all(|v| v.name != "missing"));
+}
+
+#[test]
+fn a_variable_bomb_costs_bounded_work() {
+    let mut f = Fx::new(req("http://h"));
+    // b0 expands to 2^8 copies of the leaf; every hidden variable reaches b0.
+    let mut vars: Vec<Var> = (0..8)
+        .map(|i| {
+            var(
+                &format!("b{i}"),
+                &format!("{{{{b{}}}}}{{{{b{}}}}}", i + 1, i + 1),
+            )
+        })
+        .collect();
+    vars.push(var("b8", "x"));
+    let hidden: Vec<String> = (0..200).map(|i| format!("h{i}")).collect();
+    vars.extend(hidden.iter().map(|h| var(h, "{{b0}}")));
+    f.coll.vars = vars;
+    let refs: String = hidden.iter().map(|h| format!("{{{{{h}}}}}")).collect();
+    f.req.body = Body::Form(vec![kv("password", &refs, true)]);
+    let (_, work) = super::report::explain_counted(&f.req, &f.scope());
+    assert!(work <= 3 * super::engine::MAX_EXPANSIONS, "work {work}");
+}

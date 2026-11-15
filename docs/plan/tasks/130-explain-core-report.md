@@ -94,3 +94,8 @@ context strip (wave 2, 2B) and `wisp-cli explain` (2D) both consume this type.
 ## Review round 5 — findings (HEAD 1de468f)
 - [P2] report.rs:947-959 with userinfo_cut :592-597 — the cut lands inside a `{{…}}` whose name contains `@`, leaving userinfo variables `Shown` — settled by (4a); AC13 (f), tests (h), (i).
 - [DRIFT] report.rs:944-962 the URL uses a narrower rule than (4)(f) — settled by (4a), which adopts it.
+
+## PR #83 review round 1 — findings (HEAD 7d22195)
+- 83-1 [Medium] report.rs:1405 — hidden_closure and variables() start a fresh 10k-expansion walker per hidden var per layer, including shadowed layers; explain can hang where send is instant. Fix: closure by var_refs reachability (no expansion), one shared budget; add a "variable bomb" test that counts operations (no timing asserts).
+- 83-2 [Medium] report.rs:1352 — multipart part names are expanded in explain but sent literally by the engine (false UnresolvedVar, phantom uses). Fix: treat the name as literal; credential-named literal still hides value variables (AC13(d)). Test: part named `{{missing}}` gives no UnresolvedVar and no var use.
+- Lows 83-3..83-8 and Nit 83-9: follow-ups, not this round.
