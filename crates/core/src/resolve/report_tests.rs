@@ -3,8 +3,8 @@ use super::*;
 use crate::model::PreparedBody;
 use crate::request::ClientAuth;
 use crate::request::{
-    ApiKeyLocation, Auth, Body, CollectionDefaults, Environment, FolderDefaults, Request, TextBody,
-    Var,
+    ApiKeyLocation, Auth, Body, CollectionDefaults, Environment, FolderDefaults, Part, PartValue,
+    Request, TextBody, Var,
 };
 
 struct Fx {
@@ -911,6 +911,54 @@ fn a_variable_spliced_into_a_credential_query_value_is_hidden() {
     // `q` carries `&token=<s>` into `?a={{q}}`.
     let mut f = Fx::new(req("http://h/?a={{q}}"));
     f.req.vars = vec![var("q", "1&token={{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_userinfo_password_variable_is_hidden() {
+    assert!(!plain_var_leaks(Fx::new(req("http://u:{{s}}@h/"))));
+}
+
+#[test]
+fn a_whole_userinfo_variable_is_hidden() {
+    let mut f = Fx::new(req("http://{{creds}}@h/"));
+    f.req.vars = vec![var("creds", "u:{{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn an_oauth_token_url_credential_query_variable_is_hidden() {
+    assert!(!plain_var_leaks(with_auth(Auth::OAuth2ClientCredentials {
+        token_url: "https://idp/token?client_secret={{s}}".into(),
+        client_id: "c".into(),
+        client_secret: String::new(),
+        scope: String::new(),
+        client_auth: ClientAuth::default(),
+    })));
+}
+
+#[test]
+fn a_credential_path_param_variable_is_hidden() {
+    let mut f = Fx::new(req("http://h/{token}"));
+    f.req.path = vec![var("token", "{{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_credential_form_field_variable_is_hidden() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.body = Body::Form(vec![kv("password", "{{s}}", true)]);
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_credential_multipart_field_variable_is_hidden() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.body = Body::Multipart(vec![Part {
+        name: "password".into(),
+        value: PartValue::Text("{{s}}".into()),
+        enabled: true,
+    }]);
     assert!(!plain_var_leaks(f));
 }
 

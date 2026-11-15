@@ -940,6 +940,18 @@ impl<'a> Walker<'a> {
         if hide_query_values(&url.parts) != url.parts {
             self.taint_since(mark);
         }
+        if hides_userinfo(&url.parts) {
+            match userinfo_cut(&req.url) {
+                // Userinfo written in the template: hide only what it uses.
+                Some(cut) => {
+                    let mut w = Walker::new(req, self.scope);
+                    w.subst(&req.url[..cut], &Location::Url);
+                    self.hidden_vars.extend(w.trail);
+                }
+                // Userinfo produced by a variable's value.
+                None => self.taint_since(mark),
+            }
+        }
         let mut pairs: Vec<Pair> = Vec::new();
         for p in req.params.iter().filter(|p| p.enabled) {
             let loc = Location::Param(p.name.clone());
@@ -1028,8 +1040,12 @@ impl<'a> Walker<'a> {
         if !cache.contains_key(name) {
             let req = self.req;
             let v = req.path.iter().find(|v| v.name == name).map(|v| {
+                let pmark = self.trail.len();
                 let acc = self.subst(&v.value, &Location::PathParam(name.to_string()));
                 let shown = finish(&acc.parts, Some(name));
+                if is_credential_hidden(&shown) {
+                    self.taint_since(pmark);
+                }
                 params.push(ParamReport {
                     kind: ParamKind::Path,
                     name: Shown(vec![ShownPart::Text(name.to_string())]),
@@ -1144,7 +1160,18 @@ impl<'a> Walker<'a> {
         }
         let value = match kind {
             FieldKind::Plain => finish(&acc.parts, None),
-            FieldKind::Url => finish_url(&acc.parts),
+            FieldKind::Url => {
+                let shown = finish_url(&acc.parts);
+                if shown.0.iter().any(|p| {
+                    matches!(
+                        p,
+                        ShownPart::Hidden(HideReason::Credential | HideReason::Userinfo)
+                    )
+                }) {
+                    self.taint_since(mark);
+                }
+                shown
+            }
             FieldKind::Sensitive | FieldKind::Username if acc.parts.is_empty() => Shown::default(),
             FieldKind::Username => Shown(vec![ShownPart::Hidden(HideReason::Userinfo)]),
             FieldKind::Sensitive => Shown(vec![ShownPart::Hidden(HideReason::Credential)]),
@@ -1288,7 +1315,11 @@ impl<'a> Walker<'a> {
                 let mut count = 0usize;
                 for f in fields.iter().filter(|f| f.enabled) {
                     let n = self.subst(&f.name, &loc);
+                    let vmark = self.trail.len();
                     let v = self.subst(&f.value, &loc);
+                    if is_credential_hidden(&finish_for(&v.parts, &n.parts)) {
+                        self.taint_since(vmark);
+                    }
                     count += 1;
                     total = match (total, n.bytes(), v.bytes()) {
                         (Some(t), Some(_), Some(_)) => Some(
@@ -1306,7 +1337,12 @@ impl<'a> Walker<'a> {
                 let mut total = Some(0usize);
                 for p in parts.iter().filter(|p| p.enabled) {
                     if let PartValue::Text(t) = &p.value {
+                        let n = self.subst(&p.name, &loc);
+                        let vmark = self.trail.len();
                         let v = self.subst(t, &loc);
+                        if is_credential_hidden(&finish_for(&v.parts, &n.parts)) {
+                            self.taint_since(vmark);
+                        }
                         total = total.zip(v.bytes()).map(|(a, b)| a + b);
                     }
                 }
@@ -1391,6 +1427,13 @@ impl<'a> Walker<'a> {
         }
         out
     }
+}
+
+fn hides_userinfo(parts: &[ShownPart]) -> bool {
+    finish_url(parts)
+        .0
+        .iter()
+        .any(|p| matches!(p, ShownPart::Hidden(HideReason::Userinfo)))
 }
 
 fn is_credential_hidden(s: &Shown) -> bool {
