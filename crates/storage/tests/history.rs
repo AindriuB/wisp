@@ -1242,12 +1242,15 @@ fn scrub_failure_leaves_marker_absent_and_retries() {
     assert!(!fs::read_to_string(&req).unwrap().contains("locsecret"));
 }
 
-const REFRESH_QUERY_SECRETS: [&str; 5] = [
+const REFRESH_QUERY_SECRETS: [&str; 8] = [
     "0; url=https://example.com/?access_token=secret",
     "0; url='https://e.com/?a=1&token=secret'",
     "0; url=/next?api_key=secret",
     "0; url=https://e.com/?a=1; url=/x?password=secret",
     "0; url=https://e.com/?a=1&b=2&refresh_token=secret#frag",
+    "0; url=https://e.com/?name=O'Brien&access_token=secret",
+    "0; url=https://e.com/?x=a;b&access_token=secret",
+    "0; url=https://e.com/?q=a b&access_token=secret",
 ];
 
 #[test]
@@ -1272,6 +1275,7 @@ fn refresh_query_without_credentials_is_unchanged() {
     for value in [
         "0; url=https://h/p?a=1&b=2",
         "0; url='/n?page=2&sort=x#top'",
+        "0; url=https://h/p?q=O'Brien;x=a b&c=1",
     ] {
         let (_d, data, store) = setup();
         let mut ne = plain("http://a/");

@@ -704,12 +704,11 @@ fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
         }
         out.replace_range(p..at, &user);
     }
-    // Every `?` opens a query that runs to `#`, whitespace, a quote, `;` or the end.
+    // Every `?` opens a query that runs to `#` or the end: an unquoted URL may hold
+    // quotes, `;` and whitespace, so none of them end it.
     let mut pos = out.len();
     while let Some(q) = out[..pos].rfind('?') {
-        let end = out[q + 1..]
-            .find(|c: char| c == '#' || c == '\'' || c == '"' || c == ';' || c.is_whitespace())
-            .map_or(out.len(), |i| q + 1 + i);
+        let end = out[q + 1..].find('#').map_or(out.len(), |i| q + 1 + i);
         let redacted = redact_query(&out[q + 1..end], found);
         out.replace_range(q + 1..end, &redacted);
         pos = q;
