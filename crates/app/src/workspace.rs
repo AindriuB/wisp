@@ -661,7 +661,10 @@ fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
 pub enum HistoryScope {
     /// Records of this request path.
     Records(PathBuf),
-    /// The tab belongs to no collection request, so there is nothing to scope to.
+    /// The tab is owned by no collection: its sends are not recorded.
+    NotRecorded,
+    /// The tab is in an open collection with no saved request path: sends are recorded
+    /// without a request link.
     Scratch,
     /// A from-history tab whose original request is gone.
     OriginalMissing,
@@ -682,7 +685,7 @@ fn choose_history_scope(
     scope: (Option<PathBuf>, bool, bool),
 ) -> HistoryScope {
     if !in_collection {
-        return HistoryScope::Scratch;
+        return HistoryScope::NotRecorded;
     }
     if let Some(reason) = off {
         return HistoryScope::Off(reason.to_string());
@@ -4010,7 +4013,7 @@ mod tests {
         let none = (None, false, false);
         assert_eq!(
             choose_history_scope(false, None, false, ok.clone()),
-            H::Scratch
+            H::NotRecorded
         );
         assert_eq!(
             choose_history_scope(true, Some("why"), true, ok.clone()),
