@@ -106,3 +106,10 @@ Reviewed HEAD 2eeadd2.
 
 - [P2] report_tests.rs:1072-1091 — `a_variable_bomb_costs_bounded_work` passes with either half of the 83-1 fix reverted. Fix: shadowed-layer 2^8 bomb, cheap winning layer, ~2000 hidden names, work <= 3*MAX_EXPANSIONS.
 - [P3] report.rs:1439-1476 — once the shared listing budget runs out, later values are cut short with no marker; a hidden variable with a cut value that has no parts is listed as `Shown([])`. Fix: hidden-set variables always Hidden(Credential); non-hidden cut values Hidden(TooLong).
+
+## PR #83 review round 3 — findings
+
+Reviewed HEAD ad8a2ad.
+
+- [P2] report_tests.rs:1093-1113 — no test catches reverting the "one shared walker in variables()" half of 83-1 (fresh walker per listed variable). Fix: add a test with a bomb b0..b8, a chain d0..d7 with d7 = `{{k0}}..{{k99}}` and each k_i = `{{b0}}`, header `X-A: {{d0}}`; assert work <= 3*MAX_EXPANSIONS via `explain_counted`. Reviewer measured 10210 on HEAD vs 48337 with a fresh walker per listed variable.
+- [P3, accepted residual] report.rs:1472 — a hidden-set variable whose value is empty and not cut lists as `Shown([])` (reveals only emptiness; matches finish/finish_for). Orchestrator decision: accepted, follow-up.

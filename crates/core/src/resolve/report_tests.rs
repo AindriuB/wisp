@@ -1114,6 +1114,30 @@ fn a_shadowed_variable_bomb_costs_bounded_work() {
 }
 
 #[test]
+fn listed_variables_share_one_walker_budget() {
+    let mut f = Fx::new(req("http://h"));
+    let mut vars: Vec<Var> = (0..8)
+        .map(|i| {
+            var(
+                &format!("b{i}"),
+                &format!("{{{{b{}}}}}{{{{b{}}}}}", i + 1, i + 1),
+            )
+        })
+        .collect();
+    vars.push(var("b8", "x"));
+    for i in 0..7 {
+        vars.push(var(&format!("d{i}"), &format!("{{{{d{}}}}}", i + 1)));
+    }
+    let ks: String = (0..100).map(|i| format!("{{{{k{i}}}}}")).collect();
+    vars.push(var("d7", &ks));
+    vars.extend((0..100).map(|i| var(&format!("k{i}"), "{{b0}}")));
+    f.coll.vars = vars;
+    f.req.headers = vec![kv("X-A", "{{d0}}", true)];
+    let (_, work) = super::report::explain_counted(&f.req, &f.scope());
+    assert!(work <= 3 * super::engine::MAX_EXPANSIONS, "work {work}");
+}
+
+#[test]
 fn a_value_cut_by_the_listing_budget_is_never_a_shortened_text() {
     let mut f = Fx::new(req("http://h"));
     let mut vars = vec![var("x", "y"), var("h", &"{{x}}".repeat(1300))];
