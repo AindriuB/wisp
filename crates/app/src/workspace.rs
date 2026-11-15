@@ -4031,6 +4031,14 @@ mod tests {
             choose_history_scope(true, None, false, (None, false, true)),
             H::UrlEdited
         );
+        assert_eq!(
+            choose_history_scope(true, Some("why"), false, none.clone()),
+            H::Off("why".into())
+        );
+        assert_eq!(
+            choose_history_scope(true, None, true, none.clone()),
+            H::Pending
+        );
         assert_eq!(choose_history_scope(true, None, false, ok), H::Records(p()));
         assert_eq!(choose_history_scope(true, None, false, none), H::Scratch);
     }
