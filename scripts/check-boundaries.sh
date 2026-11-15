@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.." || exit 2
 fail=0
 
 for c in wisp-core wisp-storage wisp-cli; do
-    tree=$(cargo tree -p "$c" -e normal,build --locked --prefix none 2>&1) || {
+    tree=$(cargo tree -p "$c" -e normal,build --target all --all-features --locked --prefix none 2>&1) || {
         echo "check-boundaries: cargo tree failed for $c" >&2
         echo "$tree" >&2
         fail=1
@@ -20,10 +20,17 @@ for c in wisp-core wisp-storage wisp-cli; do
     done
 done
 
-for pat in 'Engine' 'Command::' 'reqwest' 'tokio' 'std::net' 'keychain' \
-    'ensure_collection_id' 'atomic_write' 'fs::write' 'create_dir'; do
-    if grep -rnF -e "$pat" crates/cli/src; then
+for pat in 'net::' 'TcpStream' 'UdpSocket' 'process::Command' 'Command::new' \
+    'File::create' 'OpenOptions' 'fs::write' 'fs::remove' '#[path' 'include!' \
+    'include_str!' 'include_bytes!' 'reqwest' 'tokio' 'Engine' 'keychain::' \
+    'SecretStore' 'ensure_collection_id' 'atomic_write' 'create_dir'; do
+    grep -rnF -e "$pat" crates/cli/src
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
         echo "check-boundaries: crates/cli/src contains $pat" >&2
+        fail=1
+    elif [ "$rc" -ne 1 ]; then
+        echo "check-boundaries: grep failed (status $rc) for $pat" >&2
         fail=1
     fi
 done
