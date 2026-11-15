@@ -91,6 +91,28 @@ fn note(names: &mut Vec<String>, name: String) {
     }
 }
 
+/// Offset where the authority begins: after `scheme://`, or after a leading `//` (also `\\`
+/// and mixed forms, which the WHATWG parser treats as slashes) for scheme-relative URLs.
+fn authority_start(base: &str) -> usize {
+    let slashes = |s: &str| s.bytes().take_while(|b| matches!(b, b'/' | b'\\')).count();
+    let lead = slashes(base);
+    if lead >= 2 {
+        return lead;
+    }
+    if let Some((scheme, rest)) = base.split_once(':')
+        && !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+    {
+        let n = slashes(rest);
+        if n >= 2 {
+            return scheme.len() + 1 + n;
+        }
+    }
+    base.find("://").map_or(0, |i| i + 3)
+}
+
 /// Redact userinfo and credential-named query values in a URL template.
 fn redact_url(url: &str, names: &mut Vec<String>) -> String {
     let (rest, fragment) = match url.find('#') {
@@ -101,9 +123,9 @@ fn redact_url(url: &str, names: &mut Vec<String>) -> String {
         Some(i) => (&rest[..i], Some(&rest[i + 1..])),
         None => (rest, None),
     };
-    let auth_start = base.find("://").map_or(0, |i| i + 3);
+    let auth_start = authority_start(base);
     let auth_end = base[auth_start..]
-        .find('/')
+        .find(['/', '\\'])
         .map_or(base.len(), |i| auth_start + i);
     let mut out = String::with_capacity(url.len());
     match base[auth_start..auth_end].rfind('@') {
@@ -596,7 +618,18 @@ fn redact_url_headers(headers: &mut [Header], names: &mut Vec<String>) {
             || n.eq_ignore_ascii_case("refresh")
         {
             let mut found = Vec::new();
-            let redacted = redact_url(&h.value, &mut found);
+            // `Refresh: 0; url=<target>` carries the URL after `url=`.
+            let split = if n.eq_ignore_ascii_case("refresh") {
+                h.value.to_ascii_lowercase().find("url=").map(|i| i + 4)
+            } else {
+                None
+            }
+            .unwrap_or(0);
+            let redacted = format!(
+                "{}{}",
+                &h.value[..split],
+                redact_url(&h.value[split..], &mut found)
+            );
             if redacted != h.value {
                 h.value = redacted;
                 note(names, h.name.clone());
@@ -699,8 +732,14 @@ impl HistoryStore {
             text.extend_from_slice(&out);
             text.push(b'\n');
         }
-        if let Ok(rd) = fs::read_dir(self.bodies()) {
-            for f in rd.flatten() {
+        let rd = match fs::read_dir(self.bodies()) {
+            Ok(rd) => Some(rd),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(io(&self.bodies(), e)),
+        };
+        if let Some(rd) = rd {
+            for f in rd {
+                let f = f.map_err(|e| io(&self.bodies(), e))?;
                 let path = f.path();
                 let name = f.file_name().to_string_lossy().into_owned();
                 let Some(stem) = name.strip_suffix(".req.json") else {

@@ -1128,3 +1128,79 @@ fn open_scrubs_old_entries_once() {
     let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
     assert_eq!((m(&index), m(&req)), (mi, mr));
 }
+
+const SR_HEADERS: [(&str, &str); 5] = [
+    ("Location", "//alice:secret@example.com/path"),
+    ("Location", "\\\\alice:secret@example.com/path"),
+    ("Location", "/\\alice:secret@example.com/path"),
+    ("Content-Location", "//alice:secret@example.com/path"),
+    ("Refresh", "0; url=//alice:secret@h/"),
+];
+
+#[test]
+fn scheme_relative_userinfo_is_redacted_on_append() {
+    for (name, value) in SR_HEADERS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+    let (_d, data, store) = setup();
+    store.append(plain("//alice:secret@h/p"), None).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(!text.contains("secret"));
+}
+
+#[test]
+fn scheme_relative_userinfo_is_redacted_by_legacy_scrub() {
+    for (name, value) in SR_HEADERS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn scrub_failure_leaves_marker_absent_and_retries() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, data, store) = setup();
+    let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+    let bodies = bodies_dir(&data);
+    let req = bodies.join(format!("{}.req.json", e.id));
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+    v["response_headers"] =
+        serde_json::json!([{"name": "Location", "value": "http://h/?token=locsecret"}]);
+    fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+    let marker = hist_dir(&data).join(".scrubbed-1");
+    let _ = fs::remove_file(&marker);
+
+    fs::set_permissions(&bodies, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&bodies).is_ok() {
+        fs::set_permissions(&bodies, fs::Permissions::from_mode(0o700)).unwrap();
+        return; // running as root
+    }
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    assert!(!marker.exists(), "marker written after failed scrub");
+    fs::set_permissions(&bodies, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(fs::read_to_string(&req).unwrap().contains("locsecret"));
+
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    assert!(marker.exists());
+    assert!(!fs::read_to_string(&req).unwrap().contains("locsecret"));
+}
