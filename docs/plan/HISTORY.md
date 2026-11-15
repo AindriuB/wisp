@@ -17,6 +17,22 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-15 — wisp-core built at opt-level z (task 138)
+Merged as PR #90 (db79d76), a small user-approved task with no task file. `wisp-core` is compiled at opt-level "z" for size. Measure run 43704237455: Windows GUI 15,179,264 B (-267,776), macOS 11,585,856 B (-230,464), Linux 25,867,912 B (-236,544); Windows headroom under the 15,500,000 B gate is now 320,736 B.
+**Cost:** Size came from a build setting, not from removing code. The theme (#79) had cost +236,032 B (spike run 43703000956 on eaee115), so this recovers more than the theme added; the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" no longer triggers.
+
+## 2026-11-15 — History provenance fields (task 137)
+Merged as PR #89 (2e9c5a8); PASS and APPROVE at 7a0e6b3. History entries now record provenance fields. AC4's "header value" was settled to mean values inside a header assertion, so non-credential response headers stay in `<id>.req.json` as in 0.2.0.
+**Cost:** AC4 was ambiguous and needed a recorded decision after review round 1. The canary test is vacuous if the history layout moves, and the task's `--lib history` check line matches no tests (both in PLAN).
+
+## 2026-11-15 — Measure wave 1 (task 136)
+Merged as PR #88 (707646f); verified at 76e2935. The measure workflow now covers `wisp-cli` against a 4 MiB budget (552,512 / 567,296 / 662,104 B on mac/win/linux) and records the Windows GUI at 15,447,040 B at the wave-1 head. Wave 1 itself added +29,184 B on Windows; baseline is 4323fbe (run 43701286044).
+**Cost:** The theme (#79) was the real cost, +236,032 B (spike run 43703000956 on eaee115); wave 1's own code was small. The CLI size-limit check passes silently on a non-integer limit (PLAN).
+
+## 2026-11-15 — Storage validate (task 133)
+Merged as PR #86 (4ae651d); PASS and APPROVE at 5d14179. `storage validate` walks a collection and returns findings. `Mode::Unknown` secrets is an Error; findings are filed under the erroring file's own root-stripped path; the request file (1 MiB, `MAX_REQUEST_BYTES`) and its `body.file` sidecar (`history::BODY_CAP`) are checked by metadata first and an oversize or non-regular file is a Warning and is never read.
+**Cost:** Round 1 found findings filed under the wrong file, Unknown secrets shown as a harmless Warning, and unbounded sidecar reads that a FIFO could block forever. The same FIFO hazard remains for `folder.toml`, `collection.toml` and environment files (PLAN, 🔒). Oversize tests use 8 GiB sparse files and do not pin the boundary.
+
 ## 2026-11-15 — wisp-cli scaffold and inspect (task 135)
 Merged as PR #80 (b3a2575). A new `wisp-cli` crate (no GPUI, no network, hand-rolled argument parsing) has `inspect` with versioned JSON through dedicated DTOs, and `scripts/check-boundaries.sh` enforces the crate boundaries in CI. Terminal output is escaped for untrusted names and URLs, and `inspect` prints URLs with userinfo removed.
 Boundary-check decisions (orchestrator, review round 1; amend the spec at its next edit): (a) the dependency check runs `cargo tree -p <c> -e normal,build --target all --all-features --locked`, so platform-gated and optional dependencies are caught. (b) The source check matches path segments, not import lines: `net::`, `TcpStream`, `UdpSocket`, `process::Command`, `Command::new`, `File::create`, `OpenOptions`, `fs::write`, `fs::remove`, `#[path`, `include!`, `include_str!`, `include_bytes!`, `reqwest`, `Engine`, `keychain::`, `SecretStore` and `ensure_collection_id` in `crates/cli/src`; it is a tripwire next to the dependency check, not a proof. (c) The bare word `keychain` is allowed, because `explain` must print the secrets mode and "keychain: not loaded by the CLI"; only `keychain::` paths are forbidden. (d) The script fails when `grep` or `cargo` itself errors (status 2 or more), for example a missing `crates/cli/src`. Accepted residual: `{{base}}//u:p@h` keeps its userinfo.

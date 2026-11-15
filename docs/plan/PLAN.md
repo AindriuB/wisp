@@ -22,7 +22,9 @@ than no plan.
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendment 1; roadmap: `docs/plan/roadmap.md`.
 - **Wave 0 complete:** 129 (the three openapi wall-clock tests count work, `substitute` is linear; PR #78) and theme-palette (PR #79).
 - **Wave 1 contracts merged (PRs #78-#84):** 130 explain core report, 131 assertions core and storage, 132 environment info and hint, 134 create collection and environment, 135 `wisp-cli` scaffold and `inspect`. Main CI green on all three platforms.
-- **Next, in order:** (1) task 133 `storage validate` (131 is merged, so it is unblocked); (2) task 136 measure wave 1 (needs 133); (3) task 137 history provenance fields, at the head of wave 2; (4) plan the rest of wave 2 (2A UI seams first, then 2B, 2C, 2D, 2E in parallel, then 2F wiring and the sidebar and palette task for creating a collection). The theme is merged, so UI work is unblocked.
+- **Wave 1 complete (PRs #86-#90, main CI green on all three platforms):** 133 `storage validate`, 136 measure wave 1, 137 history provenance fields, 138 `wisp-core` at opt-level "z". Windows GUI is now 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger on current numbers.
+- **Next:** plan 0.3.0 wave 2 (UI): 2A UI seams first, then 2B, 2C, 2D, 2E in parallel, then 2F wiring and the sidebar and palette task for creating a collection. The theme is merged, so UI work is unblocked.
+- **Planned small task:** DNS flake fix. Unit-test `classify` (`crates/core/src/engine.rs`) with a synthetic DNS error, and give `a_failed_lookup_is_still_a_dns_error` (`crates/core/tests/timings.rs:169`) a short timeout. `known-flakes.md` already names it.
 
 ### v0.2.0 (published 2026-11-14)
 Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.md` and HISTORY.
@@ -48,7 +50,7 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 ### Hardening backlog (post-0.2.0)
 `docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled. The 🔒 items in "Follow-ups from 0.3.0 wave 1" join this backlog.
 
-### Follow-ups from 0.3.0 wave 1 (tasks 130-135, PRs #80-#84; not 0.3.0 unless scheduled)
+### Follow-ups from 0.3.0 wave 1 (tasks 130-138, PRs #80-#90; not 0.3.0 unless scheduled)
 🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Task 134's Lows 81-1 to 81-5 are listed below as 81-1 to 81-5.
 
 Accepted residuals (decided, not defects to fix now):
@@ -98,6 +100,24 @@ From PR #84 (task 131, assertions):
 - The codec label for malformed versus not supported (`codec.rs:678-681`).
 - Header any-of `matches`: an earlier value over 64 KiB skips the check before a later matching value, so the verdict depends on order; decide whether to skip only that value.
 - The haystack cap test is ASCII only; add a multibyte (é) case to pin bytes, not chars. `dfa_size_limit(1 MiB)` is untested (no observable; acceptable).
+
+From PR #86 (task 133, `storage validate`):
+- 🔒 86-3: the validate doc says messages never carry file values, but Invalid messages echo the method, body type and auth type, unbounded; fix the doc and the residuals, or use fixed text.
+- 86-5: the walk duplicates `scan_dir` and differs (escaping links, canonicalize failures); `read_doc` and `read_format` are `pub(crate)` and unused; share one classifier.
+- 86-6 (Nit): the fixture leaks outside its tempdir via `mem::forget`; the symlink-escape fixture leaks a tempdir the same way.
+- 86-7 (Nit): the sidecar cap borrows `history::BODY_CAP`; use a named validate constant.
+- P3: `MAX_ASSERTIONS` is copied, not imported from `wisp_core::assert`; the warning text hides that entries after the 50th are skipped; the code compares the literal "malformed" instead of `ParseError::Malformed.reason()`.
+- P3: a missing-sidecar finding names only the sidecar; add the referencing request (key `body.file`, "sidecar of a.toml").
+- P3: the oversize tests use 8 GiB sparse files; use `BODY_CAP + 1` and `MAX_REQUEST_BYTES + 1` so the boundary is tested (a cap mutated to 4 GiB is not caught).
+- P3 (flake risk): `ancestor_symlink_loop` and `folder_cap` run under the 20 s `validate_in_time` guard though they cannot hang (`folder_cap` takes about 2.6 s locally); call `validate()` directly.
+- 🔒 P3: `folder.toml`, `collection.toml` and environment and secrets files are still read without a regular-file or size check, so a FIFO `folder.toml` blocks validate (and `open_collection`) forever.
+- No test reaches validate's truncated (`MAX_FOLDERS`) path, and `set_readonly` leaves the fixture root writable.
+- Notes: a missing `collection.toml` still walks the whole tree (`wisp-cli validate ~`), so 2D may stop after "not a collection"; `Report` holds a private root in derived Debug and PartialEq, so 2D must print findings and never `Report` Debug.
+
+From tasks 136 and 137:
+- 136: the measure.yml "Check CLI size limit" step passes silently on a non-integer limit (`[` exits 2 inside the `if`).
+- 137: `provenance_canary_values_never_stored` does not assert that `index.jsonl` and `<id>.req.json` were among the scanned files, so it is vacuous if the layout moves.
+- 137: the task's Checks line `--lib history` matches 0 lib tests (a vacuous check).
 
 ### Follow-ups from task theme-palette (PR #79 merged; not 0.2.0)
 - 79-4: `eprintln!` instead of `tracing::warn`.
