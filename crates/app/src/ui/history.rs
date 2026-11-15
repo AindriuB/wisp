@@ -333,6 +333,8 @@ mod tests {
             body_stored: true,
             body_truncated: false,
             redacted: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
         }
     }
 
@@ -490,6 +492,8 @@ mod tests {
             connect: None,
             size: Some(2),
             response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
         };
         let stored = store
             .append(new, body_to_store(false, Some(b"hi".to_vec())).as_deref())

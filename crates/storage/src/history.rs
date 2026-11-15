@@ -223,6 +223,12 @@ pub struct HistoryEntry {
     /// Names of the fields and headers whose values were emptied.
     #[serde(default)]
     pub redacted: Vec<String>,
+    /// Name of the environment the request was sent under; never its values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// Assertion label, fingerprint and state; never a value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assertions: Vec<AssertionRecord>,
 }
 
 /// What the caller hands to [`HistoryStore::append`].
@@ -240,6 +246,8 @@ pub struct NewEntry {
     pub connect: Option<Duration>,
     pub size: Option<u64>,
     pub response_headers: Vec<Header>,
+    pub environment: Option<String>,
+    pub assertions: Vec<AssertionRecord>,
 }
 
 /// A loaded entry's request, response headers and stored body.
@@ -703,6 +711,8 @@ impl HistoryStore {
             body_stored: stored.is_some(),
             body_truncated: truncated,
             redacted,
+            environment: new.environment,
+            assertions: new.assertions,
         };
         let mut line = serde_json::to_string(&entry).map_err(|e| StorageError::History {
             message: e.to_string(),

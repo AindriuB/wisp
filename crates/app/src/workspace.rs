@@ -2686,6 +2686,8 @@ impl Workspace {
             connect: r.connect,
             size: r.size,
             response_headers: r.headers.clone(),
+            environment: None,
+            assertions: Vec::new(),
         };
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move {
@@ -3985,6 +3987,8 @@ mod tests {
             body_stored: false,
             body_truncated: false,
             redacted: redacted.iter().map(|s| s.to_string()).collect(),
+            environment: None,
+            assertions: Vec::new(),
         }
     }
 
@@ -4310,6 +4314,8 @@ mod tests {
             connect: None,
             size: Some(body.len() as u64),
             response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
         };
         let entry = store.append(new, Some(body)).unwrap();
         (d, data, id, entry)
