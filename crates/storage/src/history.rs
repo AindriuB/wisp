@@ -91,8 +91,125 @@ fn note(names: &mut Vec<String>, name: String) {
     }
 }
 
+/// Schemes the WHATWG parser always gives an authority.
+const SPECIAL_SCHEMES: [&str; 5] = ["http", "https", "ws", "wss", "ftp"];
+
+fn is_special_scheme(scheme: &str) -> bool {
+    SPECIAL_SCHEMES
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+}
+
+/// Authority offset and whether backslash ends it. Scheme-relative URLs retain the
+/// special-scheme slash rules; explicit non-special schemes require exactly `//`.
+fn authority_start(base: &str) -> (usize, bool) {
+    // WHATWG ignores leading C0 controls and space; keep offsets in the original value.
+    let trimmed = base.trim_start_matches(|c| c <= '\u{20}');
+    let offset = base.len() - trimmed.len();
+    let base = trimmed;
+    let slashes = |s: &str| s.bytes().take_while(|b| matches!(b, b'/' | b'\\')).count();
+    let lead = slashes(base);
+    if lead >= 2 {
+        return (offset + lead, true);
+    }
+    let mut backslash_delimiter = true;
+    if let Some((scheme, rest)) = base.split_once(':')
+        && !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+    {
+        backslash_delimiter = is_special_scheme(scheme) || scheme.eq_ignore_ascii_case("file");
+        if is_special_scheme(scheme) {
+            return (offset + scheme.len() + 1 + slashes(rest), true);
+        }
+        if rest.starts_with("//") {
+            return (offset + scheme.len() + 3, backslash_delimiter);
+        }
+    }
+    (
+        offset + base.find("://").map_or(0, |i| i + 3),
+        backslash_delimiter,
+    )
+}
+
+/// Decode a form query name once for matching, leaving malformed escapes literal.
+fn decode_query_name(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                char::from(bytes[i + 1]).to_digit(16),
+                char::from(bytes[i + 2]).to_digit(16),
+            )
+        {
+            decoded.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
+        }
+        decoded.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Redact the value of every credential-named `name=value` pair in a query string.
+fn redact_query(q: &str, names: &mut Vec<String>) -> String {
+    let pairs: Vec<String> = q
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((n, v)) if is_secret_name(&decode_query_name(n)) => {
+                let mut v = v.to_string();
+                if scrub(&mut v) {
+                    note(names, format!("query.{n}"));
+                }
+                format!("{n}={v}")
+            }
+            _ => pair.to_string(),
+        })
+        .collect();
+    pairs.join("&")
+}
+
+/// The WHATWG parser deletes ASCII tab, CR and LF anywhere in a URL, so `https:\t/u:p@h/`
+/// names a userinfo. Redact a copy with them removed; if that changed anything, store the
+/// redacted copy, else the original unchanged. Every URL redaction path goes through here.
+fn redact_ignoring_newlines(
+    value: &str,
+    names: &mut Vec<String>,
+    redact: fn(&str, &mut Vec<String>) -> String,
+) -> String {
+    let stripped: String = value
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+        .collect();
+    let mut found = Vec::new();
+    let redacted = redact(&stripped, &mut found);
+    if redacted == stripped {
+        return value.to_string();
+    }
+    for n in found {
+        note(names, n);
+    }
+    redacted
+}
+
 /// Redact userinfo and credential-named query values in a URL template.
 fn redact_url(url: &str, names: &mut Vec<String>) -> String {
+    redact_ignoring_newlines(url, names, redact_url_stripped)
+}
+
+/// Redact userinfo at every place a `Refresh` value could start an authority (see
+/// [`redact_refresh_stripped`]).
+fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
+    redact_ignoring_newlines(value, found, redact_refresh_stripped)
+}
+
+/// Redact userinfo and credential-named query values in a URL template.
+fn redact_url_stripped(url: &str, names: &mut Vec<String>) -> String {
     let (rest, fragment) = match url.find('#') {
         Some(i) => (&url[..i], &url[i..]),
         None => (url, ""),
@@ -101,9 +218,9 @@ fn redact_url(url: &str, names: &mut Vec<String>) -> String {
         Some(i) => (&rest[..i], Some(&rest[i + 1..])),
         None => (rest, None),
     };
-    let auth_start = base.find("://").map_or(0, |i| i + 3);
+    let (auth_start, backslash_delimiter) = authority_start(base);
     let auth_end = base[auth_start..]
-        .find('/')
+        .find(|c| c == '/' || (backslash_delimiter && c == '\\'))
         .map_or(base.len(), |i| auth_start + i);
     let mut out = String::with_capacity(url.len());
     match base[auth_start..auth_end].rfind('@') {
@@ -132,20 +249,7 @@ fn redact_url(url: &str, names: &mut Vec<String>) -> String {
     }
     if let Some(q) = query {
         out.push('?');
-        let pairs: Vec<String> = q
-            .split('&')
-            .map(|pair| match pair.split_once('=') {
-                Some((n, v)) if is_secret_name(n) => {
-                    let mut v = v.to_string();
-                    if scrub(&mut v) {
-                        note(names, format!("query.{n}"));
-                    }
-                    format!("{n}={v}")
-                }
-                _ => pair.to_string(),
-            })
-            .collect();
-        out.push_str(&pairs.join("&"));
+        out.push_str(&redact_query(q, names));
     }
     out.push_str(fragment);
     out
@@ -587,6 +691,149 @@ fn redact_credential_headers(headers: &mut [Header], names: &mut Vec<String>) {
     }
 }
 
+/// Redact userinfo at every place a `Refresh` value could start an authority. The value is
+/// not parsed down to one target URL: that is how a second `url=`, text after a closing
+/// quote or a whitespace separator slipped past. Over-redacting is safe; credential-free
+/// values come back unchanged.
+fn redact_refresh_stripped(value: &str, found: &mut Vec<String>) -> String {
+    let b = value.as_bytes();
+    let is_slash = |c: u8| matches!(c, b'/' | b'\\');
+    let skip_ws = |mut i: usize| {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    };
+    let skip_slashes = |mut i: usize| {
+        while i < b.len() && is_slash(b[i]) {
+            i += 1;
+        }
+        i
+    };
+    let mut starts: Vec<(usize, bool)> = Vec::new();
+    // Slash runs open candidate authorities; non-special schemes consume only `//`.
+    let mut i = 0;
+    while i < b.len() {
+        if is_slash(b[i]) {
+            let end = skip_slashes(i);
+            if end - i >= 2 {
+                let backslash_delimiter = value[..i].strip_suffix(':').is_none_or(|prefix| {
+                    let scheme = prefix
+                        .rsplit(|c: char| {
+                            !c.is_ascii_alphanumeric() && !matches!(c, '+' | '-' | '.')
+                        })
+                        .next()
+                        .unwrap_or_default();
+                    is_special_scheme(scheme) || scheme.eq_ignore_ascii_case("file")
+                });
+                if backslash_delimiter {
+                    starts.push((end, true));
+                } else if value[i..].starts_with("//") {
+                    starts.push((i + 2, false));
+                }
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    // Also inspect targets after `url`, optional whitespace/`=` and an optional quote.
+    for i in 0..b.len().saturating_sub(2) {
+        if !b[i..i + 3].eq_ignore_ascii_case(b"url") {
+            continue;
+        }
+        let mut j = skip_ws(i + 3);
+        if j < b.len() && b[j] == b'=' {
+            j = skip_ws(j + 1);
+        }
+        if j < b.len() && matches!(b[j], b'\'' | b'"') {
+            j += 1;
+        }
+        let (start, backslash_delimiter) = authority_start(&value[j..]);
+        if start > 0 {
+            starts.push((j + start, backslash_delimiter));
+        }
+    }
+    // A special-scheme name and `:` opens an authority after any slashes, even none.
+    for i in 0..b.len() {
+        for s in SPECIAL_SCHEMES {
+            let end = i + s.len();
+            if end < b.len() && b[i..end].eq_ignore_ascii_case(s.as_bytes()) && b[end] == b':' {
+                starts.push((skip_slashes(end + 1), true));
+            }
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    let mut out = value.to_string();
+    // Back to front, so an edit never moves a start still to be processed.
+    for &(p, backslash_delimiter) in starts.iter().rev() {
+        let span_end = out[p..]
+            .find(|c| matches!(c, '/' | '?' | '#') || (backslash_delimiter && c == '\\'))
+            .map_or(out.len(), |i| p + i);
+        let Some(at) = out[p..span_end].rfind('@').map(|i| p + i) else {
+            continue;
+        };
+        let info = &out[p..at];
+        let (mut user, pass) = match info.split_once(':') {
+            Some((u, pw)) => (u.to_string(), Some(pw.to_string())),
+            None => (info.to_string(), None),
+        };
+        if scrub(&mut user) {
+            note(found, "url.username".into());
+        }
+        if let Some(mut pw) = pass {
+            if scrub(&mut pw) {
+                note(found, "url.password".into());
+            }
+            user.push(':');
+            user.push_str(&pw);
+        }
+        out.replace_range(p..at, &user);
+    }
+    // Every `?` opens a query that runs to `#` or the end: an unquoted URL may hold
+    // quotes, `;` and whitespace, so none of them end it.
+    let mut pos = out.len();
+    while let Some(q) = out[..pos].rfind('?') {
+        let end = out[q + 1..].find('#').map_or(out.len(), |i| q + 1 + i);
+        let redacted = redact_query(&out[q + 1..end], found);
+        out.replace_range(q + 1..end, &redacted);
+        pos = q;
+    }
+    out
+}
+
+/// Run every response header that can carry a URL through [`redact_url`].
+fn redact_url_headers(headers: &mut [Header], names: &mut Vec<String>) {
+    for h in headers {
+        let n = &h.name;
+        if n.eq_ignore_ascii_case("location")
+            || n.eq_ignore_ascii_case("content-location")
+            || n.eq_ignore_ascii_case("refresh")
+        {
+            let mut found = Vec::new();
+            let redacted = if n.eq_ignore_ascii_case("refresh") {
+                redact_refresh(&h.value, &mut found)
+            } else {
+                redact_url(&h.value, &mut found)
+            };
+            if redacted != h.value {
+                h.value = redacted;
+                note(names, h.name.clone());
+            }
+        }
+    }
+}
+
+/// Redact a response header list as it is stored.
+fn redact_response_headers(headers: &mut [Header], names: &mut Vec<String>) {
+    if redact_set_cookies(headers) {
+        note(names, "Set-Cookie".into());
+    }
+    redact_credential_headers(headers, names);
+    redact_url_headers(headers, names);
+}
+
 fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -607,16 +854,111 @@ pub struct HistoryStore {
     dir: PathBuf,
     max_entries: usize,
     max_bytes: u64,
+    lock_wait: Duration,
 }
 
+/// Longest an append or clear waits for the cross-process lock.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// Present in a history dir once entries from older builds have been re-redacted.
+const SCRUB_MARKER: &str = ".scrubbed-1";
+
 impl HistoryStore {
-    /// Does no I/O.
+    /// Re-redacts an existing history dir once (see [`SCRUB_MARKER`]); a dir that does not
+    /// exist yet is left alone. Failures are logged and retried on the next open.
     pub fn open(data: &DataDir, id: &CollectionId) -> HistoryStore {
-        HistoryStore {
+        let store = HistoryStore {
             dir: data.history_dir(id),
             max_entries: MAX_ENTRIES,
             max_bytes: MAX_BYTES,
+            lock_wait: LOCK_WAIT,
+        };
+        if store.dir.is_dir()
+            && !store.dir.join(SCRUB_MARKER).exists()
+            && let Err(e) = store.scrub_legacy()
+        {
+            tracing::warn!(error = %e, "history scrub failed");
         }
+        store
+    }
+
+    /// Shorten the lock wait. For tests.
+    #[doc(hidden)]
+    pub fn with_lock_wait(mut self, wait: Duration) -> HistoryStore {
+        self.lock_wait = wait;
+        self
+    }
+
+    /// Re-run the current redaction over entries older builds wrote, then drop the marker.
+    fn scrub_legacy(&self) -> Result<(), StorageError> {
+        let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_lock = self.lock_file()?;
+        let index = self.index();
+        let bytes = match fs::read(&index) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(io(&index, e)),
+        };
+        let mut changed = false;
+        let mut text = Vec::with_capacity(bytes.len());
+        for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+            let mut out = line.to_vec();
+            if let Ok(mut entry) = serde_json::from_slice::<HistoryEntry>(line) {
+                let mut names = Vec::new();
+                let url = redact_url(&entry.url, &mut names);
+                if url != entry.url {
+                    entry.url = url;
+                    for n in names {
+                        note(&mut entry.redacted, n);
+                    }
+                    if let Ok(v) = serde_json::to_vec(&entry) {
+                        out = v;
+                        changed = true;
+                    }
+                }
+            }
+            text.extend_from_slice(&out);
+            text.push(b'\n');
+        }
+        let rd = match fs::read_dir(self.bodies()) {
+            Ok(rd) => Some(rd),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(io(&self.bodies(), e)),
+        };
+        if let Some(rd) = rd {
+            for f in rd {
+                let f = f.map_err(|e| io(&self.bodies(), e))?;
+                let path = f.path();
+                let name = f.file_name().to_string_lossy().into_owned();
+                let Some(stem) = name.strip_suffix(".req.json") else {
+                    continue;
+                };
+                if !valid_id(stem) {
+                    continue;
+                }
+                let raw = fs::read(&path).map_err(|e| io(&path, e))?;
+                let Ok(mut file) = serde_json::from_slice::<ReqFile>(&raw) else {
+                    continue;
+                };
+                let mut names = Vec::new();
+                let (request, req_names) = redact_request(&file.request);
+                file.request = request;
+                names.extend(req_names);
+                redact_response_headers(&mut file.response_headers, &mut names);
+                let json = serde_json::to_vec(&file).map_err(|e| StorageError::History {
+                    message: e.to_string(),
+                })?;
+                let before = serde_json::from_slice::<ReqFile>(&raw)
+                    .ok()
+                    .and_then(|f| serde_json::to_vec(&f).ok());
+                if before.as_deref() != Some(json.as_slice()) {
+                    atomic_write_private(&path, &json)?;
+                }
+            }
+        }
+        if changed {
+            atomic_write_private(&index, &text)?;
+        }
+        atomic_write_private(&self.dir.join(SCRUB_MARKER), b"1")
     }
 
     /// Lower the caps. For tests.
@@ -659,9 +1001,32 @@ impl HistoryStore {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
+        // Never follow a symlink planted at the lock path.
+        if let Ok(meta) = fs::symlink_metadata(&path)
+            && meta.file_type().is_symlink()
+        {
+            return Err(StorageError::Invalid {
+                path,
+                key: "path".to_string(),
+                message: "is a symlink".to_string(),
+            });
+        }
         let f = opts.open(&path).map_err(|e| io(&path, e))?;
-        f.lock().map_err(|e| io(&path, e))?;
-        Ok(DirLock(f))
+        let start = std::time::Instant::now();
+        loop {
+            match f.try_lock() {
+                Ok(()) => return Ok(DirLock(f)),
+                Err(fs::TryLockError::WouldBlock) => {
+                    if start.elapsed() >= self.lock_wait {
+                        return Err(StorageError::History {
+                            message: format!("timed out waiting for lock {}", path.display()),
+                        });
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(fs::TryLockError::Error(e)) => return Err(io(&path, e)),
+            }
+        }
     }
 
     /// Store one finished request. `body` is cut to [`BODY_CAP`] bytes.
@@ -672,10 +1037,7 @@ impl HistoryStore {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let (request, mut redacted) = redact_request(&new.request);
         let mut response_headers = new.response_headers;
-        if redact_set_cookies(&mut response_headers) {
-            redacted.push("Set-Cookie".into());
-        }
-        redact_credential_headers(&mut response_headers, &mut redacted);
+        redact_response_headers(&mut response_headers, &mut redacted);
         let (bin, req) = {
             let [a, b] = self.body_files(&id);
             (a, b)
@@ -825,8 +1187,12 @@ impl HistoryStore {
             }
             atomic_write_private(&self.index(), &text)?;
         }
+        // A kept line may repeat a dropped id; its files stay.
+        let kept: std::collections::HashSet<&str> =
+            entries.iter().map(|(id, _)| id.as_str()).collect();
         let doomed = dropped
             .iter()
+            .filter(|(id, _)| !kept.contains(id.as_str()))
             .flat_map(|(id, _)| self.body_files(id))
             .chain(orphans);
         for p in doomed {

@@ -969,3 +969,738 @@ fn provenance_canary_values_never_stored() {
         }
     }
 }
+
+fn hist_dir(data: &DataDir) -> std::path::PathBuf {
+    data.history_dir(&cid("abcdef0123456789"))
+}
+
+#[test]
+fn evict_keeps_files_of_an_id_that_survives() {
+    let (_d, data, store) = setup();
+    let store = store.with_caps(2, u64::MAX);
+    let e = store.append(plain("http://a/"), Some(b"hi")).unwrap();
+    let index = hist_dir(&data).join("index.jsonl");
+    let line = fs::read_to_string(&index).unwrap();
+    // Oldest and newest share an id; a middle line forces the oldest out.
+    let mid = line.replace(&e.id, &"1".repeat(32));
+    fs::write(&index, format!("{line}{mid}{line}")).unwrap();
+    store.append(plain("http://b/"), None).unwrap();
+    assert!(store.load(&e.id).is_ok());
+    assert!(bodies_dir(&data).join(format!("{}.bin", e.id)).exists());
+}
+
+#[test]
+fn append_times_out_when_the_lock_is_held() {
+    let (_d, data, store) = setup();
+    let store = store.with_lock_wait(Duration::from_millis(200));
+    store.append(plain("http://a/"), None).unwrap();
+    let lock = hist_dir(&data).with_extension("lock");
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock)
+        .unwrap();
+    f.lock().unwrap();
+    let index = hist_dir(&data).join("index.jsonl");
+    let before = fs::read(&index).unwrap();
+    let err = store.append(plain("http://b/"), None).unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert_eq!(fs::read(&index).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn append_refuses_a_symlinked_lock() {
+    let (d, data, store) = setup();
+    let target = d.path().join("outside");
+    fs::write(&target, b"keep").unwrap();
+    let mtime = fs::metadata(&target).unwrap().modified().unwrap();
+    let lock = hist_dir(&data).with_extension("lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &lock).unwrap();
+    assert!(store.append(plain("http://a/"), None).is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"keep");
+    assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), mtime);
+}
+
+#[test]
+fn clear_and_append_race_leaves_no_orphans() {
+    let (_d, data, store) = setup();
+    for _ in 0..10 {
+        let a = store.clone();
+        let b = store.clone();
+        let t1 = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let _ = a.append(plain("http://a/"), Some(b"x"));
+            }
+        });
+        let t2 = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let _ = b.clear();
+            }
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+        let listed: Vec<String> = store.list().unwrap().into_iter().map(|e| e.id).collect();
+        if let Ok(rd) = fs::read_dir(bodies_dir(&data)) {
+            for f in rd.flatten() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                let stem = name.split('.').next().unwrap().to_string();
+                assert!(listed.contains(&stem), "orphan {name}");
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn load_works_for_listed_entries_when_the_index_rewrite_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, data, store) = setup();
+    let store = store.with_caps(2, u64::MAX);
+    store.append(plain("http://a/"), Some(b"1")).unwrap();
+    store.append(plain("http://b/"), Some(b"2")).unwrap();
+    let dir = hist_dir(&data);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let r = store.append(plain("http://c/"), Some(b"3"));
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    r.unwrap();
+    for e in store.list().unwrap() {
+        store.load(&e.id).unwrap();
+    }
+}
+
+#[test]
+fn location_headers_are_redacted() {
+    let (_d, data, store) = setup();
+    let mut n = plain("http://a/");
+    n.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "http://user:pw123@h/cb?access_token=tok789&x=1".into(),
+    }];
+    let e = store.append(n, None).unwrap();
+    let raw = fs::read_to_string(bodies_dir(&data).join(format!("{}.req.json", e.id))).unwrap();
+    assert!(!raw.contains("tok789") && !raw.contains("pw123") && !raw.contains("user:"));
+    assert!(raw.contains("x=1"));
+}
+
+fn all_text(dir: &std::path::Path, out: &mut String) {
+    for f in fs::read_dir(dir).unwrap().flatten() {
+        let p = f.path();
+        if p.is_dir() {
+            all_text(&p, out);
+        } else {
+            out.push_str(&String::from_utf8_lossy(&fs::read(&p).unwrap()));
+        }
+    }
+}
+
+#[test]
+fn open_scrubs_old_entries_once() {
+    let (_d, data, store) = setup();
+    let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+    let dir = hist_dir(&data);
+    let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+    v["request"]["headers"] = serde_json::json!([
+        {"name": "X-Api-Key", "value": "hdrsecret1", "enabled": true}
+    ]);
+    v["response_headers"] = serde_json::json!([
+        {"name": "Location", "value": "http://h/cb?token=locsecret2"}
+    ]);
+    fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+    let index = dir.join("index.jsonl");
+    let line = fs::read_to_string(&index)
+        .unwrap()
+        .replace("http://a/", "http://a/?api_key=idxsecret3");
+    fs::write(&index, line).unwrap();
+
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    let mut text = String::new();
+    all_text(&dir, &mut text);
+    for s in ["hdrsecret1", "locsecret2", "idxsecret3"] {
+        assert!(!text.contains(s), "{s} survived");
+    }
+    let m = |p: &std::path::Path| fs::metadata(p).unwrap().modified().unwrap();
+    let (mi, mr) = (m(&index), m(&req));
+    std::thread::sleep(Duration::from_millis(20));
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    assert_eq!((m(&index), m(&req)), (mi, mr));
+}
+
+const SR_HEADERS: [(&str, &str); 22] = [
+    ("Location", "//alice:secret@example.com/path"),
+    ("Location", "\\\\alice:secret@example.com/path"),
+    ("Location", "/\\alice:secret@example.com/path"),
+    ("Content-Location", "//alice:secret@example.com/path"),
+    ("Refresh", "0; url=//alice:secret@h/"),
+    ("Refresh", "0;URL='//alice:secret@h'"),
+    ("Refresh", "0; url=\"//alice:secret@h/\""),
+    ("Refresh", "0; URL = //alice:secret@h"),
+    ("Refresh", "0; url= //alice:secret@h"),
+    ("Refresh", "0;//alice:secret@h"),
+    ("Refresh", "5, https://alice:secret@h/x"),
+    ("Refresh", "0 https://alice:secret@h/"),
+    ("Refresh", "0 url=https://alice:secret@h/"),
+    ("Refresh", "0 //alice:secret@h/"),
+    ("Refresh", "0 url=https://alice:secret@h/a;b"),
+    ("Refresh", "0;url='https://h/' https://alice:secret@h2/"),
+    ("Refresh", "0; url=a; url=//alice:secret@h"),
+    ("Refresh", "0; url //alice:secret@h"),
+    ("Refresh", "0 \\\\alice:secret@h/"),
+    ("Refresh", "0; url=/\\alice:secret@h"),
+    ("Refresh", "0; url=https:/alice:secret@h/"),
+    ("Refresh", "0, url = 'https://alice:secret@h/x'"),
+];
+
+#[test]
+fn refresh_without_credentials_is_unchanged() {
+    for value in [
+        "5",
+        "0; url=https://h/a;b?x=a@b",
+        "3, URL='//h/p'",
+        "0 https://h/",
+    ] {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Refresh".into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(text.contains(value), "{value}");
+    }
+}
+
+#[test]
+fn scheme_relative_userinfo_is_redacted_on_append() {
+    for (name, value) in SR_HEADERS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+    let (_d, data, store) = setup();
+    store.append(plain("//alice:secret@h/p"), None).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(!text.contains("secret"));
+}
+
+#[test]
+fn scheme_relative_userinfo_is_redacted_by_legacy_scrub() {
+    for (name, value) in SR_HEADERS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+const SPECIAL_SCHEME_HEADERS: [(&str, &str); 6] = [
+    ("Location", "https:/alice:secret@example.com/"),
+    ("Location", "https:\\alice:secret@example.com/"),
+    ("Location", "HTTPS:alice:secret@example.com/"),
+    ("Location", "wss:/u:secret@h/"),
+    ("Refresh", "0; https:/alice:secret@h/"),
+    ("Refresh", "0; url=https:alice:secret@h/"),
+];
+
+#[test]
+fn special_scheme_with_few_slashes_is_redacted_on_append() {
+    for (name, value) in SPECIAL_SCHEME_HEADERS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+#[test]
+fn special_scheme_with_few_slashes_is_redacted_by_legacy_scrub() {
+    for (name, value) in SPECIAL_SCHEME_HEADERS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+#[test]
+fn non_special_scheme_location_with_one_slash_is_unchanged() {
+    let (_d, data, store) = setup();
+    let mut ne = plain("http://a/");
+    ne.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "custom:/a:b@h".into(),
+    }];
+    store.append(ne, Some(b"b")).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(text.contains("custom:/a:b@h"));
+}
+
+#[test]
+fn mailto_location_is_handled_by_the_existing_rule() {
+    // `mailto:alice@example.com` has no slash, so the existing rule already treats the
+    // whole value as an authority and redacts `mailto:alice`. Pinned, not changed.
+    let (_d, data, store) = setup();
+    let mut ne = plain("http://a/");
+    ne.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "mailto:alice@example.com".into(),
+    }];
+    store.append(ne, Some(b"b")).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(!text.contains("alice"));
+}
+
+#[cfg(unix)]
+#[test]
+fn scrub_failure_leaves_marker_absent_and_retries() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, data, store) = setup();
+    let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+    let bodies = bodies_dir(&data);
+    let req = bodies.join(format!("{}.req.json", e.id));
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+    v["response_headers"] =
+        serde_json::json!([{"name": "Location", "value": "http://h/?token=locsecret"}]);
+    fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+    let marker = hist_dir(&data).join(".scrubbed-1");
+    let _ = fs::remove_file(&marker);
+
+    fs::set_permissions(&bodies, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&bodies).is_ok() {
+        fs::set_permissions(&bodies, fs::Permissions::from_mode(0o700)).unwrap();
+        return; // running as root
+    }
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    assert!(!marker.exists(), "marker written after failed scrub");
+    fs::set_permissions(&bodies, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(fs::read_to_string(&req).unwrap().contains("locsecret"));
+
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    assert!(marker.exists());
+    assert!(!fs::read_to_string(&req).unwrap().contains("locsecret"));
+}
+
+const REFRESH_QUERY_SECRETS: [&str; 8] = [
+    "0; url=https://example.com/?access_token=secret",
+    "0; url='https://e.com/?a=1&token=secret'",
+    "0; url=/next?api_key=secret",
+    "0; url=https://e.com/?a=1; url=/x?password=secret",
+    "0; url=https://e.com/?a=1&b=2&refresh_token=secret#frag",
+    "0; url=https://e.com/?name=O'Brien&access_token=secret",
+    "0; url=https://e.com/?x=a;b&access_token=secret",
+    "0; url=https://e.com/?q=a b&access_token=secret",
+];
+
+#[test]
+fn refresh_query_credentials_are_redacted_on_append() {
+    for value in REFRESH_QUERY_SECRETS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Refresh".into(),
+            value: value.into(),
+        }];
+        let e = store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{value}");
+        assert!(e.redacted.contains(&"Refresh".to_string()), "{value}");
+    }
+}
+
+#[test]
+fn refresh_query_without_credentials_is_unchanged() {
+    for value in [
+        "0; url=https://h/p?a=1&b=2",
+        "0; url='/n?page=2&sort=x#top'",
+        "0; url=https://h/p?q=O'Brien;x=a b&c=1",
+    ] {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Refresh".into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(text.contains(value), "{value}");
+    }
+}
+
+#[test]
+fn refresh_query_credentials_are_redacted_by_legacy_scrub() {
+    for value in REFRESH_QUERY_SECRETS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": "Refresh", "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{value}");
+        assert!(hist_dir(&data).join(".scrubbed-1").exists());
+    }
+}
+
+const CONTROL_CHAR_HEADERS: [(&str, &str); 6] = [
+    ("Location", "https:\t/alice:secret@h/"),
+    ("Location", "https:/\t/alice:secret@h/"),
+    ("Location", "ht\ttps:/alice:secret@h/"),
+    ("Refresh", "0; url=https:\t/alice:secret@h/"),
+    ("Location", "https:\r/alice:secret@h/"),
+    ("Content-Location", "https:\n//alice:secret@h/"),
+];
+
+#[test]
+fn tab_cr_lf_inside_a_url_do_not_hide_userinfo_on_append() {
+    for (name, value) in CONTROL_CHAR_HEADERS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
+    }
+}
+
+#[test]
+fn tab_cr_lf_inside_a_url_do_not_hide_userinfo_in_legacy_scrub() {
+    for (name, value) in CONTROL_CHAR_HEADERS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
+    }
+}
+
+#[test]
+fn credential_free_location_with_a_tab_is_byte_identical() {
+    let (_d, data, store) = setup();
+    let mut ne = plain("http://a/");
+    ne.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "https://h/a\tb".into(),
+    }];
+    store.append(ne, Some(b"b")).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(text.contains(r"https://h/a\tb"));
+}
+
+fn leading_whitespace_headers() -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    for prefix in (0u8..=b' ')
+        .map(|b| char::from(b).to_string())
+        .chain([" \t \r\n".to_string()])
+    {
+        for name in ["Location", "Content-Location"] {
+            for url in [
+                "https:/alice:secret@h/",
+                "https:alice:secret@h/",
+                "https://alice:secret@h/",
+                "//alice:secret@h/",
+                r"\\alice:secret@h/",
+            ] {
+                headers.push((name, format!("{prefix}{url}")));
+            }
+        }
+    }
+    headers
+}
+
+#[test]
+fn leading_whitespace_does_not_hide_userinfo_on_append() {
+    for (name, value) in leading_whitespace_headers() {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.clone(),
+        }];
+        let entry = store.append(ne, None).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
+        assert!(entry.redacted.iter().any(|n| n == name));
+    }
+}
+
+#[test]
+fn leading_whitespace_does_not_hide_userinfo_in_legacy_scrub() {
+    for (name, value) in leading_whitespace_headers() {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), None).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let marker = hist_dir(&data).join(".scrubbed-1");
+        if marker.exists() {
+            fs::remove_file(&marker).unwrap();
+        }
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
+        assert!(hist_dir(&data).join(".scrubbed-1").exists());
+    }
+}
+
+#[test]
+fn leading_whitespace_in_credential_free_locations_is_unchanged() {
+    let (_d, _data, store) = setup();
+    for value in [" https:/h/path", " \t\r\nhttps://h/p?q=a@b", " //h/path"] {
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Location".into(),
+            value: value.into(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        let loaded = store.load(&e.id).unwrap();
+        assert_eq!(loaded.response_headers[0].value, value);
+    }
+}
+
+fn encoded_query_headers() -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    for name in [
+        "%74oken",
+        "to%6ben",
+        "%54%4F%4b%45%4e",
+        "access%5Ftoken",
+        "api%5fkey",
+        "%FF%74oken",
+        "%GG%74oken",
+        "%26token%3D",
+    ] {
+        for header in ["Location", "Content-Location", "Refresh"] {
+            let prefix = if header == "Refresh" { "0; url=" } else { "" };
+            headers.push((
+                header,
+                format!("{prefix}https://example.com/?{name}=secret&x=%2f+z#frag"),
+            ));
+        }
+    }
+    headers
+}
+
+#[test]
+fn encoded_query_names_are_matched_on_append() {
+    for (name, value) in encoded_query_headers() {
+        let (_d, data, store) = setup();
+        let mut ne = plain("https://example.com/?%74oken=secret");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.clone(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        let loaded = store.load(&e.id).unwrap();
+        assert_eq!(
+            loaded.response_headers[0].value,
+            value.replace("=secret", "=")
+        );
+        assert!(e.redacted.iter().any(|n| n == name));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+#[test]
+fn encoded_query_names_are_matched_in_legacy_scrub() {
+    for (name, value) in encoded_query_headers() {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), None).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["request"]["url"] = serde_json::json!("https://example.com/?%74oken=secret");
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let index = hist_dir(&data).join("index.jsonl");
+        let raw = fs::read_to_string(&index)
+            .unwrap()
+            .replace("http://a/", "https://example.com/?%74oken=secret");
+        fs::write(&index, raw).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let reopened = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let loaded = reopened.load(&e.id).unwrap();
+        assert_eq!(
+            loaded.response_headers[0].value,
+            value.replace("=secret", "=")
+        );
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+        assert!(hist_dir(&data).join(".scrubbed-1").exists());
+    }
+}
+
+#[test]
+fn query_name_decoding_preserves_other_pairs_and_variable_references() {
+    let (_d, _data, store) = setup();
+    for query in [
+        "%70age=2&x=%2f+z",
+        "%GG=value&%=end&%7=short&%FF=value",
+        "to+ken=value&%2574oken=value",
+        "%74oken={{token}}&api%5fkey={{key}}",
+    ] {
+        let value = format!("https://example.com/?{query}");
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Location".into(),
+            value: value.clone(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        assert_eq!(store.load(&e.id).unwrap().response_headers[0].value, value);
+    }
+}
+
+fn custom_scheme_backslash_headers() -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    for url in [
+        r"custom://alice:secret\part@example.com/",
+        r"custom://alice\part:secret@example.com/",
+        r"custom://\alice:secret@example.com/",
+        r"custom://alice:secret\\part@example.com/",
+        r"CUSTOM://alice:secret\part@example.com/",
+    ] {
+        for header in ["Location", "Content-Location", "Refresh"] {
+            let prefix = if header == "Refresh" { "0; url=" } else { "" };
+            headers.push((header, format!("{prefix}{url}")));
+        }
+    }
+    headers.push((
+        "Refresh",
+        r"0; custom://alice:secret\part@example.com/".into(),
+    ));
+    headers.push((
+        "Refresh",
+        r"0 url='custom://alice:secret\part@example.com/'".into(),
+    ));
+    headers
+}
+
+#[test]
+fn custom_scheme_backslashes_do_not_hide_userinfo_on_append() {
+    for (name, value) in custom_scheme_backslash_headers() {
+        let (_d, data, store) = setup();
+        let mut ne = plain(r"custom://alice:secret\part@example.com/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.clone(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        assert!(e.redacted.iter().any(|n| n == name));
+        assert!(
+            store.load(&e.id).unwrap().response_headers[0]
+                .value
+                .contains(":@example.com/")
+        );
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        for credential in ["alice", "secret", "part"] {
+            assert!(!text.contains(credential), "{name}: {value}");
+        }
+    }
+}
+
+#[test]
+fn custom_scheme_backslashes_do_not_hide_userinfo_in_legacy_scrub() {
+    for (name, value) in custom_scheme_backslash_headers() {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), None).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["request"]["url"] = serde_json::json!(r"custom://alice:secret\part@example.com/");
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let reopened = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        assert!(
+            reopened.load(&e.id).unwrap().response_headers[0]
+                .value
+                .contains(":@example.com/")
+        );
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        for credential in ["alice", "secret", "part"] {
+            assert!(!text.contains(credential), "{name}: {value}");
+        }
+    }
+}
+
+#[test]
+fn backslashes_end_special_authorities_and_custom_paths_stay_unchanged() {
+    let (_d, _data, store) = setup();
+    for url in [
+        r"https://example.com\alice:secret@example.com/",
+        r"custom://example.com/path\alice:secret@example.com/",
+        r"custom://example.com/",
+        r"custom:///alice:secret@example.com/",
+    ] {
+        for name in ["Location", "Content-Location", "Refresh"] {
+            let prefix = if name == "Refresh" { "0; url=" } else { "" };
+            let value = format!("{prefix}{url}");
+            let mut ne = plain("http://a/");
+            ne.response_headers = vec![Header {
+                name: name.into(),
+                value: value.clone(),
+            }];
+            let e = store.append(ne, None).unwrap();
+            assert_eq!(store.load(&e.id).unwrap().response_headers[0].value, value);
+        }
+    }
+}
