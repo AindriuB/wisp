@@ -565,7 +565,7 @@ impl Sidebar {
         let theme = cx.theme();
         let (hover, active_bg, muted, ring) = (
             theme.list_hover,
-            theme.list_active,
+            theme.secondary_active,
             theme.muted_foreground,
             theme.ring,
         );

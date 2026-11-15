@@ -91,7 +91,7 @@ impl Render for HeadersPane {
             .flex_col()
             .flex_1()
             .min_h_0();
-        let selected_bg = cx.theme().list_active;
+        let selected_bg = cx.theme().secondary_active;
         for (row, h) in response.headers.iter().enumerate() {
             let cell = |col: usize, text: String| {
                 let on = self.selected == Some((row, col));

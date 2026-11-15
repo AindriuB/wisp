@@ -13,6 +13,14 @@ const THEME_JSON: &str = include_str!("theme.json");
 /// Share of the warning colour blended over the background for banners.
 const BANNER_ALPHA: f32 = 0.17;
 
+/// Alpha the library applies to `list_active` when a theme is applied
+/// (gpui-component 0.8.1 `theme/schema.rs:1025-1056`).
+#[cfg(test)]
+const LIST_ACTIVE_ALPHA: f32 = 0.2;
+/// Alpha the library applies to `selection` (same place).
+#[cfg(test)]
+const SELECTION_ALPHA: f32 = 0.3;
+
 /// Parses a theme set and returns its `(light, dark)` configs.
 fn parse_themes(json: &str) -> Result<(Rc<ThemeConfig>, Rc<ThemeConfig>), String> {
     let set: ThemeSet = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -300,7 +308,9 @@ mod tests {
                 c("sidebar.background"),
                 c("popover.background"),
             );
-            let (hover, selected) = (c("muted.background"), c("list.active.background"));
+            let hover = c("muted.background");
+            let selected = tint(c("list.active.background"), page, LIST_ACTIVE_ALPHA);
+            let selection = tint(c("selection.background"), page, SELECTION_ALPHA);
             let (text, muted) = (c("foreground"), c("muted.foreground"));
             for (n, bg) in [
                 ("page", page),
@@ -337,7 +347,19 @@ mod tests {
                     4.5,
                 );
             }
-            at_least(&t, "text/selection", text, c("selection.background"), 4.5);
+            at_least(&t, "text/selection", text, selection, 4.5);
+            let open = c("secondary.active.background");
+            for (n, fg) in [
+                ("text", text),
+                ("muted", muted),
+                ("success", c("success.background")),
+                ("warning", c("warning.background")),
+                ("danger", c("danger.background")),
+                ("info", c("info.background")),
+                ("accent", c("accent.background")),
+            ] {
+                at_least(&t, &format!("{n}/open row"), fg, open, 4.5);
+            }
             let banner = tint(c("warning.background"), page, BANNER_ALPHA);
             at_least(&t, "warning/banner", c("warning.background"), banner, 4.5);
             at_least(&t, "text/banner", text, banner, 4.5);
@@ -350,6 +372,63 @@ mod tests {
                 if let Some(col) = v["color"].as_str() {
                     at_least(&t, &format!("syntax {k}"), hex(col), editor, 4.5);
                 }
+            }
+        }
+    }
+
+    /// CIE76 colour difference (sRGB, D65).
+    fn delta_e(a: Rgba, b: Rgba) -> f32 {
+        fn lab(c: Rgba) -> [f32; 3] {
+            let lin = |x: f32| {
+                if x <= 0.04045 {
+                    x / 12.92
+                } else {
+                    ((x + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let (r, g, bl) = (lin(c.r), lin(c.g), lin(c.b));
+            let x = (0.4124 * r + 0.3576 * g + 0.1805 * bl) / 0.95047;
+            let y = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+            let z = (0.0193 * r + 0.1192 * g + 0.9505 * bl) / 1.08883;
+            let f = |t: f32| {
+                if t > 0.008856 {
+                    t.cbrt()
+                } else {
+                    7.787 * t + 16.0 / 116.0
+                }
+            };
+            let (fx, fy, fz) = (f(x), f(y), f(z));
+            [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+        }
+        let (p, q) = (lab(a), lab(b));
+        ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn highlights_are_distinguishable() {
+        for mode in ["light", "dark"] {
+            let t = theme(mode);
+            let c = |k: &str| color(&t, k);
+            let (page, panel, hover) = (
+                c("background"),
+                c("sidebar.background"),
+                c("list.hover.background"),
+            );
+            let open = c("secondary.active.background");
+            let list = tint(c("list.active.background"), page, LIST_ACTIVE_ALPHA);
+            let sel = tint(c("selection.background"), page, SELECTION_ALPHA);
+            let checks = [
+                ("open/page", open, page, 8.0),
+                ("open/panel", open, panel, 8.0),
+                ("open/hover", open, hover, 6.0),
+                ("list.active/page", list, page, 8.0),
+                ("list.active/hover", list, hover, 6.0),
+                ("selection/page", sel, page, 8.0),
+            ];
+            for (n, a, b, min) in checks {
+                let d = delta_e(a, b);
+                println!("{mode} {n}: {d:.1}");
+                assert!(d >= min, "{mode} {n}: dE {d:.1} < {min}");
             }
         }
     }
