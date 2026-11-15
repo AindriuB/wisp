@@ -35,6 +35,20 @@ fn finish(r: io::Result<()>) -> u8 {
     }
 }
 
+fn failure(err: &mut dyn Write, f: Failure) -> u8 {
+    match f {
+        Failure::Usage(m) => {
+            finish(writeln!(err, "wisp-cli: {}", output::display(&m))).max(EXIT_USAGE)
+        }
+        Failure::Unreadable(m) => finish(writeln!(
+            err,
+            "wisp-cli: cannot read collection: {}",
+            output::display(&m)
+        ))
+        .max(EXIT_UNREADABLE),
+    }
+}
+
 fn run<I: IntoIterator<Item = std::ffi::OsString>>(
     argv: I,
     out: &mut dyn Write,
@@ -49,9 +63,30 @@ fn run<I: IntoIterator<Item = std::ffi::OsString>>(
     match parsed.command {
         Action::Help => finish(write!(out, "{USAGE}")),
         Action::Version => finish(writeln!(out, "wisp-cli {}", env!("CARGO_PKG_VERSION"))),
-        Action::Validate { .. } | Action::Explain { .. } => {
-            finish(writeln!(err, "wisp-cli: not available in this build")).max(EXIT_USAGE)
-        }
+        Action::Validate { collection } => match cmd::validate::run(&collection) {
+            Ok(doc) => {
+                let code = u8::from(doc.errors > 0);
+                finish(if parsed.json {
+                    output::json(out, &doc)
+                } else {
+                    output::validate_text(out, &doc)
+                })
+                .max(code)
+            }
+            Err(f) => failure(err, f),
+        },
+        Action::Explain {
+            collection,
+            request,
+            env,
+        } => match cmd::explain::run(&collection, &request, env.as_deref()) {
+            Ok(doc) => finish(if parsed.json {
+                output::json(out, &doc)
+            } else {
+                output::explain_text(out, &doc)
+            }),
+            Err(f) => failure(err, f),
+        },
         Action::Inspect { collection, env } => {
             match cmd::inspect::run(&collection, env.as_deref()) {
                 Ok(doc) => finish(if parsed.json {
@@ -59,11 +94,7 @@ fn run<I: IntoIterator<Item = std::ffi::OsString>>(
                 } else {
                     output::inspect_text(out, &doc)
                 }),
-                Err(Failure::Usage(m)) => finish(writeln!(err, "wisp-cli: {m}")).max(EXIT_USAGE),
-                Err(Failure::Unreadable(m)) => {
-                    finish(writeln!(err, "wisp-cli: cannot read collection: {m}"))
-                        .max(EXIT_UNREADABLE)
-                }
+                Err(f) => failure(err, f),
             }
         }
     }

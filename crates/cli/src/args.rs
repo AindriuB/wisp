@@ -56,9 +56,9 @@ pub const USAGE: &str = "\
 usage: wisp-cli <command> [options]
 
 commands:
-  validate <collection>                       (not available in this build)
+  validate <collection>
   inspect <collection> [--env <name>]
-  explain <collection> <request-path> [--env <name>]   (not available in this build)
+  explain <collection> <request-path> [--env <name>]
 
 options:
   --json       print one JSON document
