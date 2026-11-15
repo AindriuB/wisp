@@ -111,7 +111,8 @@ fn unknown_kind_survives_load_save_reload_byte_for_byte() {
     );
     let again = load_request(&path).unwrap();
     assert_eq!(again.assertions, r.assertions);
-    assert!(saved.contains("# status must be ok") || saved.contains("value = 201"));
+    assert!(saved.contains("value = 201"));
+    assert!(!saved.contains("value = 200"));
 }
 
 #[test]
@@ -152,4 +153,147 @@ fn array_written_only_when_non_empty_or_present() {
     r.assertions.clear();
     save_request(&path, &r).unwrap();
     assert!(!fs::read_to_string(&path).unwrap().contains("assert"));
+}
+
+fn st(n: i64) -> Assertion {
+    Assertion::Status {
+        op: Op::Equals,
+        expected: Expected::Int(n),
+    }
+}
+
+fn status_file(codes: &[i64]) -> String {
+    let mut t =
+        String::from("name = \"n\"\nmethod = \"GET\"\nurl = \"u\"\n\n[auth]\ntype = \"none\"\n");
+    for c in codes {
+        t.push_str(&format!(
+            "\n[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = {c}\n"
+        ));
+    }
+    t
+}
+
+fn unrec(raw: &str, reason: &str) -> Assertion {
+    Assertion::Unrecognised {
+        raw: raw.into(),
+        reason: reason.into(),
+    }
+}
+
+fn save_reload(text: &str, edit: impl FnOnce(&mut Vec<Assertion>)) -> (Vec<Assertion>, String) {
+    let (_d, path) = write_tmp(text);
+    let mut r = load_request(&path).unwrap();
+    edit(&mut r.assertions);
+    save_request(&path, &r).unwrap();
+    let saved = fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        format!("{:?}", load_request(&path).unwrap().assertions),
+        format!("{:?}", r.assertions),
+        "{saved}"
+    );
+    (r.assertions, saved)
+}
+
+#[test]
+fn inserting_before_existing_entries_keeps_the_given_order() {
+    save_reload(&status_file(&[202, 201, 203]), |a| {
+        a.insert(0, st(301));
+        a.insert(0, st(300));
+    });
+}
+
+#[test]
+fn appended_unrecognised_entry_is_written_last() {
+    let (a, _) = save_reload(&status_file(&[201, 202]), |a| {
+        a.push(unrec(
+            "[[assert]]\nkind = \"future\"\nop = \"x\"\n",
+            "not supported",
+        ));
+    });
+    assert!(matches!(a[2], Assertion::Unrecognised { .. }));
+}
+
+#[test]
+fn child_tables_move_with_their_parent() {
+    let text = "name = \"n\"\nmethod = \"GET\"\nurl = \"u\"\n\n[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = 200\n\n\
+[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = 201\n\n[assert.mod]\nowner = \"b\"\n\n\
+[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = 202\n\n[assert.mod]\nowner = \"c\"\n";
+    let (a, saved) = save_reload(text, |a| {
+        a.reverse();
+        a.insert(0, st(500));
+    });
+    let pos = |s: &str| saved.find(s).unwrap_or_else(|| panic!("{s} in {saved}"));
+    assert!(pos("owner = \"c\"") < pos("owner = \"b\""));
+    for (i, owner) in [(1, "c"), (2, "b")] {
+        let Assertion::Unrecognised { raw, .. } = &a[i] else {
+            panic!("{a:?}")
+        };
+        assert!(raw.contains(&format!("owner = \"{owner}\"")), "{raw}");
+    }
+}
+
+fn load_one(entry: &str) -> Assertion {
+    let (_d, path) = write_tmp(&format!(
+        "name = \"n\"\nmethod = \"GET\"\nurl = \"u\"\n\n[[assert]]\n{entry}\n"
+    ));
+    load_request(&path).unwrap().assertions.remove(0)
+}
+
+fn reason(a: &Assertion) -> &str {
+    match a {
+        Assertion::Unrecognised { reason, .. } => reason,
+        _ => "typed",
+    }
+}
+
+#[test]
+fn target_keys_of_another_kind_are_malformed() {
+    for e in [
+        "kind = \"status\"\nop = \"equals\"\nvalue = 200\nname = \"x\"",
+        "kind = \"status\"\nop = \"equals\"\nvalue = 200\npath = \"$.a\"",
+        "kind = \"header\"\nname = \"a\"\nop = \"exists\"\npath = \"$.a\"",
+        "kind = \"json\"\npath = \"$.a\"\nop = \"exists\"\nname = \"a\"",
+    ] {
+        assert_eq!(reason(&load_one(e)), "malformed", "{e}");
+    }
+}
+
+#[test]
+fn unknown_keys_on_known_kinds_are_not_supported() {
+    for e in [
+        "kind = \"status\"\nop = \"equals\"\nvalue = 200\nnegate = true",
+        "kind = \"header\"\nname = \"a\"\nop = \"exists\"\nnegate = true",
+        "kind = \"json\"\npath = \"$.a\"\nop = \"exists\"\nnegate = true",
+        "kind = \"status\"\nop = \"equals\"\nvalue = 200\n[assert.sub]\nx = 1",
+    ] {
+        assert_eq!(reason(&load_one(e)), "not supported", "{e}");
+    }
+    // Kept verbatim on save.
+    let text = "name = \"n\"\nmethod = \"GET\"\nurl = \"u\"\n\n[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = 200\nnegate = true\n";
+    let (_a, saved) = save_reload(text, |a| a.push(st(201)));
+    assert!(saved.contains("negate = true"));
+}
+
+#[test]
+fn nan_value_round_trips_unchanged_with_comments() {
+    let text = "name = \"n\"\nmethod = \"GET\"\nurl = \"u\"\n\n[[assert]]\n# keep me\nkind = \"json\"\npath = \"$.a\"\nop = \"equals\"\nvalue = nan\n";
+    let (_d, path) = write_tmp(text);
+    let r = load_request(&path).unwrap();
+    save_request(&path, &r).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let (_a, saved) = save_reload(text, |a| a.push(st(201)));
+    assert!(saved.contains("# keep me"));
+}
+
+#[test]
+fn non_array_assert_key_errors_when_adding_assertions() {
+    let text = "name = \"n\"\nmethod = \"GET\"\nurl = \"u\"\nassert = []\n";
+    let (_d, path) = write_tmp(text);
+    let mut r = load_request(&path).unwrap();
+    assert!(r.assertions.is_empty());
+    save_request(&path, &r).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    r.assertions.push(st(200));
+    assert!(save_request(&path, &r).is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
 }

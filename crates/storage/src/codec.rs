@@ -653,6 +653,20 @@ fn read_one_assertion(t: &Table) -> Result<Assertion, ParseError> {
         "json" => text("path")?,
         _ => None,
     };
+    // Keys of another kind make the entry malformed; any key outside the format makes it
+    // one a newer version wrote, which is kept but never evaluated.
+    let mut unknown = false;
+    for (key, _) in t.iter() {
+        match key {
+            "kind" | "op" | "value" => {}
+            "name" if kind == "header" => {}
+            "path" if kind == "json" => {}
+            "name" | "path" if matches!(kind, "status" | "header" | "json") => {
+                return Err(ParseError::Malformed);
+            }
+            _ => unknown = true,
+        }
+    }
     let value = match t.get("value") {
         None => None,
         Some(i) => Some(
@@ -661,7 +675,38 @@ fn read_one_assertion(t: &Table) -> Result<Assertion, ParseError> {
                 .ok_or(ParseError::Malformed)?,
         ),
     };
-    Assertion::from_parts(kind, target, op, value)
+    let a = Assertion::from_parts(kind, target, op, value)?;
+    if unknown {
+        return Err(ParseError::NotSupported);
+    }
+    Ok(a)
+}
+
+/// Equality that also holds for a NaN value, so an unchanged entry is recognised.
+fn same(a: &Assertion, b: &Assertion) -> bool {
+    a == b || format!("{a:?}") == format!("{b:?}")
+}
+
+fn table_positions(t: &Table, out: &mut Vec<usize>) {
+    out.extend(t.position());
+    for (_, item) in t.iter() {
+        match item {
+            Item::Table(c) => table_positions(c, out),
+            Item::ArrayOfTables(a) => a.iter().for_each(|c| table_positions(c, out)),
+            _ => {}
+        }
+    }
+}
+
+fn set_positions(t: &mut Table, next: &mut impl FnMut() -> usize) {
+    t.set_position(next());
+    for (_, item) in t.iter_mut() {
+        match item {
+            Item::Table(c) => set_positions(c, next),
+            Item::ArrayOfTables(a) => a.iter_mut().for_each(|c| set_positions(c, next)),
+            _ => {}
+        }
+    }
 }
 
 fn read_assertion(t: &Table) -> Assertion {
@@ -733,28 +778,52 @@ pub fn write_assertions(
     path: &Path,
 ) -> Result<(), StorageError> {
     if doc.get(ASSERT_KEY).is_some() && assert_tables(doc).is_none() {
-        return Ok(());
+        // Not an array of tables: it reads as empty and is never replaced.
+        if assertions.is_empty() {
+            return Ok(());
+        }
+        return Err(invalid(
+            path,
+            ASSERT_KEY,
+            "`assert` is not an array of tables; remove it to add assertions",
+        ));
     }
     let old: Vec<(Assertion, Table)> = assert_tables(doc)
         .map(|a| a.iter().map(|t| (read_assertion(t), t.clone())).collect())
         .unwrap_or_default();
-    if old.iter().map(|(a, _)| a).eq(assertions.iter()) {
+    if old.len() == assertions.len() && old.iter().zip(assertions).all(|((o, _), a)| same(o, a)) {
         return Ok(());
     }
     if assertions.is_empty() {
         doc.remove(ASSERT_KEY);
         return Ok(());
     }
-    // Tables print in `position` order, so the existing positions are handed out afresh.
-    let mut slots: Vec<Option<usize>> = old.iter().map(|(_, t)| t.position()).collect();
-    slots.sort();
+    // Tables print in `position` order, so the positions the array already holds (child
+    // tables included) are handed out afresh, in order, to every table written. Any
+    // surplus continues from the last one, which keeps the array ahead of later tables.
+    let mut slots = Vec::new();
+    for (_, t) in &old {
+        table_positions(t, &mut slots);
+    }
+    if slots.is_empty() {
+        let mut all = Vec::new();
+        table_positions(doc, &mut all);
+        slots.push(all.into_iter().max().unwrap_or(0));
+    }
+    slots.sort_unstable();
+    let mut taken = 0;
+    let mut next = || {
+        let p = slots[taken.min(slots.len() - 1)];
+        taken += 1;
+        p
+    };
     let mut used = vec![false; old.len()];
     let mut out = ArrayOfTables::new();
-    for (n, a) in assertions.iter().enumerate() {
+    for a in assertions {
         let reuse = old
             .iter()
             .enumerate()
-            .find(|(i, (o, _))| !used[*i] && o == a)
+            .find(|(i, (o, _))| !used[*i] && same(o, a))
             .map(|(i, _)| i);
         let mut table = match reuse {
             Some(i) => {
@@ -763,9 +832,7 @@ pub fn write_assertions(
             }
             None => assertion_table(a, path)?,
         };
-        if let Some(Some(pos)) = slots.get(n) {
-            table.set_position(*pos);
-        }
+        set_positions(&mut table, &mut next);
         out.push(table);
     }
     doc.insert(ASSERT_KEY, Item::ArrayOfTables(out));

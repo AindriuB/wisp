@@ -190,8 +190,8 @@ impl Assertion {
         }
     }
 
-    /// First 8 bytes of SHA-256 over kind, target, operator and expected value, as 16
-    /// lowercase hex characters. Identifies the definition, never a response value.
+    /// First 8 bytes of SHA-256 over kind, target and operator only (never the expected
+    /// value, so it cannot be a hash of a response value), as 16 lowercase hex characters.
     pub fn fingerprint(&self) -> String {
         let mut h = Sha256::new();
         let mut field = |s: &str| {
@@ -199,23 +199,20 @@ impl Assertion {
             h.update(s.as_bytes());
         };
         match self {
-            Assertion::Status { op, expected } => {
+            Assertion::Status { op, .. } => {
                 field("status");
                 field("");
                 field(op.as_str());
-                field(&expected_key(expected));
             }
-            Assertion::Header { name, op, expected } => {
+            Assertion::Header { name, op, .. } => {
                 field("header");
                 field(&name.to_ascii_lowercase());
                 field(op.as_str());
-                field(&expected_key(expected));
             }
-            Assertion::Json { path, op, expected } => {
+            Assertion::Json { path, op, .. } => {
                 field("json");
                 field(path);
                 field(op.as_str());
-                field(&expected_key(expected));
             }
             Assertion::Unrecognised { raw, .. } => {
                 field("unrecognised");
@@ -224,15 +221,6 @@ impl Assertion {
         }
         let digest = h.finalize();
         digest[..8].iter().map(|b| format!("{b:02x}")).collect()
-    }
-}
-
-fn expected_key(e: &Expected) -> String {
-    match e {
-        Expected::Str(s) => format!("s:{s}"),
-        Expected::Int(n) => format!("i:{n}"),
-        Expected::Float(f) => format!("f:{:?}", f),
-        Expected::Bool(b) => format!("b:{b}"),
     }
 }
 
@@ -325,6 +313,18 @@ fn verdict(pass: bool, actual: impl FnOnce() -> Option<String>) -> Verdict {
     if pass { Verdict::Pass } else { fail(actual()) }
 }
 
+/// Patterns compiled during one `evaluate`, rejected ones included.
+#[derive(Default)]
+struct Regexes(std::collections::HashMap<String, Result<regex::Regex, String>>);
+
+impl Regexes {
+    fn get(&mut self, pattern: &str) -> &Result<regex::Regex, String> {
+        self.0
+            .entry(pattern.to_string())
+            .or_insert_with(|| check_regex(pattern))
+    }
+}
+
 enum Body {
     Untried,
     Json(serde_json::Value),
@@ -334,6 +334,7 @@ enum Body {
 /// Evaluate every assertion against the response. The body is parsed at most once.
 pub fn evaluate(assertions: &[Assertion], facts: &Facts<'_>) -> Vec<AssertionResult> {
     let mut body = Body::Untried;
+    let mut res = Regexes::default();
     assertions
         .iter()
         .enumerate()
@@ -341,7 +342,7 @@ pub fn evaluate(assertions: &[Assertion], facts: &Facts<'_>) -> Vec<AssertionRes
             let verdict = if i >= MAX_ASSERTIONS {
                 skipped("limit: only the first 50 assertions run")
             } else {
-                eval_one(a, facts, &mut body)
+                eval_one(a, facts, &mut body, &mut res)
             };
             AssertionResult {
                 label: a.label(),
@@ -351,7 +352,7 @@ pub fn evaluate(assertions: &[Assertion], facts: &Facts<'_>) -> Vec<AssertionRes
         .collect()
 }
 
-fn eval_one(a: &Assertion, facts: &Facts<'_>, body: &mut Body) -> Verdict {
+fn eval_one(a: &Assertion, facts: &Facts<'_>, body: &mut Body, res: &mut Regexes) -> Verdict {
     match a {
         Assertion::Unrecognised { reason, .. } => {
             if reason == "malformed" {
@@ -360,8 +361,8 @@ fn eval_one(a: &Assertion, facts: &Facts<'_>, body: &mut Body) -> Verdict {
                 skipped("not supported by this version")
             }
         }
-        Assertion::Status { op, expected } => eval_status(*op, expected, facts.status),
-        Assertion::Header { name, op, expected } => eval_header(name, *op, expected, facts),
+        Assertion::Status { op, expected } => eval_status(*op, expected, facts.status, res),
+        Assertion::Header { name, op, expected } => eval_header(name, *op, expected, facts, res),
         Assertion::Json { path, op, expected } => {
             let segments = match parse_path(path) {
                 Ok(s) => s,
@@ -371,7 +372,7 @@ fn eval_one(a: &Assertion, facts: &Facts<'_>, body: &mut Body) -> Verdict {
                 *body = parse_body(facts.body);
             }
             match body {
-                Body::Json(v) => eval_json(&segments, *op, expected, v),
+                Body::Json(v) => eval_json(&segments, *op, expected, v, res),
                 Body::Unusable(reason) => skipped(reason),
                 Body::Untried => skipped("malformed"),
             }
@@ -390,8 +391,15 @@ fn parse_body(body: Option<&[u8]>) -> Body {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static REGEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Compile a pattern within the limits; the error is a short reason.
 pub fn check_regex(pattern: &str) -> Result<regex::Regex, String> {
+    #[cfg(test)]
+    REGEX_BUILDS.with(|c| c.set(c.get() + 1));
     if pattern.chars().count() > MAX_REGEX_LEN {
         return Err("regex over 256 characters".to_string());
     }
@@ -401,13 +409,13 @@ pub fn check_regex(pattern: &str) -> Result<regex::Regex, String> {
         .map_err(|_| "invalid regex".to_string())
 }
 
-fn regex_matches(pattern: &Expected, text: &str) -> Result<bool, Verdict> {
+fn regex_matches(pattern: &Expected, text: &str, res: &mut Regexes) -> Result<bool, Verdict> {
     let Expected::Str(p) = pattern else {
         return Err(skipped("malformed"));
     };
-    match check_regex(p) {
+    match res.get(p) {
         Ok(re) => Ok(re.is_match(text)),
-        Err(e) => Err(skipped(&e)),
+        Err(e) => Err(skipped(e)),
     }
 }
 
@@ -415,11 +423,11 @@ fn exists_flag(e: &Expected) -> bool {
     !matches!(e, Expected::Bool(false))
 }
 
-fn eval_status(op: Op, expected: &Expected, status: u16) -> Verdict {
+fn eval_status(op: Op, expected: &Expected, status: u16, res: &mut Regexes) -> Verdict {
     let actual = || Some(status.to_string());
     match (op, expected) {
         (Op::Equals, Expected::Int(n)) => verdict(i64::from(status) == *n, actual),
-        (Op::Matches, p) => match regex_matches(p, &format!("{status:03}")) {
+        (Op::Matches, p) => match regex_matches(p, &format!("{status:03}"), res) {
             Ok(m) => verdict(m, actual),
             Err(v) => v,
         },
@@ -427,7 +435,13 @@ fn eval_status(op: Op, expected: &Expected, status: u16) -> Verdict {
     }
 }
 
-fn eval_header(name: &str, op: Op, expected: &Expected, facts: &Facts<'_>) -> Verdict {
+fn eval_header(
+    name: &str,
+    op: Op,
+    expected: &Expected,
+    facts: &Facts<'_>,
+    res: &mut Regexes,
+) -> Verdict {
     let values: Vec<&str> = facts
         .headers
         .iter()
@@ -453,7 +467,7 @@ fn eval_header(name: &str, op: Op, expected: &Expected, facts: &Facts<'_>) -> Ve
         (Op::Matches, p) => {
             let mut any = false;
             for v in &values {
-                match regex_matches(p, v) {
+                match regex_matches(p, v, res) {
                     Ok(true) => {
                         any = true;
                         break;
@@ -464,7 +478,7 @@ fn eval_header(name: &str, op: Op, expected: &Expected, facts: &Facts<'_>) -> Ve
             }
             if values.is_empty() {
                 // Still validate the pattern so a bad one is reported either way.
-                if let Err(e) = regex_matches(p, "") {
+                if let Err(e) = regex_matches(p, "", res) {
                     return e;
                 }
             }
@@ -581,6 +595,7 @@ fn eval_json(
     op: Op,
     expected: &Expected,
     root: &serde_json::Value,
+    res: &mut Regexes,
 ) -> Verdict {
     let node = lookup(root, segments);
     let actual = || node.map(render);
@@ -600,12 +615,12 @@ fn eval_json(
             verdict(pass, actual)
         }
         Op::Matches => match (node, expected) {
-            (Some(serde_json::Value::String(s)), p) => match regex_matches(p, s) {
+            (Some(serde_json::Value::String(s)), p) => match regex_matches(p, s, res) {
                 Ok(m) => verdict(m, actual),
                 Err(v) => v,
             },
             (_, p) => {
-                if let Err(v) = regex_matches(p, "") {
+                if let Err(v) = regex_matches(p, "", res) {
                     return v;
                 }
                 fail(actual())
@@ -1028,10 +1043,13 @@ mod tests {
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         );
         assert_eq!(f, st(Op::Equals, Expected::Int(200)).fingerprint());
-        assert_ne!(f, st(Op::Equals, Expected::Int(201)).fingerprint());
         assert_ne!(
             js("$.a", Op::Equals, s("1")).fingerprint(),
-            js("$.a", Op::Equals, Expected::Int(1)).fingerprint()
+            js("$.b", Op::Equals, s("1")).fingerprint()
+        );
+        assert_ne!(
+            js("$.a", Op::Equals, s("1")).fingerprint(),
+            js("$.a", Op::Contains, s("1")).fingerprint()
         );
     }
 
@@ -1091,5 +1109,45 @@ mod tests {
         for text in [format!("{facts:?}"), format!("{facts:#?}")] {
             assert!(!text.contains("CANARY"), "{text}");
         }
+    }
+
+    #[test]
+    fn fingerprint_ignores_the_expected_value() {
+        let a = |v: &str| hd("x", Op::Equals, s(v)).fingerprint();
+        assert_eq!(a("one"), a("two"));
+        let st = |n| Assertion::Status {
+            op: Op::Equals,
+            expected: Expected::Int(n),
+        };
+        assert_eq!(st(200).fingerprint(), st(404).fingerprint());
+        assert_ne!(
+            hd("x", Op::Equals, s("a")).fingerprint(),
+            hd("y", Op::Equals, s("a")).fingerprint()
+        );
+    }
+
+    fn many_headers() -> Vec<Header> {
+        (0..100).map(|i| h("x-a", &format!("v{i}"))).collect()
+    }
+
+    #[test]
+    fn regex_compiled_once_per_evaluation() {
+        let hs = many_headers();
+        let facts = Facts {
+            status: 200,
+            headers: &hs,
+            body: None,
+        };
+        let ok: Vec<_> = (0..50)
+            .map(|_| hd("x-a", Op::Matches, s("^nomatch$")))
+            .collect();
+        REGEX_BUILDS.with(|c| c.set(0));
+        evaluate(&ok, &facts);
+        assert_eq!(REGEX_BUILDS.with(|c| c.get()), 1);
+        let bad: Vec<_> = (0..50).map(|_| hd("x-a", Op::Matches, s("("))).collect();
+        REGEX_BUILDS.with(|c| c.set(0));
+        let r = evaluate(&bad, &facts);
+        assert_eq!(REGEX_BUILDS.with(|c| c.get()), 1);
+        assert!(matches!(r[0].verdict, Verdict::Skipped { .. }));
     }
 }
