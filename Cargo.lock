@@ -8630,6 +8630,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisp-cli"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "wisp-core",
+ "wisp-storage",
+]
+
+[[package]]
 name = "wisp-core"
 version = "0.2.0"
 dependencies = [
