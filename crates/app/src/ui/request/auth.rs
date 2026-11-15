@@ -318,7 +318,7 @@ impl AuthEditor {
         let token = secret("Token", window, cx);
         let key_name = plain("Name", window, cx);
         let key_value = secret("Value", window, cx);
-        let access_key = plain("Access key", window, cx);
+        let access_key = secret("Access key", window, cx);
         let secret_key = secret("Secret key", window, cx);
         let session_token = secret("Session token (optional)", window, cx);
         let region = plain("us-east-1", window, cx);
@@ -683,7 +683,10 @@ impl Render for AuthEditor {
                     Input::new(&self.password).mask_toggle(),
                 )),
             AuthKind::AwsSigV4 => col
-                .child(Self::row("Access key", Input::new(&self.access_key)))
+                .child(Self::row(
+                    "Access key",
+                    Input::new(&self.access_key).mask_toggle(),
+                ))
                 .child(Self::row(
                     "Secret key",
                     Input::new(&self.secret_key).mask_toggle(),
