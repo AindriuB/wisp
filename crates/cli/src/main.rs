@@ -37,10 +37,15 @@ fn finish(r: io::Result<()>) -> u8 {
 
 fn failure(err: &mut dyn Write, f: Failure) -> u8 {
     match f {
-        Failure::Usage(m) => finish(writeln!(err, "wisp-cli: {m}")).max(EXIT_USAGE),
-        Failure::Unreadable(m) => {
-            finish(writeln!(err, "wisp-cli: cannot read collection: {m}")).max(EXIT_UNREADABLE)
+        Failure::Usage(m) => {
+            finish(writeln!(err, "wisp-cli: {}", output::display(&m))).max(EXIT_USAGE)
         }
+        Failure::Unreadable(m) => finish(writeln!(
+            err,
+            "wisp-cli: cannot read collection: {}",
+            output::display(&m)
+        ))
+        .max(EXIT_UNREADABLE),
     }
 }
 

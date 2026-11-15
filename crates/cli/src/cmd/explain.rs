@@ -75,6 +75,16 @@ pub fn run(collection: &Path, request: &str, env: Option<&str>) -> Result<Explai
                     s.value = PLACEHOLDER.to_owned();
                 }
             }
+            // Declared but not loaded (store mode): keep the names as empty
+            // secrets so they shadow lower scopes and report as unavailable.
+            for n in info.secret_names {
+                if !e.secrets.iter().any(|s| s.name == n) {
+                    e.secrets.push(wisp_core::request::Var {
+                        name: n,
+                        value: String::new(),
+                    });
+                }
+            }
             Some(e)
         }
         None => None,

@@ -302,7 +302,7 @@ fn validate_reports_everything_in_one_run() {
         .iter()
         .map(|f| f["path"].as_str().unwrap().to_owned())
         .collect();
-    for want in ["badfolder/folder.toml", "broken.toml"] {
+    for want in ["badfolder/folder.toml", "broken.toml", "assert.toml"] {
         assert!(paths.iter().any(|x| x == want), "{want} in {paths:?}");
     }
     #[cfg(unix)]
@@ -392,4 +392,54 @@ fn closed_stdout_pipe_exits_cleanly() {
     drop(c.stdout.take());
     let s = c.wait().unwrap();
     assert!(matches!(s.code(), Some(0 | 1)), "{s:?}");
+}
+
+#[test]
+fn failure_messages_never_carry_raw_escapes() {
+    let d = tempfile::tempdir().unwrap();
+    w(d.path(), "collection.toml", "format = 1\n");
+    w(
+        d.path(),
+        "a.toml",
+        "name = \"x\"\nmethod = \"\\u001b[31mEVIL\"\nurl = \"u\"\n",
+    );
+    let o = bin(&["explain", p(&d), "a.toml"]);
+    assert!(!o.status.success());
+    assert!(
+        !o.stderr.contains(&0x1b),
+        "{:?}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("EVIL"));
+}
+
+#[test]
+fn explain_keychain_secret_shadows_lower_scope() {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    w(
+        r,
+        "collection.toml",
+        "format = 1\n\n[vars]\ntok = \"FALLBACK-CANARY\"\n",
+    );
+    w(
+        r,
+        "environments/prod.toml",
+        "secrets = \"keychain\"\nsecret_names = [\"tok\"]\n",
+    );
+    w(
+        r,
+        "a.toml",
+        &req("A", "\n[[headers]]\nname = \"X-T\"\nvalue = \"{{tok}}\"\n"),
+    );
+    for args in [
+        vec!["explain", p(&d), "a.toml", "--env", "prod"],
+        vec!["explain", p(&d), "a.toml", "--env", "prod", "--json"],
+    ] {
+        let o = bin(&args);
+        let t = String::from_utf8_lossy(&o.stdout).into_owned();
+        assert!(!t.contains("FALLBACK-CANARY"), "{t}");
+        assert!(t.contains("tok"), "{t}");
+        assert!(t.contains("secret") || t.contains("Secret"), "{t}");
+    }
 }
