@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use wisp_core::request::{Environment, Var};
+use wisp_storage::StorageError;
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{
-    EnvironmentInfo, SuggestConfirm, environment_info, save_environment,
+    EnvironmentInfo, SecretsMode, SuggestConfirm, environment_info, save_environment,
 };
 use wisp_storage::vault::{NoStores, StoreKind, VaultCtx, load_environment_with};
 
@@ -53,7 +54,7 @@ fn file_mode_names() {
     write(t.path(), "dev.toml", "[vars]\nhost = \"h\"\n");
     write(t.path(), "dev.secrets.toml", "[vars]\ntoken = \"t\"\n");
     let i = environment_info(t.path(), "dev").unwrap();
-    assert_eq!(i.store, StoreKind::File);
+    assert_eq!(i.store, SecretsMode::File);
     assert_eq!(i.var_names, ["host"]);
     assert_eq!(i.secret_names, ["token"]);
 }
@@ -61,7 +62,7 @@ fn file_mode_names() {
 #[test]
 fn store_mode_names_without_store() {
     let i = info("secrets = \"keychain\"\nsecret_names = [\"a\", \"b\"]\n[vars]\nhost = \"h\"\n");
-    assert_eq!(i.store, StoreKind::Keychain);
+    assert_eq!(i.store, SecretsMode::Store(StoreKind::Keychain));
     assert_eq!(i.secret_names, ["a", "b"]);
 }
 
@@ -81,10 +82,43 @@ fn no_values_in_debug() {
 }
 
 #[test]
+fn unknown_kind_is_ok_and_capped() {
+    let i = info("secrets = \"keepassxc\"\nsecret_names = [\"a\"]\n[vars]\nhost = \"h\"\n");
+    assert_eq!(i.store, SecretsMode::Unknown("keepassxc".into()));
+    assert_eq!(i.secret_names, ["a"]);
+    let long = format!("{}é", "x".repeat(63));
+    let i = info(&format!("secrets = \"{long}\"\n"));
+    assert_eq!(i.store, SecretsMode::Unknown("x".repeat(63)));
+    let i = info(&format!("secrets = \"{}\"\n", "y".repeat(500)));
+    assert_eq!(i.store, SecretsMode::Unknown("y".repeat(64)));
+}
+
+#[test]
+fn non_string_secrets_is_invalid() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", "secrets = 5\n");
+    match environment_info(t.path(), "dev") {
+        Err(StorageError::Invalid { key, .. }) => assert_eq!(key, "secrets"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn bad_names_refused() {
     let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("root");
+    std::fs::create_dir_all(root.join("environments")).unwrap();
+    // Files the escaping names would reach, so only `check_name` can refuse.
+    std::fs::write(root.join("x.toml"), "[vars]\n").unwrap();
+    std::fs::create_dir_all(root.join("environments/a")).unwrap();
+    std::fs::write(root.join("environments/a/b.toml"), "[vars]\n").unwrap();
+    std::fs::write(root.join("environments/.toml"), "[vars]\n").unwrap();
+    std::fs::write(root.join("environments/.hidden.toml"), "[vars]\n").unwrap();
     for n in ["../x", "a/b", "", ".hidden"] {
-        assert!(environment_info(t.path(), n).is_err(), "{n}");
+        match environment_info(&root, n) {
+            Err(StorageError::Invalid { key, .. }) => assert_eq!(key, "name", "{n}"),
+            other => panic!("{n}: {other:?}"),
+        }
     }
 }
 
