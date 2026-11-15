@@ -1319,3 +1319,85 @@ fn a_problem_inside_a_hidden_variable_is_still_reported() {
             .any(|p| matches!(p, Problem::UnresolvedVar { name, .. } if name == "nope"))
     );
 }
+
+// ---- review round 1 (task 151) ----
+
+#[test]
+fn a_hidden_variable_supplying_a_query_mark_does_not_expose_a_credential_value() {
+    for (url, v) in [
+        ("http://h/{{q}}token=LITCANARY", var("q", "?")),
+        ("http://h/?a=1{{amp}}token=LITCANARY", var("amp", "&")),
+        (
+            "http://h/{{base}}&api_key=LITCANARY",
+            var("base", "http://h/?v=1"),
+        ),
+    ] {
+        let name = v.name.clone();
+        let (_, dump) = canary_report(|f| {
+            f.req.url = url.into();
+            f.coll.vars.push(v);
+            f.req
+                .headers
+                .push(kv("X-Other", &format!("{{{{{name}}}}}"), true));
+            f.req
+                .headers
+                .push(kv("Authorization", &format!("{{{{{name}}}}}"), true));
+        });
+        assert!(!dump.contains("LITCANARY"), "{url}: {dump}");
+    }
+}
+
+#[test]
+fn a_hidden_variable_supplying_an_at_sign_does_not_expose_the_password() {
+    let (_, dump) = canary_report(|f| {
+        f.req.url = "http://alice:LITCANARY{{at}}h.example/".into();
+        f.coll.vars.push(var("at", "@"));
+        f.req.headers.push(kv("Authorization", "{{at}}", true));
+    });
+    assert!(!dump.contains("LITCANARY"), "{dump}");
+}
+
+#[test]
+fn a_userinfo_sub_walk_bomb_costs_bounded_work() {
+    let mut f = Fx::new(req("http://alice:{{b0}}@h/"));
+    let mut vars: Vec<Var> = (0..13)
+        .map(|i| {
+            var(
+                &format!("b{i}"),
+                &format!("{{{{b{}}}}}{{{{b{}}}}}", i + 1, i + 1),
+            )
+        })
+        .collect();
+    vars.push(var("b13", "x"));
+    f.coll.vars = vars;
+    f.req.headers = vec![kv("Authorization", "Bearer {{b0}}", true)];
+    let (_, work) = super::report::explain_counted(&f.req, &f.scope());
+    let max = super::engine::MAX_EXPANSIONS;
+    assert!(work <= 3 * max, "work {work}");
+    // The userinfo sub-walk is counted (about 500 expansions; without it work was 5572).
+    assert!(work >= 6000, "sub-walk work not counted: {work}");
+}
+
+#[test]
+fn problem_text_from_a_hidden_variable_is_masked() {
+    let (r, dump) = canary_report(|f| {
+        f.req.url = "http://h/{{foo}}".into();
+        f.coll.vars = vec![var("foo", "{CANARYFOO}")];
+    });
+    assert!(!dump.contains(CANARY), "{dump}");
+    assert!(r.problems.iter().any(|p| matches!(
+        p,
+        Problem::MissingPathParam { name } if name == "<hidden>"
+    )));
+}
+
+#[test]
+fn pattern_warning_text_from_a_hidden_variable_is_masked() {
+    let (r, dump) = canary_report(|f| {
+        f.req.url = "http://h/{{foo}}".into();
+        f.coll.vars = vec![var("foo", "{id:CANARYFOO(}")];
+        f.req.path = vec![var("id", "x")];
+    });
+    assert!(!dump.contains(CANARY), "{dump}");
+    assert!(!r.warnings.is_empty());
+}
