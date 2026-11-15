@@ -78,11 +78,21 @@ impl std::fmt::Debug for ResolveWarning {
 }
 
 mod engine;
+mod report;
 
 #[cfg(test)]
 mod tests;
 
 pub use engine::{VarLookup, VarSource, lookup_var, resolve};
+pub use report::{
+    AuthApplication, AuthField, AuthKind, AuthReport, BodyKind, BodyReport, EnvReport,
+    HeaderReport, HideReason, Origin, ParamKind, ParamReport, ReportWarning, ResolutionReport,
+    SecretStatus, Setting, SettingSource, SettingsReport, Shown, ShownPart, Synthetic, VarReport,
+    explain, explain_auth,
+};
 
 #[cfg(test)]
 mod lookup_tests;
+
+#[cfg(test)]
+mod report_tests;

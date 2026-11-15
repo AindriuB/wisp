@@ -17,13 +17,13 @@ use crate::request::{ApiKeyLocation, Auth, Body, KeyValue, PartValue, Request, T
 use crate::template::{self, PathToken};
 
 /// Maximum nesting of variables whose values contain further variables.
-const MAX_DEPTH: usize = 8;
+pub(super) const MAX_DEPTH: usize = 8;
 
 /// Maximum bytes that variable expansion may add to a single resolved value.
-const MAX_OUTPUT: usize = 64 * 1024;
+pub(super) const MAX_OUTPUT: usize = 64 * 1024;
 
 /// Maximum variable expansions in one `resolve()` call.
-const MAX_EXPANSIONS: usize = 10_000;
+pub(super) const MAX_EXPANSIONS: usize = 10_000;
 
 /// Everything except RFC 3986 unreserved characters is percent-encoded.
 const ENCODE: &AsciiSet = &NON_ALPHANUMERIC
@@ -32,16 +32,20 @@ const ENCODE: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'~');
 
-fn encode(s: &str) -> String {
+pub(super) fn encode(s: &str) -> String {
     utf8_percent_encode(s, ENCODE).to_string()
 }
 
-fn encode_form(s: &str) -> String {
+pub(super) fn encode_form(s: &str) -> String {
     encode(s).replace("%20", "+")
 }
 
 /// Find a variable by precedence. Borrows from the inputs, so no copy is made.
-fn lookup<'s>(req: &'s Request, scope: &'s Scope<'s>, name: &str) -> Option<(&'s str, VarSource)> {
+pub(super) fn lookup<'s>(
+    req: &'s Request,
+    scope: &'s Scope<'s>,
+    name: &str,
+) -> Option<(&'s str, VarSource)> {
     let find = |vars: &'s [crate::request::Var]| {
         vars.iter()
             .find(|v| v.name == name)
@@ -70,6 +74,30 @@ fn lookup<'s>(req: &'s Request, scope: &'s Scope<'s>, name: &str) -> Option<(&'s
                 .map(|v| (v, VarSource::Environment))
         })
         .or_else(|| find(&scope.collection.vars).map(|v| (v, VarSource::Collection)))
+}
+
+/// Every layer that defines `name`, in precedence order (winner first).
+pub(super) fn lookup_all<'s>(
+    req: &'s Request,
+    scope: &'s Scope<'s>,
+    name: &str,
+) -> Vec<(&'s str, VarSource)> {
+    let find = |vars: &'s [crate::request::Var]| {
+        vars.iter()
+            .find(|v| v.name == name)
+            .map(|v| v.value.as_str())
+    };
+    let mut out = Vec::new();
+    out.extend(find(&req.vars).map(|v| (v, VarSource::Request)));
+    for (i, f) in scope.folders.iter().enumerate().rev() {
+        out.extend(find(&f.vars).map(|v| (v, VarSource::Folder(i))));
+    }
+    if let Some(e) = scope.environment {
+        out.extend(find(&e.secrets).map(|v| (v, VarSource::Secret)));
+        out.extend(find(&e.vars).map(|v| (v, VarSource::Environment)));
+    }
+    out.extend(find(&scope.collection.vars).map(|v| (v, VarSource::Collection)));
+    out
 }
 
 /// Where a variable's value came from.

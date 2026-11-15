@@ -5,14 +5,14 @@ use crate::request::{
     TextBody, Var,
 };
 
-fn var(n: &str, v: &str) -> Var {
+pub(super) fn var(n: &str, v: &str) -> Var {
     Var {
         name: n.into(),
         value: v.into(),
     }
 }
 
-fn kv(n: &str, v: &str, enabled: bool) -> KeyValue {
+pub(super) fn kv(n: &str, v: &str, enabled: bool) -> KeyValue {
     KeyValue {
         name: n.into(),
         value: v.into(),
@@ -20,14 +20,14 @@ fn kv(n: &str, v: &str, enabled: bool) -> KeyValue {
     }
 }
 
-fn hdr(n: &str, v: &str) -> Header {
+pub(super) fn hdr(n: &str, v: &str) -> Header {
     Header {
         name: n.into(),
         value: v.into(),
     }
 }
 
-fn req(url: &str) -> Request {
+pub(super) fn req(url: &str) -> Request {
     Request {
         url: url.into(),
         ..Request::default()

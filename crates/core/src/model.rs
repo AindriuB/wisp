@@ -71,7 +71,7 @@ fn redact_query(url: &str) -> String {
 
 /// Proxy URL with any userinfo replaced by `<redacted>@`. A URL without
 /// `://` is treated as a bare authority (reqwest accepts `user:pw@host:port`).
-fn redact_userinfo(url: &str) -> String {
+pub(crate) fn redact_userinfo(url: &str) -> String {
     let (prefix, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (format!("{scheme}://"), rest),
         None => (String::new(), url),
