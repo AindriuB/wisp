@@ -609,37 +609,97 @@ fn redact_credential_headers(headers: &mut [Header], names: &mut Vec<String>) {
     }
 }
 
-/// Redact the URL of a `Refresh` value, parsed like HTML `<meta http-equiv=refresh>`: after
-/// the first `;` or `,` come optional whitespace, `url`, `=` and one optional quote.
+/// Redact userinfo at every place a `Refresh` value could start an authority. The value is
+/// not parsed down to one target URL: that is how a second `url=`, text after a closing
+/// quote or a whitespace separator slipped past. Over-redacting is safe; credential-free
+/// values come back unchanged.
 fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
-    let Some(sep) = value.find([';', ',']) else {
-        return value.to_string();
+    let b = value.as_bytes();
+    let is_slash = |c: u8| matches!(c, b'/' | b'\\');
+    let skip_ws = |mut i: usize| {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
     };
-    let rest = &value[sep + 1..];
-    let mut pos = sep + 1 + (rest.len() - rest.trim_start().len());
-    let after = &value[pos..];
-    if after.len() >= 3 && after.is_char_boundary(3) && after[..3].eq_ignore_ascii_case("url") {
-        let t = after[3..].trim_start();
-        if let Some(t) = t.strip_prefix('=') {
-            pos = value.len() - t.trim_start().len();
+    let skip_slashes = |mut i: usize| {
+        while i < b.len() && is_slash(b[i]) {
+            i += 1;
+        }
+        i
+    };
+    let mut starts: Vec<usize> = Vec::new();
+    // Every run of two or more slashes (`://`, `//`, `\\`, mixed) opens an authority.
+    let mut i = 0;
+    while i < b.len() {
+        if is_slash(b[i]) {
+            let end = skip_slashes(i);
+            if end - i >= 2 {
+                starts.push(end);
+            }
+            i = end;
+        } else {
+            i += 1;
         }
     }
-    let url = &value[pos..];
-    let (quote, body_start) = match url.chars().next() {
-        Some(q @ ('\'' | '"')) => (Some(q), pos + 1),
-        _ => (None, pos),
-    };
-    let body = &value[body_start..];
-    let (target, tail) = match quote.and_then(|q| body.find(q)) {
-        Some(i) => body.split_at(i),
-        None => (body, ""),
-    };
-    format!(
-        "{}{}{}",
-        &value[..body_start],
-        redact_url(target, found),
-        tail
-    )
+    // Anything after `url`, optional whitespace and `=`, one optional quote, an optional
+    // scheme and at least one slash.
+    for i in 0..b.len().saturating_sub(2) {
+        if !b[i..i + 3].eq_ignore_ascii_case(b"url") {
+            continue;
+        }
+        let mut j = skip_ws(i + 3);
+        if j < b.len() && b[j] == b'=' {
+            j = skip_ws(j + 1);
+        }
+        if j < b.len() && matches!(b[j], b'\'' | b'"') {
+            j += 1;
+        }
+        let mut k = j;
+        if k < b.len() && b[k].is_ascii_alphabetic() {
+            while k < b.len()
+                && (b[k].is_ascii_alphanumeric() || matches!(b[k], b'+' | b'-' | b'.'))
+            {
+                k += 1;
+            }
+            if k < b.len() && b[k] == b':' {
+                j = k + 1;
+            }
+        }
+        let end = skip_slashes(j);
+        if end > j {
+            starts.push(end);
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    let mut out = value.to_string();
+    // Back to front, so an edit never moves a start still to be processed.
+    for &p in starts.iter().rev() {
+        let span_end = out[p..]
+            .find(['/', '\\', '?', '#'])
+            .map_or(out.len(), |i| p + i);
+        let Some(at) = out[p..span_end].rfind('@').map(|i| p + i) else {
+            continue;
+        };
+        let info = &out[p..at];
+        let (mut user, pass) = match info.split_once(':') {
+            Some((u, pw)) => (u.to_string(), Some(pw.to_string())),
+            None => (info.to_string(), None),
+        };
+        if scrub(&mut user) {
+            note(found, "url.username".into());
+        }
+        if let Some(mut pw) = pass {
+            if scrub(&mut pw) {
+                note(found, "url.password".into());
+            }
+            user.push(':');
+            user.push_str(&pw);
+        }
+        out.replace_range(p..at, &user);
+    }
+    out
 }
 
 /// Run every response header that can carry a URL through [`redact_url`].

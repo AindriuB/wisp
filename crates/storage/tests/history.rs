@@ -1128,7 +1128,7 @@ fn open_scrubs_old_entries_once() {
     assert_eq!((m(&index), m(&req)), (mi, mr));
 }
 
-const SR_HEADERS: [(&str, &str); 11] = [
+const SR_HEADERS: [(&str, &str); 22] = [
     ("Location", "//alice:secret@example.com/path"),
     ("Location", "\\\\alice:secret@example.com/path"),
     ("Location", "/\\alice:secret@example.com/path"),
@@ -1140,7 +1140,39 @@ const SR_HEADERS: [(&str, &str); 11] = [
     ("Refresh", "0; url= //alice:secret@h"),
     ("Refresh", "0;//alice:secret@h"),
     ("Refresh", "5, https://alice:secret@h/x"),
+    ("Refresh", "0 https://alice:secret@h/"),
+    ("Refresh", "0 url=https://alice:secret@h/"),
+    ("Refresh", "0 //alice:secret@h/"),
+    ("Refresh", "0 url=https://alice:secret@h/a;b"),
+    ("Refresh", "0;url='https://h/' https://alice:secret@h2/"),
+    ("Refresh", "0; url=a; url=//alice:secret@h"),
+    ("Refresh", "0; url //alice:secret@h"),
+    ("Refresh", "0 \\\\alice:secret@h/"),
+    ("Refresh", "0; url=/\\alice:secret@h"),
+    ("Refresh", "0; url=https:/alice:secret@h/"),
+    ("Refresh", "0, url = 'https://alice:secret@h/x'"),
 ];
+
+#[test]
+fn refresh_without_credentials_is_unchanged() {
+    for value in [
+        "5",
+        "0; url=https://h/a;b?x=a@b",
+        "3, URL='//h/p'",
+        "0 https://h/",
+    ] {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Refresh".into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(text.contains(value), "{value}");
+    }
+}
 
 #[test]
 fn scheme_relative_userinfo_is_redacted_on_append() {
