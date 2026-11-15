@@ -39,3 +39,9 @@ limit in its own budget file. Runs on the main head after tasks 130-135 merge.
 - The CLI size step in `release.yml`, packaging and signing: 3B.
 - Recording the budgets in `docs/architecture.md#budgets`: the scribe, after the user approves.
 - Any size reduction: if the gate fails, stop and report.
+
+## Review round 1 — findings
+Reviewed HEAD 0001494.
+- [P2] scripts/measure/results/wave-1-size.json:5,9,11 — macOS/Linux deltas recorded as null and "no baseline" though run 43622975912 (commit a02a779) measured macOS 11,601,344 B and Linux 25,812,488 B; no baseline commit recorded (AC5 asks for per-target baseline commit and GUI delta).
+- [P2] same file :5 — baseline is not the one the task file's Context requires: theme-palette merged first (4323fbe, PR #79), so the baseline must be a measure run on 4323fbe; none exists. The recorded +265,216 B also includes theme #79, 128 and 129.
+- [P3, follow-up] measure.yml "Check CLI size limit" — a non-integer limit passes silently (`[` exit 2 inside `if`).
