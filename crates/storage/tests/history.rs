@@ -1607,3 +1607,100 @@ fn query_name_decoding_preserves_other_pairs_and_variable_references() {
         assert_eq!(store.load(&e.id).unwrap().response_headers[0].value, value);
     }
 }
+
+fn custom_scheme_backslash_headers() -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    for url in [
+        r"custom://alice:secret\part@example.com/",
+        r"custom://alice\part:secret@example.com/",
+        r"custom://\alice:secret@example.com/",
+        r"custom://alice:secret\\part@example.com/",
+        r"CUSTOM://alice:secret\part@example.com/",
+    ] {
+        for header in ["Location", "Content-Location", "Refresh"] {
+            let prefix = if header == "Refresh" { "0; url=" } else { "" };
+            headers.push((header, format!("{prefix}{url}")));
+        }
+    }
+    headers.push((
+        "Refresh",
+        r"0; custom://alice:secret\part@example.com/".into(),
+    ));
+    headers.push((
+        "Refresh",
+        r"0 url='custom://alice:secret\part@example.com/'".into(),
+    ));
+    headers
+}
+
+#[test]
+fn custom_scheme_backslashes_do_not_hide_userinfo_on_append() {
+    for (name, value) in custom_scheme_backslash_headers() {
+        let (_d, data, store) = setup();
+        let mut ne = plain(r"custom://alice:secret\part@example.com/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.clone(),
+        }];
+        let e = store.append(ne, None).unwrap();
+        assert!(e.redacted.iter().any(|n| n == name));
+        assert!(
+            store.load(&e.id).unwrap().response_headers[0]
+                .value
+                .contains(":@example.com/")
+        );
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        for credential in ["alice", "secret", "part"] {
+            assert!(!text.contains(credential), "{name}: {value}");
+        }
+    }
+}
+
+#[test]
+fn custom_scheme_backslashes_do_not_hide_userinfo_in_legacy_scrub() {
+    for (name, value) in custom_scheme_backslash_headers() {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), None).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["request"]["url"] = serde_json::json!(r"custom://alice:secret\part@example.com/");
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let reopened = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        assert!(
+            reopened.load(&e.id).unwrap().response_headers[0]
+                .value
+                .contains(":@example.com/")
+        );
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        for credential in ["alice", "secret", "part"] {
+            assert!(!text.contains(credential), "{name}: {value}");
+        }
+    }
+}
+
+#[test]
+fn backslashes_end_special_authorities_and_custom_paths_stay_unchanged() {
+    let (_d, _data, store) = setup();
+    for url in [
+        r"https://example.com\alice:secret@example.com/",
+        r"custom://example.com/path\alice:secret@example.com/",
+        r"custom://example.com/",
+        r"custom:///alice:secret@example.com/",
+    ] {
+        for name in ["Location", "Content-Location", "Refresh"] {
+            let prefix = if name == "Refresh" { "0; url=" } else { "" };
+            let value = format!("{prefix}{url}");
+            let mut ne = plain("http://a/");
+            ne.response_headers = vec![Header {
+                name: name.into(),
+                value: value.clone(),
+            }];
+            let e = store.append(ne, None).unwrap();
+            assert_eq!(store.load(&e.id).unwrap().response_headers[0].value, value);
+        }
+    }
+}

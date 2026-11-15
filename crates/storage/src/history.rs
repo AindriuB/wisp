@@ -100,9 +100,9 @@ fn is_special_scheme(scheme: &str) -> bool {
         .any(|s| scheme.eq_ignore_ascii_case(s))
 }
 
-/// Offset where the authority begins: after `scheme://`, or after a leading `//` (also `\\`
-/// and mixed forms, which the WHATWG parser treats as slashes) for scheme-relative URLs.
-fn authority_start(base: &str) -> usize {
+/// Authority offset and whether backslash ends it. Scheme-relative URLs retain the
+/// special-scheme slash rules; explicit non-special schemes require exactly `//`.
+fn authority_start(base: &str) -> (usize, bool) {
     // WHATWG ignores leading C0 controls and space; keep offsets in the original value.
     let trimmed = base.trim_start_matches(|c| c <= '\u{20}');
     let offset = base.len() - trimmed.len();
@@ -110,21 +110,27 @@ fn authority_start(base: &str) -> usize {
     let slashes = |s: &str| s.bytes().take_while(|b| matches!(b, b'/' | b'\\')).count();
     let lead = slashes(base);
     if lead >= 2 {
-        return offset + lead;
+        return (offset + lead, true);
     }
+    let mut backslash_delimiter = true;
     if let Some((scheme, rest)) = base.split_once(':')
         && !scheme.is_empty()
         && scheme
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
     {
-        let n = slashes(rest);
-        // Special schemes have an authority after any number of slashes, even none.
-        if n >= 2 || is_special_scheme(scheme) {
-            return offset + scheme.len() + 1 + n;
+        backslash_delimiter = is_special_scheme(scheme) || scheme.eq_ignore_ascii_case("file");
+        if is_special_scheme(scheme) {
+            return (offset + scheme.len() + 1 + slashes(rest), true);
+        }
+        if rest.starts_with("//") {
+            return (offset + scheme.len() + 3, backslash_delimiter);
         }
     }
-    offset + base.find("://").map_or(0, |i| i + 3)
+    (
+        offset + base.find("://").map_or(0, |i| i + 3),
+        backslash_delimiter,
+    )
 }
 
 /// Decode a form query name once for matching, leaving malformed escapes literal.
@@ -212,9 +218,9 @@ fn redact_url_stripped(url: &str, names: &mut Vec<String>) -> String {
         Some(i) => (&rest[..i], Some(&rest[i + 1..])),
         None => (rest, None),
     };
-    let auth_start = authority_start(base);
+    let (auth_start, backslash_delimiter) = authority_start(base);
     let auth_end = base[auth_start..]
-        .find(['/', '\\'])
+        .find(|c| c == '/' || (backslash_delimiter && c == '\\'))
         .map_or(base.len(), |i| auth_start + i);
     let mut out = String::with_capacity(url.len());
     match base[auth_start..auth_end].rfind('@') {
@@ -704,22 +710,34 @@ fn redact_refresh_stripped(value: &str, found: &mut Vec<String>) -> String {
         }
         i
     };
-    let mut starts: Vec<usize> = Vec::new();
-    // Every run of two or more slashes (`://`, `//`, `\\`, mixed) opens an authority.
+    let mut starts: Vec<(usize, bool)> = Vec::new();
+    // Slash runs open candidate authorities; non-special schemes consume only `//`.
     let mut i = 0;
     while i < b.len() {
         if is_slash(b[i]) {
             let end = skip_slashes(i);
             if end - i >= 2 {
-                starts.push(end);
+                let backslash_delimiter = value[..i].strip_suffix(':').is_none_or(|prefix| {
+                    let scheme = prefix
+                        .rsplit(|c: char| {
+                            !c.is_ascii_alphanumeric() && !matches!(c, '+' | '-' | '.')
+                        })
+                        .next()
+                        .unwrap_or_default();
+                    is_special_scheme(scheme) || scheme.eq_ignore_ascii_case("file")
+                });
+                if backslash_delimiter {
+                    starts.push((end, true));
+                } else if value[i..].starts_with("//") {
+                    starts.push((i + 2, false));
+                }
             }
             i = end;
         } else {
             i += 1;
         }
     }
-    // Anything after `url`, optional whitespace and `=`, one optional quote, an optional
-    // scheme and at least one slash.
+    // Also inspect targets after `url`, optional whitespace/`=` and an optional quote.
     for i in 0..b.len().saturating_sub(2) {
         if !b[i..i + 3].eq_ignore_ascii_case(b"url") {
             continue;
@@ -731,20 +749,9 @@ fn redact_refresh_stripped(value: &str, found: &mut Vec<String>) -> String {
         if j < b.len() && matches!(b[j], b'\'' | b'"') {
             j += 1;
         }
-        let mut k = j;
-        if k < b.len() && b[k].is_ascii_alphabetic() {
-            while k < b.len()
-                && (b[k].is_ascii_alphanumeric() || matches!(b[k], b'+' | b'-' | b'.'))
-            {
-                k += 1;
-            }
-            if k < b.len() && b[k] == b':' {
-                j = k + 1;
-            }
-        }
-        let end = skip_slashes(j);
-        if end > j {
-            starts.push(end);
+        let (start, backslash_delimiter) = authority_start(&value[j..]);
+        if start > 0 {
+            starts.push((j + start, backslash_delimiter));
         }
     }
     // A special-scheme name and `:` opens an authority after any slashes, even none.
@@ -752,7 +759,7 @@ fn redact_refresh_stripped(value: &str, found: &mut Vec<String>) -> String {
         for s in SPECIAL_SCHEMES {
             let end = i + s.len();
             if end < b.len() && b[i..end].eq_ignore_ascii_case(s.as_bytes()) && b[end] == b':' {
-                starts.push(skip_slashes(end + 1));
+                starts.push((skip_slashes(end + 1), true));
             }
         }
     }
@@ -760,9 +767,9 @@ fn redact_refresh_stripped(value: &str, found: &mut Vec<String>) -> String {
     starts.dedup();
     let mut out = value.to_string();
     // Back to front, so an edit never moves a start still to be processed.
-    for &p in starts.iter().rev() {
+    for &(p, backslash_delimiter) in starts.iter().rev() {
         let span_end = out[p..]
-            .find(['/', '\\', '?', '#'])
+            .find(|c| matches!(c, '/' | '?' | '#') || (backslash_delimiter && c == '\\'))
             .map_or(out.len(), |i| p + i);
         let Some(at) = out[p..span_end].rfind('@').map(|i| p + i) else {
             continue;
