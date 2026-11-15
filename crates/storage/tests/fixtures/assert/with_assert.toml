@@ -1,0 +1,26 @@
+# A request with assertions
+name = "Get thing"
+method = "GET"
+url = "https://example.com/thing"
+
+[[assert]]
+# status must be ok
+kind = "status"
+op = "equals"
+value = 200
+
+[[assert]]
+kind = "header"
+name = "content-type"
+op = "contains"
+value = "json"
+
+[[assert]]
+kind = "json"
+path = "$.data.items[0].id"
+op = "exists"
+
+[[assert]]
+kind = "future"
+op = "teleports"
+payload = { a = 1, b = "two" }

@@ -4,6 +4,7 @@ mod client;
 mod engine;
 mod model;
 
+pub mod assert;
 pub mod auth;
 pub mod body;
 pub mod cookies;

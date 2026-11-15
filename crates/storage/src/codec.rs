@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table, TableLike, Value};
+use wisp_core::assert::{Assertion, Expected, Op, ParseError};
 use wisp_core::request::{ApiKeyLocation, Auth, ClientAuth, KeyValue, Var};
 
 use crate::StorageError;
@@ -610,6 +611,232 @@ pub fn write_auth(table: &mut Table, auth: &Auth) {
             }
         }
     }
+}
+
+const ASSERT_KEY: &str = "assert";
+
+/// The `[[assert]]` tables of a document; `None` when the key is absent or not an array of
+/// tables (such a value is neither read nor touched on save).
+fn assert_tables(doc: &Table) -> Option<&ArrayOfTables> {
+    doc.get(ASSERT_KEY).and_then(Item::as_array_of_tables)
+}
+
+fn raw_text(t: &Table) -> String {
+    let mut aot = ArrayOfTables::new();
+    aot.push(t.clone());
+    let mut d = DocumentMut::new();
+    d.insert(ASSERT_KEY, Item::ArrayOfTables(aot));
+    d.to_string()
+}
+
+fn expected_of(v: &Value) -> Option<Expected> {
+    match v {
+        Value::String(s) => Some(Expected::Str(s.value().clone())),
+        Value::Integer(i) => Some(Expected::Int(*i.value())),
+        Value::Float(f) => Some(Expected::Float(*f.value())),
+        Value::Boolean(b) => Some(Expected::Bool(*b.value())),
+        _ => None,
+    }
+}
+
+fn read_one_assertion(t: &Table) -> Result<Assertion, ParseError> {
+    let text = |key: &str| -> Result<Option<&str>, ParseError> {
+        match t.get(key) {
+            None => Ok(None),
+            Some(i) => i.as_str().map(Some).ok_or(ParseError::Malformed),
+        }
+    };
+    let kind = text("kind")?.ok_or(ParseError::Malformed)?;
+    let op = text("op")?.ok_or(ParseError::Malformed)?;
+    let target = match kind {
+        "header" => text("name")?,
+        "json" => text("path")?,
+        _ => None,
+    };
+    // Keys of another kind make the entry malformed; any key outside the format makes it
+    // one a newer version wrote, which is kept but never evaluated.
+    let mut unknown = false;
+    for (key, _) in t.iter() {
+        match key {
+            "kind" | "op" | "value" => {}
+            "name" if kind == "header" => {}
+            "path" if kind == "json" => {}
+            "name" | "path" if matches!(kind, "status" | "header" | "json") => {
+                return Err(ParseError::Malformed);
+            }
+            _ => unknown = true,
+        }
+    }
+    let value = match t.get("value") {
+        None => None,
+        Some(i) => Some(
+            i.as_value()
+                .and_then(expected_of)
+                .ok_or(ParseError::Malformed)?,
+        ),
+    };
+    let a = Assertion::from_parts(kind, target, op, value)?;
+    if unknown {
+        return Err(ParseError::NotSupported);
+    }
+    Ok(a)
+}
+
+/// Equality that also holds for a NaN value, so an unchanged entry is recognised.
+fn same(a: &Assertion, b: &Assertion) -> bool {
+    a == b || format!("{a:?}") == format!("{b:?}")
+}
+
+fn table_positions(t: &Table, out: &mut Vec<usize>) {
+    out.extend(t.position());
+    for (_, item) in t.iter() {
+        match item {
+            Item::Table(c) => table_positions(c, out),
+            Item::ArrayOfTables(a) => a.iter().for_each(|c| table_positions(c, out)),
+            _ => {}
+        }
+    }
+}
+
+fn set_positions(t: &mut Table, next: &mut impl FnMut() -> usize) {
+    t.set_position(next());
+    for (_, item) in t.iter_mut() {
+        match item {
+            Item::Table(c) => set_positions(c, next),
+            Item::ArrayOfTables(a) => a.iter_mut().for_each(|c| set_positions(c, next)),
+            _ => {}
+        }
+    }
+}
+
+fn read_assertion(t: &Table) -> Assertion {
+    match read_one_assertion(t) {
+        Ok(a) => a,
+        Err(e) => Assertion::Unrecognised {
+            raw: raw_text(t),
+            reason: e.reason().to_string(),
+        },
+    }
+}
+
+/// Read the `[[assert]]` array; an unknown or malformed entry becomes `Unrecognised`.
+pub fn read_assertions(doc: &Table) -> Vec<Assertion> {
+    assert_tables(doc)
+        .map(|a| a.iter().map(read_assertion).collect())
+        .unwrap_or_default()
+}
+
+fn assertion_table(a: &Assertion, path: &Path) -> Result<Table, StorageError> {
+    let mut t = Table::new();
+    match a {
+        Assertion::Unrecognised { raw, .. } => {
+            let doc = parse(path, raw)?;
+            return assert_tables(&doc)
+                .and_then(|a| a.get(0))
+                .cloned()
+                .ok_or_else(|| invalid(path, ASSERT_KEY, "unrecognised entry has no table"));
+        }
+        Assertion::Status { op, expected } => {
+            t.insert("kind", Item::Value("status".into()));
+            put_op(&mut t, *op, expected);
+        }
+        Assertion::Header { name, op, expected } => {
+            t.insert("kind", Item::Value("header".into()));
+            t.insert("name", Item::Value(name.as_str().into()));
+            put_op(&mut t, *op, expected);
+        }
+        Assertion::Json { path, op, expected } => {
+            t.insert("kind", Item::Value("json".into()));
+            t.insert("path", Item::Value(path.as_str().into()));
+            put_op(&mut t, *op, expected);
+        }
+    }
+    Ok(t)
+}
+
+fn put_op(t: &mut Table, op: Op, expected: &Expected) {
+    t.insert("op", Item::Value(op.as_str().into()));
+    if op == Op::Exists && *expected == Expected::Bool(true) {
+        return;
+    }
+    let v = match expected {
+        Expected::Str(s) => Value::from(s.as_str()),
+        Expected::Int(n) => Value::from(*n),
+        Expected::Float(f) => Value::from(*f),
+        Expected::Bool(b) => Value::from(*b),
+    };
+    t.insert("value", Item::Value(v));
+}
+
+/// Write the `[[assert]]` array. Writes only when `assertions` is non-empty or the file
+/// already has the array; an unchanged entry keeps its table (comments and spacing) and an
+/// `Unrecognised` entry is written back from its raw text. A saved empty list removes the
+/// array.
+pub fn write_assertions(
+    doc: &mut Table,
+    assertions: &[Assertion],
+    path: &Path,
+) -> Result<(), StorageError> {
+    if doc.get(ASSERT_KEY).is_some() && assert_tables(doc).is_none() {
+        // Not an array of tables: it reads as empty and is never replaced.
+        if assertions.is_empty() {
+            return Ok(());
+        }
+        return Err(invalid(
+            path,
+            ASSERT_KEY,
+            "`assert` is not an array of tables; remove it to add assertions",
+        ));
+    }
+    let old: Vec<(Assertion, Table)> = assert_tables(doc)
+        .map(|a| a.iter().map(|t| (read_assertion(t), t.clone())).collect())
+        .unwrap_or_default();
+    if old.len() == assertions.len() && old.iter().zip(assertions).all(|((o, _), a)| same(o, a)) {
+        return Ok(());
+    }
+    if assertions.is_empty() {
+        doc.remove(ASSERT_KEY);
+        return Ok(());
+    }
+    // Tables print in `position` order, so the positions the array already holds (child
+    // tables included) are handed out afresh, in order, to every table written. Any
+    // surplus continues from the last one, which keeps the array ahead of later tables.
+    let mut slots = Vec::new();
+    for (_, t) in &old {
+        table_positions(t, &mut slots);
+    }
+    if slots.is_empty() {
+        let mut all = Vec::new();
+        table_positions(doc, &mut all);
+        slots.push(all.into_iter().max().unwrap_or(0));
+    }
+    slots.sort_unstable();
+    let mut taken = 0;
+    let mut next = || {
+        let p = slots[taken.min(slots.len() - 1)];
+        taken += 1;
+        p
+    };
+    let mut used = vec![false; old.len()];
+    let mut out = ArrayOfTables::new();
+    for a in assertions {
+        let reuse = old
+            .iter()
+            .enumerate()
+            .find(|(i, (o, _))| !used[*i] && same(o, a))
+            .map(|(i, _)| i);
+        let mut table = match reuse {
+            Some(i) => {
+                used[i] = true;
+                old[i].1.clone()
+            }
+            None => assertion_table(a, path)?,
+        };
+        set_positions(&mut table, &mut next);
+        out.push(table);
+    }
+    doc.insert(ASSERT_KEY, Item::ArrayOfTables(out));
+    Ok(())
 }
 
 #[cfg(test)]

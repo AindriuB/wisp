@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use wisp_core::assert::{Assertion, AssertionResult, Verdict};
 use wisp_core::redact::{contains_credential_fragment, is_credential_name as is_secret_name};
 use wisp_core::request::{ApiKeyLocation, Auth, Body, PartValue, Request};
 use wisp_core::{ErrorKind, Header, Method};
@@ -22,6 +23,38 @@ use crate::fs::atomic_write_private;
 
 /// Largest response body stored per entry.
 pub const BODY_CAP: usize = 1024 * 1024;
+/// The state of one assertion in a history record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AssertionState {
+    Pass,
+    Fail,
+    Skipped,
+}
+
+/// One assertion as history keeps it: label, definition fingerprint and state. Never an
+/// expected or actual value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssertionRecord {
+    pub label: String,
+    pub hash: String,
+    pub state: AssertionState,
+}
+
+impl AssertionRecord {
+    pub fn from_result(assertion: &Assertion, result: &AssertionResult) -> Self {
+        Self {
+            label: result.label.clone(),
+            hash: assertion.fingerprint(),
+            state: match result.verdict {
+                Verdict::Pass => AssertionState::Pass,
+                Verdict::Fail { .. } => AssertionState::Fail,
+                Verdict::Skipped { .. } => AssertionState::Skipped,
+            },
+        }
+    }
+}
+
 /// Entries kept per collection.
 pub const MAX_ENTRIES: usize = 500;
 /// Bytes kept under `bodies/` per collection.
@@ -297,6 +330,8 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
     let mut out = req.clone();
     let mut names = Vec::new();
     out.auth = req.auth.redacted();
+    // Expected values are authored literals that may be sensitive; the copy carries none.
+    out.assertions.clear();
     for ((n, before), (_, after)) in auth_fields(&req.auth)
         .into_iter()
         .zip(auth_fields(&out.auth))
