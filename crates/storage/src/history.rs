@@ -91,6 +91,15 @@ fn note(names: &mut Vec<String>, name: String) {
     }
 }
 
+/// Schemes the WHATWG parser always gives an authority.
+const SPECIAL_SCHEMES: [&str; 5] = ["http", "https", "ws", "wss", "ftp"];
+
+fn is_special_scheme(scheme: &str) -> bool {
+    SPECIAL_SCHEMES
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+}
+
 /// Offset where the authority begins: after `scheme://`, or after a leading `//` (also `\\`
 /// and mixed forms, which the WHATWG parser treats as slashes) for scheme-relative URLs.
 fn authority_start(base: &str) -> usize {
@@ -106,7 +115,8 @@ fn authority_start(base: &str) -> usize {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
     {
         let n = slashes(rest);
-        if n >= 2 {
+        // Special schemes have an authority after any number of slashes, even none.
+        if n >= 2 || is_special_scheme(scheme) {
             return scheme.len() + 1 + n;
         }
     }
@@ -674,6 +684,15 @@ fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
         let end = skip_slashes(j);
         if end > j {
             starts.push(end);
+        }
+    }
+    // A special-scheme name and `:` opens an authority after any slashes, even none.
+    for i in 0..b.len() {
+        for s in SPECIAL_SCHEMES {
+            let end = i + s.len();
+            if end < b.len() && b[i..end].eq_ignore_ascii_case(s.as_bytes()) && b[end] == b':' {
+                starts.push(skip_slashes(end + 1));
+            }
         }
     }
     starts.sort_unstable();

@@ -1212,6 +1212,78 @@ fn scheme_relative_userinfo_is_redacted_by_legacy_scrub() {
     }
 }
 
+const SPECIAL_SCHEME_HEADERS: [(&str, &str); 6] = [
+    ("Location", "https:/alice:secret@example.com/"),
+    ("Location", "https:\\alice:secret@example.com/"),
+    ("Location", "HTTPS:alice:secret@example.com/"),
+    ("Location", "wss:/u:secret@h/"),
+    ("Refresh", "0; https:/alice:secret@h/"),
+    ("Refresh", "0; url=https:alice:secret@h/"),
+];
+
+#[test]
+fn special_scheme_with_few_slashes_is_redacted_on_append() {
+    for (name, value) in SPECIAL_SCHEME_HEADERS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: name.into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+#[test]
+fn special_scheme_with_few_slashes_is_redacted_by_legacy_scrub() {
+    for (name, value) in SPECIAL_SCHEME_HEADERS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": name, "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}: {value}");
+    }
+}
+
+#[test]
+fn non_special_scheme_location_with_one_slash_is_unchanged() {
+    let (_d, data, store) = setup();
+    let mut ne = plain("http://a/");
+    ne.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "custom:/a:b@h".into(),
+    }];
+    store.append(ne, Some(b"b")).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(text.contains("custom:/a:b@h"));
+}
+
+#[test]
+fn mailto_location_is_handled_by_the_existing_rule() {
+    // `mailto:alice@example.com` has no slash, so the existing rule already treats the
+    // whole value as an authority and redacts `mailto:alice`. Pinned, not changed.
+    let (_d, data, store) = setup();
+    let mut ne = plain("http://a/");
+    ne.response_headers = vec![Header {
+        name: "Location".into(),
+        value: "mailto:alice@example.com".into(),
+    }];
+    store.append(ne, Some(b"b")).unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(!text.contains("alice"));
+}
+
 #[cfg(unix)]
 #[test]
 fn scrub_failure_leaves_marker_absent_and_retries() {
