@@ -87,3 +87,6 @@ task 137 (they need `crates/app` edits).
 - [P2] crates/core/src/assert.rs:241-243 — `raw_string` skips every `[[...]]` line instead of stopping at child tables, so a missing top-level kind/name/path/op is read from a child array-of-tables. Input: `[[assert]]\nkind = "header"\nname = "Authorization"\n[[assert.any]]\nop = "Bearer s3cr3t"` → the fingerprint hashes "Bearer s3cr3t".
 - [P2] crates/core/src/assert.rs:240-260 — no multi-line string tracking: a line inside a `"""`/`'''` value that looks like `op = "..."` is read as `op`. Input: `[[assert]]\nkind = "header"\nname = "A"\nvalue = """\nop = "s3cr3t"\n"""\nop = "future"` → hashes "s3cr3t".
 - [P3, optional, follow-up] trailing comments / quoted keys / escapes make `raw_string` return "" or undecoded text → fingerprint collisions only, no leak.
+
+## Attempt 1 — failed
+Reviewer REQUEST CHANGES at 86a6f0a: AC4 '[?]' — body_parsed_once_per_evaluate (crates/core/src/assert.rs:1009) only checks that three verdicts agree and would pass if the body were parsed three times; no counter like REGEX_BUILDS. The code parses once (Body::Untried memo at :415); only the test is missing.

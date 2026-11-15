@@ -425,6 +425,8 @@ fn eval_one(a: &Assertion, facts: &Facts<'_>, body: &mut Body, res: &mut Regexes
 }
 
 fn parse_body(body: Option<&[u8]>) -> Body {
+    #[cfg(test)]
+    BODY_PARSES.with(|c| c.set(c.get() + 1));
     match body {
         None => Body::Unusable("no response body"),
         Some(b) if b.len() > MAX_JSON_BODY => Body::Unusable("body over 1 MiB"),
@@ -433,6 +435,11 @@ fn parse_body(body: Option<&[u8]>) -> Body {
             Err(_) => Body::Unusable("body is not JSON"),
         },
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BODY_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1014,7 +1021,9 @@ mod tests {
             headers: &[],
             body: Some(b"not json"),
         };
+        BODY_PARSES.with(|c| c.set(0));
         let out = evaluate(&list, &facts);
+        assert_eq!(BODY_PARSES.with(|c| c.get()), 1);
         assert!(out.iter().all(
             |r| matches!(&r.verdict, Verdict::Skipped { reason } if reason == "body is not JSON")
         ));
