@@ -17,7 +17,10 @@ use wisp_core::request::{Environment, Var};
 
 use crate::collection::CollectionId;
 use crate::data_dir::DataDir;
-use crate::environment::{check_name, ensure_gitignore, plain_path, render, secrets_path};
+use crate::environment::{
+    SuggestConfirm, check_name, ensure_gitignore, plain_path, read_suggest_confirm, render,
+    secrets_path,
+};
 use crate::vault_binding::{self as binding, BindError};
 use crate::{StorageError, codec, fs};
 
@@ -268,7 +271,7 @@ pub(crate) fn read_mode(doc: &DocumentMut, path: &Path) -> Result<Mode, StorageE
     })
 }
 
-fn read_names(doc: &DocumentMut, path: &Path) -> Result<Vec<String>, StorageError> {
+pub(crate) fn read_names(doc: &DocumentMut, path: &Path) -> Result<Vec<String>, StorageError> {
     let Some(item) = doc.get("secret_names") else {
         return Ok(Vec::new());
     };
@@ -403,6 +406,8 @@ pub struct LoadedEnvironment {
     pub status: LoadStatus,
     /// Names in `secret_names` that have no value.
     pub unresolved: Vec<String>,
+    /// The committed `suggest_confirm` hint.
+    pub suggest_confirm: SuggestConfirm,
 }
 
 /// Only these reasons mean the store is absent, so the file may be used.
@@ -431,6 +436,7 @@ pub fn load_environment_with(
     let mode = read_mode(&doc, &pp)?;
     let names = read_names(&doc, &pp)?;
     let vars = codec::read_vars(doc.as_table(), "vars", &pp)?;
+    let suggest_confirm = read_suggest_confirm(&doc);
     let sp = secrets_path(root, name);
 
     let finish = |secrets: Vec<Var>, status: LoadStatus| {
@@ -453,6 +459,7 @@ pub fn load_environment_with(
             },
             status,
             unresolved,
+            suggest_confirm,
         }
     };
     let failed = |reason: FailReason| finish(Vec::new(), LoadStatus::Failed { reason });
