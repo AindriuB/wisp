@@ -397,6 +397,9 @@ fn bool_setting(v: bool, default: bool) -> Setting {
 struct Acc {
     parts: Vec<ShownPart>,
     len: usize,
+    /// For each `Hidden` part in order, what it stands for (a variable name), so two
+    /// different hidden names do not look the same.
+    hidden_ids: Vec<String>,
 }
 
 impl Acc {
@@ -424,11 +427,13 @@ impl Acc {
             self.part(p.clone());
         }
         self.len = before + o.len;
+        self.hidden_ids.extend(o.hidden_ids.iter().cloned());
     }
 
     /// Stand in for `o` with a hidden marker, keeping its size for the bounds.
-    fn hide(&mut self, o: &Acc) {
+    fn hide(&mut self, o: &Acc, id: &str) {
         self.parts.push(ShownPart::Hidden(HideReason::Credential));
+        self.hidden_ids.push(id.to_string());
         self.len += o.len;
     }
 
@@ -448,6 +453,7 @@ impl Acc {
     /// Identity for header-name matching.
     fn key(&self) -> String {
         let mut k = String::new();
+        let mut hidden = 0usize;
         for p in &self.parts {
             match p {
                 ShownPart::Text(t) => k.push_str(&t.to_ascii_lowercase()),
@@ -461,7 +467,12 @@ impl Acc {
                     k.push_str("d:");
                     k.push_str(name);
                 }
-                ShownPart::Hidden(_) => k.push(MARK),
+                ShownPart::Hidden(_) => {
+                    k.push(MARK);
+                    k.push_str("h:");
+                    k.push_str(self.hidden_ids.get(hidden).map_or("", String::as_str));
+                    hidden += 1;
+                }
             }
         }
         k
@@ -499,8 +510,53 @@ fn finish(parts: &[ShownPart], name: Option<&str>) -> Shown {
     Shown(parts.to_vec())
 }
 
-/// `finish`, plus hiding URL userinfo.
+/// `finish` for a value whose name is `name`: hidden when the name is credential-like
+/// or holds any hidden or secret part (its text cannot be checked).
+fn finish_for(parts: &[ShownPart], name: &[ShownPart]) -> Shown {
+    let opaque = name
+        .iter()
+        .any(|p| matches!(p, ShownPart::Hidden(_) | ShownPart::Secret { .. }));
+    if opaque && !parts.is_empty() {
+        return hidden_credential();
+    }
+    finish(parts, Some(&text_only(name)))
+}
+
+/// Hide the value of every credential-named (or opaquely named) pair in the query.
+fn hide_query_values(parts: &[ShownPart]) -> Vec<ShownPart> {
+    let (flat, rest) = flatten(parts);
+    let Some(q) = flat.find('?') else {
+        return parts.to_vec();
+    };
+    let qend = flat[q..].find('#').map_or(flat.len(), |i| q + i);
+    let mut cur = Cursor {
+        parts: rest.into_iter(),
+    };
+    let mut out = Acc::default();
+    cur.append(&mut out, &flat[..=q]);
+    for (i, pair) in flat[q + 1..qend].split('&').enumerate() {
+        if i > 0 {
+            out.text("&");
+        }
+        match pair.split_once('=') {
+            Some((n, v)) if is_credential_name(n) || n.contains(MARK) => {
+                cur.append(&mut out, n);
+                out.text("=");
+                cur.skip(v);
+                if !v.is_empty() {
+                    out.part(ShownPart::Hidden(HideReason::Credential));
+                }
+            }
+            _ => cur.append(&mut out, pair),
+        }
+    }
+    cur.append(&mut out, &flat[qend..]);
+    out.parts
+}
+
+/// `finish`, plus hiding URL userinfo and credential-named query values.
 fn finish_url(parts: &[ShownPart]) -> Shown {
+    let parts = &hide_query_values(parts);
     let (flat, _) = flatten(parts);
     if redact_userinfo(&flat) == flat {
         return finish(parts, None);
@@ -697,6 +753,7 @@ struct AuthEffect {
 enum FieldKind {
     Plain,
     Sensitive,
+    Username,
     Url,
 }
 
@@ -836,7 +893,7 @@ impl<'a> Walker<'a> {
                     let v = self.expand(value, loc, stack);
                     stack.pop();
                     if is_credential_name(name) {
-                        out.hide(&v);
+                        out.hide(&v, name);
                     } else {
                         out.append(&v);
                     }
@@ -872,7 +929,7 @@ impl<'a> Walker<'a> {
             let n = self.subst(&p.name, &loc);
             let v = self.subst(&p.value, &loc);
             let name = finish(&n.parts, None);
-            let value = finish(&v.parts, Some(&n.text_only()));
+            let value = finish_for(&v.parts, &n.parts);
             params.push(ParamReport {
                 kind: ParamKind::Query,
                 name: name.clone(),
@@ -1018,7 +1075,7 @@ impl<'a> Walker<'a> {
                 let loc = Location::Header(h.name.clone());
                 let name = self.subst(&h.name, &loc);
                 let value = self.subst(&h.value, &loc);
-                let shown = finish(&value.parts, Some(&name.text_only()));
+                let shown = finish_for(&value.parts, &name.parts);
                 set_header(&mut out, &name, shown, origin, None);
             }
         }
@@ -1059,7 +1116,8 @@ impl<'a> Walker<'a> {
         let value = match kind {
             FieldKind::Plain => finish(&acc.parts, None),
             FieldKind::Url => finish_url(&acc.parts),
-            FieldKind::Sensitive if acc.parts.is_empty() => Shown::default(),
+            FieldKind::Sensitive | FieldKind::Username if acc.parts.is_empty() => Shown::default(),
+            FieldKind::Username => Shown(vec![ShownPart::Hidden(HideReason::Userinfo)]),
             FieldKind::Sensitive => Shown(vec![ShownPart::Hidden(HideReason::Credential)]),
         };
         fields.push(AuthField { name, value });
@@ -1067,7 +1125,7 @@ impl<'a> Walker<'a> {
     }
 
     fn auth(&mut self) -> (AuthReport, AuthEffect) {
-        use FieldKind::{Plain, Sensitive, Url};
+        use FieldKind::{Plain, Sensitive, Url, Username};
         let (auth, origin) = self.effective_auth();
         let kind = AuthKind::of(&auth);
         let mut f = Vec::new();
@@ -1080,7 +1138,7 @@ impl<'a> Walker<'a> {
         let application = match &auth {
             Auth::None | Auth::Inherit => AuthApplication::None,
             Auth::Basic { username, password } => {
-                self.field(&mut f, "username", username, Plain);
+                self.field(&mut f, "username", username, Username);
                 self.field(&mut f, "password", password, Sensitive);
                 let name = text("Authorization");
                 let app = AuthApplication::Header(finish(&name.parts, None));
@@ -1100,15 +1158,13 @@ impl<'a> Walker<'a> {
                 location,
             } => {
                 let n = self.field(&mut f, "name", name, Plain);
-                let ntext = n.text_only();
-                let vkind = if is_credential_name(&ntext) {
-                    Sensitive
-                } else {
-                    Plain
-                };
-                let v = self.field(&mut f, "value", value, vkind);
+                let v = self.field(&mut f, "value", value, Sensitive);
                 let nshown = finish(&n.parts, None);
-                let vshown = finish(&v.parts, Some(&ntext));
+                let vshown = if v.parts.is_empty() {
+                    Shown::default()
+                } else {
+                    hidden_credential()
+                };
                 match location {
                     ApiKeyLocation::Header => {
                         effect.header = Some((n, vshown));
@@ -1121,7 +1177,7 @@ impl<'a> Walker<'a> {
                 }
             }
             Auth::Digest { username, password } => {
-                self.field(&mut f, "username", username, Plain);
+                self.field(&mut f, "username", username, Username);
                 self.field(&mut f, "password", password, Sensitive);
                 AuthApplication::AtSend
             }

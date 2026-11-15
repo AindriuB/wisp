@@ -1,5 +1,7 @@
 use super::tests::{kv, req, var};
 use super::*;
+use crate::model::PreparedBody;
+use crate::request::ClientAuth;
 use crate::request::{
     ApiKeyLocation, Auth, Body, CollectionDefaults, Environment, FolderDefaults, Request, TextBody,
     Var,
@@ -150,6 +152,68 @@ fn fixtures() -> Vec<Fx> {
         f.req.headers = vec![kv("Accept", "*/*", true)];
         out.push(f);
     }
+    // header layering through 2 and 3 folders; reversing the folder order changes the result
+    for depth in [2usize, 3] {
+        let mut f = Fx::new(req("http://h"));
+        f.coll.headers = vec![kv("X-A", "coll", true), kv("X-Only-C", "c", true)];
+        f.folders = (0..depth)
+            .map(|i| FolderDefaults {
+                headers: vec![
+                    kv("x-a", &format!("f{i}"), true),
+                    kv(&format!("X-F{i}"), "v", true),
+                ],
+                ..Default::default()
+            })
+            .collect();
+        f.req.headers = vec![kv("X-R", "r", true)];
+        out.push(f);
+    }
+    // auth inheritance through 2 and 3 folders; credential headers and API keys are
+    // compared by name and position only
+    let bearer = || Auth::Bearer {
+        token: "tok".into(),
+    };
+    let basic = || Auth::Basic {
+        username: "u".into(),
+        password: "p".into(),
+    };
+    let apikey = || Auth::ApiKey {
+        name: "X-Tenant".into(),
+        value: "sk_live_abc".into(),
+        location: ApiKeyLocation::Header,
+    };
+    for auths in [
+        vec![bearer(), Auth::Inherit],
+        vec![Auth::Inherit, basic()],
+        vec![bearer(), Auth::Inherit, apikey()],
+        vec![basic(), bearer(), Auth::Inherit],
+        vec![Auth::Inherit, Auth::Inherit, apikey()],
+    ] {
+        let mut f = Fx::new(req("http://h"));
+        f.coll.auth = basic();
+        f.coll.headers = vec![kv("Accept", "*/*", true)];
+        f.folders = auths
+            .into_iter()
+            .map(|a| FolderDefaults {
+                auth: a,
+                ..Default::default()
+            })
+            .collect();
+        out.push(f);
+    }
+    // auth overriding a user Authorization header, and an API key under a plain name
+    let mut f = Fx::new(req("http://h"));
+    f.req.headers = vec![
+        kv("Accept", "*/*", true),
+        kv("authorization", "user", true),
+        kv("X-Z", "z", true),
+    ];
+    f.req.auth = bearer();
+    out.push(f);
+    let mut f = Fx::new(req("http://h"));
+    f.req.headers = vec![kv("x-tenant", "mine", true), kv("X-Z", "z", true)];
+    f.req.auth = apikey();
+    out.push(f);
     // auth that adds nothing
     let mut f = Fx::new(req("http://h"));
     f.coll.auth = Auth::Digest {
@@ -194,17 +258,58 @@ fn eligible(f: &Fx) -> bool {
     if let Body::Json(t) | Body::Xml(t) | Body::Text(t) = &f.req.body {
         strings.push(&t.content);
     }
-    if let Auth::ApiKey { name, value, .. } = &f.coll.auth {
-        names.push(name);
-        strings.push(value);
-    }
     !names.iter().any(|n| crate::redact::is_credential_name(n))
         && !strings
             .iter()
             .any(|s| s.contains("{{$") || s.chars().count() > 200)
         && resolve(&f.req, &f.scope()).is_ok()
-        // Basic and Bearer add a credential-named header; those are covered elsewhere.
-        && !matches!(f.coll.auth, Auth::Basic { .. } | Auth::Bearer { .. })
+        // Basic, Bearer and API keys hide their values; `explain_matches_resolve_by_position`
+        // covers them by name and position.
+        && !all_auths(f).any(|a| matches!(a, Auth::Basic { .. } | Auth::Bearer { .. } | Auth::ApiKey { .. }))
+}
+
+fn all_auths(f: &Fx) -> impl Iterator<Item = &Auth> {
+    std::iter::once(&f.req.auth)
+        .chain(f.folders.iter().map(|fo| &fo.auth))
+        .chain(std::iter::once(&f.coll.auth))
+}
+
+/// True when a fixture has no secret or dynamic value and `resolve()` succeeds.
+fn comparable(f: &Fx) -> bool {
+    f.env.as_ref().is_none_or(|e| e.secrets.is_empty())
+        && resolve(&f.req, &f.scope()).is_ok()
+        && !f.req.url.contains("{{$")
+}
+
+fn all_hidden(r: &Shown) -> bool {
+    !r.0.is_empty() && r.0.iter().all(|p| matches!(p, ShownPart::Hidden(_)))
+}
+
+/// Header names and positions, and body size, equal `resolve()`'s even where values are
+/// hidden; every value that is shown equals `resolve()`'s.
+fn assert_positions(i: usize, f: &Fx) {
+    let p = resolve(&f.req, &f.scope()).unwrap();
+    let r = f.report();
+    assert_eq!(
+        r.headers.len(),
+        p.headers.len(),
+        "fixture {i}: header count"
+    );
+    for (n, (rh, ph)) in r.headers.iter().zip(&p.headers).enumerate() {
+        assert_eq!(flat(&rh.name), ph.name, "fixture {i}: header {n} name");
+        match rh.value.plain_text() {
+            Some(v) => assert_eq!(v, ph.value, "fixture {i}: header {n} value"),
+            None => assert!(all_hidden(&rh.value), "fixture {i}: header {n} hidden"),
+        }
+    }
+    match &p.body {
+        PreparedBody::Bytes(b) => assert_eq!(r.body.bytes, Some(b.len()), "fixture {i}: body"),
+        PreparedBody::None => assert!(matches!(r.body.bytes, None | Some(0)), "fixture {i}"),
+        _ => {}
+    }
+    if let Some(u) = r.url.plain_text() {
+        assert_eq!(u, p.url, "fixture {i}: url");
+    }
 }
 
 #[test]
@@ -238,11 +343,193 @@ fn explain_matches_resolve_for_plain_fixtures() {
             .filter(|p| p.kind == ParamKind::Query)
             .collect();
         assert_eq!(query.len(), enabled.len(), "fixture {i}: params");
+        match &p.body {
+            PreparedBody::Bytes(b) => assert_eq!(r.body.bytes, Some(b.len()), "fixture {i}: body"),
+            _ => {}
+        }
         compared += 1;
     }
     assert!(found > 0);
     assert!(compared >= found, "compared {compared} of {found}");
     assert!(found >= 10, "only {found} eligible fixtures");
+}
+
+#[test]
+fn explain_matches_resolve_by_position() {
+    let all = fixtures();
+    let mut n = 0;
+    for (i, f) in all.iter().enumerate() {
+        if comparable(f) {
+            assert_positions(i, f);
+            n += 1;
+        }
+    }
+    assert!(n >= 20, "only {n} comparable fixtures");
+}
+
+#[test]
+fn auth_inheritance_names_the_right_folder() {
+    let mut f = Fx::new(req("http://h"));
+    f.folders = vec![
+        FolderDefaults {
+            auth: Auth::Basic {
+                username: "u".into(),
+                password: "p".into(),
+            },
+            ..Default::default()
+        },
+        FolderDefaults::default(),
+        FolderDefaults {
+            auth: Auth::Bearer { token: "t".into() },
+            ..Default::default()
+        },
+    ];
+    let r = f.report();
+    assert_eq!(
+        (r.auth.kind, r.auth.origin),
+        (AuthKind::Bearer, Some(Origin::Folder(2)))
+    );
+    f.folders[2].auth = Auth::Inherit;
+    let r = f.report();
+    assert_eq!(
+        (r.auth.kind, r.auth.origin),
+        (AuthKind::Basic, Some(Origin::Folder(0)))
+    );
+}
+
+#[test]
+fn bearer_overrides_a_user_authorization_header_in_place() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.headers = vec![kv("Authorization", "user", true), kv("X-Z", "z", true)];
+    f.req.auth = Auth::Bearer { token: "t".into() };
+    let r = f.report();
+    assert_eq!(r.headers.len(), 2);
+    assert_eq!(text(&r.headers[0].name), "Authorization");
+    assert_eq!(r.headers[0].origin, Origin::Auth);
+    assert_eq!(r.headers[0].overridden, vec![Origin::Request]);
+    assert!(all_hidden(&r.headers[0].value));
+}
+
+// ---- leaks ----
+
+const SENTINEL: &str = "sentinel-7f3a9";
+
+fn leaks(f: &Fx) -> bool {
+    let r = f.report();
+    let a = explain_auth(&f.req, &f.scope());
+    format!("{r:?}{a:?}").contains(SENTINEL)
+}
+
+#[test]
+fn api_key_value_is_hidden_whatever_its_name() {
+    for location in [ApiKeyLocation::Header, ApiKeyLocation::Query] {
+        let mut f = Fx::new(req("http://h"));
+        f.req.auth = Auth::ApiKey {
+            name: "X-Tenant".into(),
+            value: SENTINEL.into(),
+            location,
+        };
+        assert!(!leaks(&f), "{location:?}");
+        let r = f.report();
+        assert!(all_hidden(&r.auth.fields[1].value));
+    }
+}
+
+#[test]
+fn a_name_from_a_credential_variable_or_secret_hides_the_value() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.vars = vec![var("api_token", "X-Tenant")];
+    f.env = Some(Environment {
+        name: "e".into(),
+        secrets: vec![var("sec", "X-Sec")],
+        vars: vec![],
+    });
+    f.req.headers = vec![
+        kv("{{api_token}}", SENTINEL, true),
+        kv("{{sec}}", SENTINEL, true),
+    ];
+    f.req.params = vec![
+        kv("{{api_token}}", SENTINEL, true),
+        kv("{{sec}}", SENTINEL, true),
+    ];
+    f.req.auth = Auth::ApiKey {
+        name: "{{api_token}}".into(),
+        value: SENTINEL.into(),
+        location: ApiKeyLocation::Header,
+    };
+    assert!(!leaks(&f));
+}
+
+#[test]
+fn headers_named_by_different_hidden_variables_stay_apart() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.vars = vec![var("a_token", "X-One"), var("b_token", "X-Two")];
+    f.req.headers = vec![kv("{{a_token}}", "1", true), kv("{{b_token}}", "2", true)];
+    assert_eq!(f.report().headers.len(), 2);
+    // The same hidden variable twice is the same header.
+    f.req.headers = vec![kv("{{a_token}}", "1", true), kv("{{a_token}}", "2", true)];
+    assert_eq!(f.report().headers.len(), 1);
+}
+
+#[test]
+fn credential_query_pairs_inline_in_urls_are_hidden() {
+    let mut f = Fx::new(req(&format!(
+        "http://h/p?a=1&access_token={SENTINEL}&b=2#f"
+    )));
+    assert!(!leaks(&f));
+    let r = f.report();
+    assert_eq!(
+        flat(&r.url),
+        "http://h/p?a=1&access_token=<Hidden(Credential)>&b=2#f"
+    );
+    for auth in [Auth::OAuth2ClientCredentials {
+        token_url: format!("http://t/x?client_secret={SENTINEL}&k=1"),
+        client_id: "id".into(),
+        client_secret: "s".into(),
+        scope: "sc".into(),
+        client_auth: ClientAuth::default(),
+    }] {
+        f.req.url = "http://h".into();
+        f.req.auth = auth;
+        assert!(!leaks(&f));
+    }
+    f.req.auth = Auth::OAuth2AuthCode {
+        auth_url: format!("http://t/a?access_token={SENTINEL}"),
+        token_url: format!("http://t/x?api_key={SENTINEL}"),
+        client_id: "id".into(),
+        client_secret: "s".into(),
+        scope: "sc".into(),
+        client_auth: ClientAuth::default(),
+        redirect_port: 0,
+    };
+    assert!(!leaks(&f));
+    let a = explain_auth(&f.req, &f.scope());
+    assert_eq!(
+        flat(&a.fields[0].value),
+        "http://t/a?access_token=<Hidden(Credential)>"
+    );
+}
+
+#[test]
+fn basic_and_digest_usernames_are_hidden() {
+    for auth in [
+        Auth::Basic {
+            username: SENTINEL.into(),
+            password: "p".into(),
+        },
+        Auth::Digest {
+            username: SENTINEL.into(),
+            password: "p".into(),
+        },
+    ] {
+        let mut f = Fx::new(req("http://h"));
+        f.req.auth = auth;
+        assert!(!leaks(&f));
+        assert_eq!(
+            explain_auth(&f.req, &f.scope()).fields[0].value,
+            Shown(vec![ShownPart::Hidden(HideReason::Userinfo)])
+        );
+    }
 }
 
 // ---- precedence ----
@@ -534,6 +821,15 @@ fn explain_auth_expands_only_auth_fields() {
     };
     let a = explain_auth(&f.req, &f.scope());
     assert_eq!(a.kind, AuthKind::Bearer);
+    assert_eq!(a.origin, Some(Origin::Request));
+    assert_eq!(
+        a.application,
+        AuthApplication::Header(Shown(vec![ShownPart::Text("Authorization".into())]))
+    );
+    assert_eq!(a.fields.len(), 1);
+    assert_eq!(a.fields[0].name, "token");
+    // `t` is unresolved, so the field is empty rather than hidden.
+    assert!(a.fields[0].value.0.is_empty());
     // `explain_auth` returns no problems at all; the URL's unresolved variable is not
     // even looked at. The full report does see it.
     assert!(f.report().problems.iter().any(|p| matches!(
