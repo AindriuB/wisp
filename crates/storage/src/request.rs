@@ -109,6 +109,7 @@ pub fn load_request(path: &Path) -> Result<Request, StorageError> {
         body: read_body(&doc, dir, path)?,
         vars: codec::read_vars(&doc, "vars", path)?,
         settings: read_settings(&doc, path)?,
+        assertions: codec::read_assertions(&doc),
     })
 }
 
@@ -364,6 +365,7 @@ pub fn save_request(path: &Path, request: &Request) -> Result<(), StorageError> 
     }
     write_body(&mut doc, &request.body, dir, path)?;
     write_settings(&mut doc, &request.settings);
+    codec::write_assertions(&mut doc, &request.assertions, path)?;
 
     fs::atomic_write(path, doc.to_string().as_bytes())
 }

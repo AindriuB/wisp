@@ -801,3 +801,80 @@ fn json_body_with_duplicate_keys_is_dropped() {
         assert!(e.redacted.contains(&"body".to_string()));
     }
 }
+
+#[test]
+fn max_json_body_equals_body_cap() {
+    assert_eq!(
+        wisp_core::assert::MAX_JSON_BODY,
+        wisp_storage::history::BODY_CAP
+    );
+}
+
+#[test]
+fn assertion_record_json_shape_is_pinned() {
+    use wisp_core::assert::{Assertion, AssertionResult, Expected, Op, Verdict};
+    use wisp_storage::history::AssertionRecord;
+    let a = Assertion::Status {
+        op: Op::Equals,
+        expected: Expected::Int(200),
+    };
+    let r = AssertionResult {
+        label: a.label(),
+        verdict: Verdict::Pass,
+    };
+    let rec = AssertionRecord::from_result(&a, &r);
+    let json = serde_json::to_string(&rec).unwrap();
+    assert_eq!(
+        json,
+        format!(
+            r#"{{"label":"status equals","hash":"{}","state":"pass"}}"#,
+            a.fingerprint()
+        )
+    );
+    assert_eq!(rec.hash.len(), 16);
+    let failed = AssertionResult {
+        label: a.label(),
+        verdict: Verdict::Fail {
+            actual: Some("404".into()),
+        },
+    };
+    assert!(
+        serde_json::to_string(&AssertionRecord::from_result(&a, &failed))
+            .unwrap()
+            .ends_with(r#""state":"fail"}"#)
+    );
+}
+
+#[test]
+fn stored_request_carries_no_assertions_or_their_values() {
+    use wisp_core::assert::{Assertion, Expected, Op};
+    let (_d, data, store) = setup();
+    let req = Request {
+        url: "/a".into(),
+        headers: vec![kv("X-Trace", "plain")],
+        assertions: vec![
+            Assertion::Json {
+                path: "$.token".into(),
+                op: Op::Equals,
+                expected: Expected::Str("CANARY-EXPECTED".into()),
+            },
+            Assertion::Header {
+                name: "x-trace".into(),
+                op: Op::Equals,
+                expected: Expected::Str("CANARY-HEADER-EXPECTED".into()),
+            },
+        ],
+        ..Request::default()
+    };
+    let e = store.append(new_entry(req), Some(b"hi")).unwrap();
+    assert!(store.load(&e.id).unwrap().request.assertions.is_empty());
+    let root = data.history_dir(&cid("abcdef0123456789"));
+    let index = fs::read_to_string(root.join("index.jsonl")).unwrap();
+    let stored = fs::read_to_string(bodies_dir(&data).join(format!("{}.req.json", e.id))).unwrap();
+    for canary in ["CANARY-EXPECTED", "CANARY-HEADER-EXPECTED"] {
+        assert!(
+            !index.contains(canary) && !stored.contains(canary),
+            "{canary}"
+        );
+    }
+}
