@@ -22,15 +22,18 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             binary: wisp
+            cli_binary: wisp-cli
             renderer: unknown
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             binary: wisp.exe
+            cli_binary: wisp-cli.exe
             renderer: software
           - target: x86_64-unknown-linux-gnu
             # glibc floor 2.39: ubuntu-latest is 26.04 and would need GLIBC_2.43
             os: ubuntu-24.04
             binary: wisp
+            cli_binary: wisp-cli
             renderer: software
     runs-on: ${{ matrix.os }}
     steps:
@@ -67,8 +70,42 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Add target
         run: rustup target add ${{ matrix.target }}
-      - name: Build
-        run: cargo build --release --locked -p wisp-app --target ${{ matrix.target }}
+      - name: Build (GUI only)
+        shell: bash
+        run: |
+          cargo build --release --locked -p wisp-app --target ${{ matrix.target }}
+          gui_alone=$(wc -c < target/${{ matrix.target }}/release/${{ matrix.binary }} | tr -d ' ')
+          echo "GUI_ALONE=$gui_alone" >> "$GITHUB_ENV"
+          echo "GUI binary, built alone: $gui_alone bytes"
+      - name: Build (GUI and CLI) and compare
+        shell: bash
+        run: |
+          cargo build --release --locked -p wisp-app -p wisp-cli --target ${{ matrix.target }}
+          rel=target/${{ matrix.target }}/release
+          gui_both=$(wc -c < "$rel/${{ matrix.binary }}" | tr -d ' ')
+          cli=$(wc -c < "$rel/${{ matrix.cli_binary }}" | tr -d ' ')
+          echo "GUI binary, built with CLI: $gui_both bytes"
+          echo "CLI binary: $cli bytes"
+          printf '{"target":"%s","gui_bytes_alone":%s,"gui_bytes_with_cli":%s,"cli_bytes":%s}\n' \
+            "${{ matrix.target }}" "$GUI_ALONE" "$gui_both" "$cli" > measure-${{ matrix.target }}.sizes.json
+          if [ "$GUI_ALONE" != "$gui_both" ]; then
+            echo "::error::GUI binary size changed when wisp-cli was built with it: $GUI_ALONE vs $gui_both"
+            exit 1
+          fi
+      - name: Check CLI size limit
+        shell: bash
+        run: |
+          limit=$(jq -r '.limits["${{ matrix.target }}"]' scripts/measure/cli-budgets.json)
+          cli=$(wc -c < target/${{ matrix.target }}/release/${{ matrix.cli_binary }} | tr -d ' ')
+          if [ -z "$limit" ] || [ "$limit" = null ]; then
+            echo "::error::no CLI limit for ${{ matrix.target }} in cli-budgets.json"
+            exit 1
+          fi
+          echo "wisp-cli $cli bytes, limit $limit"
+          if [ "$cli" -gt "$limit" ]; then
+            echo "::error::wisp-cli is $cli bytes, over its $limit limit"
+            exit 1
+          fi
       - name: Check glibc floor (Linux)
         if: runner.os == 'Linux'
         run: scripts/release/check-glibc.sh target/${{ matrix.target }}/release/${{ matrix.binary }} 2.39
@@ -119,6 +156,7 @@ jobs:
           name: measure-${{ matrix.target }}
           path: |
             measure-${{ matrix.target }}.json
+            measure-${{ matrix.target }}.sizes.json
             measure-${{ matrix.target }}.*.log
             measure-${{ matrix.target }}.png
             measure-${{ matrix.target }}.libs.txt
