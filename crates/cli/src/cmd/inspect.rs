@@ -35,12 +35,28 @@ fn rel(p: &Path) -> String {
 pub fn safe_url(url: &str) -> String {
     let end = url.find(['?', '#']).unwrap_or(url.len());
     let u = &url[..end];
-    let (prefix, rest) = match u.find("://") {
-        Some(i) => u.split_at(i + 3),
-        None if u.starts_with("//") => u.split_at(2),
-        None => ("", u),
+    let is_sep = |c: char| c == '/' || c == '\\';
+    let scheme_len = u
+        .find(':')
+        .filter(|&i| {
+            let sch = &u[..i];
+            sch.starts_with(|c: char| c.is_ascii_alphabetic())
+                && sch
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+                && u[i + 1..].starts_with(is_sep)
+        })
+        .map(|i| i + 1);
+    let after = scheme_len.unwrap_or(0);
+    let slashes = u[after..].len() - u[after..].trim_start_matches(is_sep).len();
+    // Without a scheme a single leading slash is a path, not an authority.
+    let skip = if scheme_len.is_some() || slashes >= 2 {
+        slashes
+    } else {
+        0
     };
-    let auth_end = rest.find('/').unwrap_or(rest.len());
+    let (prefix, rest) = u.split_at(after + skip);
+    let auth_end = rest.find(['/', '\\']).unwrap_or(rest.len());
     let (auth, path) = rest.split_at(auth_end);
     let host = auth.rsplit('@').next().unwrap_or(auth);
     let out = format!("{prefix}{host}{path}");
@@ -202,5 +218,9 @@ mod tests {
         assert_eq!(safe_url("//u:p@h/x"), "//h/x");
         assert_eq!(safe_url("u:p@h"), "h");
         assert_eq!(safe_url("/a@b/c"), "/a@b/c");
+        assert_eq!(safe_url("http:/u:p@h/x"), "http:/h/x");
+        assert_eq!(safe_url("http:///u:p@h/x"), "http:///h/x");
+        assert_eq!(safe_url("http:/\\u:p@h/x"), "http:/\\h/x");
+        assert_eq!(safe_url("\\\\u:p@h/x"), "\\\\h/x");
     }
 }

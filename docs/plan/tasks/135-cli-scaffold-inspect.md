@@ -78,3 +78,7 @@ land in 2D once tasks 130, 132 and 133 have merged.
 - [80-3, Medium, 🔒] `output.rs:26` text output writes untrusted names/paths/URLs raw (ANSI/OSC, forged lines, bidi); escape them.
 - [80-4, Medium] `inspect.rs:106` `collection.invalid` undercounts when truncated: emit null / "unknown (truncated)".
 - Follow-ups (not fixed): 80-7 denylist misses vault::, ops::, save_; 80-8 symlinked folders escaping root; 80-9 parser table lacks NotUtf8; 80-10 BrokenPipe untested; 80-11 NodeInfo implements Dto; 80-12 inspect loads whole requests; 80-13 test names; 80-14 read-only test leaves undeletable tempdir.
+
+## Review round 2 — findings
+(reviewed HEAD 7c2f625)
+- [P2] crates/cli/src/cmd/inspect.rs:38-46 — 80-2 only partly fixed. `safe_url` still prints userinfo when the scheme is followed by one slash, three slashes, or backslashes: `http:/u:p@h/x`, `http:///u:p@h/x`, `http:/\u:p@h/x` print unchanged. The WHATWG parser (reqwest::Url::parse, used by the engine at crates/core/src/engine.rs:697) reads all three as userinfo `u:p` at host `h`.
