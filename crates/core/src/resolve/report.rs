@@ -330,12 +330,15 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
     // warnings are dropped: the discovery walk already reported them.
     let mut rw = Walker::new(req, scope);
     rw.render_only = true;
+    // Only a plain variable in the hidden set can move the URL cuts: a secret is never
+    // expanded, so it stays an opaque marker.
+    let url_hidden = w.uses_hidden_plain(&w.url_trail, &hidden);
     if !hidden.is_empty() {
         rw.hide_names = hidden.clone();
         rendered = rw.render();
         // A hidden variable used anywhere in the URL can move the query and userinfo
         // cuts: show none of the URL.
-        if w.url_trail.iter().any(|n| hidden.contains(n)) {
+        if url_hidden {
             rendered.url = hidden_credential();
         }
     }
@@ -362,11 +365,17 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         follow_redirects: bool_setting(s.follow_redirects, true),
         verify_tls: bool_setting(s.verify_tls, true),
     };
-    let (variables, listing_work) = w.variables(&hidden, &mut rw);
+    let (mut variables, listing_work) = w.variables(&hidden, &mut rw);
+    if url_hidden {
+        for v in &mut variables {
+            for loc in &mut v.locations {
+                mask_location(loc);
+            }
+        }
+    }
     let work = w.expansions + closure_work + listing_work;
     // Free text in a path-parameter problem can come from a hidden variable's value.
-    let mask = w.url_trail.iter().any(|n| hidden.contains(n));
-    let (problems, warnings) = if mask {
+    let (problems, warnings) = if url_hidden {
         (
             w.problems.into_iter().map(mask_problem).collect(),
             w.warnings.into_iter().map(mask_warning).collect(),
@@ -403,19 +412,25 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
 /// Stands in for problem text that may have come from a hidden variable's value.
 const HIDDEN_TEXT: &str = "<hidden>";
 
-fn mask_problem(p: Problem) -> Problem {
-    match p {
-        Problem::MissingPathParam { .. } => Problem::MissingPathParam {
-            name: HIDDEN_TEXT.into(),
-        },
-        Problem::Syntax { location, message } if message.starts_with("invalid path parameter") => {
-            Problem::Syntax {
-                location,
-                message: format!("invalid path parameter `{HIDDEN_TEXT}`"),
+fn mask_location(location: &mut Location) {
+    if let Location::PathParam(name) = location {
+        *name = HIDDEN_TEXT.into();
+    }
+}
+
+fn mask_problem(mut p: Problem) -> Problem {
+    match &mut p {
+        Problem::MissingPathParam { name } => *name = HIDDEN_TEXT.into(),
+        Problem::UnresolvedVar { location, .. } => mask_location(location),
+        Problem::Syntax { location, message } => {
+            mask_location(location);
+            if message.starts_with("invalid path parameter") {
+                *message = format!("invalid path parameter `{HIDDEN_TEXT}`");
             }
         }
-        other => other,
+        _ => {}
     }
+    p
 }
 
 fn mask_warning(w: ReportWarning) -> ReportWarning {
@@ -900,6 +915,16 @@ impl<'a> Walker<'a> {
         }
     }
 
+    fn uses_hidden_plain(&self, trail: &[String], hidden: &HashSet<String>) -> bool {
+        trail.iter().any(|n| {
+            hidden.contains(n)
+                && !matches!(
+                    lookup(self.req, self.scope, n),
+                    Some((_, VarSource::Secret))
+                )
+        })
+    }
+
     fn problem(&mut self, p: Problem) {
         if self.seen.insert(format!("{p:?}")) {
             self.problems.push(p);
@@ -1283,7 +1308,12 @@ impl<'a> Walker<'a> {
         let value = match kind {
             FieldKind::Plain => finish(&acc.parts, None),
             FieldKind::Url => {
-                let shown = finish_url(&acc.parts);
+                // Hiding an expanded separator can move the userinfo or query cuts.
+                let shown = if self.uses_hidden_plain(&self.trail[mark..], &self.hide_names) {
+                    hidden_credential()
+                } else {
+                    finish_url(&acc.parts)
+                };
                 if shown.0.iter().any(|p| {
                     matches!(
                         p,

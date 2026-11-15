@@ -783,8 +783,11 @@ fn a_secret_value_never_reaches_the_report() {
     for s in [format!("{r:?}"), format!("{r:#?}")] {
         assert!(!s.contains(MARK), "{s}");
     }
-    // The query value uses `sec`, so the whole URL is hidden.
-    assert_eq!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
+    // `sec` is a secret, never expanded: it shows as its marker.
+    assert!(r.url.0.contains(&ShownPart::Secret {
+        name: "sec".into(),
+        resolved: true
+    }));
     assert_eq!(r.body.bytes, None);
     // Each auth variant too.
     for auth in [
@@ -1469,4 +1472,169 @@ fn the_userinfo_sub_walk_shares_the_expansion_budget() {
         with >= without + 111,
         "sub-walk not counted: {with} vs {without}"
     );
+}
+
+#[test]
+fn a_secret_only_url_keeps_its_part_by_part_rendering() {
+    // `key` is credential-named, so its value is hidden by name as on main; the rest of
+    // the URL still shows. A neutral name shows the Secret marker.
+    for (url, marker) in [
+        ("https://h/p?key={{sec}}&page=1", false),
+        ("https://h/p?q={{sec}}&page=1", true),
+    ] {
+        let mut f = Fx::new(req(url));
+        f.env = Some(Environment {
+            name: "e".into(),
+            vars: vec![],
+            secrets: vec![var("sec", "CANARY-1")],
+        });
+        let r = f.report();
+        assert_ne!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
+        assert_eq!(
+            r.url.0.contains(&ShownPart::Secret {
+                name: "sec".into(),
+                resolved: true
+            }),
+            marker
+        );
+        assert!(format!("{:?}", r.url).contains("page=1"), "{:?}", r.url);
+        assert!(!format!("{r:?}").contains("CANARY-1"));
+    }
+}
+
+#[test]
+fn a_secret_nested_in_a_hidden_plain_variable_hides_the_whole_url() {
+    let mut f = Fx::new(req("https://h/p?key={{nested}}&page=1"));
+    f.env = Some(Environment {
+        name: "e".into(),
+        vars: vec![],
+        secrets: vec![var("sec", "CANARY-2")],
+    });
+    f.req.vars = vec![var("nested", "pre-{{sec}}")];
+    f.req.headers = vec![kv("X-Nested", "{{nested}}", true)];
+    f.req.auth = Auth::Bearer {
+        token: "{{nested}}".into(),
+    };
+    let r = f.report();
+    assert_eq!(r.url.0, vec![ShownPart::Hidden(HideReason::Credential)]);
+    assert!(!format!("{r:?}").contains("CANARY-2"));
+}
+
+#[test]
+fn hidden_oauth_url_separators_do_not_expose_literal_credentials() {
+    for (url, separator) in [
+        ("https://alice:OAUTHCANARY{{sep}}idp.test/", "@"),
+        ("https://idp.test/{{sep}}token=OAUTHCANARY", "?"),
+        ("https://idp.test/?x=1{{sep}}token=OAUTHCANARY", "&"),
+        ("https://idp.test/?token{{sep}}OAUTHCANARY", "="),
+    ] {
+        for auth_code in [false, true] {
+            let mut f = Fx::new(req("https://api.test/"));
+            f.coll.vars = vec![var("sep", separator)];
+            f.req.headers = vec![kv("Authorization", "{{sep}}", true)];
+            f.req.auth = if auth_code {
+                Auth::OAuth2AuthCode {
+                    auth_url: url.into(),
+                    token_url: url.into(),
+                    client_id: "id".into(),
+                    client_secret: "s".into(),
+                    scope: "".into(),
+                    client_auth: ClientAuth::default(),
+                    redirect_port: 0,
+                }
+            } else {
+                Auth::OAuth2ClientCredentials {
+                    token_url: url.into(),
+                    client_id: "id".into(),
+                    client_secret: "s".into(),
+                    scope: "".into(),
+                    client_auth: ClientAuth::default(),
+                }
+            };
+            let r = f.report();
+            for dump in [format!("{r:?}"), format!("{r:#?}")] {
+                assert!(!dump.contains("OAUTHCANARY"));
+                assert!(!dump.contains("alice"));
+            }
+            for field in r.auth.fields.iter().filter(|f| f.name.ends_with("_url")) {
+                assert_eq!(
+                    field.value.0,
+                    vec![ShownPart::Hidden(HideReason::Credential)]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn hidden_derived_path_locations_do_not_expose_names() {
+    for path_value in ["{{known}}{{missing}}", "{{known}}{{"] {
+        let mut f = Fx::new(req("https://h/{{segment}}"));
+        f.coll.vars = vec![var("segment", "{PATHCANARY}"), var("known", "ok")];
+        f.req.headers = vec![kv("Authorization", "{{segment}}", true)];
+        f.req.path = vec![var("PATHCANARY", path_value)];
+        let r = f.report();
+        for dump in [format!("{r:?}"), format!("{r:#?}")] {
+            assert!(!dump.contains("PATHCANARY"));
+        }
+        assert!(r.problems.iter().any(|p| matches!(p,
+            Problem::UnresolvedVar { location: Location::PathParam(name), .. }
+            | Problem::Syntax { location: Location::PathParam(name), .. }
+            if name == "<hidden>"
+        )));
+        let known = r.variables.iter().find(|v| v.name == "known").unwrap();
+        assert!(
+            known
+                .locations
+                .contains(&Location::PathParam("<hidden>".into()))
+        );
+    }
+}
+
+#[test]
+fn literal_path_locations_still_identify_the_parameter() {
+    let mut f = Fx::new(req("https://h/{id}"));
+    f.coll.vars = vec![var("known", "ok")];
+    f.req.path = vec![var("id", "{{known}}{{missing}}")];
+    let r = f.report();
+    assert!(r.problems.iter().any(|p| matches!(p,
+        Problem::UnresolvedVar { name, location: Location::PathParam(path) }
+        if name == "missing" && path == "id"
+    )));
+    assert!(
+        r.variables
+            .iter()
+            .find(|v| v.name == "known")
+            .unwrap()
+            .locations
+            .contains(&Location::PathParam("id".into()))
+    );
+}
+
+#[test]
+fn oauth_urls_preserve_ordinary_text_and_opaque_secret_markers() {
+    let mut f = Fx::new(req("https://api.test/"));
+    f.coll.vars = vec![var("host", "idp.test")];
+    f.env = Some(Environment {
+        name: "e".into(),
+        vars: vec![],
+        secrets: vec![var("sec", "OAUTHSECRETCANARY")],
+    });
+    f.req.auth = Auth::OAuth2AuthCode {
+        auth_url: "https://{{host}}/authorize".into(),
+        token_url: "https://idp.test/?q={{sec}}&page=1".into(),
+        client_id: "id".into(),
+        client_secret: "{{sec}}".into(),
+        scope: "".into(),
+        client_auth: ClientAuth::default(),
+        redirect_port: 0,
+    };
+    let r = f.report();
+    assert_eq!(text(&r.auth.fields[0].value), "https://idp.test/authorize");
+    assert!(r.auth.fields[1].value.0.contains(&ShownPart::Secret {
+        name: "sec".into(),
+        resolved: true,
+    }));
+    assert!(flat(&r.auth.fields[1].value).contains("page=1"));
+    assert!(!format!("{r:?}").contains("OAUTHSECRETCANARY"));
 }
