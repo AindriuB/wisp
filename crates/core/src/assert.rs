@@ -19,7 +19,10 @@ pub const MAX_ASSERTIONS: usize = 50;
 /// Longest regex pattern, in characters.
 pub const MAX_REGEX_LEN: usize = 256;
 /// Compiled-size limit for a regex, in bytes.
-const REGEX_SIZE_LIMIT: usize = 256 * 1024;
+const REGEX_SIZE_LIMIT: usize = 64 * 1024;
+const REGEX_DFA_LIMIT: usize = 1024 * 1024;
+/// Longest text a `matches` op will run a regex over; longer is skipped, never truncated.
+pub const MAX_MATCH_HAYSTACK: usize = 64 * 1024;
 /// Longest JSON path, in characters.
 pub const MAX_PATH_LEN: usize = 256;
 /// Most segments in a JSON path.
@@ -444,6 +447,11 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    static REGEX_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
     static REGEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -456,6 +464,7 @@ pub fn check_regex(pattern: &str) -> Result<regex::Regex, String> {
     }
     RegexBuilder::new(pattern)
         .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_DFA_LIMIT)
         .build()
         .map_err(|_| "invalid regex".to_string())
 }
@@ -465,7 +474,12 @@ fn regex_matches(pattern: &Expected, text: &str, res: &mut Regexes) -> Result<bo
         return Err(skipped("malformed"));
     };
     match res.get(p) {
-        Ok(re) => Ok(re.is_match(text)),
+        Ok(_) if text.len() > MAX_MATCH_HAYSTACK => Err(skipped("value too large to match")),
+        Ok(re) => {
+            #[cfg(test)]
+            REGEX_RUNS.with(|c| c.set(c.get() + 1));
+            Ok(re.is_match(text))
+        }
         Err(e) => Err(skipped(e)),
     }
 }
@@ -977,6 +991,38 @@ mod tests {
         assert!(check_path(&ok16).is_ok());
         let over = format!("${}", ".a".repeat(17));
         assert!(check_path(&over).is_err());
+    }
+
+    #[test]
+    fn regex_size_limit_is_64_kib() {
+        // Compiles under the old 256 KiB limit, not under 64 KiB.
+        let pat = "(a{100}){80}";
+        let old = regex::RegexBuilder::new(pat).size_limit(256 * 1024).build();
+        assert!(old.is_ok(), "premise: fits the old limit");
+        assert_eq!(check_regex(pat).unwrap_err(), "invalid regex");
+        let r = run(st(Op::Matches, s(pat)), 200, &[], None);
+        assert_eq!(skip_reason(r), "invalid regex");
+    }
+
+    #[test]
+    fn matches_haystack_capped_at_64_kib() {
+        let at = "a".repeat(MAX_MATCH_HAYSTACK);
+        let over = "a".repeat(MAX_MATCH_HAYSTACK + 1);
+        let hs = [h("x-a", &at), h("x-b", &over)];
+        REGEX_RUNS.with(|c| c.set(0));
+        pass(run(hd("x-a", Op::Matches, s("^a+$")), 200, &hs, None));
+        assert_eq!(REGEX_RUNS.with(|c| c.get()), 1);
+        let r = run(hd("x-b", Op::Matches, s("^a+$")), 200, &hs, None);
+        assert_eq!(skip_reason(r), "value too large to match");
+        assert_eq!(REGEX_RUNS.with(|c| c.get()), 1);
+        let body = format!(r#"{{"s":"{over}"}}"#);
+        let r = json(js("$.s", Op::Matches, s("a")), &body);
+        assert_eq!(skip_reason(r), "value too large to match");
+        assert_eq!(REGEX_RUNS.with(|c| c.get()), 1);
+        pass(json(
+            js("$.s", Op::Matches, s("a")),
+            &format!(r#"{{"s":"{at}"}}"#),
+        ));
     }
 
     #[test]
