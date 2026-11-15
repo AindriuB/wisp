@@ -18,17 +18,15 @@ than no plan.
 **In flight:** 01, 02
 -->
 
-### v0.2.0
-Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple collections, phase timings and a persisted cookie jar. Spec: `docs/plan/specs/2026-11-09-wisp-0-2-0.md`. Each wave ends with a measure run and fails if the Windows binary exceeds 15.5 MB.
-- **Wave 1:** per-user data dir then history rewrite; importers (curl, Postman, OpenAPI); Digest and SigV4. **Complete (tasks 91-98); size gate passed, Windows 14,514,688 B of 15,500,000 (run 42823763145).** Done: 91 (dependencies and storage stubs), 92 (per-user data dir and collection ID), 93 (history rewrite into the per-user data dir), 94 (importers), 95 (Digest and SigV4 auth), 96 (Import dialog), 97 (history panel, Clear and Resend), 98 (size gate); see HISTORY. Wave 2 is next.
-- **Wave 2:** **Complete (tasks 100-108); size gate passed, Windows 15,136,256 B of 15,500,000, headroom 363,744 B (run 42890358687).** OAuth2 (client credentials, auth code + PKCE); cookie jar; phase timings. Done: 100 (wave-2 surface types and seams: OAuth2 through model, resolve, codec and history redaction; timings and cookie-jar types, engine refuses OAuth2 until 103); 101 (settings follow WISP_DATA_DIR); 102 (persisted cookie file store in storage; app wiring is 107); 103 (OAuth2 engine: client credentials, auth code + PKCE, refresh); 106 (OAuth2 UI: editor, Authorize via the system browser, status strip); 104 (in-memory cookie jar per collection, bundled public-suffix list); 105 (phase timings: DNS, connect+TLS); 107 (cookie manager UI: per-collection persistence, Cookies panel); 108 (size gate); see HISTORY. Wave 3 is next, then task 99.
-- **Wave 3:** **Complete (tasks 109-116); size gate passed, Windows 15,177,216 B of 15,500,000, headroom 322,784 B (run 43505214545).** Multiple collections; keychain. Done: 109 (keychain spike; PR #51 closed unmerged; `keyring` 4.x chosen, Windows +26,112 B, Linux +290,960 B); 110 (refresh-token store calls run on spawn_blocking behind a per-key lock, fail closed, `set_persist_refresh`); 111 (secret store: `SecretStore` trait, `MemoryStore`, extensible `StoreKind`, `secrets`/`secret_names` in `<env>.toml`, fail-closed loader including TimedOut, migration both ways; module `crates/storage/src/vault.rs`); 112 (up to 8 open collections, each with its own tree, watcher, environment, id, history and tabs; the open list is kept in settings.toml; palette Switch and Close; quit saves every jar; a same-id clone is refused); 113 (sidebar collection switcher with the active name, the open list with a check mark, path tooltips and × close through root.rs's shared close_collection_at); 114 (OS keychain secret store on `keyring` 4, module keychain in wisp-storage; not yet linked into the app; Windows 15,256,576 B, 243,424 B headroom); 115 (keychain wiring: OS keychain in the app, secrets panel, confirmed bind/move flows; PR #55; Windows 15,171,072 B after opt-level "z" on wisp-storage); 116 (size gate: Windows +40,960 B over wave 2, Linux 25,806,344 B, macOS 11,601,328 B, all budgets met); see HISTORY. Next: hardening (see below), then the Windows test+clippy CI job (54-CI) last before the 0.2.0 tag.
+### v0.3.0 (in progress)
+Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendment 1; roadmap: `docs/plan/roadmap.md`.
+- **Wave 0 complete:** 129 (the three openapi wall-clock tests count work, `substitute` is linear; PR #78) and theme-palette (PR #79).
+- **Wave 1 contracts merged (PRs #78-#84):** 130 explain core report, 131 assertions core and storage, 132 environment info and hint, 134 create collection and environment, 135 `wisp-cli` scaffold and `inspect`. Main CI green on all three platforms.
+- **Next, in order:** (1) task 133 `storage validate` (131 is merged, so it is unblocked); (2) task 136 measure wave 1 (needs 133); (3) task 137 history provenance fields, at the head of wave 2; (4) plan the rest of wave 2 (2A UI seams first, then 2B, 2C, 2D, 2E in parallel, then 2F wiring and the sidebar and palette task for creating a collection). The theme is merged, so UI work is unblocked.
 
-- **Hardening (task 99 split):** **Wave 1 complete (tasks 117-121, PRs #59-#63).** Done: 117 (cross-origin redirects keep only an allow-list of headers, the engine follows any redirect carrying another header and uses reqwest/curl method rules, `referer(false)`, engine errors carry no URL); 118 (more credential fragments, response headers redacted by name, nameless Set-Cookie, path vars, duplicate-key JSON dropped, resend of a redacted path var refused); 119 (importers keep a value literally only when it is one `{{name}}`, userinfo with raw `/`, `?`, `#` or lenient schemes goes to secrets, curl `--digest` imports as Digest); 120 (symlinks refused before open on every collection-file path); 121 (a failed reload clears active secrets); see HISTORY. The rest of task 99 is the post-0.2.0 backlog below.
-- **Windows distribution (tasks 122-127, PRs #65-#71):** **Complete.** Windows CI (54-CI, 99-AC38) is green, so wave 3 and the Windows work are done. Also landed: SignPath signing (124), winget manifests (125), unsigned MSIX artifact (126), winget CRLF fix (127) and the 0.2.0 prep (version, README, release notes); see HISTORY.
-- **Next for 0.2.0, in order:** (1) the release dry run with the size gate (99-AC39) to produce a release candidate; (2) the user's hand test, including the signed macOS keychain; (3) tag v0.2.0 at the tested commit; (4) publish; (5) the AAR (never committed).
+### v0.2.0 (published 2026-11-14)
+Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.md` and HISTORY.
 
-- **Next version:** 0.3.0, spec `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendment 1; the 0.3.0 to 0.5.0 roadmap is `docs/plan/roadmap.md`. Prioritise the wall-clock-assert fix (34-19) early: `many_parameters_merge_in_linear_time` failed on the Windows CI leg 3+ times on 2026-11-14.
 
 **User setup (optional channels):** none of these block 0.2.0.
 - SignPath Foundation application, then the repository secret and variables (`scripts/release/sign-windows/README.md`).
@@ -37,35 +35,6 @@ Importers, history, OAuth2/Digest/SigV4, optional keychain secrets, multiple col
 
 ### v0.1.0 is tagged
 Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
-
-### HTTP client v1
-Build the portable GPUI HTTP client in three milestones, in this order. Spec: `docs/plan/specs/2026-10-29-http-client-v1.md`. Product is Wisp; crate naming is settled in `docs/conventions.md#naming`.
-- **M0 — Walking skeleton (complete).**
-- **M1 — Core and storage (complete):** tasks 10-20 landed. The full model, `resolve`, body store, full event set and cancel, `toml_edit` storage with secrets and watcher, and the fixture integration test all pass without a window. See HISTORY.
-- **M2 — UI v1 (complete):** tasks 21-37 landed (layout, tabs, dirty/save, env switcher, auth and body editors, response viewer, palette, settings, icons, integration and budgets). Window hand check passed on 2026-11-02; see HISTORY. Three defects were found there and all three are fixed and hand-checked in the running app (tasks 38, 39, 40, 41; see HISTORY).
-**Budgets (task 35, commit add9842, macOS 27.0.1 arm64, hardware renderer):** binary 18,965,216 B of 20,971,520 (headroom about 2 MB); idle RSS 99,808 KiB (about 97.5 MiB) of 120 MiB; after one request 104,784 KiB (about 102.3 MiB) of 128 MiB. Measured with a 64 KB response; RSS was about 127 MiB with a 20 MB response loaded.
-- **M3 — v1 hardening (complete):** tasks 52-61 landed (request sub-tab scrolling, autosend resolve error, Cookies and failed-status fit, tab close button, engine roots and TLS cleanup, storage hardening, history and environment fixes, streamed File and Multipart bodies, integration and budgets); see HISTORY. Task 61 added a 720×480 minimum window and fitted the URL row and status lines to narrow panes; its hand check also closed the task 53 failed-line check.
-**Budgets (task 60, commit f116a69, macOS 27.0.1 arm64, hardware renderer):** binary 19,181,072 B of 20,971,520; idle RSS 70,496 KiB (68.8 MiB) of 120 MiB; after one request 75,648 KiB (73.9 MiB) of 128 MiB. RSS fell about 28.4 MiB since task 50 although the binary grew; the macOS version changed between the runs, which likely explains it, so do not read it as a broken measurement.
-**Residuals (53):** at 600 px the "Expires / Max-Age" header and typical dates are cut (accepted); below 584 px the rows' vertical scrollbar starts off-screen until you scroll sideways; the Flags width (256 px, `FLAGS_TEXT_PX` 250) was measured against the macOS system font only.
-**Residuals (55):** closing a dirty tab had no prompt; fixed by task 83.
-**Residuals (54):** a `,` or `)` in a variable name can make the autosend `problems=` list ambiguous (nothing parses past the prefix); if autosend ever runs after an environment is selected, an unresolved `{{x}}` inside a secret's value would print `x`.
-**Residuals (57):** a streamed body over 1 MiB is now resent on 307/308 (task 86); PUT/PATCH on 301/302 still shows the 3xx as-is. Special files (/proc entries reporting size 0, FIFOs, /dev/stdin) are sent empty or refused with "not a regular file"; a read-to-EOF fallback was rejected by the user. Bytes bodies still pass user Content-Length/Transfer-Encoding through. No test checks the 64 KiB chunk limit. `block_in_place` runs on every response chunk. The 20 MiB tests compare bytes but do not measure client memory.
-**Residuals (56):** the `install_crypto_provider` unit test does not exercise the Err branch.
-**Residuals (59):** a true swap (one var moving each way in the same save) cannot be made safe with two writes and is accepted; `gains_moved_name` treats an unparseable other file as empty (harmless while `render` parses first); the files are re-read after `render`; a dangling non-.toml symlink logs a skip warning.
-**Residuals (58):** rejecting a symlink diamond takes about 7-10 s before the error; a Windows trailing-dot or trailing-space `.toml` alias passes (`request.rs:221`); the name check at `request.rs:224-226` is unreachable.
-
-**Budgets (task 61, macOS arm64, hardware renderer):** binary 19,181,072 B (+0); idle RSS 98.7 MiB of 120 MiB; after one request 103.6 MiB of 128 MiB. RSS is about 30 MiB above task 60's figures; the change cannot explain it, so it is probably run-to-run noise. Re-measure main on the same machine to confirm the baseline.
-**Residuals (61):** at 720 px wide the sidebar can still take 480 px and panes can be dragged to 100 px (clipping covers it); the minimum size was checked on macOS arm64 only. Do not re-add `overflow_hidden` to the `resizable_panel()` calls: it clips the splitter's 9 px grab band to 5 px.
-
-**Residuals (72):** the Windows archive ships LICENSE, NOTICE and THIRD-PARTY-NOTICES with CRLF endings (Windows checkout); a `.gitattributes` `eol=lf` would fix it. Re-running a failed tag-push run creates a second draft for the same tag; delete the stale one before publishing. The tag-push path has not been exercised. The packaged `Wisp.app` launched with a window but nobody has looked at it; user hand test pending at release.
-
-**Residuals (70):** the Bundled assets header in `scripts/notices/generate.sh:37` hard-codes "19 SVG icons" and the gpui-kit-assets and gpui-component versions, so it can go stale without the CI `notices` job noticing; `about.toml` accepts OpenSSL and BSL-1.0 though nothing uses them (OpenSSL contradicts the rustls-only rule in `docs/conventions.md#dependencies`).
-
-**Residuals (67, optional P3):** `safe_sidecar` (`ops.rs:416-420`) still compares with `to_lowercase` rather than `fold_case`; it errs toward keeping a sidecar, so no data is lost. Task 67's head has not run on Linux; its own PR CI is the first run.
-
-**Residuals (66):** the "Request failed" fallback heading is written in three places (`mod.rs:50`, `mod.rs:167`, `body.rs:727-729`); a shared helper would keep them in step. The macOS arm64 hand check of the error panel passed on 2026-11-03 (with task 69's sub-tab scroll check); only the Windows and Linux hand checks remain for the user.
-
-**Residuals (62):** (P3) `clean()` (`ops.rs:83-87`) rejects a leading dot or `environments` with `to_lowercase`, while the new check in `clean_node` (`ops.rs:172-177`) uses `fold_case`. Paths through `clean()` only (move destinations, create targets) still use plain lowercasing; on Linux `move_node(r, "a.toml", "environment\u{17f}")` gives Io NotFound while `delete_node` of the same name gives Invalid. Fix: switch `clean()` to `fold_case` and drop the duplicate block; candidate for the next polish wave. The comment at `ops.rs:172` reads as if that block were the Linux fix, but the `collection.toml`/`folder.toml` check was. `delete_refuses_wide_case_fold_alias` (`ops.rs:1397-1400`) could now assert Invalid unconditionally. No test covers a non-existent reserved source spelling for rename or move (only delete).
 
 ### v0.1.1 wave
 Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies resent on 307/308), 84 (secrets redacted from Debug output in wisp-core), 85 (storage rejects Windows-unsafe and aliasing names), 83 (ask before discarding unsaved changes on quit and close), 88 (narrow-window layout limits and Cookies scrollbar) and 87 (Linux window icon, app id and desktop launcher; Linux hand checks still pending) and 89 (workspace version 0.1.1); see HISTORY. Remaining before tagging: a release-candidate dry run, the user's hand tests (the checklist in task 83's HISTORY entry), then tag and publish with the user's approval.
@@ -77,7 +46,58 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - A folder containing `con.toml` can still be moved, while moving `con.toml` itself is refused.
 
 ### Hardening backlog (post-0.2.0)
-`docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled.
+`docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled. The 🔒 items in "Follow-ups from 0.3.0 wave 1" join this backlog.
+
+### Follow-ups from 0.3.0 wave 1 (tasks 130-135, PRs #80-#84; not 0.3.0 unless scheduled)
+🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Task 134's Lows 81-1 to 81-5 are listed below as 81-1 to 81-5.
+
+Accepted residuals (decided, not defects to fix now):
+- 135: a templated scheme from a variable, `{{base}}//u:p@h`, keeps its userinfo in `inspect` output (the template hides what the userinfo is).
+- 130: a hidden-set variable whose value is empty and not cut lists as `Shown([])`; this reveals only that the value is empty (`report.rs:1472`).
+
+From PR #80 (task 135, `wisp-cli`):
+- 🔒 80-15: `safe_url` reads separators inside `{{...}}` (`{{a:b}}://u:p@h` keeps userinfo). Also: `?` in a password prints part of it, and a backslash in a non-special scheme.
+- 🔒 80-16: stderr error messages skip `display()`.
+- 🔒 80-17: `display()` leaves backslash, U+2028/2029 and Cf (zero-width) characters unescaped.
+- 🔒 80-7: the boundary denylist misses `vault::`, `ops::` and `save_`.
+- 🔒 80-8: symlinked folders that escape the root are followed.
+- 80-18: only name escaping is tested through the binary.
+- 80-9: a NotUtf8 parser row; 80-10: a BrokenPipe test; 80-11: drop `dto!(NodeInfo)`; 80-12: `inspect` loads whole requests; 80-14: a read-only test tempdir guard; 80-13 (Nit): test names.
+
+From PR #82 (task 132, environment info):
+- 82-1: file mode skips `read_names`, so a malformed `secret_names` is Ok here and Invalid in the loader.
+- 🔒 82-2: file mode loads every secret value to collect names; it needs a names-only reader.
+- 🔒 82-3: Unknown kind and names keep control characters; strip or escape them in `inspect`.
+- 82-4: no symlink-refusal tests (plain and secrets); 82-5: the loader hint is tested only in file mode; 82-6 (Nit): `cx()` leaks the temp dir.
+
+From PR #81 (task 134):
+- 81-1: collection.toml is written in place, not atomically; a crash can leave a broken file that create_collection then refuses to overwrite (`ops.rs:511`).
+- 81-2: directories created by the call are left behind when the file write fails (`ops.rs:542`).
+- 🔒 81-3: a check-then-use race on environments/ could put the new file outside the collection root (`ops.rs:544`).
+- 81-4: the returned paths are absolute, unlike the module contract and the other create_* functions (`ops.rs:545`).
+- 81-5: no tests for a missing parent folder, the empty tree, environments being a file, or a dangling symlink (`create.rs:25`).
+
+From PR #83 (task 130, explain core):
+- 🔒 83-3: variables in JSON, XML and text bodies are listed with values under credential keys (`password:{{pw}}`).
+- 83-4: `InvalidPattern` is dropped when a path-param value is not plain.
+- 83-5: the query separator is computed on placeholders (`?page` against `&page`).
+- 🔒 83-6: fragments of a credential variable's value can reach `problems` through nested-ref errors.
+- 83-7: auth origin is never None (collection `Auth::None`).
+- 83-8: the parity test compares only the param count; API key query placement is untested.
+- 83-9 (Nit): `lookup_all` duplicates the `lookup` precedence.
+- 83-10: after the listing budget runs out, every later variable is labelled `TooLong`, though the reason is the budget and not length; add a Budget reason or a report warning.
+- `explain_counted` sums only the last listing walker, so a revert that resets without accumulating would undercount and escape the bomb tests; make the counter structural.
+- Inline query names are checked raw (`%61`, after `#`), as history does; `finish_url` drops a scheme that carries userinfo; an ordering comment is wanted on the inside-check `Option`.
+
+From PR #84 (task 131, assertions):
+- 84-2: codec `same()` compares by Debug output; compare structurally (with NaN) before 84-3.
+- 🔒 84-3: derived Debug prints expected values and raw text inside `Request` Debug; write a redacting Debug (after 84-2).
+- 84-4: a comment above an Unrecognised `[[assert]]` empties kind, target and op, so fingerprints collide. The reviewer's P3 is the same: a leading comment above `[[assert]]` in `raw_string` gives empty fingerprint fields, and trailing comments or quoted keys also collide.
+- 84-5: an inline-array `assert = [{...}]` is silently read as none.
+- 84-6 (Nit): JSON deeper than 128 is reported as not JSON; add boundary tests (depth, exactly 1 MiB).
+- The codec label for malformed versus not supported (`codec.rs:678-681`).
+- Header any-of `matches`: an earlier value over 64 KiB skips the check before a later matching value, so the verdict depends on order; decide whether to skip only that value.
+- The haystack cap test is ASCII only; add a multibyte (é) case to pin bytes, not chars. `dfa_size_limit(1 MiB)` is untested (no observable; acceptable).
 
 ### Follow-ups from task theme-palette (PR #79 merged; not 0.2.0)
 - 79-4: `eprintln!` instead of `tracing::warn`.

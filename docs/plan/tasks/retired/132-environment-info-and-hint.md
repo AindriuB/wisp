@@ -50,3 +50,6 @@ environment guard (3A). Neither path opens a secret store or returns a value.
 - [P2] crates/storage/src/environment.rs:195-201 — an unknown store kind returns Invalid, so `wisp-cli inspect` can't describe a newer Wisp's environment. Settled by the 2026-11-15 Decisions entry (AC1, AC8).
 - [P2] crates/storage/tests/environment_info.rs:82-88 — `bad_names_refused` passes without `check_name` (the targets don't exist, so the error is NotFound). Fix: create the file the escaping name would reach (e.g. `<root>/x.toml` for `"../x"`) and assert `StorageError::Invalid { key: "name", .. }`.
 - [NOTE] A symlinked `environments/` is still followed for the plain file (pre-existing, documented). Relevant to the CLI symlink-escape fixture.
+
+## Outcome
+Merged as PR #82 (79610be); PASS and APPROVE at e39d8da. `environment_info` returns names and the secrets mode without values, and `suggest_confirm` is read into `LoadedEnvironment`. `SecretsMode::Unknown` is in HISTORY. Lows 82-1 to 82-6 are follow-ups in PLAN.

@@ -113,3 +113,6 @@ Reviewed HEAD ad8a2ad.
 
 - [P2] report_tests.rs:1093-1113 — no test catches reverting the "one shared walker in variables()" half of 83-1 (fresh walker per listed variable). Fix: add a test with a bomb b0..b8, a chain d0..d7 with d7 = `{{k0}}..{{k99}}` and each k_i = `{{b0}}`, header `X-A: {{d0}}`; assert work <= 3*MAX_EXPANSIONS via `explain_counted`. Reviewer measured 10210 on HEAD vs 48337 with a fresh walker per listed variable.
 - [P3, accepted residual] report.rs:1472 — a hidden-set variable whose value is empty and not cut lists as `Shown([])` (reveals only emptiness; matches finish/finish_for). Orchestrator decision: accepted, follow-up.
+
+## Outcome
+Merged as PR #83 (93f447b); PASS and APPROVE at 0d9531a. `core` has `ResolutionReport`, `explain` and `explain_auth`. Decisions (1)-(4a) on credential hiding are in HISTORY. Residual accepted: a hidden-set variable with an empty value lists as `Shown([])`. Lows 83-3 to 83-10 are follow-ups in PLAN.

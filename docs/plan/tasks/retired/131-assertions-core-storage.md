@@ -94,3 +94,6 @@ Reviewer REQUEST CHANGES at 86a6f0a: AC4 '[?]' — body_parsed_once_per_evaluate
 ## PR #84 review round 1 — findings (HEAD 895a439)
 - [84-1, Medium, security] crates/core/src/assert.rs:457 — regex cost: a 256 KiB compiled program over up to a 1 MiB haystack, 50 times, on the UI thread; the spec relies on linear time but the constant is large. Orchestrator decision (applying the user's review): compiled regex `size_limit` lowered to 64 KiB; `dfa_size_limit` set explicitly to 1 MiB; the haystack a `matches` op runs over is capped at 64 KiB — a longer header value or JSON string is skipped with a distinct reason ("value too large to match"), never truncated-then-matched. These replace the earlier regex limits where they conflict.
 - Lows 84-2..84-5 and Nit 84-6: follow-ups, not this round.
+
+## Outcome
+Merged as PR #84 (2bc13a3); PASS and APPROVE at d1a65d4. Assertions evaluate in `core` and round-trip through `storage`. Decisions (1), (2), (2a) and the 84-1 regex limits are in HISTORY. Lows 84-2 to 84-6 and the re-review P3s are follow-ups in PLAN.

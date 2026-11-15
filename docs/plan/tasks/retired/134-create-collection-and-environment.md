@@ -41,3 +41,6 @@ outside the collection root.
 - Sidebar empty state and palette actions: wave 2 A5 app task.
 - `environment.rs`, `vault.rs` (task 132); `collection.rs`, `lib.rs`, `validate.rs` (task 133).
 - Assigning a collection id (the first Send already does it).
+
+## Outcome
+Merged as PR #81 (aa7770e); PASS and APPROVE at 12e8582. Storage can create `collection.toml` and an empty environment file without overwriting or leaving the root. Lows 81-1 to 81-5 are follow-ups.

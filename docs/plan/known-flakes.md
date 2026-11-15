@@ -3,7 +3,4 @@
 Tests that have changed result on rerun. A flake listed here does not block a
 merge; a new one is looked at first. Only `scribe` edits this file.
 
-- `wisp-storage import::openapi::tests::many_parameters_merge_in_linear_time`: wall-clock assertion. Failed once under parallel load (clippy building) on 2026-11-10 in task 102's worktree and passed on rerun. The fix is tracked as the wall-clock-assert follow-up (34-19) for task 99.
-- `wisp-storage import::openapi::tests::brace_heavy_url_is_linear`: wall-clock assertion. Failed under parallel load on 2026-11-10 in task 105's worktree and passed on rerun. Same fix as the entry above (task 99, 34-19).
-- `wisp-storage import::openapi::tests::shared_ref_parameter_names_are_charged`: wall-clock assertion. Failed under parallel load on 2026-11-14 in the task 118, 119 and 120 worktrees and passed on rerun. Same fix as the two entries above (task 99, 34-19).
-- `wisp-storage import::openapi::tests::many_parameters_merge_in_linear_time` also failed on the windows-latest CI leg (2026-11-14, run 43624583558) and passed on rerun. Same fix as above (task 99, 34-19).
+- `crates/core/tests/timings.rs:169 a_failed_lookup_is_still_a_dns_error`: failed once on macos-latest CI (the PR #80 push run, 2026-11-15) and passed on rerun. On macOS CI run 43663344531 the host resolver stalled on `no-such-host.invalid`, so the engine's 30s default timeout fired and `classify` (`engine.rs:1105-1113`, timeout checked before DNS strings) returned Timeout instead of Dns; the test depends on the runner's resolver. Planned fix: unit-test classify with a synthetic DNS error, and give the network test a short timeout.
