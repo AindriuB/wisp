@@ -1075,6 +1075,37 @@ fn cross_origin_keeps(name: &str) -> bool {
         .any(|s| name.eq_ignore_ascii_case(s))
 }
 
+struct ErrorFlags {
+    timeout: bool,
+    builder: bool,
+    connect: bool,
+    /// Reading the body, or a body or decode error.
+    body: bool,
+}
+
+/// The kind decision; `chain` is the lower-cased source chain.
+fn kind_of(f: ErrorFlags, chain: &str) -> ErrorKind {
+    if f.timeout {
+        ErrorKind::Timeout
+    } else if f.builder {
+        ErrorKind::Other
+    } else if chain.contains("dns error")
+        || chain.contains("failed to lookup")
+        || chain.contains("name or service not known")
+    {
+        ErrorKind::Dns
+    } else if chain.contains("certificate") || chain.contains("tls") || chain.contains("handshake")
+    {
+        ErrorKind::Tls
+    } else if f.connect {
+        ErrorKind::Connect
+    } else if f.body {
+        ErrorKind::Body
+    } else {
+        ErrorKind::Other
+    }
+}
+
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
     // Only the causes: the top-level text embeds the URL, whose words must not influence the kind.
     let mut chain = String::new();
@@ -1102,31 +1133,56 @@ fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {
             ),
         };
     }
-    let kind = if e.is_timeout() {
-        ErrorKind::Timeout
-    } else if e.is_builder() {
-        ErrorKind::Other
-    } else if chain.contains("dns error")
-        || chain.contains("failed to lookup")
-        || chain.contains("name or service not known")
-    {
-        ErrorKind::Dns
-    } else if chain.contains("certificate") || chain.contains("tls") || chain.contains("handshake")
-    {
-        ErrorKind::Tls
-    } else if e.is_connect() {
-        ErrorKind::Connect
-    } else if reading_body || e.is_body() || e.is_decode() {
-        ErrorKind::Body
-    } else {
-        ErrorKind::Other
+    let flags = ErrorFlags {
+        timeout: e.is_timeout(),
+        builder: e.is_builder(),
+        connect: e.is_connect(),
+        body: reading_body || e.is_body() || e.is_decode(),
     };
+    let kind = kind_of(flags, &chain);
     EngineError { kind, message }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flags(connect: bool, timeout: bool) -> ErrorFlags {
+        ErrorFlags {
+            timeout,
+            builder: false,
+            connect,
+            body: false,
+        }
+    }
+
+    #[test]
+    fn dns_text_on_a_connect_error_is_dns() {
+        for chain in [
+            "dns error: x ",
+            "failed to lookup address information: y ",
+            "name or service not known ",
+        ] {
+            assert_eq!(
+                kind_of(flags(true, false), chain),
+                ErrorKind::Dns,
+                "{chain}"
+            );
+        }
+    }
+
+    #[test]
+    fn timeout_tls_and_plain_connect_classify() {
+        assert_eq!(kind_of(flags(true, true), "dns error "), ErrorKind::Timeout);
+        assert_eq!(
+            kind_of(flags(true, false), "invalid peer certificate "),
+            ErrorKind::Tls
+        );
+        assert_eq!(
+            kind_of(flags(true, false), "connection refused "),
+            ErrorKind::Connect
+        );
+    }
 
     #[test]
     fn the_cross_origin_allow_list_holds_no_credential_name() {
