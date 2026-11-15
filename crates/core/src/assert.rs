@@ -215,13 +215,51 @@ impl Assertion {
                 field(op.as_str());
             }
             Assertion::Unrecognised { raw, .. } => {
+                // Kind, target and operator strings only; never the raw text, `value` or
+                // unknown keys, so two entries differing only in `value` share a fingerprint.
+                let kind = raw_string(raw, "kind");
+                let target = match kind.as_str() {
+                    "header" => raw_string(raw, "name"),
+                    "json" => raw_string(raw, "path"),
+                    _ => String::new(),
+                };
+                field(&kind);
+                field(&target);
+                field(&raw_string(raw, "op"));
                 field("unrecognised");
-                field(raw);
             }
         }
         let digest = h.finalize();
         digest[..8].iter().map(|b| format!("{b:02x}")).collect()
     }
+}
+
+/// A top-level string key of the entry's `[[assert]]` text (empty if absent or not a plain
+/// string). Stops at the first child table header.
+fn raw_string(raw: &str, key: &str) -> String {
+    for line in raw.lines().map(str::trim) {
+        if line.starts_with("[[") {
+            continue;
+        }
+        if line.starts_with('[') {
+            break;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() != key {
+            continue;
+        }
+        let v = v.trim();
+        if let Some(inner) = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+            return inner.replace("\\\"", "\"").replace("\\\\", "\\");
+        }
+        if let Some(inner) = v.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+            return inner.to_string();
+        }
+        return String::new();
+    }
+    String::new()
 }
 
 fn cap(s: &str, max: usize) -> String {
@@ -1007,6 +1045,22 @@ mod tests {
             reason: "malformed".into(),
         };
         assert_eq!(skip_reason(run(bad, 200, &[], None)), "malformed");
+    }
+
+    #[test]
+    fn unrecognised_fingerprint_ignores_value() {
+        let mk = |v: &str| Assertion::Unrecognised {
+            raw: format!(
+                "[[assert]]\nkind = \"json\"\npath = \"$.a\"\nop = \"future\"\nvalue = \"{v}\"\nextra = \"{v}\"\n"
+            ),
+            reason: "not supported".into(),
+        };
+        assert_eq!(mk("one").fingerprint(), mk("two").fingerprint());
+        let other = Assertion::Unrecognised {
+            raw: "[[assert]]\nkind = \"json\"\npath = \"$.b\"\nop = \"future\"\n".into(),
+            reason: "not supported".into(),
+        };
+        assert_ne!(mk("one").fingerprint(), other.fingerprint());
     }
 
     #[test]
