@@ -321,23 +321,25 @@ pub fn explain(req: &Request, scope: &Scope) -> ResolutionReport {
 
 /// `explain`, plus the number of reference visits it spent (for tests that bound the work).
 pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport, usize) {
+    // Discovery walk: finds the uses, problems, warnings and the hidden set.
     let mut w = Walker::new(req, scope);
-    let mut params = Vec::new();
-    let url = w.build_url(&mut params);
-    let mut headers = w.merged_headers();
-    let (auth, effect) = w.auth();
-    if let Some((name, value)) = effect.header {
-        set_header(
-            &mut headers,
-            &name,
-            value,
-            Origin::Auth,
-            Some(Synthetic::Auth(auth.kind)),
-        );
+    let mut rendered = w.render();
+    let (hidden, closure_work) = w.hidden_closure();
+    // Render again with the final hidden set when it names anything. The render walker
+    // also lists the variables, so both share one expansion budget. Its problems and
+    // warnings are dropped: the discovery walk already reported them.
+    let mut rw = Walker::new(req, scope);
+    if !hidden.is_empty() {
+        rw.hide_names = hidden.clone();
+        rendered = rw.render();
     }
-    let query_extra: Vec<_> = effect.query.into_iter().collect();
-    let url = finish_url(&append_query(url, &query_extra).parts);
-    let body = w.build_body(&mut headers);
+    let Rendered {
+        url,
+        params,
+        headers,
+        auth,
+        body,
+    } = rendered;
     let s = &req.settings;
     let settings = SettingsReport {
         timeout: match s.timeout {
@@ -353,8 +355,8 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         follow_redirects: bool_setting(s.follow_redirects, true),
         verify_tls: bool_setting(s.verify_tls, true),
     };
-    let (variables, listing_work) = w.variables();
-    let work = w.expansions + listing_work;
+    let (variables, listing_work) = w.variables(&hidden, &mut rw);
+    let work = w.expansions + closure_work + listing_work;
     let report = ResolutionReport {
         environment: scope.environment.map(|e| EnvReport {
             name: e.name.clone(),
@@ -379,6 +381,42 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         warnings: w.warnings,
     };
     (report, work)
+}
+
+struct Rendered {
+    url: Shown,
+    params: Vec<ParamReport>,
+    headers: Vec<HeaderBuild>,
+    auth: AuthReport,
+    body: BodyReport,
+}
+
+impl Walker<'_> {
+    fn render(&mut self) -> Rendered {
+        let mut params = Vec::new();
+        let url = self.build_url(&mut params);
+        let mut headers = self.merged_headers();
+        let (auth, effect) = self.auth();
+        if let Some((name, value)) = effect.header {
+            set_header(
+                &mut headers,
+                &name,
+                value,
+                Origin::Auth,
+                Some(Synthetic::Auth(auth.kind)),
+            );
+        }
+        let query_extra: Vec<_> = effect.query.into_iter().collect();
+        let url = finish_url(&append_query(url, &query_extra).parts);
+        let body = self.build_body(&mut headers);
+        Rendered {
+            url,
+            params,
+            headers,
+            auth,
+            body,
+        }
+    }
 }
 
 /// Explain only the effective auth. Expands the auth fields and nothing else.
@@ -1432,11 +1470,9 @@ impl<'a> Walker<'a> {
         (set, work)
     }
 
-    fn variables(&self) -> (Vec<VarReport>, usize) {
-        let (hidden, closure_work) = self.hidden_closure();
-        // One throwaway walker for every listed value, so they share one expansion budget.
-        // Its problems are already reported at the use sites.
-        let mut w = Walker::new(self.req, self.scope);
+    /// `w` is the render walker: its budget is shared by every listed value. Its
+    /// problems are already reported at the use sites. Returns the work `w` spent too.
+    fn variables(&self, hidden: &HashSet<String>, w: &mut Walker) -> (Vec<VarReport>, usize) {
         w.hide_names = hidden.clone();
         let mut out = Vec::new();
         for u in &self.uses {
@@ -1486,7 +1522,7 @@ impl<'a> Walker<'a> {
                 locations: u.locations.clone(),
             });
         }
-        (out, closure_work + w.expansions)
+        (out, w.expansions)
     }
 }
 

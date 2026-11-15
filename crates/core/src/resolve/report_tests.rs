@@ -1179,3 +1179,143 @@ fn a_value_cut_by_the_listing_budget_is_never_a_shortened_text() {
         get("zz_shown")
     );
 }
+
+// ---- hidden set applied everywhere (task 151) ----
+
+const CANARY: &str = "CANARYFOO";
+
+/// `foo` is hidden by `Authorization: Bearer {{foo}}`; `edit` adds the place under test.
+fn canary_report(edit: impl FnOnce(&mut Fx)) -> (ResolutionReport, String) {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", CANARY)];
+    f.req.headers = vec![kv("Authorization", "Bearer {{foo}}", true)];
+    edit(&mut f);
+    let r = f.report();
+    let dump = format!("{r:?}");
+    (r, dump)
+}
+
+#[test]
+fn a_second_header_expanding_a_hidden_variable_is_hidden() {
+    let (r, dump) = canary_report(|f| f.req.headers.push(kv("X-Other", "{{foo}}", true)));
+    assert!(!dump.contains(CANARY), "{dump}");
+    let h = r
+        .headers
+        .iter()
+        .find(|h| h.name.0 == [ShownPart::Text("X-Other".into())]);
+    assert_eq!(
+        h.expect("header").value.0,
+        vec![ShownPart::Hidden(HideReason::Credential)]
+    );
+}
+
+#[test]
+fn a_hidden_variable_in_a_param_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.params = vec![kv("note", "{{foo}}", true)]);
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_an_inline_query_value_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.url = "http://h/?q={{foo}}".into());
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_a_path_segment_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.url = "http://h/{{foo}}/x".into());
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_a_plain_auth_field_is_hidden() {
+    let (_, dump) = canary_report(|f| {
+        f.req.auth = Auth::AwsSigV4 {
+            access_key: "a".into(),
+            secret_key: "k".into(),
+            session_token: String::new(),
+            region: "{{foo}}".into(),
+            service: "svc".into(),
+        }
+    });
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_hidden_variable_in_a_form_body_field_is_hidden_with_no_byte_count() {
+    let (r, dump) = canary_report(|f| f.req.body = Body::Form(vec![kv("note", "{{foo}}", true)]));
+    assert!(!dump.contains(CANARY), "{dump}");
+    assert_eq!(r.body.bytes, None);
+}
+
+#[test]
+fn a_hidden_variable_in_a_header_name_is_hidden() {
+    let (_, dump) = canary_report(|f| f.req.headers.push(kv("{{foo}}", "v", true)));
+    assert!(!dump.contains(CANARY), "{dump}");
+}
+
+#[test]
+fn a_closure_only_variable_is_hidden_where_expanded_directly() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("token", "{{s}}"), var("s", CANARY)];
+    f.req.auth = Auth::Bearer {
+        token: "{{token}}".into(),
+    };
+    f.req.headers = vec![kv("X-S", "{{s}}", true)];
+    assert!(!format!("{:?}", f.report()).contains(CANARY));
+}
+
+#[test]
+fn a_variable_used_only_in_shown_places_stays_shown() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", "SECRETISH"), var("r", "REGIONTEXT")];
+    f.req.auth = Auth::AwsSigV4 {
+        access_key: "a".into(),
+        secret_key: "k".into(),
+        session_token: String::new(),
+        region: "{{r}}".into(),
+        service: "svc".into(),
+    };
+    f.req.headers = vec![kv("Authorization", "Bearer {{foo}}", true)];
+    let r = f.report();
+    let dump = format!("{r:?}");
+    assert!(!dump.contains("SECRETISH"));
+    assert_eq!(dump.matches("REGIONTEXT").count(), 2, "{dump}");
+    let v = r.variables.iter().find(|v| v.name == "r").expect("r");
+    assert_eq!(v.value.plain_text().as_deref(), Some("REGIONTEXT"));
+}
+
+#[test]
+fn hiding_does_not_feed_back_into_the_set() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", CANARY), var("bar", "BARTEXT")];
+    f.req.headers = vec![
+        kv("Authorization", "Bearer {{foo}}", true),
+        kv("X", "{{foo}}-{{bar}}", true),
+    ];
+    let r = f.report();
+    let x = r
+        .headers
+        .iter()
+        .find(|h| h.name.0 == [ShownPart::Text("X".into())]);
+    assert!(flat(&x.expect("X").value).contains("BARTEXT"));
+    let v = r.variables.iter().find(|v| v.name == "bar").expect("bar");
+    assert_eq!(v.value.plain_text().as_deref(), Some("BARTEXT"));
+    assert!(!format!("{r:?}").contains(CANARY));
+}
+
+#[test]
+fn a_problem_inside_a_hidden_variable_is_still_reported() {
+    let mut f = Fx::new(req("http://h"));
+    f.coll.vars = vec![var("foo", "{{nope}}")];
+    f.req.headers = vec![
+        kv("Authorization", "Bearer {{foo}}", true),
+        kv("X-Other", "{{foo}}", true),
+    ];
+    let r = f.report();
+    assert!(
+        r.problems
+            .iter()
+            .any(|p| matches!(p, Problem::UnresolvedVar { name, .. } if name == "nope"))
+    );
+}
