@@ -1,5 +1,6 @@
 //! App settings stored as TOML.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item, value};
@@ -19,6 +20,29 @@ pub enum SplitAxis {
     Horizontal,
 }
 
+/// A collection and environment pair whose sends need confirming.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GuardKey {
+    pub collection_id: String,
+    pub environment: String,
+}
+
+impl GuardKey {
+    /// `"<id>:<env>"`.
+    fn encode(&self) -> String {
+        format!("{}:{}", self.collection_id, self.environment)
+    }
+
+    /// Split at the first `:`; empty id or environment is rejected.
+    fn decode(s: &str) -> Option<Self> {
+        let (id, env) = s.split_once(':')?;
+        (!id.is_empty() && !env.is_empty()).then(|| Self {
+            collection_id: id.to_string(),
+            environment: env.to_string(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub theme: ThemeMode,
@@ -31,6 +55,8 @@ pub struct Settings {
     pub open_collections: Vec<PathBuf>,
     /// The active one of `open_collections`.
     pub active_collection: Option<PathBuf>,
+    /// Collection and environment pairs that confirm before sending.
+    pub confirm_send: BTreeSet<GuardKey>,
 }
 
 impl Default for Settings {
@@ -43,6 +69,7 @@ impl Default for Settings {
             history_bodies: true,
             open_collections: Vec::new(),
             active_collection: None,
+            confirm_send: BTreeSet::new(),
         }
     }
 }
@@ -156,6 +183,25 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
             _ => bad.push("open_collections"),
         }
     }
+    if let Some(item) = doc.get("confirm_send") {
+        match item.as_array() {
+            Some(a) => {
+                for v in a.iter() {
+                    match v.as_str().and_then(GuardKey::decode) {
+                        Some(k) => {
+                            settings.confirm_send.insert(k);
+                        }
+                        None => {
+                            if !bad.contains(&"confirm_send") {
+                                bad.push("confirm_send");
+                            }
+                        }
+                    }
+                }
+            }
+            None => bad.push("confirm_send"),
+        }
+    }
     if let Some(item) = doc.get("active_collection") {
         match item.as_str() {
             Some(p) => settings.active_collection = Some(PathBuf::from(p)),
@@ -261,6 +307,30 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
     );
     if paths.is_empty() && doc.get("open_collections").is_some() {
         doc.remove("open_collections");
+    }
+    let guards: Vec<String> = settings.confirm_send.iter().map(GuardKey::encode).collect();
+    if guards.is_empty() {
+        doc.remove("confirm_send");
+    } else {
+        set_if_differs(
+            &mut doc,
+            "confirm_send",
+            value(
+                guards
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<toml_edit::Array>(),
+            ),
+            false,
+            |i| {
+                i.as_array().is_some_and(|a| {
+                    a.len() == guards.len()
+                        && a.iter()
+                            .zip(&guards)
+                            .all(|(v, g)| v.as_str() == Some(g.as_str()))
+                })
+            },
+        );
     }
     let active = settings
         .active_collection
@@ -548,6 +618,48 @@ mod tests {
         let (s, w) = load(&p);
         assert!(s.history_bodies);
         assert!(w.unwrap().contains("history_bodies"));
+    }
+
+    fn key(id: &str, env: &str) -> GuardKey {
+        GuardKey {
+            collection_id: id.into(),
+            environment: env.into(),
+        }
+    }
+
+    #[test]
+    fn confirm_send_roundtrips_and_is_absent_when_empty() {
+        let f = dir("guard").join("settings.toml");
+        let mut s = Settings::default();
+        s.confirm_send.insert(key("c1", "prod"));
+        s.confirm_send.insert(key("c1", "a:b"));
+        save(&f, &s).unwrap();
+        assert!(
+            std::fs::read_to_string(&f)
+                .unwrap()
+                .contains("confirm_send")
+        );
+        assert_eq!(load(&f), (s.clone(), None));
+        s.confirm_send.clear();
+        save(&f, &s).unwrap();
+        assert!(
+            !std::fs::read_to_string(&f)
+                .unwrap()
+                .contains("confirm_send")
+        );
+    }
+
+    #[test]
+    fn confirm_send_drops_malformed_entries_with_notice() {
+        let f = dir("guard-bad").join("settings.toml");
+        std::fs::write(
+            &f,
+            "confirm_send = [\"nocolon\", \":env\", \"id:\", \"ok:dev\"]\n",
+        )
+        .unwrap();
+        let (s, w) = load(&f);
+        assert_eq!(s.confirm_send, BTreeSet::from([key("ok", "dev")]));
+        assert!(w.unwrap().contains("confirm_send"));
     }
 
     #[test]

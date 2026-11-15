@@ -13,6 +13,7 @@ pub struct DirtySections {
     pub auth: bool,
     pub body: bool,
     pub settings: bool,
+    pub assertions: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +62,7 @@ pub fn dirty_sections(saved: Option<&Request>, draft: &Request) -> DirtySections
         auth: base.auth != draft.auth,
         body: base.body != draft.body,
         settings: base.settings != draft.settings,
+        assertions: base.assertions != draft.assertions,
     }
 }
 
@@ -94,6 +96,7 @@ pub fn on_disk_change(
 mod tests {
     use super::*;
     use wisp_core::Method;
+    use wisp_core::assert::{Assertion, Expected, Op};
     use wisp_core::request::{Auth, Body, KeyValue, RequestSettings, Var};
 
     fn base() -> Request {
@@ -208,6 +211,18 @@ mod tests {
             d,
             DirtySections {
                 settings: true,
+                ..Default::default()
+            },
+        ));
+        let mut d = s.clone();
+        d.assertions = vec![Assertion::Status {
+            op: Op::Equals,
+            expected: Expected::Int(200),
+        }];
+        cases.push((
+            d,
+            DirtySections {
+                assertions: true,
                 ..Default::default()
             },
         ));

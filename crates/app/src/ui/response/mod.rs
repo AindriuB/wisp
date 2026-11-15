@@ -1,6 +1,7 @@
 //! Response pane: status line and sub-tab strip over body, headers and cookies.
 
 pub mod body;
+pub mod checks;
 pub mod cookies;
 pub mod headers;
 
@@ -15,21 +16,40 @@ use gpui_component::spinner::Spinner;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Sizable as _};
+use wisp_core::assert::Verdict;
 use wisp_core::{EngineError, ErrorKind};
 
 use crate::format::{format_duration, format_size, status_text};
-use crate::tab::{Phase, RequestTab, ResponseState, ResponseSubTab, TabEvent};
+use crate::tab::{CheckOutcome, Phase, RequestTab, ResponseState, ResponseSubTab, TabEvent};
 use crate::workspace::Workspace;
 
 use body::BodyPane;
+use checks::ChecksPane;
 use cookies::CookiesPane;
 use headers::HeadersPane;
 
-const SUB_TABS: [(ResponseSubTab, &str); 3] = [
+use crate::ui::explain::ExplainPane;
+
+const SUB_TABS: [(ResponseSubTab, &str); 5] = [
     (ResponseSubTab::Body, "Body"),
     (ResponseSubTab::Headers, "Headers"),
     (ResponseSubTab::Cookies, "Cookies"),
+    (ResponseSubTab::Checks, "Checks"),
+    (ResponseSubTab::Explain, "Explain"),
 ];
+
+/// `"<passed>/<total> checks"`, or `None` when no assertion ran. Skipped
+/// checks count in the total, not as passed.
+pub fn checks_summary(checks: &[CheckOutcome]) -> Option<String> {
+    if checks.is_empty() {
+        return None;
+    }
+    let passed = checks
+        .iter()
+        .filter(|c| matches!(c.result.verdict, Verdict::Pass))
+        .count();
+    Some(format!("{passed}/{} checks", checks.len()))
+}
 
 pub fn error_words(kind: ErrorKind) -> &'static str {
     match kind {
@@ -87,6 +107,8 @@ pub struct ResponsePane {
     body: Entity<BodyPane>,
     headers: Entity<HeadersPane>,
     cookies: Entity<CookiesPane>,
+    checks: Entity<ChecksPane>,
+    explain: Entity<ExplainPane>,
     _sub: Subscription,
 }
 
@@ -107,6 +129,8 @@ impl ResponsePane {
             body: cx.new(|cx| BodyPane::new(w.clone(), t.clone(), window, cx)),
             headers: cx.new(|cx| HeadersPane::new(w.clone(), t.clone(), window, cx)),
             cookies: cx.new(|cx| CookiesPane::new(w.clone(), t.clone(), window, cx)),
+            checks: cx.new(|cx| ChecksPane::new(w.clone(), t.clone(), window, cx)),
+            explain: cx.new(|cx| ExplainPane::new(w.clone(), t.clone(), window, cx)),
             workspace,
             tab,
             _sub: sub,
@@ -160,6 +184,7 @@ impl ResponsePane {
                             .child(status_str),
                     )
                     .child(div().min_w_0().truncate().child(timing))
+                    .children(checks_summary(&r.assertions).map(|s| div().flex_none().child(s)))
                     .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
                 Some(line.into_any_element())
             }
@@ -216,6 +241,8 @@ impl Render for ResponsePane {
             ResponseSubTab::Body => self.body.clone().into_any_element(),
             ResponseSubTab::Headers => self.headers.clone().into_any_element(),
             ResponseSubTab::Cookies => self.cookies.clone().into_any_element(),
+            ResponseSubTab::Checks => self.checks.clone().into_any_element(),
+            ResponseSubTab::Explain => self.explain.clone().into_any_element(),
         };
         let mut root = div().flex().flex_col().size_full();
         let origin = self.tab.read(cx).from_history.clone();
@@ -265,6 +292,7 @@ fn done_tooltip(status: &str, timing: &str, phases: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wisp_core::assert::{Assertion, AssertionResult, Expected, Op};
 
     fn ms(n: u64) -> Option<Duration> {
         Some(Duration::from_millis(n))
@@ -338,6 +366,35 @@ mod tests {
         assert_eq!(status_class(404), StatusClass::ClientError);
         assert_eq!(status_class(503), StatusClass::ServerError);
         assert_eq!(status_class(100), StatusClass::Other);
+    }
+
+    fn outcome(v: Verdict) -> CheckOutcome {
+        CheckOutcome {
+            assertion: Assertion::Status {
+                op: Op::Equals,
+                expected: Expected::Int(200),
+            },
+            result: AssertionResult {
+                label: "status".into(),
+                verdict: v,
+            },
+        }
+    }
+
+    #[test]
+    fn checks_summary_counts() {
+        assert_eq!(checks_summary(&[]), None);
+        let fail = Verdict::Fail { actual: None };
+        let skip = Verdict::Skipped { reason: "x".into() };
+        let v = [
+            outcome(Verdict::Pass),
+            outcome(Verdict::Pass),
+            outcome(Verdict::Pass),
+            outcome(fail),
+        ];
+        assert_eq!(checks_summary(&v).as_deref(), Some("3/4 checks"));
+        let v = [outcome(Verdict::Pass), outcome(skip)];
+        assert_eq!(checks_summary(&v).as_deref(), Some("1/2 checks"));
     }
 
     #[test]
