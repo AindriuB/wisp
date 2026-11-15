@@ -52,3 +52,129 @@ pub struct NodeInfo {
     pub valid: bool,
 }
 dto!(NodeInfo);
+
+#[derive(Debug, Serialize)]
+pub struct ValidateDoc {
+    pub schema: &'static str,
+    pub command: &'static str,
+    pub errors: usize,
+    pub warnings: usize,
+    pub truncated: bool,
+    pub findings: Vec<FindingInfo>,
+}
+dto!(ValidateDoc);
+
+#[derive(Debug, Serialize)]
+pub struct FindingInfo {
+    pub path: String,
+    pub key: Option<String>,
+    pub message: String,
+    pub severity: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExplainDoc {
+    pub schema: &'static str,
+    pub command: &'static str,
+    pub request: String,
+    pub environment: Option<EnvDoc>,
+    pub method: String,
+    pub url: Vec<PartDoc>,
+    pub params: Vec<ParamDoc>,
+    pub headers: Vec<HeaderDoc>,
+    pub auth: AuthDoc,
+    pub settings: Vec<SettingDoc>,
+    pub body: BodyDoc,
+    pub variables: Vec<VarDoc>,
+    pub problems: Vec<ProblemDoc>,
+    pub warnings: Vec<String>,
+}
+dto!(ExplainDoc);
+
+#[derive(Debug, Serialize)]
+pub struct EnvDoc {
+    pub name: String,
+    /// Set when the secrets live in a store the CLI does not open.
+    pub keychain: Option<&'static str>,
+    pub secrets: Vec<SecretDoc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SecretDoc {
+    pub name: String,
+    pub present: bool,
+}
+
+/// One piece of display text. Never carries a secret value.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum PartDoc {
+    Text { text: String },
+    Secret { name: String, resolved: bool },
+    Dynamic { name: String },
+    Hidden { reason: &'static str },
+}
+
+#[derive(Debug, Serialize)]
+pub struct ParamDoc {
+    pub kind: &'static str,
+    pub name: Vec<PartDoc>,
+    pub value: Vec<PartDoc>,
+    pub origin: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HeaderDoc {
+    pub name: Vec<PartDoc>,
+    pub value: Vec<PartDoc>,
+    pub origin: String,
+    pub overridden: Vec<String>,
+    pub synthetic: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthDoc {
+    pub kind: &'static str,
+    pub origin: Option<String>,
+    /// `none`, `header`, `query` or `at-send`.
+    pub application: &'static str,
+    pub target: Option<Vec<PartDoc>>,
+    pub fields: Vec<AuthFieldDoc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthFieldDoc {
+    pub name: &'static str,
+    pub value: Vec<PartDoc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SettingDoc {
+    pub name: &'static str,
+    pub value: String,
+    pub source: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BodyDoc {
+    pub kind: &'static str,
+    pub bytes: Option<usize>,
+    pub vars: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VarDoc {
+    pub name: String,
+    pub origin: String,
+    pub value: Vec<PartDoc>,
+    pub shadowed: Vec<String>,
+    pub locations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProblemDoc {
+    pub kind: &'static str,
+    pub name: Option<String>,
+    pub location: Option<String>,
+    pub message: Option<String>,
+}

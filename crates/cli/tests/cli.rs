@@ -68,16 +68,29 @@ fn canaries_never_printed() {
         vec!["inspect", p(&d), "--json"],
         vec!["inspect", p(&d), "--env", "dev", "--json"],
         vec!["inspect", p(&d), "--env", "prod"],
+        vec!["validate", p(&d)],
+        vec!["validate", p(&d), "--json"],
+        vec!["explain", p(&d), "a.toml"],
+        vec!["explain", p(&d), "a.toml", "--json"],
+        vec!["explain", p(&d), "a.toml", "--env", "dev"],
+        vec!["explain", p(&d), "a.toml", "--env", "dev", "--json"],
+        vec!["explain", p(&d), "a.toml", "--env", "prod"],
+        vec!["explain", p(&d), "a.toml", "--env", "prod", "--json"],
     ] {
         let o = bin(&args);
-        assert_eq!(o.status.code(), Some(0), "{args:?}");
+        let want = i32::from(args[0] == "validate");
+        assert_eq!(o.status.code(), Some(want), "{args:?}");
         let all = format!(
             "{}{}",
             String::from_utf8_lossy(&o.stdout),
             String::from_utf8_lossy(&o.stderr)
         );
         assert!(!all.contains("CANARY"), "{args:?}");
-        assert!(!all.contains("pw@") && !all.contains("q=1"), "{all}");
+        assert!(!all.contains("pw@"), "{all}");
+        if args[0] != "explain" {
+            // explain shows query parameters by design; inspect never does
+            assert!(!all.contains("q=1"), "{all}");
+        }
     }
 }
 
@@ -109,14 +122,28 @@ fn exit_codes() {
     assert_eq!(bin(&["--version"]).status.code(), Some(0));
     assert_eq!(bin(&["--help"]).status.code(), Some(0));
     assert_eq!(bin(&[]).status.code(), Some(2));
-    assert_eq!(bin(&["validate", p(&d)]).status.code(), Some(2));
-    assert_eq!(bin(&["explain", p(&d), "a.toml"]).status.code(), Some(2));
+    assert_eq!(bin(&["validate", p(&d)]).status.code(), Some(1));
+    assert_eq!(bin(&["explain", p(&d), "a.toml"]).status.code(), Some(0));
+    assert_eq!(bin(&["explain", p(&d), "nope.toml"]).status.code(), Some(3));
+    assert_eq!(bin(&["explain", p(&d), "../a.toml"]).status.code(), Some(3));
+    assert_eq!(bin(&["explain", p(&d)]).status.code(), Some(2));
+    assert_eq!(
+        bin(&["explain", p(&d), "a.toml", "--env", "nope"])
+            .status
+            .code(),
+        Some(2)
+    );
     assert_eq!(
         bin(&["inspect", p(&d), "--env", "nope"]).status.code(),
         Some(2)
     );
     let empty = tempfile::tempdir().unwrap();
     assert_eq!(bin(&["inspect", p(&empty)]).status.code(), Some(3));
+    assert_eq!(bin(&["validate", p(&empty)]).status.code(), Some(3));
+    assert_eq!(
+        bin(&["explain", p(&empty), "a.toml"]).status.code(),
+        Some(3)
+    );
     let missing: PathBuf = empty.path().join("missing");
     assert_eq!(
         bin(&["inspect", missing.to_str().unwrap()]).status.code(),
@@ -235,4 +262,134 @@ fn text_output_escapes_controls() {
     let t = String::from_utf8(bin(&["inspect", p(&d)]).stdout).unwrap();
     assert!(!t.contains('\u{1b}'));
     assert!(t.contains("\\u{001b}[2Jfake\\u{000a}forged line"));
+}
+
+fn out(args: &[&str]) -> String {
+    String::from_utf8(bin(args).stdout).unwrap()
+}
+
+#[test]
+fn validate_reports_everything_in_one_run() {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    w(r, "collection.toml", "format = 1\n");
+    w(r, "badfolder/folder.toml", "vars = [[[");
+    w(r, "badfolder/ok.toml", &req("Ok", ""));
+    w(
+        r,
+        "broken.toml",
+        "name = \"x\"\nmethod = \"NOPE\"\nurl = \"u\"\n",
+    );
+    w(
+        r,
+        "assert.toml",
+        &req("As", "\n[[assert]]\nkind = \"bogus\"\n"),
+    );
+    #[cfg(unix)]
+    {
+        let outside = tempfile::tempdir().unwrap();
+        w(outside.path(), "x.toml", &req("Out", ""));
+        std::os::unix::fs::symlink(outside.path(), r.join("escape")).unwrap();
+    }
+    let o = bin(&["validate", p(&d), "--json"]);
+    assert_eq!(o.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["schema"], "wisp-cli/1");
+    assert_eq!(v["command"], "validate");
+    let paths: Vec<String> = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap().to_owned())
+        .collect();
+    for want in ["badfolder/folder.toml", "broken.toml"] {
+        assert!(paths.iter().any(|x| x == want), "{want} in {paths:?}");
+    }
+    #[cfg(unix)]
+    assert!(paths.iter().any(|x| x.starts_with("escape")), "{paths:?}");
+    assert!(v["findings"][0]["severity"].is_string());
+    let t = out(&["validate", p(&d)]);
+    assert!(t.contains("error: broken.toml"), "{t}");
+    assert!(t.contains("error(s)"));
+}
+
+#[test]
+fn validate_clean_collection_exits_0() {
+    let d = tempfile::tempdir().unwrap();
+    w(d.path(), "collection.toml", "format = 1\n");
+    w(d.path(), "a.toml", &req("A", ""));
+    assert_eq!(bin(&["validate", p(&d)]).status.code(), Some(0));
+}
+
+fn explain_fixture(eol: &str) -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    let f = |s: &str| s.replace('\n', eol);
+    w(
+        r,
+        "collection.toml",
+        &f("format = 1\n\n[vars]\nhost = \"h.test\"\n"),
+    );
+    w(
+        r,
+        "sub/r.toml",
+        &f(
+            "name = \"R\"\nmethod = \"GET\"\nurl = \"https://{{host}}/p/{{$uuid}}?k={{missing}}\"\n\n[[headers]]\nname = \"Authorization\"\nvalue = \"CANARY_AUTH\"\nenabled = true\n",
+        ),
+    );
+    w(
+        r,
+        "environments/dev.toml",
+        &f("[vars]\nhost = \"dev.test\"\n"),
+    );
+    d
+}
+
+#[test]
+fn explain_golden() {
+    for eol in ["\n", "\r\n"] {
+        let d = explain_fixture(eol);
+        let t = out(&["explain", p(&d), "sub/r.toml"]);
+        let want = "\
+request: sub/r.toml
+environment: none
+GET https://h.test/p/[$uuid, generated at send]?k=
+headers:
+  Authorization: hidden: credential name  (request)
+auth: none  (collection)
+settings:
+  timeout: default  (default)
+  follow_redirects: true  (default)
+  verify_tls: true  (default)
+body: none, 0 bytes
+variables:
+  host = h.test  (collection, used in url)
+  $uuid = $uuid, generated at send  (dynamic, used in url)
+problems:
+  unresolved-var missing in url
+";
+        assert_eq!(t.replace("\r\n", "\n"), want, "eol {eol:?}\n{t}");
+        let o = bin(&["explain", p(&d), "sub/r.toml", "--env", "dev", "--json"]);
+        assert_eq!(o.status.code(), Some(0));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["schema"], "wisp-cli/1");
+        assert_eq!(v["command"], "explain");
+        assert_eq!(v["environment"]["name"], "dev");
+        assert_eq!(v["method"], "GET");
+        assert!(!String::from_utf8_lossy(&o.stdout).contains("CANARY"));
+    }
+}
+
+#[test]
+fn closed_stdout_pipe_exits_cleanly() {
+    use std::process::Stdio;
+    let d = explain_fixture("\n");
+    let mut c = Command::new(env!("CARGO_BIN_EXE_wisp-cli"))
+        .args(["explain", p(&d), "sub/r.toml"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(c.stdout.take());
+    let s = c.wait().unwrap();
+    assert!(matches!(s.code(), Some(0 | 1)), "{s:?}");
 }

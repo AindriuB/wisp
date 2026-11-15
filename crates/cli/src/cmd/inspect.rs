@@ -20,11 +20,11 @@ pub enum Failure {
     Usage(String),
 }
 
-fn cap(s: &str) -> String {
+pub(crate) fn cap(s: &str) -> String {
     s.chars().take(MAX_NAME).collect()
 }
 
-fn rel(p: &Path) -> String {
+pub(crate) fn rel(p: &Path) -> String {
     p.components()
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
