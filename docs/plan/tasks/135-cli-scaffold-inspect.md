@@ -70,3 +70,11 @@ land in 2D once tasks 130, 132 and 133 have merged.
 - [NOTE] Read-only test doesn't check exit codes.
 - [NOTE] `inspect` loads bodies it never prints.
 - [NOTE] JSON `method` uses `Debug`.
+
+## PR #80 review round 1 (user, HEAD dda2e98)
+80-5 and 80-6 (boundary script) are already fixed at 03489df. Lows/Nits are follow-ups.
+- [80-1, Medium] `crates/cli/tests/cli.rs:131` Windows CI red: `read_only_and_no_id_added` compares `DirEntry::metadata` mtimes, stale for directories on Windows. Use `fs::metadata(path)`.
+- [80-2, Medium, 🔒] `inspect.rs:38` `safe_url` keeps userinfo when the URL has no `://` (`u:p@h/x`, `//u:p@h/x`).
+- [80-3, Medium, 🔒] `output.rs:26` text output writes untrusted names/paths/URLs raw (ANSI/OSC, forged lines, bidi); escape them.
+- [80-4, Medium] `inspect.rs:106` `collection.invalid` undercounts when truncated: emit null / "unknown (truncated)".
+- Follow-ups (not fixed): 80-7 denylist misses vault::, ops::, save_; 80-8 symlinked folders escaping root; 80-9 parser table lacks NotUtf8; 80-10 BrokenPipe untested; 80-11 NodeInfo implements Dto; 80-12 inspect loads whole requests; 80-13 test names; 80-14 read-only test leaves undeletable tempdir.

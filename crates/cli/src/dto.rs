@@ -36,7 +36,8 @@ pub struct CollectionInfo {
     pub format: u32,
     pub folders: usize,
     pub requests: usize,
-    pub invalid: usize,
+    /// `None` when the node cap was hit: requests past it are not loaded.
+    pub invalid: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]

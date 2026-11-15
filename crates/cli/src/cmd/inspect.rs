@@ -35,16 +35,15 @@ fn rel(p: &Path) -> String {
 pub fn safe_url(url: &str) -> String {
     let end = url.find(['?', '#']).unwrap_or(url.len());
     let u = &url[..end];
-    let out = match u.find("://") {
-        Some(i) => {
-            let (scheme, rest) = u.split_at(i + 3);
-            let auth_end = rest.find('/').unwrap_or(rest.len());
-            let (auth, path) = rest.split_at(auth_end);
-            let host = auth.rsplit('@').next().unwrap_or(auth);
-            format!("{scheme}{host}{path}")
-        }
-        None => u.to_owned(),
+    let (prefix, rest) = match u.find("://") {
+        Some(i) => u.split_at(i + 3),
+        None if u.starts_with("//") => u.split_at(2),
+        None => ("", u),
     };
+    let auth_end = rest.find('/').unwrap_or(rest.len());
+    let (auth, path) = rest.split_at(auth_end);
+    let host = auth.rsplit('@').next().unwrap_or(auth);
+    let out = format!("{prefix}{host}{path}");
     cap(&out)
 }
 
@@ -175,7 +174,7 @@ pub fn run(collection: &Path, env: Option<&str>) -> Result<InspectDoc, Failure> 
             format: tree.defaults.format,
             folders: w.folders,
             requests: w.requests,
-            invalid: w.invalid,
+            invalid: if w.truncated { None } else { Some(w.invalid) },
         },
         environments: environments.iter().map(|e| cap(e)).collect(),
         environment,
@@ -195,5 +194,13 @@ mod tests {
             "https://host:8080/a/b"
         );
         assert_eq!(safe_url("{{base}}/x?y=1"), "{{base}}/x");
+    }
+
+    #[test]
+    fn userinfo_is_stripped_without_scheme() {
+        assert_eq!(safe_url("u:p@h/x"), "h/x");
+        assert_eq!(safe_url("//u:p@h/x"), "//h/x");
+        assert_eq!(safe_url("u:p@h"), "h");
+        assert_eq!(safe_url("/a@b/c"), "/a@b/c");
     }
 }

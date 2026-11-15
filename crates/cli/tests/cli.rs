@@ -128,7 +128,8 @@ fn snapshot(root: &Path, out: &mut Vec<(PathBuf, std::time::SystemTime, u64)>) {
     let mut es: Vec<_> = fs::read_dir(root).unwrap().map(|e| e.unwrap()).collect();
     es.sort_by_key(|e| e.path());
     for e in es {
-        let m = e.metadata().unwrap();
+        // not DirEntry::metadata: on Windows that is stale for directories
+        let m = fs::metadata(e.path()).unwrap();
         out.push((e.path(), m.modified().unwrap(), m.len()));
         if m.is_dir() {
             snapshot(&e.path(), out);
@@ -206,6 +207,9 @@ fn bounded_at_2000_nodes() {
     assert_eq!(v["truncated"], true);
     assert_eq!(v["nodes"].as_array().unwrap().len(), 2000);
     assert_eq!(v["collection"]["requests"], 2001);
+    assert!(v["collection"]["invalid"].is_null());
+    let t = String::from_utf8(bin(&["inspect", p(&d)]).stdout).unwrap();
+    assert!(t.contains("invalid: unknown (truncated)"));
 }
 
 #[test]
@@ -217,4 +221,18 @@ fn names_are_capped() {
     let o = bin(&["inspect", p(&d), "--json"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["nodes"][0]["name"].as_str().unwrap().len(), 200);
+}
+
+#[test]
+fn text_output_escapes_controls() {
+    let d = tempfile::tempdir().unwrap();
+    w(d.path(), "collection.toml", "format = 1\n");
+    w(
+        d.path(),
+        "x.toml",
+        &req("A\\u001b[2Jfake\\nforged line", ""),
+    );
+    let t = String::from_utf8(bin(&["inspect", p(&d)]).stdout).unwrap();
+    assert!(!t.contains('\u{1b}'));
+    assert!(t.contains("\\u{001b}[2Jfake\\u{000a}forged line"));
 }
