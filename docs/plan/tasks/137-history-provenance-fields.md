@@ -25,7 +25,7 @@ into 2A), and before H1 (both edit `history.rs`).
 - [ ] AC1 `HistoryEntry` and `NewEntry` gain `environment: Option<String>` and `assertions: Vec<AssertionRecord>`, `serde(default)` on `HistoryEntry`; `append` writes them into the index line (keys absent when `None`/empty is acceptable).
 - [ ] AC2 An index line written by 0.2.0 (no new keys) loads with `None` and empty (test with a literal 0.2.0 line).
 - [ ] AC3 Round-trip: an entry with an environment and three records (pass, fail, skipped) reads back equal.
-- [ ] AC4 Canary: an expected value, an actual value and a response header value appear nowhere in `index.jsonl` or `<id>.req.json`.
+- [ ] AC4 Canary: the expected and actual values of a failing header assertion (task 131 AC10 sense) and the actual value of a failing non-header assertion appear nowhere in `index.jsonl` or `<id>.req.json`. Non-credential response headers stay in `<id>.req.json` as in 0.2.0, even when one equals a header assertion's actual value (see Decisions).
 - [ ] AC5 The `crates/app` diff is exactly the two field insertions per listed literal; no behaviour change in the app (production `NewEntry` sets `None` and empty; 2F wires real values).
 
 ## Checks
@@ -39,3 +39,11 @@ into 2A), and before H1 (both edit `history.rs`).
 ## Out of scope
 - Evaluating assertions in the Completed handler, `Sent.environment`, history chips, Resend notice: 2F.
 - H1 history hardening (AC50, AC8, AC9, AC48, AC17, 62-1, 62-2).
+
+## Decisions
+- orchestrator, 2026-11-15 — AC4 "header value" means the expected or actual value carried by a header assertion (as in task 131 AC10 and its CANARY-HEADER-EXPECTED test). Those values never appear in the history index line or in `<id>.req.json`: the `.req.json` copy drops assertions (spec:212) and assertion records hold label/fingerprint/state only (spec:210). Non-credential response headers stay in `<id>.req.json` as in 0.2.0 (only Set-Cookie and credential-named headers are redacted), including when one equals a header assertion's actual value; that is not a canary failure.
+
+## Review round 1 — findings
+Reviewed HEAD d8a17cd.
+- [SPEC] AC4 "response header value" was ambiguous. Settled by the 2026-11-15 decision above; AC4 reworded.
+- [P2] crates/storage/tests/history.rs:918-948 `provenance_canary_values_never_stored` — HEADER-CANARY sits inside a Status assertion's actual text, so no header assertion goes through `AssertionRecord::from_result`. Fix: use an `Assertion::Header` whose expected value and failing actual are both canaries, and make the stored request carry that assertion so the `.req.json` drop path is exercised.
