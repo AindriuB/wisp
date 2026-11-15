@@ -927,6 +927,20 @@ fn a_whole_userinfo_variable_is_hidden() {
 }
 
 #[test]
+fn a_userinfo_cut_inside_a_reference_taints_every_variable() {
+    let mut f = Fx::new(req("http://{{a@b}}/x"));
+    f.req.vars = vec![var("a@b", "u:{{s}}@host")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_userinfo_cut_inside_a_later_reference_taints_every_variable() {
+    let mut f = Fx::new(req("http://p@{{q@r}}/"));
+    f.req.vars = vec![var("q@r", "{{s}}@host")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
 fn an_oauth_token_url_credential_query_variable_is_hidden() {
     assert!(!plain_var_leaks(with_auth(Auth::OAuth2ClientCredentials {
         token_url: "https://idp/token?client_secret={{s}}".into(),

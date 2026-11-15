@@ -950,7 +950,10 @@ impl<'a> Walker<'a> {
                     // A `{{` left in the authority can supply an `@`: the cut is unsure.
                     let tail = &req.url[cut..];
                     let auth_end = tail.find(['/', '?', '#']).unwrap_or(tail.len());
-                    if tail[..auth_end].contains("{{") {
+                    let head = &req.url[..cut];
+                    // A cut inside a `{{…}}` reference leaves it unclosed in the prefix.
+                    let inside = head.rfind("{{") > head.rfind("}}");
+                    if inside || tail[..auth_end].contains("{{") {
                         self.taint_since(mark);
                     }
                     let mut w = Walker::new(req, self.scope);
