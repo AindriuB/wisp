@@ -31,7 +31,7 @@ land in 2D once tasks 130, 132 and 133 have merged.
 - [ ] AC7 Canary test through the real binary (`CARGO_BIN_EXE_wisp-cli`): a fixture with a secrets-file value, a plain variable `api_token`, an `Authorization` header literal and a keychain-mode environment; for `inspect` in text and JSON the canary strings are in neither stdout nor stderr. Fixtures are written by the test into a tempdir (no CRLF-sensitive checked-in files).
 - [ ] AC8 Read-only test: a read-only fixture copy, all commands run, file tree and mtimes unchanged; a collection without an id is reported without one and not given one.
 - [ ] AC9 Bounded: a 2,001-node fixture reports `truncated: true` and exactly 2,000 nodes.
-- [ ] AC10 `scripts/check-boundaries.sh` (POSIX shell, `grep` not `rg`) fails if `cargo tree -p <c> -e normal,build --locked` for `wisp-core`, `wisp-storage` or `wisp-cli` contains `gpui`, `gpui-component`, `gpui-platform`, `gpui-pre`, `gpui-pre-platform` or `winresource`, or if `crates/cli/src` contains `Engine`, `Command::`, `reqwest`, `tokio`, `std::net`, `keychain`, `ensure_collection_id`, `atomic_write`, `fs::write` or `create_dir`. It passes on the branch head; the PR shows it failing on a local injected violation of each kind.
+- [ ] AC10 `scripts/check-boundaries.sh` (POSIX shell, `grep` not `rg`) fails if `cargo tree -p <c> -e normal,build --target all --all-features --locked` for `wisp-core`, `wisp-storage` or `wisp-cli` contains `gpui`, `gpui-component`, `gpui-platform`, `gpui-pre`, `gpui-pre-platform` or `winresource`; or if `crates/cli/src` contains any of the path segments `net::`, `TcpStream`, `UdpSocket`, `process::Command`, `Command::new`, `File::create`, `OpenOptions`, `fs::write`, `fs::remove`, `#[path`, `include!`, `include_str!`, `include_bytes!`, `reqwest`, `tokio`, `Engine`, `keychain::`, `SecretStore`, `ensure_collection_id`, `atomic_write` or `create_dir` (names adjusted to the real APIs per Decision 2026-11-15; the bare word `keychain` is allowed); or if any `grep` or `cargo` invocation errors (exit status ≥2, e.g. a missing `crates/cli/src`). The source check is a tripwire alongside the dependency check, not a proof. It passes on the branch head; the PR shows it failing on a local injected violation of each kind.
 - [ ] AC11 `ci.yml` runs the script in the `check` job on the Linux leg only; no other CI change.
 
 ## Checks
@@ -50,3 +50,23 @@ land in 2D once tasks 130, 132 and 133 have merged.
 - `validate`, `explain`, environment secrets mode and names, assertion counts in `inspect`: 2D.
 - Release packaging, `release.yml`, signing, the CLI size step: 1M (task 136) and 3B.
 - Any `crates/core`, `crates/storage` or `crates/app` file.
+
+## Decisions
+- 2026-11-15, orchestrator, code review round 1 of PR #80. Technical tightening of the boundary check within the spec's intent; recorded so the spec can be amended at record.
+  - (a) The dependency check runs `cargo tree -p <c> -e normal,build --target all --all-features --locked`, so platform-gated and optional GPUI/`winresource` dependencies are caught.
+  - (b) The source check matches path segments, not import lines: it fails on any of `net::`, `TcpStream`, `UdpSocket`, `process::Command`, `Command::new`, `File::create`, `OpenOptions`, `fs::write`, `fs::remove`, `#[path`, `include!`, `include_str!`, `include_bytes!`, `reqwest`, `Engine`, `keychain::`, `SecretStore`, `ensure_collection_id` in `crates/cli/src`. Adjust names to the real APIs; the list's intent is no network, no process spawning, no filesystem writes, no code pulled from outside `crates/cli/src`, no keychain/secret-store access, no collection-id writes. It stays a tripwire alongside the dependency check, not a proof.
+  - (c) The bare word `keychain` is no longer forbidden (2D must print the secrets mode `keychain` and "keychain: not loaded by the CLI"); only `keychain::` paths are.
+  - (d) The script fails if `grep` or `cargo` errors (exit status ≥2), e.g. a missing `crates/cli/src`.
+
+## Review round 1 — findings (HEAD dda2e98)
+- [P2] `scripts/check-boundaries.sh:9` `cargo tree` misses platform/feature-gated deps — settled by Decision (a).
+- [P2] `scripts/check-boundaries.sh:23-29` fixed-string grep bypassed by grouped imports, renames, `#[path]`, `include!` — settled by Decision (b).
+- [SPEC] `scripts/check-boundaries.sh:23` bare `keychain` conflicts with spec :264 — settled by Decision (c).
+- [P3] `scripts/check-boundaries.sh:24` grep error passes silently — settled by Decision (d).
+- [P3, follow-up, 🔒] `output.rs:26` text mode prints untrusted names raw (terminal escape / forged lines) — schedule in 2D.
+- [P3, follow-up] `inspect.rs:180` environment list uncapped.
+- [P3, follow-up] `inspect.rs:106-109` invalid count after the node cap.
+- [P3, follow-up] `args.rs` no `NotUtf8` usage error.
+- [NOTE] Read-only test doesn't check exit codes.
+- [NOTE] `inspect` loads bodies it never prints.
+- [NOTE] JSON `method` uses `Debug`.
