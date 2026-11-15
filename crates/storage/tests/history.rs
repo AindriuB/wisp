@@ -1385,7 +1385,7 @@ const CONTROL_CHAR_HEADERS: [(&str, &str); 6] = [
     ("Location", "https:/\t/alice:secret@h/"),
     ("Location", "ht\ttps:/alice:secret@h/"),
     ("Refresh", "0; url=https:\t/alice:secret@h/"),
-    ("Location", "https://ali\r\nce:sec\r\nret@h/"),
+    ("Location", "https:\r/alice:secret@h/"),
     ("Content-Location", "https:\n//alice:secret@h/"),
 ];
 
@@ -1402,6 +1402,7 @@ fn tab_cr_lf_inside_a_url_do_not_hide_userinfo_on_append() {
         let mut text = String::new();
         all_text(&hist_dir(&data), &mut text);
         assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
     }
 }
 
@@ -1419,6 +1420,7 @@ fn tab_cr_lf_inside_a_url_do_not_hide_userinfo_in_legacy_scrub() {
         let mut text = String::new();
         all_text(&hist_dir(&data), &mut text);
         assert!(!text.contains("secret"), "{name}: {value:?}");
+        assert!(!text.contains("alice"), "{name}: {value:?}");
     }
 }
 
