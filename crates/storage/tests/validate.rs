@@ -183,3 +183,58 @@ fn findings_never_carry_values() {
         assert!(!dbg.contains(m), "{m} leaked: {dbg}");
     }
 }
+
+fn one(rep: &Report, path: &str) -> Vec<String> {
+    rep.findings
+        .iter()
+        .filter(|f| f.path == Path::new(path))
+        .map(|f| f.message.clone())
+        .collect()
+}
+
+#[test]
+fn secrets_file_error_is_filed_under_the_secrets_file() {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    w(r, "collection.toml", "format = 1\n");
+    w(r, "environments/dev.toml", "[vars]\na = \"1\"\n");
+    w(r, "environments/dev.secrets.toml", "\n\n[[[\n");
+    let rep = validate(r);
+    assert!(
+        has(&rep, "environments/dev.secrets.toml", Severity::Error),
+        "{rep:?}"
+    );
+    assert!(one(&rep, "environments/dev.toml").is_empty(), "{rep:?}");
+}
+
+#[test]
+fn sidecar_body_error_is_filed_under_the_sidecar() {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    w(r, "collection.toml", "format = 1\n");
+    w(
+        r,
+        "a.toml",
+        &format!("{GOOD}\n[body]\ntype = \"text\"\nfile = \"missing.txt\"\n"),
+    );
+    let rep = validate(r);
+    assert!(has(&rep, "missing.txt", Severity::Error), "{rep:?}");
+    assert!(one(&rep, "a.toml").is_empty(), "{rep:?}");
+}
+
+#[test]
+fn unknown_secret_store_kind_is_an_error() {
+    let d = tempfile::tempdir().unwrap();
+    let r = d.path();
+    w(r, "collection.toml", "format = 1\n");
+    w(r, "environments/typo.toml", "secrets = \"keychian\"\n");
+    let rep = validate(r);
+    let f = rep
+        .findings
+        .iter()
+        .find(|f| f.path == Path::new("environments/typo.toml"))
+        .expect("finding");
+    assert_eq!(f.severity, Severity::Error, "{rep:?}");
+    assert_eq!(f.key.as_deref(), Some("secrets"));
+    assert!(!f.message.contains("keychian"));
+}

@@ -30,6 +30,8 @@ pub struct Report {
     pub findings: Vec<Finding>,
     /// The folder visit cap stopped the walk early.
     pub truncated: bool,
+    /// Canonical root, used to make error paths relative.
+    root: PathBuf,
 }
 
 impl Report {
@@ -53,7 +55,18 @@ impl Report {
             StorageError::NotACollection { .. } => (None, "not a collection".to_string()),
             other => (None, other.to_string()),
         };
-        self.add(path, key, message, Severity::Error);
+        let own = match e {
+            StorageError::Io { path, .. }
+            | StorageError::Parse { path, .. }
+            | StorageError::Invalid { path, .. }
+            | StorageError::UnsupportedFormat { path, .. } => path
+                .strip_prefix(&self.root)
+                .ok()
+                .filter(|_| !self.root.as_os_str().is_empty()),
+            _ => None,
+        };
+        let path = own.unwrap_or(path).to_path_buf();
+        self.add(&path, key, message, Severity::Error);
     }
 }
 
@@ -72,6 +85,7 @@ pub fn validate(root: &Path) -> Report {
             return report;
         }
     };
+    report.root = root.clone();
     if !root.join(COLLECTION_FILE).is_file() {
         report.error(
             Path::new(COLLECTION_FILE),
@@ -263,6 +277,12 @@ fn environments(root: &Path, report: &mut Report) {
         };
         match crate::vault::read_mode(&doc, &abs) {
             Ok(crate::vault::Mode::File) => {}
+            Ok(crate::vault::Mode::Unknown(_)) => report.add(
+                &rel,
+                Some("secrets"),
+                "unknown secret store kind; the app cannot load this environment",
+                Severity::Error,
+            ),
             Ok(_) => report.add(
                 &rel,
                 Some("secrets"),
