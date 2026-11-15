@@ -1,0 +1,35 @@
+{
+  "run": "https://github.com/AindriuB/wisp/actions/runs/43700232185",
+  "built_commit": "e1c698761d60b1efaee6fbca48ca9d8562c46ebe",
+  "main_base": "4ae651d",
+  "baseline": {
+    "commit": "4323fbe",
+    "note": "first merge of wave 1 (theme-palette, PR #79); measure.yml dispatched on it",
+    "run": "https://github.com/AindriuB/wisp/actions/runs/43701286044"
+  },
+  "spec_baseline": {
+    "commit": "a02a779",
+    "note": "secondary reference; deltas include theme #79, 128 and 129",
+    "run": "https://github.com/AindriuB/wisp/actions/runs/43622975912"
+  },
+  "windows_gate_bytes": 15500000,
+  "windows_soft_line_bytes": 15400000,
+  "targets": {
+    "aarch64-apple-darwin": {
+      "gui_bytes": 11816320, "cli_bytes": 552512,
+      "baseline_gui_bytes": 11783104, "gui_delta_bytes": 33216,
+      "spec_baseline_gui_bytes": 11601344, "spec_gui_delta_bytes": 214976
+    },
+    "x86_64-pc-windows-msvc": {
+      "gui_bytes": 15447040, "cli_bytes": 567296,
+      "baseline_gui_bytes": 15417856, "gui_delta_bytes": 29184,
+      "spec_baseline_gui_bytes": 15181824, "spec_gui_delta_bytes": 265216,
+      "under_gate": true, "over_soft_line": true
+    },
+    "x86_64-unknown-linux-gnu": {
+      "gui_bytes": 26104456, "cli_bytes": 662104,
+      "baseline_gui_bytes": 26072200, "gui_delta_bytes": 32256,
+      "spec_baseline_gui_bytes": 25812488, "spec_gui_delta_bytes": 291968
+    }
+  }
+}
