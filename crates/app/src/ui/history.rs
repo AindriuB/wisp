@@ -424,6 +424,7 @@ mod tests {
             request: None,
             url: String::new(),
             stored_body: Default::default(),
+            had_assertions: false,
         };
         assert_eq!(origin_line(&o, 5 * 60_000), "From history, 5 min ago");
         o.body_truncated = true;

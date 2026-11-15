@@ -655,11 +655,57 @@ fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
     })
 }
 
+/// Which history records a tab's Explain/Checks views may show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // seam: read by tasks 140/141/143/147
+pub enum HistoryScope {
+    /// Records of this request path.
+    Records(PathBuf),
+    /// The tab is owned by no collection: its sends are not recorded.
+    NotRecorded,
+    /// The tab is in an open collection with no saved request path: sends are recorded
+    /// without a request link.
+    Scratch,
+    /// A from-history tab whose original request is gone.
+    OriginalMissing,
+    /// A from-history tab whose URL was edited.
+    UrlEdited,
+    /// Writing history is off; the reason.
+    Off(String),
+    /// The collection id is not resolved yet.
+    Pending,
+}
+
+/// Choose the [`HistoryScope`]. Pure. `scope` is `scope_path_for`'s result.
+#[allow(dead_code)] // seam: read by tasks 140/141/143/147
+fn choose_history_scope(
+    in_collection: bool,
+    off: Option<&str>,
+    pending: bool,
+    scope: (Option<PathBuf>, bool, bool),
+) -> HistoryScope {
+    if !in_collection {
+        return HistoryScope::NotRecorded;
+    }
+    if let Some(reason) = off {
+        return HistoryScope::Off(reason.to_string());
+    }
+    if pending {
+        return HistoryScope::Pending;
+    }
+    match scope {
+        (_, true, _) => HistoryScope::OriginalMissing,
+        (_, _, true) => HistoryScope::UrlEdited,
+        (Some(p), _, _) => HistoryScope::Records(p),
+        (None, _, _) => HistoryScope::Scratch,
+    }
+}
+
 /// A tab's own path wins. A from-history tab has none, so its entry's original
 /// request path scopes the resolve, but only while the tab's URL is still the
 /// stored one. Flags: the original path is gone; the URL was edited. Either way
 /// only the collection defaults apply.
-fn scope_path_for(
+pub(crate) fn scope_path_for(
     tree: &CollectionTree,
     tab_path: Option<&Path>,
     origin: Option<&HistoryOrigin>,
@@ -827,6 +873,7 @@ fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigi
         request: entry.request.clone(),
         url: request.url.clone(),
         stored_body: request.body.clone(),
+        had_assertions: false,
     }
 }
 
@@ -2254,6 +2301,68 @@ impl Workspace {
                 environment: None,
             },
         }
+    }
+
+    /// The scope `send` resolves `tab` in: its owning collection, its scope path and that
+    /// collection's active environment.
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
+    pub fn send_scope(&self, tab: &Entity<RequestTab>, cx: &gpui::App) -> Scope<'_> {
+        let c = self.collection_of(tab);
+        let Some(c) = c else {
+            return Scope {
+                collection: &self.empty_defaults,
+                folders: Vec::new(),
+                environment: None,
+            };
+        };
+        let t = tab.read(cx);
+        let (scope_path, _, _) = scope_path_for(
+            &c.tree,
+            t.path.as_deref(),
+            t.from_history.as_ref(),
+            &t.draft.url,
+        );
+        c.tree.scope_for(
+            scope_path.as_deref().unwrap_or(Path::new("")),
+            c.active_env.as_ref(),
+        )
+    }
+
+    /// Which history records apply to `tab`.
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
+    pub fn history_scope(&self, tab: &Entity<RequestTab>, cx: &gpui::App) -> HistoryScope {
+        let Some(c) = self.collection_of(tab) else {
+            return choose_history_scope(false, None, false, (None, false, false));
+        };
+        let t = tab.read(cx);
+        let scope = scope_path_for(
+            &c.tree,
+            t.path.as_deref(),
+            t.from_history.as_ref(),
+            &t.draft.url,
+        );
+        let off = match &c.history {
+            HistoryState::Off(reason) => Some(reason.as_str()),
+            _ => None,
+        };
+        let pending = matches!(c.history, HistoryState::Unresolved)
+            && !matches!(c.coll_id, IdState::Known(_));
+        choose_history_scope(true, off, pending, scope)
+    }
+
+    /// The id of collection `ix`, only when it is known.
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
+    pub fn known_collection_id(&self, ix: usize) -> Option<String> {
+        match &self.collections.get(ix)?.coll_id {
+            IdState::Known(id) => Some(id.clone()),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
+    fn collection_of(&self, tab: &Entity<RequestTab>) -> Option<&OpenCollection> {
+        let root = self.owner_of(tab).and_then(|o| self.root_of(o))?;
+        self.coll_ix(&root).map(|i| &self.collections[i])
     }
 
     /// Send the tab's request. `Ok(None)` means the submit waits for the collection id to be
@@ -3896,6 +4005,44 @@ mod tests {
 
     const URL: &str = "http://example.test/";
 
+    #[test]
+    fn history_scope_table() {
+        use HistoryScope as H;
+        let p = || PathBuf::from("a.toml");
+        let ok = (Some(p()), false, false);
+        let none = (None, false, false);
+        assert_eq!(
+            choose_history_scope(false, None, false, ok.clone()),
+            H::NotRecorded
+        );
+        assert_eq!(
+            choose_history_scope(true, Some("why"), true, ok.clone()),
+            H::Off("why".into())
+        );
+        assert_eq!(
+            choose_history_scope(true, None, true, ok.clone()),
+            H::Pending
+        );
+        assert_eq!(
+            choose_history_scope(true, None, false, (None, true, false)),
+            H::OriginalMissing
+        );
+        assert_eq!(
+            choose_history_scope(true, None, false, (None, false, true)),
+            H::UrlEdited
+        );
+        assert_eq!(
+            choose_history_scope(true, Some("why"), false, none.clone()),
+            H::Off("why".into())
+        );
+        assert_eq!(
+            choose_history_scope(true, None, true, none.clone()),
+            H::Pending
+        );
+        assert_eq!(choose_history_scope(true, None, false, ok), H::Records(p()));
+        assert_eq!(choose_history_scope(true, None, false, none), H::Scratch);
+    }
+
     fn origin(request: Option<&str>) -> HistoryOrigin {
         HistoryOrigin {
             at_ms: 0,
@@ -3906,6 +4053,7 @@ mod tests {
             request: request.map(String::from),
             url: URL.into(),
             stored_body: Body::None,
+            had_assertions: false,
         }
     }
 

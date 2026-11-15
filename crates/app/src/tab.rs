@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{Context, EventEmitter, SharedString};
+use wisp_core::assert::{Assertion, AssertionResult};
 use wisp_core::body::BodyHandle;
 use wisp_core::request::{Body, Request};
 use wisp_core::{EngineError, Header, HttpVersion, RequestId};
@@ -18,6 +19,7 @@ pub enum RequestSubTab {
     Auth,
     Body,
     Settings,
+    Assertions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,8 @@ pub enum ResponseSubTab {
     Body,
     Headers,
     Cookies,
+    Checks,
+    Explain,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +54,14 @@ pub enum Phase {
     Cancelled,
 }
 
+/// One evaluated assertion. The definition is kept beside the result so the
+/// Checks pane shows the expected value as sent, after the draft changes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckOutcome {
+    pub assertion: Assertion,
+    pub result: AssertionResult,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResponseState {
     pub phase: Phase,
@@ -66,6 +78,7 @@ pub struct ResponseState {
     pub received: u64,
     pub body: Option<BodyHandle>,
     pub error: Option<EngineError>,
+    pub assertions: Vec<CheckOutcome>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +138,8 @@ pub struct HistoryOrigin {
     /// The body the tab opened with (after sanitising). A redacted body must
     /// differ from it before the tab can be sent.
     pub stored_body: Body,
+    /// Whether the recorded run evaluated assertions.
+    pub had_assertions: bool,
 }
 
 pub struct RequestTab {
