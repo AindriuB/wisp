@@ -20,8 +20,10 @@ pub const MAX_ASSERTIONS: usize = 50;
 pub const MAX_REGEX_LEN: usize = 256;
 /// Compiled-size limit for a regex, in bytes.
 const REGEX_SIZE_LIMIT: usize = 64 * 1024;
+/// Lazy-DFA cache cap for a regex, in bytes.
 const REGEX_DFA_LIMIT: usize = 1024 * 1024;
-/// Longest text a `matches` op will run a regex over; longer is skipped, never truncated.
+/// Longest text a `matches` op will run a regex over, in bytes (`str::len`, unlike
+/// `MAX_REGEX_LEN`, which counts characters); longer is skipped, never truncated.
 pub const MAX_MATCH_HAYSTACK: usize = 64 * 1024;
 /// Longest JSON path, in characters.
 pub const MAX_PATH_LEN: usize = 256;
