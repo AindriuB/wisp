@@ -142,6 +142,73 @@ pub fn secrets_file_names(root: &Path, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The committed `suggest_confirm` hint in `<env>.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuggestConfirm {
+    /// Absent or `false`.
+    No,
+    /// `true`.
+    Yes,
+    /// Present with any other type. Never an error.
+    Malformed,
+}
+
+pub(crate) fn read_suggest_confirm(doc: &toml_edit::DocumentMut) -> SuggestConfirm {
+    match doc.get("suggest_confirm") {
+        None => SuggestConfirm::No,
+        Some(item) => match item.as_bool() {
+            Some(true) => SuggestConfirm::Yes,
+            Some(false) => SuggestConfirm::No,
+            None => SuggestConfirm::Malformed,
+        },
+    }
+}
+
+/// A value-free description of an environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentInfo {
+    pub name: String,
+    pub store: crate::vault::StoreKind,
+    pub var_names: Vec<String>,
+    pub secret_names: Vec<String>,
+    pub suggest_confirm: SuggestConfirm,
+}
+
+/// Describe an environment without opening a secret store or returning a
+/// value. In store mode the secret names come from `secret_names`; in file
+/// mode from the keys of the secrets file.
+pub fn environment_info(root: &Path, name: &str) -> Result<EnvironmentInfo, StorageError> {
+    use crate::vault::{Mode, StoreKind};
+    check_name(root, name)?;
+    let pp = plain_path(root, name);
+    let doc = codec::parse(&pp, &read_plain_text(root, &pp)?)?;
+    let vars = codec::read_vars(doc.as_table(), "vars", &pp)?;
+    let (store, secret_names) = match crate::vault::read_mode(&doc, &pp)? {
+        Mode::File => (
+            StoreKind::File,
+            load_secrets_file(root, &secrets_path(root, name))?
+                .into_iter()
+                .map(|v| v.name)
+                .collect(),
+        ),
+        Mode::Store(k) => (k, crate::vault::read_names(&doc, &pp)?),
+        Mode::Unknown(s) => {
+            return Err(StorageError::Invalid {
+                path: pp,
+                key: "secrets".into(),
+                message: format!("unknown store kind \"{s}\""),
+            });
+        }
+    };
+    Ok(EnvironmentInfo {
+        name: name.to_string(),
+        store,
+        var_names: vars.into_iter().map(|v| v.name).collect(),
+        secret_names,
+        suggest_confirm: read_suggest_confirm(&doc),
+    })
+}
+
 /// Load an environment: vars from `<name>.toml`, secrets from `<name>.secrets.toml`.
 pub fn load_environment(root: &Path, name: &str) -> Result<Environment, StorageError> {
     check_name(root, name)?;
