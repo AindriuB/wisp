@@ -330,10 +330,12 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
     // warnings are dropped: the discovery walk already reported them.
     let mut rw = Walker::new(req, scope);
     rw.render_only = true;
+    // A cutoff can conceal later sensitive uses, so no plain variable is known safe.
+    rw.hide_all_vars = w.classification_incomplete;
     // Only a plain variable in the hidden set can move the URL cuts: a secret is never
     // expanded, so it stays an opaque marker.
-    let url_hidden = w.uses_hidden_plain(&w.url_trail, &hidden);
-    if !hidden.is_empty() {
+    let url_hidden = w.classification_incomplete || w.uses_hidden_plain(&w.url_trail, &hidden);
+    if !hidden.is_empty() || w.classification_incomplete {
         rw.hide_names = hidden.clone();
         rw.header_keys = w.header_keys.clone();
         if url_hidden {
@@ -889,6 +891,10 @@ struct Walker<'a> {
     warnings: Vec<ReportWarning>,
     expansions: usize,
     stop: bool,
+    /// A limit prevented discovery from classifying every use, even if a later subst resets stop.
+    classification_incomplete: bool,
+    /// Incomplete discovery cannot establish which plain variables are safe to display.
+    hide_all_vars: bool,
     seen: HashSet<String>,
     uses: Vec<VarUse>,
     /// Every variable name noted so far, in order (a variable can repeat).
@@ -924,6 +930,8 @@ impl<'a> Walker<'a> {
             warnings: Vec::new(),
             expansions: 0,
             stop: false,
+            classification_incomplete: false,
+            hide_all_vars: false,
             seen: HashSet::new(),
             uses: Vec::new(),
             trail: Vec::new(),
@@ -1009,6 +1017,7 @@ impl<'a> Walker<'a> {
 
     fn too_large(&mut self, loc: &Location) {
         self.stop = true;
+        self.classification_incomplete = true;
         self.problem(Problem::Syntax {
             location: loc.clone(),
             message: "variable expansion too large".into(),
@@ -1074,6 +1083,7 @@ impl<'a> Walker<'a> {
                         name: name.to_string(),
                     });
                 } else if stack.len() >= MAX_DEPTH {
+                    self.classification_incomplete = true;
                     self.problem(Problem::Syntax {
                         location: Location::Var(name.to_string()),
                         message: format!("variables nested deeper than {MAX_DEPTH}"),
@@ -1082,7 +1092,10 @@ impl<'a> Walker<'a> {
                     stack.push(name.to_string());
                     let v = self.expand(value, loc, stack);
                     stack.pop();
-                    if is_credential_name(name) || self.hide_names.contains(name) {
+                    if self.hide_all_vars
+                        || is_credential_name(name)
+                        || self.hide_names.contains(name)
+                    {
                         out.hide(&v, name);
                     } else {
                         out.append(&v);
@@ -1141,6 +1154,7 @@ impl<'a> Walker<'a> {
                         w.expansions = self.expansions;
                         w.subst(&req.url[..cut], &Location::Url);
                         self.expansions = w.expansions;
+                        self.classification_incomplete |= w.classification_incomplete;
                         self.hidden_vars.extend(w.trail);
                     }
                     // Userinfo produced by a variable's value.
@@ -1362,7 +1376,9 @@ impl<'a> Walker<'a> {
             FieldKind::Plain => finish(&acc.parts, None),
             FieldKind::Url => {
                 // Hiding an expanded separator can move the userinfo or query cuts.
-                let shown = if self.uses_hidden_plain(&self.trail[mark..], &self.hide_names) {
+                let shown = if self.hide_all_vars
+                    || self.uses_hidden_plain(&self.trail[mark..], &self.hide_names)
+                {
                     hidden_credential()
                 } else {
                     finish_url(&acc.parts)
@@ -1653,7 +1669,7 @@ impl<'a> Walker<'a> {
                     &mut vec![u.name.clone()],
                 );
                 let cut = w.stop;
-                if hidden.contains(&u.name) && (cut || !acc.parts.is_empty()) {
+                if (w.hide_all_vars || hidden.contains(&u.name)) && (cut || !acc.parts.is_empty()) {
                     hidden_credential()
                 } else if cut {
                     // The shared budget ran out: never list a silently shortened value.

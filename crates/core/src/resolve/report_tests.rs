@@ -1768,3 +1768,96 @@ fn a_templated_api_key_header_keeps_its_override_identity() {
     assert_eq!(r.headers[0].origin, Origin::Auth);
     assert_eq!(r.headers[0].overridden, vec![Origin::Collection]);
 }
+
+#[test]
+fn a_discovery_cutoff_cannot_expose_unclassified_variables() {
+    for seed_name in ["api_key", "seed"] {
+        for sensitive_first in [false, true] {
+            let max = super::engine::MAX_EXPANSIONS;
+            let mut f = Fx::new(req(&format!(
+                "https://h/{{{{{seed_name}}}}}{{{{early}}}}{}",
+                "{{pad}}".repeat(max)
+            )));
+            f.coll.vars = vec![
+                var(seed_name, "seed"),
+                var("pad", ""),
+                var("early", "EARLYCANARY"),
+                var("late", "LATECANARY"),
+                var("at", "@"),
+            ];
+            let sensitive = kv("Authorization", "{{early}}{{late}}", true);
+            let ordinary = kv("X-Other", "{{early}}{{late}}", true);
+            f.req.headers = if sensitive_first {
+                vec![sensitive, ordinary]
+            } else {
+                vec![ordinary, sensitive]
+            };
+            f.req.body = Body::Json(TextBody {
+                content: "{{late}}".into(),
+                sidecar: None,
+            });
+            f.req.auth = Auth::OAuth2ClientCredentials {
+                token_url: "https://alice:OAUTHCANARY{{at}}idp.test/".into(),
+                client_id: "id".into(),
+                client_secret: "{{late}}".into(),
+                scope: "".into(),
+                client_auth: ClientAuth::default(),
+            };
+            let (r, work) = super::report::explain_counted(&f.req, &f.scope());
+            for dump in [format!("{r:?}"), format!("{r:#?}")] {
+                assert!(!dump.contains("EARLYCANARY"));
+                assert!(!dump.contains("LATECANARY"));
+                assert!(!dump.contains("OAUTHCANARY"));
+            }
+            let ordinary = r
+                .headers
+                .iter()
+                .find(|h| h.name.plain_text().as_deref() == Some("X-Other"))
+                .unwrap();
+            assert!(
+                ordinary
+                    .value
+                    .0
+                    .contains(&ShownPart::Hidden(HideReason::Credential))
+            );
+            assert_eq!(
+                r.variables
+                    .iter()
+                    .find(|v| v.name == "early")
+                    .unwrap()
+                    .value
+                    .0,
+                vec![ShownPart::Hidden(HideReason::Credential)]
+            );
+            assert_eq!(r.body.bytes, None);
+            assert!(r.problems.iter().any(|p| matches!(p,
+                Problem::Syntax { message, .. } if message == "variable expansion too large"
+            )));
+            assert!(work <= 3 * max, "work {work}");
+        }
+    }
+}
+
+#[test]
+fn a_userinfo_discovery_cutoff_hides_unclassified_listed_values() {
+    let max = super::engine::MAX_EXPANSIONS;
+    let mut f = Fx::new(req(&format!(
+        "https://alice:{}{{{{late}}}}@h/",
+        "{{pad}}".repeat(max * 3 / 5)
+    )));
+    f.coll.vars = vec![var("pad", ""), var("late", "USERINFOCANARY")];
+    let (r, work) = super::report::explain_counted(&f.req, &f.scope());
+    for dump in [format!("{r:?}"), format!("{r:#?}")] {
+        assert!(!dump.contains("USERINFOCANARY"));
+    }
+    assert_eq!(
+        r.variables
+            .iter()
+            .find(|v| v.name == "late")
+            .unwrap()
+            .value
+            .0,
+        vec![ShownPart::Hidden(HideReason::Credential)]
+    );
+    assert!(work <= 3 * max, "work {work}");
+}
