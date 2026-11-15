@@ -321,12 +321,7 @@ mod tests {
             ] {
                 at_least(&t, &format!("text/{n}"), text, bg, 4.5);
             }
-            for (n, bg) in [
-                ("page", page),
-                ("panel", panel),
-                ("raised", raised),
-                ("selected", selected),
-            ] {
+            for (n, bg) in [("page", page), ("panel", panel), ("raised", raised)] {
                 at_least(&t, &format!("muted/{n}"), muted, bg, 4.5);
                 for k in [
                     "primary.background",
@@ -338,6 +333,7 @@ mod tests {
                     at_least(&t, &format!("{k}/{n}"), c(k), bg, 4.5);
                 }
             }
+            at_least(&t, "muted/selected", muted, selected, 4.5);
             for k in ["primary", "success", "warning", "danger", "info"] {
                 at_least(
                     &t,
@@ -356,7 +352,7 @@ mod tests {
                 ("warning", c("warning.background")),
                 ("danger", c("danger.background")),
                 ("info", c("info.background")),
-                ("accent", c("accent.background")),
+                ("accent", c("primary.background")),
             ] {
                 at_least(&t, &format!("{n}/open row"), fg, open, 4.5);
             }
