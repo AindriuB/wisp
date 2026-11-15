@@ -834,3 +834,97 @@ fn explain_auth_expands_only_auth_fields() {
         Problem::UnresolvedVar { name, .. } if name == "only-in-url"
     )));
 }
+
+// ---- variable hiding by use (AC13) ----
+
+const PLAIN: &str = "plain-sentinel-value";
+
+fn plain_var_leaks(mut f: Fx) -> bool {
+    f.coll.vars = vec![var("s", PLAIN)];
+    format!("{:?}", f.report()).contains(PLAIN)
+}
+
+fn with_auth(auth: Auth) -> Fx {
+    let mut f = Fx::new(req("http://h"));
+    f.req.auth = auth;
+    f
+}
+
+#[test]
+fn a_bearer_token_variable_is_hidden() {
+    assert!(!plain_var_leaks(with_auth(Auth::Bearer {
+        token: "{{s}}".into()
+    })));
+}
+
+#[test]
+fn a_basic_password_variable_is_hidden() {
+    assert!(!plain_var_leaks(with_auth(Auth::Basic {
+        username: "u".into(),
+        password: "{{s}}".into(),
+    })));
+}
+
+#[test]
+fn an_api_key_value_variable_is_hidden() {
+    assert!(!plain_var_leaks(with_auth(Auth::ApiKey {
+        name: "X-K".into(),
+        value: "{{s}}".into(),
+        location: ApiKeyLocation::Query,
+    })));
+}
+
+#[test]
+fn a_sigv4_secret_key_variable_is_hidden() {
+    assert!(!plain_var_leaks(with_auth(Auth::AwsSigV4 {
+        access_key: "a".into(),
+        secret_key: "{{s}}".into(),
+        session_token: String::new(),
+        region: "r".into(),
+        service: "svc".into(),
+    })));
+}
+
+#[test]
+fn an_authorization_header_variable_is_hidden() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.headers = vec![kv("Authorization", "Bearer {{s}}", true)];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_credential_param_variable_is_hidden() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.params = vec![kv("api_key", "{{s}}", true)];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_credential_query_pair_in_the_url_hides_its_variable() {
+    assert!(!plain_var_leaks(Fx::new(req(
+        "http://h/?access_token={{s}}"
+    ))));
+}
+
+#[test]
+fn a_variable_spliced_into_a_credential_query_value_is_hidden() {
+    // `q` carries `&token=<s>` into `?a={{q}}`.
+    let mut f = Fx::new(req("http://h/?a={{q}}"));
+    f.req.vars = vec![var("q", "1&token={{s}}")];
+    assert!(!plain_var_leaks(f));
+}
+
+#[test]
+fn a_variable_used_only_in_a_shown_field_stays_shown() {
+    let mut f = with_auth(Auth::AwsSigV4 {
+        access_key: "a".into(),
+        secret_key: "k".into(),
+        session_token: String::new(),
+        region: "{{s}}".into(),
+        service: "svc".into(),
+    });
+    f.coll.vars = vec![var("s", PLAIN)];
+    let r = f.report();
+    let v = r.variables.iter().find(|v| v.name == "s").unwrap();
+    assert_eq!(text(&v.value), PLAIN);
+}

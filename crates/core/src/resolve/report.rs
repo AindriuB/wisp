@@ -766,6 +766,10 @@ struct Walker<'a> {
     stop: bool,
     seen: HashSet<String>,
     uses: Vec<VarUse>,
+    /// Every variable name noted so far, in order (a variable can repeat).
+    trail: Vec<String>,
+    /// Variables with a use in a place the report hides; their listed value is hidden too.
+    hidden_vars: HashSet<String>,
     use_idx: HashMap<String, usize>,
 }
 
@@ -785,6 +789,8 @@ impl<'a> Walker<'a> {
             stop: false,
             seen: HashSet::new(),
             uses: Vec::new(),
+            trail: Vec::new(),
+            hidden_vars: HashSet::new(),
             use_idx: HashMap::new(),
         }
     }
@@ -795,7 +801,14 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Hide the listed value of every variable noted since `mark`.
+    fn taint_since(&mut self, mark: usize) {
+        let names: Vec<String> = self.trail[mark..].to_vec();
+        self.hidden_vars.extend(names);
+    }
+
     fn note_use(&mut self, name: &str, loc: &Location) {
+        self.trail.push(name.to_string());
         let i = match self.use_idx.get(name) {
             Some(i) => *i,
             None => {
@@ -921,15 +934,23 @@ impl<'a> Walker<'a> {
 
     fn build_url(&mut self, params: &mut Vec<ParamReport>) -> Acc {
         let req = self.req;
+        let mark = self.trail.len();
         let url = self.subst(&req.url, &Location::Url);
         let url = self.apply_path_params(url, params);
+        if hide_query_values(&url.parts) != url.parts {
+            self.taint_since(mark);
+        }
         let mut pairs: Vec<Pair> = Vec::new();
         for p in req.params.iter().filter(|p| p.enabled) {
             let loc = Location::Param(p.name.clone());
             let n = self.subst(&p.name, &loc);
+            let vmark = self.trail.len();
             let v = self.subst(&p.value, &loc);
             let name = finish(&n.parts, None);
             let value = finish_for(&v.parts, &n.parts);
+            if is_credential_hidden(&value) {
+                self.taint_since(vmark);
+            }
             params.push(ParamReport {
                 kind: ParamKind::Query,
                 name: name.clone(),
@@ -1074,8 +1095,12 @@ impl<'a> Walker<'a> {
             for h in level.iter().filter(|h| h.enabled) {
                 let loc = Location::Header(h.name.clone());
                 let name = self.subst(&h.name, &loc);
+                let vmark = self.trail.len();
                 let value = self.subst(&h.value, &loc);
                 let shown = finish_for(&value.parts, &name.parts);
+                if is_credential_hidden(&shown) {
+                    self.taint_since(vmark);
+                }
                 set_header(&mut out, &name, shown, origin, None);
             }
         }
@@ -1112,7 +1137,11 @@ impl<'a> Walker<'a> {
         raw: &str,
         kind: FieldKind,
     ) -> Acc {
+        let mark = self.trail.len();
         let acc = self.subst(raw, &Location::Auth);
+        if matches!(kind, FieldKind::Sensitive | FieldKind::Username) {
+            self.taint_since(mark);
+        }
         let value = match kind {
             FieldKind::Plain => finish(&acc.parts, None),
             FieldKind::Url => finish_url(&acc.parts),
@@ -1346,7 +1375,11 @@ impl<'a> Walker<'a> {
                     &Location::Var(u.name.clone()),
                     &mut vec![u.name.clone()],
                 );
-                finish(&acc.parts, Some(&u.name))
+                if self.hidden_vars.contains(&u.name) && !acc.parts.is_empty() {
+                    hidden_credential()
+                } else {
+                    finish(&acc.parts, Some(&u.name))
+                }
             };
             out.push(VarReport {
                 name: u.name.clone(),
@@ -1358,6 +1391,11 @@ impl<'a> Walker<'a> {
         }
         out
     }
+}
+
+fn is_credential_hidden(s: &Shown) -> bool {
+    s.0.iter()
+        .any(|p| matches!(p, ShownPart::Hidden(HideReason::Credential)))
 }
 
 fn hidden_credential() -> Shown {
