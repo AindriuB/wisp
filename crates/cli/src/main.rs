@@ -1,0 +1,70 @@
+//! `wisp-cli`: read-only console tool for Wisp collections.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+mod args;
+mod cmd;
+mod dto;
+mod output;
+
+use std::io::{self, Write};
+use std::process::ExitCode;
+
+use args::{Action, USAGE};
+use cmd::inspect::Failure;
+
+const EXIT_USAGE: u8 = 2;
+const EXIT_UNREADABLE: u8 = 3;
+const EXIT_IO: u8 = 1;
+
+fn main() -> ExitCode {
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    ExitCode::from(run(
+        std::env::args_os().skip(1),
+        &mut stdout.lock(),
+        &mut stderr.lock(),
+    ))
+}
+
+fn finish(r: io::Result<()>) -> u8 {
+    match r {
+        Ok(()) => 0,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => 0,
+        Err(_) => EXIT_IO,
+    }
+}
+
+fn run<I: IntoIterator<Item = std::ffi::OsString>>(
+    argv: I,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> u8 {
+    let parsed = match args::parse(argv) {
+        Ok(p) => p,
+        Err(e) => {
+            return finish(writeln!(err, "wisp-cli: {e}\n\n{USAGE}")).max(EXIT_USAGE);
+        }
+    };
+    match parsed.command {
+        Action::Help => finish(write!(out, "{USAGE}")),
+        Action::Version => finish(writeln!(out, "wisp-cli {}", env!("CARGO_PKG_VERSION"))),
+        Action::Validate { .. } | Action::Explain { .. } => {
+            finish(writeln!(err, "wisp-cli: not available in this build")).max(EXIT_USAGE)
+        }
+        Action::Inspect { collection, env } => {
+            match cmd::inspect::run(&collection, env.as_deref()) {
+                Ok(doc) => finish(if parsed.json {
+                    output::json(out, &doc)
+                } else {
+                    output::inspect_text(out, &doc)
+                }),
+                Err(Failure::Usage(m)) => finish(writeln!(err, "wisp-cli: {m}")).max(EXIT_USAGE),
+                Err(Failure::Unreadable(m)) => {
+                    finish(writeln!(err, "wisp-cli: cannot read collection: {m}"))
+                        .max(EXIT_UNREADABLE)
+                }
+            }
+        }
+    }
+}
