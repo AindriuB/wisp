@@ -657,6 +657,7 @@ fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
 
 /// Which history records a tab's Explain/Checks views may show.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // seam: read by tasks 140/141/143/147
 pub enum HistoryScope {
     /// Records of this request path.
     Records(PathBuf),
@@ -673,6 +674,7 @@ pub enum HistoryScope {
 }
 
 /// Choose the [`HistoryScope`]. Pure. `scope` is `scope_path_for`'s result.
+#[allow(dead_code)] // seam: read by tasks 140/141/143/147
 fn choose_history_scope(
     in_collection: bool,
     off: Option<&str>,
@@ -2300,6 +2302,7 @@ impl Workspace {
 
     /// The scope `send` resolves `tab` in: its owning collection, its scope path and that
     /// collection's active environment.
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
     pub fn send_scope(&self, tab: &Entity<RequestTab>, cx: &gpui::App) -> Scope<'_> {
         let c = self.collection_of(tab);
         let Some(c) = c else {
@@ -2323,6 +2326,7 @@ impl Workspace {
     }
 
     /// Which history records apply to `tab`.
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
     pub fn history_scope(&self, tab: &Entity<RequestTab>, cx: &gpui::App) -> HistoryScope {
         let Some(c) = self.collection_of(tab) else {
             return choose_history_scope(false, None, false, (None, false, false));
@@ -2344,6 +2348,7 @@ impl Workspace {
     }
 
     /// The id of collection `ix`, only when it is known.
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
     pub fn known_collection_id(&self, ix: usize) -> Option<String> {
         match &self.collections.get(ix)?.coll_id {
             IdState::Known(id) => Some(id.clone()),
@@ -2351,6 +2356,7 @@ impl Workspace {
         }
     }
 
+    #[allow(dead_code)] // seam: read by tasks 140/141/143/147
     fn collection_of(&self, tab: &Entity<RequestTab>) -> Option<&OpenCollection> {
         let root = self.owner_of(tab).and_then(|o| self.root_of(o))?;
         self.coll_ix(&root).map(|i| &self.collections[i])

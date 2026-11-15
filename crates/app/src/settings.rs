@@ -561,6 +561,7 @@ mod tests {
             history_bodies: true,
             open_collections: Vec::new(),
             active_collection: None,
+            confirm_send: Default::default(),
         };
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();

@@ -1,6 +1,6 @@
 //! Assertions sub-tab (stub; content lands in a later task).
 
-use gpui::{Context, Entity, IntoElement, ParentElement, Render, Window, div};
+use gpui::{Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div};
 
 use crate::tab::RequestTab;
 use crate::workspace::Workspace;
