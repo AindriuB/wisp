@@ -21,6 +21,9 @@ opt-level = "z"
 [profile.release.package.wisp-storage]
 opt-level = "z"
 
+[profile.release.package.wisp-core]
+opt-level = "z"
+
 [workspace.dependencies]
 wisp-core = { path = "crates/core" }
 wisp-storage = { path = "crates/storage" }
