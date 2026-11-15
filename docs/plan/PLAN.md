@@ -49,7 +49,7 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 `docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled. The 🔒 items in "Follow-ups from 0.3.0 wave 1" join this backlog.
 
 ### Follow-ups from 0.3.0 wave 1 (tasks 130-135, PRs #80-#84; not 0.3.0 unless scheduled)
-🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Task 134's Lows 81-1 to 81-5 are in the user's saved PR #81 review report and not yet transcribed here.
+🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Task 134's Lows 81-1 to 81-5 are listed below as 81-1 to 81-5.
 
 Accepted residuals (decided, not defects to fix now):
 - 135: a templated scheme from a variable, `{{base}}//u:p@h`, keeps its userinfo in `inspect` output (the template hides what the userinfo is).
