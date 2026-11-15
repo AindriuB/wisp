@@ -1247,7 +1247,7 @@ const REFRESH_QUERY_SECRETS: [&str; 5] = [
     "0; url='https://e.com/?a=1&token=secret'",
     "0; url=/next?api_key=secret",
     "0; url=https://e.com/?a=1; url=/x?password=secret",
-    "0; url=https://e.com/?a=1&b=2&client_secret=secret#frag",
+    "0; url=https://e.com/?a=1&b=2&refresh_token=secret#frag",
 ];
 
 #[test]
