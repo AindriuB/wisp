@@ -70,7 +70,12 @@ From PR #82 (task 132, environment info):
 - 🔒 82-3: Unknown kind and names keep control characters; strip or escape them in `inspect`.
 - 82-4: no symlink-refusal tests (plain and secrets); 82-5: the loader hint is tested only in file mode; 82-6 (Nit): `cx()` leaks the temp dir.
 
-From PR #81 (task 134): 81-1 to 81-5 (Lows from round 1; see the user's saved report).
+From PR #81 (task 134):
+- 81-1: collection.toml is written in place, not atomically; a crash can leave a broken file that create_collection then refuses to overwrite (`ops.rs:511`).
+- 81-2: directories created by the call are left behind when the file write fails (`ops.rs:542`).
+- 🔒 81-3: a check-then-use race on environments/ could put the new file outside the collection root (`ops.rs:544`).
+- 81-4: the returned paths are absolute, unlike the module contract and the other create_* functions (`ops.rs:545`).
+- 81-5: no tests for a missing parent folder, the empty tree, environments being a file, or a dangling symlink (`create.rs:25`).
 
 From PR #83 (task 130, explain core):
 - 🔒 83-3: variables in JSON, XML and text bodies are listed with values under credential keys (`password:{{pw}}`).
