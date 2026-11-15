@@ -235,13 +235,19 @@ impl Assertion {
 }
 
 /// A top-level string key of the entry's `[[assert]]` text (empty if absent or not a plain
-/// string). Stops at the first child table header.
+/// string). Skips only the entry's own first header line, stops at any later line starting
+/// with `[` (a child table), and stops at the first line containing a multi-line string
+/// opener (`"""` or `'''`), so later keys read as missing rather than risk reading string content.
 fn raw_string(raw: &str, key: &str) -> String {
+    let mut first = true;
     for line in raw.lines().map(str::trim) {
-        if line.starts_with("[[") {
+        if line.is_empty() {
             continue;
         }
-        if line.starts_with('[') {
+        if std::mem::take(&mut first) && line.starts_with("[[") {
+            continue;
+        }
+        if line.starts_with('[') || line.contains("\"\"\"") || line.contains("'''") {
             break;
         }
         let Some((k, v)) = line.split_once('=') else {
@@ -1061,6 +1067,28 @@ mod tests {
             reason: "not supported".into(),
         };
         assert_ne!(mk("one").fingerprint(), other.fingerprint());
+    }
+
+    #[test]
+    fn unrecognised_fingerprint_ignores_child_table_keys() {
+        let mk = |v: &str| Assertion::Unrecognised {
+            raw: format!(
+                "[[assert]]\nkind = \"header\"\nname = \"Authorization\"\n[[assert.any]]\nop = \"{v}\"\n"
+            ),
+            reason: "not supported".into(),
+        };
+        assert_eq!(mk("Bearer s3cr3t").fingerprint(), mk("other").fingerprint());
+    }
+
+    #[test]
+    fn unrecognised_fingerprint_ignores_multiline_string_content() {
+        let mk = |v: &str| Assertion::Unrecognised {
+            raw: format!(
+                "[[assert]]\nkind = \"header\"\nname = \"A\"\nvalue = \"\"\"\nop = \"{v}\"\n\"\"\"\nop = \"future\"\n"
+            ),
+            reason: "not supported".into(),
+        };
+        assert_eq!(mk("s3cr3t").fingerprint(), mk("other").fingerprint());
     }
 
     #[test]

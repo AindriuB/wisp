@@ -82,3 +82,8 @@ task 137 (they need `crates/app` edits).
 ## Review round 2 — findings (HEAD 093b1e5)
 - [SPEC] assert.rs:217-220 Unrecognised fingerprint hashes the whole raw entry including `value` (e.g. `kind="header" name="Authorization" op="equals" value="Bearer s3cr3t" negate=true` — the hash changes with the value) — settled by Decision (2a).
 - [P3, follow-up] codec.rs:678-681 when both an unknown key and a wrongly typed value are present the entry is labelled "malformed" rather than "not supported" (kept verbatim and never evaluated either way).
+
+## Review round 3 — findings (HEAD 86f4391)
+- [P2] crates/core/src/assert.rs:241-243 — `raw_string` skips every `[[...]]` line instead of stopping at child tables, so a missing top-level kind/name/path/op is read from a child array-of-tables. Input: `[[assert]]\nkind = "header"\nname = "Authorization"\n[[assert.any]]\nop = "Bearer s3cr3t"` → the fingerprint hashes "Bearer s3cr3t".
+- [P2] crates/core/src/assert.rs:240-260 — no multi-line string tracking: a line inside a `"""`/`'''` value that looks like `op = "..."` is read as `op`. Input: `[[assert]]\nkind = "header"\nname = "A"\nvalue = """\nop = "s3cr3t"\n"""\nop = "future"` → hashes "s3cr3t".
+- [P3, optional, follow-up] trailing comments / quoted keys / escapes make `raw_string` return "" or undecoded text → fingerprint collisions only, no leak.
