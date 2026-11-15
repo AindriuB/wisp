@@ -1241,3 +1241,65 @@ fn scrub_failure_leaves_marker_absent_and_retries() {
     assert!(marker.exists());
     assert!(!fs::read_to_string(&req).unwrap().contains("locsecret"));
 }
+
+const REFRESH_QUERY_SECRETS: [&str; 5] = [
+    "0; url=https://example.com/?access_token=secret",
+    "0; url='https://e.com/?a=1&token=secret'",
+    "0; url=/next?api_key=secret",
+    "0; url=https://e.com/?a=1; url=/x?password=secret",
+    "0; url=https://e.com/?a=1&b=2&client_secret=secret#frag",
+];
+
+#[test]
+fn refresh_query_credentials_are_redacted_on_append() {
+    for value in REFRESH_QUERY_SECRETS {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Refresh".into(),
+            value: value.into(),
+        }];
+        let e = store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{value}");
+        assert!(e.redacted.contains(&"Refresh".to_string()), "{value}");
+    }
+}
+
+#[test]
+fn refresh_query_without_credentials_is_unchanged() {
+    for value in [
+        "0; url=https://h/p?a=1&b=2",
+        "0; url='/n?page=2&sort=x#top'",
+    ] {
+        let (_d, data, store) = setup();
+        let mut ne = plain("http://a/");
+        ne.response_headers = vec![Header {
+            name: "Refresh".into(),
+            value: value.into(),
+        }];
+        store.append(ne, Some(b"b")).unwrap();
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(text.contains(value), "{value}");
+    }
+}
+
+#[test]
+fn refresh_query_credentials_are_redacted_by_legacy_scrub() {
+    for value in REFRESH_QUERY_SECRETS {
+        let (_d, data, store) = setup();
+        let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
+        let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+        v["response_headers"] = serde_json::json!([{"name": "Refresh", "value": value}]);
+        fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+        let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+        let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{value}");
+        assert!(hist_dir(&data).join(".scrubbed-1").exists());
+    }
+}

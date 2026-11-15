@@ -113,6 +113,24 @@ fn authority_start(base: &str) -> usize {
     base.find("://").map_or(0, |i| i + 3)
 }
 
+/// Redact the value of every credential-named `name=value` pair in a query string.
+fn redact_query(q: &str, names: &mut Vec<String>) -> String {
+    let pairs: Vec<String> = q
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((n, v)) if is_secret_name(n) => {
+                let mut v = v.to_string();
+                if scrub(&mut v) {
+                    note(names, format!("query.{n}"));
+                }
+                format!("{n}={v}")
+            }
+            _ => pair.to_string(),
+        })
+        .collect();
+    pairs.join("&")
+}
+
 /// Redact userinfo and credential-named query values in a URL template.
 fn redact_url(url: &str, names: &mut Vec<String>) -> String {
     let (rest, fragment) = match url.find('#') {
@@ -154,20 +172,7 @@ fn redact_url(url: &str, names: &mut Vec<String>) -> String {
     }
     if let Some(q) = query {
         out.push('?');
-        let pairs: Vec<String> = q
-            .split('&')
-            .map(|pair| match pair.split_once('=') {
-                Some((n, v)) if is_secret_name(n) => {
-                    let mut v = v.to_string();
-                    if scrub(&mut v) {
-                        note(names, format!("query.{n}"));
-                    }
-                    format!("{n}={v}")
-                }
-                _ => pair.to_string(),
-            })
-            .collect();
-        out.push_str(&pairs.join("&"));
+        out.push_str(&redact_query(q, names));
     }
     out.push_str(fragment);
     out
@@ -698,6 +703,16 @@ fn redact_refresh(value: &str, found: &mut Vec<String>) -> String {
             user.push_str(&pw);
         }
         out.replace_range(p..at, &user);
+    }
+    // Every `?` opens a query that runs to `#`, whitespace, a quote, `;` or the end.
+    let mut pos = out.len();
+    while let Some(q) = out[..pos].rfind('?') {
+        let end = out[q + 1..]
+            .find(|c: char| c == '#' || c == '\'' || c == '"' || c == ';' || c.is_whitespace())
+            .map_or(out.len(), |i| q + 1 + i);
+        let redacted = redact_query(&out[q + 1..end], found);
+        out.replace_range(q + 1..end, &redacted);
+        pos = q;
     }
     out
 }
