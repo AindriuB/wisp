@@ -1,0 +1,34 @@
+{
+  "run": "https://github.com/AindriuB/wisp/actions/runs/43976706350",
+  "run_id": 43976706350,
+  "built_commit": "4769107adc3750d0890f88e009b76c59d4edf54a",
+  "note": "measure.yml dispatched on main at the wave-2 head (PR #108 merge); all matrix targets green",
+  "baseline": {
+    "commit": "db79d76",
+    "note": "wave-1 head measured by task 138",
+    "run": "https://github.com/AindriuB/wisp/actions/runs/43704237455",
+    "run_id": 43704237455
+  },
+  "windows_gate_bytes": 15500000,
+  "windows_soft_line_bytes": 15400000,
+  "windows_gui_status": "UNDER the 15,500,000 B gate by 5,344 B; OVER the 15,400,000 B soft line by 94,656 B. Cut order (spec Size gate) applies; nothing cut here.",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "gui_bytes": 11817952, "cli_bytes": 1415600,
+      "baseline_gui_bytes": 11585856, "gui_delta_bytes": 232096,
+      "baseline_cli_bytes": 552528
+    },
+    "x86_64-pc-windows-msvc": {
+      "gui_bytes": 15494656, "cli_bytes": 1631232,
+      "baseline_gui_bytes": 15179264, "gui_delta_bytes": 315392,
+      "baseline_cli_bytes": 567808,
+      "under_gate": true, "over_soft_line": true,
+      "gate_headroom_bytes": 5344, "over_soft_line_bytes": 94656
+    },
+    "x86_64-unknown-linux-gnu": {
+      "gui_bytes": 26181000, "cli_bytes": 1966744,
+      "baseline_gui_bytes": 25867912, "gui_delta_bytes": 313088,
+      "baseline_cli_bytes": 662728
+    }
+  }
+}
