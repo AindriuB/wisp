@@ -57,7 +57,8 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 - 🔒 `authority_start` in the import path has the same special-scheme gap (`https:user:pw@h`, `https:\user:pw@h`; `\` is never a slash), so import may keep userinfo (`import/mod.rs:267`).
 - 🔒 `redact_ignoring_newlines` does not trim leading or trailing C0 and space as WHATWG does; a request URL like ` https:/alice:secret@h/` would keep its credentials if untrimmed URLs reach storage; check whether they can (`history.rs:147`).
 - `open_scrubs_old_entries_once` sleeps 20 ms and relies on mtimes; compare bytes or inode and drop the sleep (`tests/history.rs`).
-- A `mailto:alice@example.com` Location is redacted because `authority_start` returns 0 and the whole value is treated as authority; this over-redaction is pinned by `mailto_location_is_handled_by_the_existing_rule`, and the round-2 decision was left to the orchestrator, so decide it.
+- Design question: the global `APPEND_LOCK` queues appends across every collection, so N queued appends can wait N × 5 s; consider a per-collection mutex.
+- A `mailto:alice@example.com` Location is redacted because `authority_start` returns 0 and the whole value is treated as authority; this over-redaction is pinned by `mailto_location_is_handled_by_the_existing_rule`, and the round-2 decision was left to the orchestrator, so decide it. A no-scheme `a@b` Location is likewise mangled to `@b` (no leak).
 - No test for a request URL `https:/alice:secret@h/` (only headers are pinned), and the redaction of a non-special no-slash `custom:a:b@h` is untested.
 - The fifth `CONTROL_CHAR_HEADERS` entry (`https://ali\r\nce:sec\r\nret@h/`) is vacuous: JSON escapes CR and LF, so `secret` never appears on disk anyway.
 - The `leading_whitespace_headers` tests cover Location and Content-Location only; none pins leading C0 for Refresh or for request URLs.
