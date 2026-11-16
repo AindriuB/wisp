@@ -21,6 +21,8 @@ no row is one `planner` cannot find, and will re-plan.
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
 | 2026-11-16 | 148 | New collection and New environment palette commands and sidebar buttons; pure name check and notice mapping in ui/create.rs | ## 2026-11-16 — New collection and New environment from the app (task 148) |
+
+| 2026-11-16 | 147 | assertions evaluated per send into Checks pane; history records environment and per-assertion records; chip and Resend notice; AC2 amended (unfiltered body) | ## 2026-11-16 — Assertions run after each send and history records environment and checks (task 147) |
 | 2026-11-16 | 152 | saving a history tab no longer overwrites a sidecar; bodies inlined on open, save-time backstop via replace_draft | ## 2026-11-16 — A history tab no longer overwrites a sidecar on save (task 152) |
 | 2026-11-16 | 143 | checked saves (conflict check against disk baseline), save-and-close and quit prompts, sidecar guard | ## 2026-11-16 — Checked saves and save-and-close prompts (task 143) |
 | 2026-11-16 | 141 | Assertions sub-tab editor (matrix-valid controls, row_error, Unrecognised preserved) and Checks pane; evaluation is 147 | ## 2026-11-16 — Assertions editor and Checks pane (task 141) |

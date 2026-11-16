@@ -22,8 +22,8 @@ than no plan.
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendment 1; roadmap: `docs/plan/roadmap.md`.
 - **Waves 0 and 1 complete (PRs #78-#90):** 129, theme-palette, 130-138; main CI green on all three platforms. Windows GUI 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger. Detail in `docs/plan/archive/2026-11-16-closed-sections.md`.
 - **Wave 2 merged and recorded (PRs #92-#102):** 139-146, 150-152. Detail in `docs/plan/archive/2026-11-16-closed-sections.md` and HISTORY.
-- **148 (new collection and environment UI):** recorded, PR #108, last verified at d5aed9e; its follow-ups are under "Follow-ups from task 148".
-- **Next:** 147 (assertion and history wiring, in flight; edits the `workspace.rs` serial queue 139 -> 143 -> 147), then 149 (measure wave 2) last.
+- **147 and 148 recorded (PRs #109 and #108):** assertion and history wiring, and the new collection and environment UI. Follow-ups are under "Follow-ups from task 147" and "Follow-ups from task 148".
+- **Next:** 149 (measure wave 2) is next and last.
 
 ### v0.2.0 (published 2026-11-14)
 Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.md` and HISTORY.
@@ -76,6 +76,10 @@ None of these is marked 🔒 in the review notes (🔒 would mark a security-rel
 - 103-4: the new `file:` tests use a fixed request URL, not the looped one.
 - 103-5 (Nit): the new `file:` branch duplicates the special-scheme return; merge the conditions.
 - 103-6 (Nit): no uppercase `FILE:` or Refresh case in the new `file:` tests.
+
+### Follow-ups from task 147 (assertion and history wiring; not 0.3.0 unless scheduled)
+- [Note] AC4's test checks the history records only. `NewEntry.request` still carries assertions with expected values and `response_headers` carries header values; the store strips both (`redact_request` history.rs:449, `redact_response_headers` :1043), as the spec intends, but no test inspects the whole `NewEntry`.
+- [Note] A failed or cancelled send recording an empty assertion list is checked by reading only (`show_sending` resets `ResponseState`); no test covers it.
 
 ### Follow-ups from tasks 143 and 152 (PRs #101 and #102; not 0.3.0 unless scheduled)
 From PR #102's review (https://github.com/AindriuB/wisp/pull/102#pullrequestreview-5927425261):
