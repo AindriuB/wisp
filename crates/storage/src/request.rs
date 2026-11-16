@@ -434,11 +434,31 @@ pub fn assertions_equal(left: &[Assertion], right: &[Assertion]) -> bool {
 }
 
 impl DiskBaseline {
-    /// Raw malformed-request bytes do not capture the sidecar this draft would overwrite.
-    pub fn lacks_sidecar_baseline(&self, draft: &Request) -> bool {
-        matches!(self, Self::Unreadable(_))
-            && matches!(&draft.body, Body::Json(body) | Body::Text(body) | Body::Xml(body)
-                if body.sidecar.is_some())
+    /// Whether saving `draft` could overwrite a sidecar this baseline never captured.
+    ///
+    /// Unreadable request bytes hold no sidecar baseline, so any sidecar body is refused. A
+    /// missing request file is refused only when the sidecar exists with different bytes (or
+    /// cannot be read), since recreating over an absent or identical sidecar loses nothing.
+    pub fn lacks_sidecar_baseline(&self, request_path: &Path, draft: &Request) -> bool {
+        let (Body::Json(body) | Body::Text(body) | Body::Xml(body)) = &draft.body else {
+            return false;
+        };
+        let Some(name) = &body.sidecar else {
+            return false;
+        };
+        match self {
+            Self::Unreadable(_) => true,
+            Self::Missing => {
+                let Ok(target) = sidecar_path(dir_of(request_path), request_path, name) else {
+                    return false;
+                };
+                match std::fs::read(&target) {
+                    Ok(bytes) => bytes != body.content.as_bytes(),
+                    Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+                }
+            }
+            Self::Request(_) => false,
+        }
     }
 
     pub fn read(path: &Path) -> Result<Self, StorageError> {
@@ -495,7 +515,7 @@ pub fn save_request_if_unchanged(
         // Without readable bytes even an earlier Keep cannot authorize a write.
         return Ok(SaveOutcome::Conflict);
     };
-    if &current != expected || expected.lacks_sidecar_baseline(draft) {
+    if &current != expected || expected.lacks_sidecar_baseline(path, draft) {
         return Ok(SaveOutcome::Conflict);
     }
     write_request(path, draft, doc)?;
@@ -950,6 +970,43 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
             SaveOutcome::Conflict
         );
         assert_eq!(std::fs::read(&p).unwrap(), bytes);
+    }
+
+    #[test]
+    fn missing_request_file_cannot_overwrite_an_externally_edited_sidecar() {
+        let (d, p) = example();
+        let draft = load_request(&p).unwrap();
+        let sidecar = d.path().join("create-user.body.json");
+        std::fs::remove_file(&p).unwrap();
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        assert_eq!(
+            save_request_if_unchanged(&p, &DiskBaseline::Missing, &draft).unwrap(),
+            SaveOutcome::Conflict
+        );
+        assert!(!p.exists());
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside body");
+    }
+
+    #[test]
+    fn missing_request_file_recreates_with_an_absent_or_identical_sidecar() {
+        let (d, p) = example();
+        let draft = load_request(&p).unwrap();
+        let sidecar = d.path().join("create-user.body.json");
+        std::fs::remove_file(&p).unwrap();
+        // Identical bytes.
+        assert_eq!(
+            save_request_if_unchanged(&p, &DiskBaseline::Missing, &draft).unwrap(),
+            SaveOutcome::Written
+        );
+        assert_eq!(load_request(&p).unwrap(), draft);
+        // Absent sidecar.
+        std::fs::remove_file(&p).unwrap();
+        std::fs::remove_file(&sidecar).unwrap();
+        assert_eq!(
+            save_request_if_unchanged(&p, &DiskBaseline::Missing, &draft).unwrap(),
+            SaveOutcome::Written
+        );
+        assert_eq!(load_request(&p).unwrap(), draft);
     }
 
     #[test]
