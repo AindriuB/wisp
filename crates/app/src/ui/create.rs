@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn env_name_table() {
+    fn env_names_are_checked_for_empty_bad_characters_and_duplicates() {
         let existing = vec!["dev".to_string()];
         let cases: [(&str, bool); 8] = [
             ("staging", true),
