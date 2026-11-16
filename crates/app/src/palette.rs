@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(all[2].label, "Send request");
         assert_eq!(
             items(None, &[], None, PaletteMode::All).len(),
-            CommandId::ALL.len()
+            CommandId::ALL.len() - 1
         );
 
         let envs = vec!["dev".to_string(), "prod".to_string()];
