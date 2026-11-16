@@ -477,7 +477,17 @@ fn read_disk_document(path: &Path) -> Result<(DiskBaseline, DocumentMut), Storag
     };
     let baseline = match request_from_doc(path, &doc) {
         Ok(request) => DiskBaseline::Request(Box::new(request)),
-        // An unreadable sidecar has no captured body baseline, so Keep cannot authorize it.
+        // A sidecar that is missing or not UTF-8 leaves the TOML readable but the body
+        // uncaptured: classify the raw TOML so the sidecar guard decides about the sidecar.
+        // Any other I/O error (permissions, a directory) stays an error and conflicts.
+        Err(StorageError::Io { source, .. })
+            if matches!(
+                source.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+            ) =>
+        {
+            DiskBaseline::Unreadable(bytes)
+        }
         Err(error @ StorageError::Io { .. }) => return Err(error),
         Err(_) => DiskBaseline::Unreadable(bytes),
     };
@@ -493,13 +503,13 @@ pub enum SaveOutcome {
 /// Re-read the request just before saving. Conflicts leave both files untouched.
 ///
 /// When the draft has a sidecar the `expected` baseline never captured, the sidecar must be
-/// absent, equal the draft, or equal `known_sidecar` (its name and the content Wisp last read
-/// or wrote). Anything else, including an unreadable sidecar, is a conflict.
+/// absent, equal the draft, or equal `known_sidecar` (its name and the bytes Wisp last read
+/// or wrote). Anything else, including a sidecar that cannot be read, is a conflict.
 pub fn save_request_if_unchanged(
     path: &Path,
     expected: &DiskBaseline,
     draft: &Request,
-    known_sidecar: Option<(&str, &str)>,
+    known_sidecar: Option<(&str, &[u8])>,
 ) -> Result<SaveOutcome, StorageError> {
     let Ok((current, doc)) = read_disk_document(path) else {
         // Without readable bytes even an earlier Keep cannot authorize a write.
@@ -517,7 +527,7 @@ fn sidecar_guard_allows(
     request_path: &Path,
     expected: &DiskBaseline,
     draft: &Request,
-    known_sidecar: Option<(&str, &str)>,
+    known_sidecar: Option<(&str, &[u8])>,
 ) -> bool {
     let (Body::Json(body) | Body::Text(body) | Body::Xml(body)) = &draft.body else {
         return true;
@@ -535,8 +545,7 @@ fn sidecar_guard_allows(
     match std::fs::read(&target) {
         Ok(bytes) => {
             bytes == body.content.as_bytes()
-                || known_sidecar
-                    .is_some_and(|(n, content)| n == name && bytes == content.as_bytes())
+                || known_sidecar.is_some_and(|(n, content)| n == name && bytes == content)
         }
         Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     }
@@ -927,7 +936,9 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
             b"\xffchanged unreadable body",
         ] {
             std::fs::write(&sidecar, body).unwrap();
-            assert!(DiskBaseline::read(&p).is_err());
+            assert!(
+                matches!(DiskBaseline::read(&p).unwrap(), DiskBaseline::Unreadable(raw) if raw == request_bytes)
+            );
             assert_eq!(
                 save_request_if_unchanged(&p, &expected, &draft, None).unwrap(),
                 SaveOutcome::Conflict
@@ -935,6 +946,62 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
             assert_eq!(std::fs::read(&p).unwrap(), request_bytes);
             assert_eq!(std::fs::read(&sidecar).unwrap(), body);
         }
+    }
+
+    #[test]
+    fn a_missing_or_non_utf8_sidecar_classifies_the_request_as_unreadable() {
+        let (d, p) = example();
+        let sidecar = d.path().join("create-user.body.json");
+        let request_bytes = std::fs::read(&p).unwrap();
+        let draft = load_request(&p).unwrap();
+        std::fs::remove_file(&sidecar).unwrap();
+        let kept = DiskBaseline::read(&p).unwrap();
+        assert!(matches!(&kept, DiskBaseline::Unreadable(raw) if *raw == request_bytes));
+        // A missing sidecar is recreated from the draft.
+        assert_eq!(
+            save_request_if_unchanged(&p, &kept, &draft, None).unwrap(),
+            SaveOutcome::Written
+        );
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"{\"a\": 1}\n");
+        // A non-UTF-8 sidecar is allowed only once its bytes are known.
+        std::fs::write(&sidecar, b"\xffbytes").unwrap();
+        let kept = DiskBaseline::read(&p).unwrap();
+        assert!(matches!(kept, DiskBaseline::Unreadable(_)));
+        assert_eq!(
+            save_request_if_unchanged(&p, &kept, &draft, None).unwrap(),
+            SaveOutcome::Conflict
+        );
+        assert_eq!(
+            save_request_if_unchanged(
+                &p,
+                &kept,
+                &draft,
+                Some(("create-user.body.json", b"\xffother".as_slice()))
+            )
+            .unwrap(),
+            SaveOutcome::Conflict
+        );
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"\xffbytes");
+        assert_eq!(
+            save_request_if_unchanged(
+                &p,
+                &kept,
+                &draft,
+                Some(("create-user.body.json", b"\xffbytes".as_slice()))
+            )
+            .unwrap(),
+            SaveOutcome::Written
+        );
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"{\"a\": 1}\n");
+    }
+
+    #[test]
+    fn a_directory_in_place_of_the_sidecar_stays_an_error() {
+        let (d, p) = example();
+        let sidecar = d.path().join("create-user.body.json");
+        std::fs::remove_file(&sidecar).unwrap();
+        std::fs::create_dir(&sidecar).unwrap();
+        assert!(DiskBaseline::read(&p).is_err());
     }
 
     #[test]
@@ -1052,7 +1119,7 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
                 &p,
                 &DiskBaseline::Missing,
                 &draft,
-                Some(("create-user.body.json", &known))
+                Some(("create-user.body.json", known.as_bytes()))
             )
             .unwrap(),
             SaveOutcome::Written
@@ -1096,7 +1163,7 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
                     &p,
                     &kept,
                     &draft,
-                    Some(("create-user.body.json", &known))
+                    Some(("create-user.body.json", known.as_bytes()))
                 )
                 .unwrap(),
                 SaveOutcome::Conflict
@@ -1110,7 +1177,7 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
                     &p,
                     &kept,
                     &draft,
-                    Some(("create-user.body.json", &known))
+                    Some(("create-user.body.json", known.as_bytes()))
                 )
                 .unwrap(),
                 SaveOutcome::Written
@@ -1131,8 +1198,13 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         let kept = DiskBaseline::read(&p).unwrap();
         assert!(matches!(kept, DiskBaseline::Unreadable(_)));
         assert_eq!(
-            save_request_if_unchanged(&p, &kept, &draft, Some(("create-user.body.json", &known)))
-                .unwrap(),
+            save_request_if_unchanged(
+                &p,
+                &kept,
+                &draft,
+                Some(("create-user.body.json", known.as_bytes()))
+            )
+            .unwrap(),
             SaveOutcome::Written
         );
         assert!(d.path().join("create-user.body.json").exists());
@@ -1152,7 +1224,7 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
                 &p,
                 &DiskBaseline::Missing,
                 &draft,
-                Some(("create-user.body.json", &known))
+                Some(("create-user.body.json", known.as_bytes()))
             )
             .unwrap(),
             SaveOutcome::Conflict

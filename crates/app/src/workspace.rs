@@ -1202,10 +1202,11 @@ fn recorded_request(scope_path: Option<&Path>) -> Option<String> {
 /// A request's sidecar as the user last saw it, for tabs whose save the sidecar guard refused.
 #[derive(Default)]
 struct SidecarSeen {
-    /// Name and content when the guard refused; Keep mine promotes it to `kept`.
-    refused: Option<(String, String)>,
-    /// Name and content the user kept: the known content for the next guarded save.
-    kept: Option<(String, String)>,
+    /// Name and bytes when the guard refused (`None` bytes: the sidecar was absent); Keep
+    /// promotes it to `kept`.
+    refused: Option<(String, Option<Vec<u8>>)>,
+    /// Name and bytes the user kept: the known content for the next guarded save.
+    kept: Option<(String, Option<Vec<u8>>)>,
 }
 
 pub struct Workspace {
@@ -2256,22 +2257,39 @@ impl Workspace {
         let abs = root.join(rel);
         match wisp_storage::request::DiskBaseline::read(&abs) {
             Ok(baseline) => tab.update(cx, |t, cx| {
-                // A refused sidecar is kept as it is now; any other Keep clears older content.
+                // A refused sidecar is kept as it is now. Without a refusal, only a sidecar the
+                // banner itself reported (missing or not UTF-8) is kept; a readable one the user
+                // has not seen stays guarded. Any other Keep clears older content.
                 let refused = self
                     .sidecar_seen
                     .remove(&tab.entity_id())
-                    .and_then(|seen| seen.refused);
-                if let Some((name, _)) = refused
+                    .and_then(|seen| seen.refused)
+                    .map(|(name, _)| name);
+                let had_refusal = refused.is_some();
+                let name = refused.or_else(|| match &t.draft.body {
+                    Body::Json(b) | Body::Text(b) | Body::Xml(b) => b.sidecar.clone(),
+                    _ => None,
+                });
+                if let Some(name) = name
                     && let Some(dir) = abs.parent()
-                    && let Ok(content) = std::fs::read_to_string(dir.join(&name))
                 {
-                    self.sidecar_seen.insert(
-                        tab.entity_id(),
-                        SidecarSeen {
-                            refused: None,
-                            kept: Some((name, content)),
-                        },
-                    );
+                    let content = match std::fs::read(dir.join(&name)) {
+                        Ok(bytes) if had_refusal || std::str::from_utf8(&bytes).is_err() => {
+                            Some(Some(bytes))
+                        }
+                        Ok(_) => None,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+                        Err(_) => None,
+                    };
+                    if let Some(content) = content {
+                        self.sidecar_seen.insert(
+                            tab.entity_id(),
+                            SidecarSeen {
+                                refused: None,
+                                kept: Some((name, content)),
+                            },
+                        );
+                    }
                 }
                 t.kept_disk = Some(baseline);
                 t.set_disk_state(DiskState::InSync, cx);
@@ -3065,9 +3083,10 @@ impl Workspace {
                 .and_then(|seen| seen.kept.clone());
             let known = kept.or_else(|| {
                 t.saved.as_ref().and_then(|saved| match &saved.body {
-                    Body::Json(b) | Body::Text(b) | Body::Xml(b) => {
-                        b.sidecar.clone().map(|name| (name, b.content.clone()))
-                    }
+                    Body::Json(b) | Body::Text(b) | Body::Xml(b) => b
+                        .sidecar
+                        .clone()
+                        .map(|name| (name, Some(b.content.clone().into_bytes()))),
                     _ => None,
                 })
             });
@@ -3075,7 +3094,9 @@ impl Workspace {
                 &abs,
                 baseline,
                 &draft,
-                known.as_ref().map(|(n, c)| (n.as_str(), c.as_str())),
+                known
+                    .as_ref()
+                    .and_then(|(n, c)| Some((n.as_str(), c.as_deref()?))),
             )
             .map_err(|_| anyhow::anyhow!("Could not write the request file"))?;
             if outcome == SaveOutcome::Conflict {
@@ -3086,7 +3107,11 @@ impl Workspace {
                 {
                     let seen = abs
                         .parent()
-                        .and_then(|dir| std::fs::read_to_string(dir.join(name)).ok());
+                        .and_then(|dir| match std::fs::read(dir.join(name)) {
+                            Ok(bytes) => Some(Some(bytes)),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+                            Err(_) => None,
+                        });
                     let Some(content) = seen else {
                         anyhow::bail!("Not saved: sidecar `{name}` cannot be read");
                     };
@@ -3101,8 +3126,13 @@ impl Workspace {
                         .or_default()
                         .refused = Some((name.clone(), content));
                     tab.update(cx, |t, cx| t.set_disk_state(state, cx));
+                    let choice = if state == DiskState::DeletedOnDisk {
+                        "Keep"
+                    } else {
+                        "Keep mine"
+                    };
                     anyhow::bail!(
-                        "Not saved: sidecar `{name}` was changed outside Wisp; choose Keep mine to overwrite it"
+                        "Not saved: sidecar `{name}` was changed outside Wisp; choose {choice} to overwrite it"
                     );
                 }
                 let missing = std::fs::symlink_metadata(&abs)
@@ -5330,6 +5360,85 @@ mod env_wiring_tests {
         fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
         fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
         assert_eq!(saved_body(&path), "edited");
+    }
+
+    /// Replace the sidecar behind a dirty tab and let the watcher notice.
+    fn break_sidecar(
+        fx: &Fx,
+        tab: &Entity<RequestTab>,
+        bytes: Option<&[u8]>,
+        cx: &mut TestAppContext,
+    ) {
+        let sidecar = fx.root.join("sidecar.txt");
+        match bytes {
+            Some(b) => std::fs::write(&sidecar, b).unwrap(),
+            None => std::fs::remove_file(&sidecar).unwrap(),
+        }
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(tab, &fx.root, cx));
+    }
+
+    #[gpui::test]
+    fn a_deleted_or_non_utf8_sidecar_under_a_readable_request_recovers_through_keep_mine(
+        cx: &mut TestAppContext,
+    ) {
+        for bytes in [None, Some(b"\xff".as_slice())] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let sidecar = fx.root.join("sidecar.txt");
+            break_sidecar(&fx, &tab, bytes, cx);
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+            fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+            assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+            assert_eq!(saved_body(&fx.root.join(&rel)), "edited");
+            assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    #[gpui::test]
+    fn a_non_utf8_sidecar_beside_a_deleted_request_recovers_through_keep(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&sidecar, b"\xff").unwrap();
+        save_err(&fx, &tab, cx);
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+        let err = save_err(&fx, &tab, cx);
+        assert!(
+            err.contains("sidecar.txt") && !err.contains("Keep mine"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"\xff");
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn a_non_utf8_sidecar_that_changes_again_after_keep_mine_is_refused(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, _rel) = sidecar_tab(&fx, cx);
+        let sidecar = fx.root.join("sidecar.txt");
+        break_sidecar(&fx, &tab, Some(b"\xff"), cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        std::fs::write(&sidecar, b"\xfe again").unwrap();
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"\xfe again");
+        assert_ne!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        // Keep mine again records the new bytes, and the save then goes through.
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
     }
 
     #[gpui::test]
