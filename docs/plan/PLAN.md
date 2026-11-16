@@ -78,7 +78,7 @@ From PR #102's review (https://github.com/AindriuB/wisp/pull/102#pullrequestrevi
 - [Nit] 102-4: wording of the `new_tomls` doc comment.
 
 From PR #101 (task 143, save and close):
-- [P3] 101-3 and 101-4: Lows the owner deferred; not recorded in the 143 task file, read PR #101 for the text.
+- [P3] 101-3 and 101-4: Lows the owner deferred; text not recorded on PR #101 or in the 143 task file. 101-1 and 101-2 were fixed in 91f09b5 and a53bbd6.
 - [P3] `sidecar_seen` entries are never removed when a tab closes.
 - [P3] Keep mine records the sidecar as it is at click time, not the version the refusal saw.
 - [P3] The quit prompt fixes its tab list before it opens.
