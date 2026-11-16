@@ -13,12 +13,15 @@ use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath};
 use wisp_core::Method;
-use wisp_core::resolve::{Location, Problem, resolve};
+use wisp_core::resolve::{AuthReport, Location, Problem, explain_auth, resolve};
+use wisp_storage::vault::LoadStatus;
 
 use crate::highlight::{self, SpanKind, VarState};
 use crate::tab::{Phase, RequestTab, TabEvent};
+use crate::ui::explain::{origin_text, tab_folders};
 use crate::url_sync::{apply_url_text, display_url, sync_path_vars};
-use crate::workspace::{Workspace, WorkspaceEvent};
+use crate::vault::EnvState;
+use crate::workspace::{HistoryScope, Workspace, WorkspaceEvent};
 
 const METHODS: [(Method, &str); 7] = [
     (Method::Get, "GET"),
@@ -48,7 +51,53 @@ pub fn folder_names(path: Option<&Path>) -> Vec<String> {
         .collect()
 }
 
-fn location_text(location: &Location) -> String {
+pub(crate) fn strip_text(
+    environment: Option<(&str, Option<&EnvState>)>,
+    auth: &AuthReport,
+    history: &HistoryScope,
+    folders: &[String],
+) -> String {
+    let env = match environment {
+        None => "none".to_string(),
+        Some((name, state)) => {
+            let status = match state {
+                None | Some(EnvState::Loading) => "secrets loading",
+                Some(EnvState::Error(_))
+                | Some(EnvState::Loaded {
+                    status: LoadStatus::Failed { .. },
+                    ..
+                }) => "secrets failed",
+                Some(EnvState::Loaded {
+                    status: LoadStatus::Store { .. },
+                    ..
+                }) => "keychain",
+                Some(EnvState::Loaded { .. }) => "secrets loaded",
+            };
+            format!("{name} ({status})")
+        }
+    };
+    let source = auth
+        .origin
+        .as_ref()
+        .map_or_else(|| "none".to_string(), |o| origin_text(o, folders));
+    let history = match history {
+        HistoryScope::Records(path) => format!("records under {}", path.display()),
+        HistoryScope::NotRecorded => "scratch: not recorded".into(),
+        HistoryScope::Scratch => "scratch: recorded without a request link".into(),
+        HistoryScope::OriginalMissing => {
+            "original request missing: recorded without a request link".into()
+        }
+        HistoryScope::UrlEdited => "URL edited: recorded without a request link".into(),
+        HistoryScope::Off(reason) => format!("off: {reason}"),
+        HistoryScope::Pending => "history: pending".into(),
+    };
+    format!(
+        "Environment: {env}  ·  Auth: {}, from {source}  ·  History: {history}",
+        auth.kind.label()
+    )
+}
+
+pub(crate) fn location_text(location: &Location) -> String {
     match location {
         Location::Url => "URL".to_string(),
         Location::PathParam(n) => format!("path parameter {n}"),
@@ -108,6 +157,7 @@ pub struct UrlBar {
     input: Entity<InputState>,
     segments: Vec<Segment>,
     problems: Vec<String>,
+    context_strip: String,
     /// What the draft's URL text was right after this input's own last edit.
     own_last: Option<String>,
     _subs: Vec<Subscription>,
@@ -151,11 +201,17 @@ impl UrlBar {
             input,
             segments: Vec::new(),
             problems: Vec::new(),
+            context_strip: String::new(),
             own_last: None,
             _subs: subs,
         };
         this.refresh(cx);
         this
+    }
+
+    #[cfg(test)]
+    pub(crate) fn context_strip_text(&self) -> &str {
+        &self.context_strip
     }
 
     fn on_method(
@@ -230,6 +286,7 @@ impl UrlBar {
                 self.resync(false, window, cx);
                 self.refresh(cx);
             }
+            TabEvent::Saved => self.refresh(cx),
             _ => {}
         }
         cx.notify();
@@ -243,7 +300,10 @@ impl UrlBar {
     ) {
         if matches!(
             event,
-            WorkspaceEvent::EnvironmentChanged | WorkspaceEvent::CollectionChanged
+            WorkspaceEvent::EnvironmentChanged
+                | WorkspaceEvent::CollectionChanged
+                | WorkspaceEvent::SecretsChanged
+                | WorkspaceEvent::HistoryChanged
         ) {
             self.refresh(cx);
             cx.notify();
@@ -277,6 +337,29 @@ impl UrlBar {
         let folders = folder_names(path.as_deref());
         let ws = self.workspace.read(cx);
         let scope = ws.scope_for(path.as_deref());
+        let send_scope = ws.send_scope(&self.tab, cx);
+        let auth = explain_auth(&draft, &send_scope);
+        let folders_for_send = tab_folders(ws, &self.tab, cx);
+        let collection = ws
+            .collections
+            .iter()
+            .find(|c| c.group.tabs.contains(&self.tab));
+        let environment = collection.and_then(|c| {
+            c.active_env.as_ref().map(|env| {
+                let state = c
+                    .env_status
+                    .as_ref()
+                    .filter(|status| status.env == env.name)
+                    .map(|status| &status.state);
+                (env.name.as_str(), state)
+            })
+        });
+        self.context_strip = strip_text(
+            environment,
+            &auth,
+            &ws.history_scope(&self.tab, cx),
+            &folders_for_send,
+        );
         let text = display_url(&draft.url, &draft.params);
         self.segments = highlight::url_spans(&text, &draft, &scope)
             .into_iter()
@@ -384,6 +467,15 @@ impl Render for UrlBar {
                     .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
                     .child(div().flex_none().child(button)),
             )
+            .child(
+                div()
+                    .px_2()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(self.context_strip.clone()),
+            )
             .child(strip)
             .child(problems)
     }
@@ -393,6 +485,46 @@ impl Render for UrlBar {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn strip_covers_history_scopes() {
+        use wisp_core::resolve::{AuthApplication, AuthKind, Origin};
+        let auth = AuthReport {
+            kind: AuthKind::Bearer,
+            origin: Some(Origin::Folder(0)),
+            application: AuthApplication::None,
+            fields: vec![],
+        };
+        let cases = [
+            (
+                HistoryScope::Records("users/get.toml".into()),
+                "records under users/get.toml",
+            ),
+            (HistoryScope::NotRecorded, "scratch: not recorded"),
+            (
+                HistoryScope::Scratch,
+                "scratch: recorded without a request link",
+            ),
+            (HistoryScope::OriginalMissing, "original request missing"),
+            (HistoryScope::UrlEdited, "URL edited"),
+            (HistoryScope::Off("disabled".into()), "off: disabled"),
+            (HistoryScope::Pending, "history: pending"),
+        ];
+        for (scope, expected) in cases {
+            let text = strip_text(None, &auth, &scope, &["users".into()]);
+            assert!(text.contains(expected), "{text}");
+            assert!(text.contains("Bearer, from folder users"));
+        }
+        assert!(
+            strip_text(
+                Some(("dev", Some(&EnvState::Error("ignored".into())))),
+                &auth,
+                &HistoryScope::Pending,
+                &[]
+            )
+            .contains("dev (secrets failed)")
+        );
+    }
 
     #[test]
     fn untick_then_retick_while_focused_resyncs_both_times() {
