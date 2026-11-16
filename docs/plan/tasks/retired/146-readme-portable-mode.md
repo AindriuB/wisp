@@ -32,3 +32,6 @@ keeping the marker file as the Windows and Linux mechanism.
 ## Out of scope
 - Any code change to the marker handling (D-D: none).
 - The README CLI section and the "Unsaved changes" wording for Save and close (wave 3 docs, 3C).
+
+## Outcome
+Merged as PR #92 (3624ef0) at c62d720. README now says macOS portable data uses an absolute `WISP_DATA_DIR` and the `portable` marker is the Windows and Linux mechanism.

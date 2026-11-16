@@ -20,6 +20,12 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-16 | 151 | explain report: hidden-set variables hidden in headers, params, URL, body, auth; shared work budget | ## 2026-11-16 — Explain hides every expansion of a hidden variable (task 151) |
+| 2026-11-16 | 142 | wisp-cli validate/explain, text and --json, canary and read-only tests | ## 2026-11-16 — wisp-cli validate and explain (task 142) |
+| 2026-11-16 | 139 | UI seams: stub panes, dirty flag, CheckOutcome, confirm_send, workspace scope accessors | ## 2026-11-16 — Wave-2 UI seams (task 139) |
+| 2026-11-16 | 150 | auth editor: SigV4 access key masked with toggle (H8) | ## 2026-11-16 — SigV4 access key masked (task 150) |
+| 2026-11-16 | 145 | classify kind_of unit tests; network DNS test bounded to 5 s; flake entry removed | ## 2026-11-16 — DNS classify unit test (task 145) |
+| 2026-11-16 | 146 | README: macOS portable data via WISP_DATA_DIR (B2, D-D) | ## 2026-11-16 — README portable-mode sentence (task 146) |
 | 2026-11-16 | 144 | history hardening H1: eviction, bounded lock, redaction of Location/Refresh, one-time scrub, URL authority rounds | ## 2026-11-16 — History hardening, H1 (task 144) |
 | 2026-11-15 | 138 | wisp-core opt-level z, Windows headroom 320,736 B | ## 2026-11-15 — wisp-core built at opt-level z (task 138) |
 | 2026-11-15 | 137 | history provenance fields, AC4 header decision | ## 2026-11-15 — History provenance fields (task 137) |
