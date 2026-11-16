@@ -11,7 +11,9 @@ use gpui::{
 use wisp_core::auth::EngineAuth;
 use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::cookies::{CookieJar, CookieJars};
-use wisp_core::request::{Auth, Body, CollectionDefaults, Environment, PartValue, Request};
+use wisp_core::request::{
+    Auth, Body, CollectionDefaults, Environment, PartValue, Request, TextBody,
+};
 use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
 use wisp_core::{
     Command, Engine, EngineConfig, EngineError, Event, EventReceiver, PreparedRequest, RequestId,
@@ -3045,6 +3047,7 @@ impl Workspace {
         use wisp_storage::request::{DiskBaseline, SaveOutcome, save_request_if_unchanged};
         let t = tab.read(cx);
         let mut draft = t.draft.clone();
+        let was_path = t.path.is_some();
         let rel = if let Some(rel) = t.path.clone() {
             let expected;
             let baseline = match t.disk {
@@ -3141,6 +3144,8 @@ impl Workspace {
             if draft.name.is_empty() {
                 draft.name = "Untitled".into();
             }
+            // A new request file never writes to a pre-existing sidecar: it is self-contained.
+            draft.body = inline_sidecar_body(draft.body);
             let rel = wisp_storage::ops::create_request(&root, Path::new(""), &draft.name)
                 .map_err(|_| anyhow::anyhow!("Could not create the request file"))?;
             if save_request(&root.join(&rel), &draft).is_err() {
@@ -3155,6 +3160,10 @@ impl Workspace {
         tab.update(cx, |t, cx| {
             if t.draft.name.is_empty() {
                 t.edit(|r| r.name = name, cx);
+            }
+            if !was_path {
+                // The file just written is inline; later saves must not name the old sidecar.
+                t.draft.body = inline_sidecar_body(t.draft.body.clone());
             }
             t.mark_saved(rel, cx)
         });
@@ -3210,6 +3219,17 @@ impl Workspace {
 
 /// The notice `Workspace::send` already showed for a refused redacted body, if
 /// this error is that refusal. Callers must not replace it with their own.
+/// A Json/Text/Xml body that names a sidecar becomes the same body inline (`sidecar: None`,
+/// content kept). Every other body is returned as it is.
+fn inline_sidecar_body(body: Body) -> Body {
+    match body {
+        Body::Json(b) if b.sidecar.is_some() => Body::Json(TextBody { sidecar: None, ..b }),
+        Body::Text(b) if b.sidecar.is_some() => Body::Text(TextBody { sidecar: None, ..b }),
+        Body::Xml(b) if b.sidecar.is_some() => Body::Xml(TextBody { sidecar: None, ..b }),
+        other => other,
+    }
+}
+
 pub(crate) fn refused_body_message(e: &ResolveError) -> Option<&str> {
     match e.problems.as_slice() {
         [
@@ -5975,5 +5995,231 @@ mod env_wiring_tests {
         cx.run_until_parked();
         assert!(!has_refresh(&fx), "{:?}", fx.store.accounts());
         assert!(fx.root.join("environments/dev.secrets.toml").exists());
+    }
+
+    /// New request files in the root: every `.toml` but the two known ones.
+    fn new_tomls(root: &Path, known: &[&str]) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+            .filter(|p| {
+                let n = p.file_name().unwrap().to_string_lossy();
+                n != "collection.toml" && !known.contains(&&*n)
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn json_sidecar_request(file: &str, content: &str) -> Request {
+        Request {
+            body: Body::Json(wisp_core::request::TextBody {
+                content: content.into(),
+                sidecar: Some(file.into()),
+            }),
+            ..Request::default()
+        }
+    }
+
+    /// Append `request` to the fixture collection's history, open it as a tab, and return the tab.
+    fn history_tab(fx: &Fx, request: Request, cx: &mut TestAppContext) -> Entity<RequestTab> {
+        let data = DataDir::at(fx._dir.path().join("data"));
+        let store = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
+        let new = NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request,
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+        };
+        let entry = store.append(new, None).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_history_entry(entry, cx));
+        cx.run_until_parked();
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        assert!(tab.read_with(cx, |t, _| t.path.is_none()));
+        tab
+    }
+
+    fn json_content(r: &Request) -> (&str, &Option<String>) {
+        match &r.body {
+            Body::Json(b) => (&b.content, &b.sidecar),
+            other => panic!("not a json body: {other:?}"),
+        }
+    }
+
+    #[gpui::test]
+    fn path_less_save_from_history_keeps_the_original_sidecar(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let original = json_sidecar_request("create-user.body.json", "{\"name\":\"ann\"}");
+        save_request(&fx.root.join("create-user.toml"), &original).unwrap();
+        let toml_before = std::fs::read(fx.root.join("create-user.toml")).unwrap();
+        let tab = history_tab(&fx, original, cx);
+        let sidecar = fx.root.join("create-user.body.json");
+        std::fs::write(&sidecar, b"{\"name\":\"edited on disk\"}").unwrap();
+
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+
+        // (a) the original sidecar is untouched
+        assert_eq!(
+            std::fs::read(&sidecar).unwrap(),
+            b"{\"name\":\"edited on disk\"}"
+        );
+        // (b) a new TOML exists; the original is byte-identical
+        assert_eq!(
+            std::fs::read(fx.root.join("create-user.toml")).unwrap(),
+            toml_before
+        );
+        let made = new_tomls(&fx.root, &["create-user.toml"]);
+        assert_eq!(made.len(), 1, "{made:?}");
+        // (c) the new file holds the history body inline
+        let text = std::fs::read_to_string(&made[0]).unwrap();
+        assert!(!text.contains("file ="), "{text}");
+        let saved = load_request(&made[0]).unwrap();
+        assert_eq!(json_content(&saved), ("{\"name\":\"ann\"}", &None));
+        // AC4: draft and saved are inlined, the tab is clean
+        tab.read_with(cx, |t, _| {
+            assert!(!t.is_dirty());
+            assert_eq!(json_content(&t.draft), ("{\"name\":\"ann\"}", &None));
+            assert_eq!(
+                json_content(t.saved.as_ref().unwrap()),
+                ("{\"name\":\"ann\"}", &None)
+            );
+        });
+        // AC4: a second edit and save (the pathed branch) stays inline
+        tab.update(cx, |t, cx| {
+            t.edit(
+                |r| {
+                    if let Body::Json(b) = &mut r.body {
+                        b.content = "{\"name\":\"bob\"}".into();
+                    }
+                },
+                cx,
+            )
+        });
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        let again = load_request(&made[0]).unwrap();
+        assert_eq!(json_content(&again), ("{\"name\":\"bob\"}", &None));
+        assert_eq!(
+            std::fs::read(&sidecar).unwrap(),
+            b"{\"name\":\"edited on disk\"}"
+        );
+        assert_eq!(new_tomls(&fx.root, &["create-user.toml"]).len(), 1);
+    }
+
+    #[gpui::test]
+    fn path_less_save_of_a_redacted_history_body_keeps_the_original_sidecar(
+        cx: &mut TestAppContext,
+    ) {
+        for text_body in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let original = if text_body {
+                Request {
+                    body: Body::Text(wisp_core::request::TextBody {
+                        content: "password=hunter2".into(),
+                        sidecar: Some("create-user.body.txt".into()),
+                    }),
+                    ..Request::default()
+                }
+            } else {
+                json_sidecar_request("create-user.body.json", "{\"password\":\"hunter2\"}")
+            };
+            let side = match &original.body {
+                Body::Text(b) | Body::Json(b) => b.sidecar.clone().unwrap(),
+                _ => unreachable!(),
+            };
+            save_request(&fx.root.join("create-user.toml"), &original).unwrap();
+            let sidecar = fx.root.join(&side);
+            let side_before = std::fs::read(&sidecar).unwrap();
+            let tab = history_tab(&fx, original, cx);
+            let shown = tab.read_with(cx, |t, _| t.draft.body.clone());
+
+            fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+
+            assert_eq!(std::fs::read(&sidecar).unwrap(), side_before);
+            let made = new_tomls(&fx.root, &["create-user.toml"]);
+            assert_eq!(made.len(), 1, "{made:?}");
+            let saved = load_request(&made[0]).unwrap();
+            let (content, sc) = match &saved.body {
+                Body::Text(b) | Body::Json(b) => (b.content.clone(), b.sidecar.clone()),
+                other => panic!("{other:?}"),
+            };
+            assert!(sc.is_none());
+            assert!(!content.contains("hunter2"), "{content}");
+            let shown_content = match &shown {
+                Body::Text(b) | Body::Json(b) => b.content.clone(),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(content, shown_content);
+        }
+    }
+
+    #[gpui::test]
+    fn path_less_save_never_touches_an_unrelated_root_file(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        std::fs::create_dir_all(fx.root.join("users")).unwrap();
+        let original = json_sidecar_request("body.json", "{\"in\":\"folder\"}");
+        save_request(&fx.root.join("users/create.toml"), &original).unwrap();
+        std::fs::write(fx.root.join("body.json"), b"unrelated root file").unwrap();
+        let folder_sidecar = std::fs::read(fx.root.join("users/body.json")).unwrap();
+        let toml_before = std::fs::read(fx.root.join("users/create.toml")).unwrap();
+        let tab = history_tab(&fx, original, cx);
+
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+
+        assert_eq!(
+            std::fs::read(fx.root.join("body.json")).unwrap(),
+            b"unrelated root file"
+        );
+        assert_eq!(
+            std::fs::read(fx.root.join("users/body.json")).unwrap(),
+            folder_sidecar
+        );
+        assert_eq!(
+            std::fs::read(fx.root.join("users/create.toml")).unwrap(),
+            toml_before
+        );
+        let made = new_tomls(&fx.root, &[]);
+        assert_eq!(made.len(), 1, "{made:?}");
+        let saved = load_request(&made[0]).unwrap();
+        assert_eq!(json_content(&saved), ("{\"in\":\"folder\"}", &None));
+    }
+
+    #[test]
+    fn path_less_save_inlines_every_text_body_kind() {
+        let tb = |sidecar: Option<&str>| wisp_core::request::TextBody {
+            content: "c".into(),
+            sidecar: sidecar.map(Into::into),
+        };
+        assert_eq!(
+            inline_sidecar_body(Body::Json(tb(Some("a.json")))),
+            Body::Json(tb(None))
+        );
+        assert_eq!(
+            inline_sidecar_body(Body::Text(tb(Some("a.txt")))),
+            Body::Text(tb(None))
+        );
+        assert_eq!(
+            inline_sidecar_body(Body::Xml(tb(Some("a.xml")))),
+            Body::Xml(tb(None))
+        );
+        assert_eq!(
+            inline_sidecar_body(Body::Json(tb(None))),
+            Body::Json(tb(None))
+        );
+        let form = Body::Form(vec![wisp_core::request::KeyValue::default()]);
+        assert_eq!(inline_sidecar_body(form.clone()), form);
+        assert_eq!(inline_sidecar_body(Body::None), Body::None);
     }
 }
