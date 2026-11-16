@@ -1199,6 +1199,16 @@ fn recorded_request(scope_path: Option<&Path>) -> Option<String> {
     scope_path.map(|p| p.to_string_lossy().into_owned())
 }
 
+/// A request's sidecar as the user last saw it, for tabs whose save the sidecar guard refused.
+#[derive(Default)]
+struct SidecarSeen {
+    /// Name and bytes when the guard refused (`None` bytes: the sidecar was absent); Keep
+    /// promotes it to `kept`.
+    refused: Option<(String, Option<Vec<u8>>)>,
+    /// Name and bytes the user kept: the known content for the next guarded save.
+    kept: Option<(String, Option<Vec<u8>>)>,
+}
+
 pub struct Workspace {
     pub engine: Engine,
     pub settings: Settings,
@@ -1222,6 +1232,8 @@ pub struct Workspace {
     cookie_busy: bool,
     /// Sends waiting for a collection id to be created, by tab, with their token.
     id_waits: HashMap<EntityId, u64>,
+    /// Sidecar content per tab; cleared wherever the tab's `kept_disk` is.
+    sidecar_seen: HashMap<EntityId, SidecarSeen>,
     next_wait: u64,
     cookie_ticker: Option<Task<()>>,
     _quit_sub: Option<gpui::Subscription>,
@@ -1412,6 +1424,23 @@ impl Workspace {
         self.all_tabs().any(|t| t.read(cx).is_dirty())
     }
 
+    /// Every collection tab, and the titles of dirty scratch tabs.
+    pub fn quit_tabs(&self, cx: &gpui::App) -> (Vec<Entity<RequestTab>>, Vec<String>) {
+        let tabs = self
+            .collections
+            .iter()
+            .flat_map(|c| c.group.tabs.iter().cloned())
+            .collect();
+        let scratch = self
+            .scratch
+            .tabs
+            .iter()
+            .filter(|t| t.read(cx).is_dirty())
+            .map(|t| t.read(cx).title().to_string())
+            .collect();
+        (tabs, scratch)
+    }
+
     /// True when closing collection `ix` would discard unsaved changes.
     pub fn collection_dirty(&self, ix: usize, cx: &gpui::App) -> bool {
         self.collections
@@ -1450,6 +1479,7 @@ impl Workspace {
             collections: Vec::new(),
             active_collection: None,
             scratch: TabGroup::default(),
+            sidecar_seen: HashMap::new(),
             routes: HashMap::new(),
             auth_routes: HashMap::new(),
             sent: HashMap::new(),
@@ -2154,17 +2184,31 @@ impl Workspace {
         tab.update(cx, |t, cx| {
             let Some(rel) = t.path.clone() else { return };
             let abs = root.join(&rel);
-            let disk = if abs.exists() {
-                Some(load_request(&abs).map_err(|e| e.to_string()))
-            } else {
-                None
+            use wisp_storage::request::DiskBaseline;
+            let disk = DiskBaseline::read(&abs);
+            if t.disk == DiskState::InSync
+                && let (Some(kept), Ok(current)) = (&t.kept_disk, &disk)
+                && kept == current
+            {
+                return;
+            }
+            let loaded = match disk {
+                Ok(DiskBaseline::Request(req)) => Some(Ok(req)),
+                Ok(DiskBaseline::Missing) => None,
+                Ok(DiskBaseline::Unreadable(_)) | Err(_) => Some(Err(())),
             };
-            let loaded = disk.as_ref().and_then(|d| d.as_ref().ok()).cloned();
-            match draft::on_disk_change(t.is_dirty(), t.saved.as_ref(), disk) {
+            let expected = match &t.kept_disk {
+                Some(DiskBaseline::Request(req)) => Some(req.as_ref()),
+                Some(_) => None,
+                None => t.saved.as_ref(),
+            };
+            let observed = loaded.as_ref().map(|r| r.as_deref().map_err(|_| ()));
+            match draft::on_disk_change(t.is_dirty(), expected, observed) {
                 ReloadAction::Reload => {
-                    if let Some(req) = loaded {
-                        t.saved = Some(req.clone());
-                        t.replace_draft(req, cx);
+                    if let Some(Ok(req)) = loaded {
+                        self.sidecar_seen.remove(&tab.entity_id());
+                        t.saved = Some((*req).clone());
+                        t.replace_draft(*req, cx);
                         t.set_disk_state(DiskState::InSync, cx);
                     }
                 }
@@ -2185,17 +2229,62 @@ impl Workspace {
         };
         match load_request(&root.join(&rel)) {
             Ok(req) => tab.update(cx, |t, cx| {
+                self.sidecar_seen.remove(&tab.entity_id());
                 t.saved = Some(req.clone());
                 t.replace_draft(req, cx);
                 t.set_disk_state(DiskState::InSync, cx);
             }),
-            Err(e) => cx.emit(WorkspaceEvent::Notice(format!("Reload failed: {e}").into())),
+            Err(e) => cx.emit(WorkspaceEvent::Notice(
+                format!(
+                    "Cannot reload: the request file is missing or cannot be read ({e}). Choose Keep mine to overwrite it"
+                )
+                .into(),
+            )),
         }
     }
 
     /// Keep the draft and stop showing the disk-change banner.
     pub fn keep_mine(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
-        tab.update(cx, |t, cx| t.set_disk_state(DiskState::InSync, cx));
+        if tab.read(cx).disk == DiskState::InSync {
+            return;
+        }
+        let Some(root) = self.owner_of(tab).and_then(|o| self.root_of(o)) else {
+            return;
+        };
+        let Some(rel) = tab.read(cx).path.clone() else {
+            return;
+        };
+        let abs = root.join(rel);
+        match wisp_storage::request::DiskBaseline::read(&abs) {
+            Ok(baseline) => tab.update(cx, |t, cx| {
+                // Only a sidecar the guard refused is kept, as it is now: the user saw that
+                // refusal. Without one nothing is recorded and any older entry is cleared, so
+                // bytes the banner did not concern stay guarded (a missing sidecar needs no
+                // record: the guard allows NotFound).
+                let refused = self
+                    .sidecar_seen
+                    .remove(&tab.entity_id())
+                    .and_then(|seen| seen.refused)
+                    .map(|(name, _)| name);
+                if let Some(name) = refused
+                    && let Some(dir) = abs.parent()
+                    && let Ok(bytes) = std::fs::read(dir.join(&name))
+                {
+                    self.sidecar_seen.insert(
+                        tab.entity_id(),
+                        SidecarSeen {
+                            refused: None,
+                            kept: Some((name, Some(bytes))),
+                        },
+                    );
+                }
+                t.kept_disk = Some(baseline);
+                t.set_disk_state(DiskState::InSync, cx);
+            }),
+            Err(_) => cx.emit(WorkspaceEvent::Notice(
+                "Cannot keep this version: the request file could not be read".into(),
+            )),
+        }
     }
 
     pub fn open_request(&mut self, rel: &Path, cx: &mut Context<Self>) {
@@ -2953,29 +3042,116 @@ impl Workspace {
         let Some(root) = self.owner_of(tab).and_then(|o| self.root_of(o)) else {
             anyhow::bail!("Open a collection to save");
         };
-        // The disk file is newer than the draft: the banner's choices decide, not Save.
-        if tab.read(cx).disk == DiskState::ChangedOnDisk {
-            anyhow::bail!("Changed on disk: choose Keep mine to overwrite, or Reload");
-        }
-        let mut draft = tab.read(cx).draft.clone();
-        let (rel, created) = match tab.read(cx).path.clone() {
-            Some(rel) => (rel, false),
-            None => {
-                if draft.name.is_empty() {
-                    draft.name = "Untitled".into();
+        use wisp_storage::request::{DiskBaseline, SaveOutcome, save_request_if_unchanged};
+        let t = tab.read(cx);
+        let mut draft = t.draft.clone();
+        let rel = if let Some(rel) = t.path.clone() {
+            let expected;
+            let baseline = match t.disk {
+                DiskState::ChangedOnDisk => {
+                    anyhow::bail!("Changed on disk: choose Keep mine to overwrite, or Reload")
                 }
-                let rel = wisp_storage::ops::create_request(&root, Path::new(""), &draft.name)?;
-                (rel, true)
+                DiskState::DeletedOnDisk => &DiskBaseline::Missing,
+                DiskState::InSync => match &t.kept_disk {
+                    Some(kept) => kept,
+                    None => {
+                        let Some(saved) = &t.saved else {
+                            anyhow::bail!("No saved version to compare")
+                        };
+                        expected = DiskBaseline::Request(Box::new(saved.clone()));
+                        &expected
+                    }
+                },
+            };
+            let abs = root.join(&rel);
+            // `saved` is always the last content read from or written to disk for this tab.
+            let kept = self
+                .sidecar_seen
+                .get(&tab.entity_id())
+                .and_then(|seen| seen.kept.clone());
+            let known = kept.or_else(|| {
+                t.saved.as_ref().and_then(|saved| match &saved.body {
+                    Body::Json(b) | Body::Text(b) | Body::Xml(b) => b
+                        .sidecar
+                        .clone()
+                        .map(|name| (name, Some(b.content.clone().into_bytes()))),
+                    _ => None,
+                })
+            });
+            let outcome = save_request_if_unchanged(
+                &abs,
+                baseline,
+                &draft,
+                known
+                    .as_ref()
+                    .and_then(|(n, c)| Some((n.as_str(), c.as_deref()?))),
+            )
+            .map_err(|_| anyhow::anyhow!("Could not write the request file"))?;
+            if outcome == SaveOutcome::Conflict {
+                // The request file still matches the baseline, so the sidecar blocked the save.
+                if DiskBaseline::read(&abs).is_ok_and(|current| &current == baseline)
+                    && let Body::Json(b) | Body::Text(b) | Body::Xml(b) = &draft.body
+                    && let Some(name) = &b.sidecar
+                {
+                    let seen = abs
+                        .parent()
+                        .and_then(|dir| match std::fs::read(dir.join(name)) {
+                            Ok(bytes) => Some(Some(bytes)),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+                            Err(_) => None,
+                        });
+                    let Some(content) = seen else {
+                        anyhow::bail!("Not saved: sidecar `{name}` cannot be read");
+                    };
+                    let state = if matches!(baseline, DiskBaseline::Missing) {
+                        DiskState::DeletedOnDisk
+                    } else {
+                        DiskState::ChangedOnDisk
+                    };
+                    let name = name.clone();
+                    self.sidecar_seen
+                        .entry(tab.entity_id())
+                        .or_default()
+                        .refused = Some((name.clone(), content));
+                    tab.update(cx, |t, cx| t.set_disk_state(state, cx));
+                    let choice = if state == DiskState::DeletedOnDisk {
+                        "Keep"
+                    } else {
+                        "Keep mine"
+                    };
+                    anyhow::bail!(
+                        "Not saved: sidecar `{name}` was changed outside Wisp; choose {choice} to overwrite it"
+                    );
+                }
+                let missing = std::fs::symlink_metadata(&abs)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+                let state = if missing {
+                    DiskState::DeletedOnDisk
+                } else {
+                    DiskState::ChangedOnDisk
+                };
+                tab.update(cx, |t, cx| t.set_disk_state(state, cx));
+                if missing {
+                    anyhow::bail!("Deleted on disk: choose Keep or save again to recreate");
+                }
+                anyhow::bail!("Changed on disk: choose Keep mine to overwrite, or Reload");
             }
-        };
-        if let Err(e) = save_request(&root.join(&rel), &draft) {
-            if created {
+            rel
+        } else {
+            if draft.name.is_empty() {
+                draft.name = "Untitled".into();
+            }
+            let rel = wisp_storage::ops::create_request(&root, Path::new(""), &draft.name)
+                .map_err(|_| anyhow::anyhow!("Could not create the request file"))?;
+            if save_request(&root.join(&rel), &draft).is_err() {
                 let _ = std::fs::remove_file(root.join(&rel));
+                anyhow::bail!("Could not write the request file");
             }
-            return Err(e.into());
-        }
-        // Only a successful save touches the tab.
+            rel
+        };
+        // Only a successful write marks the draft saved.
         let name = draft.name;
+        self.sidecar_seen.remove(&tab.entity_id());
         tab.update(cx, |t, cx| {
             if t.draft.name.is_empty() {
                 t.edit(|r| r.name = name, cx);
@@ -4862,6 +5038,714 @@ mod env_wiring_tests {
             .unwrap_err()
             .to_string();
         assert_eq!(err, "Open a collection to save");
+    }
+
+    #[gpui::test]
+    fn save_rechecks_a_clean_tab_before_any_watcher_event(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let mut external = load_request(&path).unwrap();
+        external.url = "http://outside.test/".into();
+        save_request(&path, &external).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+    }
+
+    #[gpui::test]
+    fn save_accepts_nan_assertion_baselines_after_load_and_keep(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let rel = PathBuf::from("nan.toml");
+        let path = fx.root.join(&rel);
+        let text = "name = \"NaN\"\nmethod = \"GET\"\nurl = \"http://example.test/\"\n\n[[assert]]\nkind = \"json\"\npath = \"$.n\"\nop = \"equals\"\nvalue = nan\n";
+        std::fs::write(&path, text).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        assert!(!tab.read_with(cx, |t, _| {
+            crate::draft::dirty_sections(t.saved.as_ref(), &t.draft).assertions
+        }));
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine.test/".into(), cx)
+        });
+        let outside = text.replace("http://example.test/", "http://outside.test/");
+        std::fs::write(&path, &outside).unwrap();
+        assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        let saved = load_request(&path).unwrap();
+        assert_eq!(saved.url, "http://mine.test/");
+        assert!(
+            matches!(&saved.assertions[0], wisp_core::assert::Assertion::Json { expected: wisp_core::assert::Expected::Float(value), .. } if value.is_nan())
+        );
+        use crate::save_close::{self, ClosePrompt};
+        let close = fx.ws.update(cx, |w, cx| {
+            w.prompt_up = true;
+            save_close::finish(
+                ClosePrompt::Tab { can_save: true },
+                Some(0),
+                std::slice::from_ref(&tab),
+                w,
+                cx,
+            )
+        });
+        assert!(close);
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        assert!(!fx.ws.read_with(cx, |w, _| w.prompt_up));
+    }
+
+    #[gpui::test]
+    fn save_rechecks_external_changes_after_keep_and_edit(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        conflict(&fx, &tab, &rel, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        tab.update(cx, |t, cx| t.edit(|r| r.name = "Mine".into(), cx));
+        let path = fx.root.join(&rel);
+        let mut external = load_request(&path).unwrap();
+        external.url = "http://new-outside.test/".into();
+        save_request(&path, &external).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+    }
+
+    #[gpui::test]
+    fn clean_unreadable_file_shows_banner_and_keep_accepts_only_those_bytes(
+        cx: &mut TestAppContext,
+    ) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        for malformed in [b"bad = [toml".as_slice(), b"\xffnot utf8"] {
+            let (tab, rel) = open_tab(&fx, cx);
+            let path = fx.root.join(&rel);
+            std::fs::write(&path, malformed).unwrap();
+            fx.ws
+                .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            // A delayed watcher notification of the kept version must stay dismissed.
+            fx.ws
+                .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+            std::fs::write(&path, b"other = [broken").unwrap();
+            assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"other = [broken");
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+            tab.read_with(cx, |t, _| {
+                assert_eq!(load_request(&path).unwrap(), t.draft);
+                assert!(!t.is_dirty());
+                assert_eq!(t.disk, DiskState::InSync);
+                assert!(t.kept_disk.is_none());
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn save_checks_sidecar_changes_before_watcher_and_after_keep(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let rel = PathBuf::from("sidecar.toml");
+        let request = Request {
+            body: Body::Text(wisp_core::request::TextBody {
+                content: "original".into(),
+                sidecar: Some("sidecar.txt".into()),
+            }),
+            ..Request::default()
+        };
+        save_request(&fx.root.join(&rel), &request).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        let path = fx.root.join(&rel);
+        let bytes = std::fs::read(&path).unwrap();
+        let sidecar = fx.root.join("sidecar.txt");
+        for external in ["outside before watcher", "outside after Keep"] {
+            std::fs::write(&sidecar, external).unwrap();
+            assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), external);
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        }
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "original");
+    }
+
+    #[gpui::test]
+    fn save_after_keeping_malformed_toml_preserves_external_sidecar_edits(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let rel = PathBuf::from("sidecar.toml");
+        let path = fx.root.join(&rel);
+        let request = Request {
+            body: Body::Text(wisp_core::request::TextBody {
+                content: "original".into(),
+                sidecar: Some("sidecar.txt".into()),
+            }),
+            ..Request::default()
+        };
+        save_request(&path, &request).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "https://mine.test/".into(), cx)
+        });
+        let malformed = b"broken = [toml";
+        std::fs::write(&path, malformed).unwrap();
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::write(&sidecar, b"outside after Keep").unwrap();
+        let error = fx
+            .ws
+            .update(cx, |w, cx| w.save(&tab, cx))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("sidecar.txt"));
+        assert_eq!(std::fs::read(&path).unwrap(), malformed);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside after Keep");
+        assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn save_after_deleting_request_preserves_external_sidecar_edits(cx: &mut TestAppContext) {
+        for keep in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let rel = PathBuf::from("sidecar.toml");
+            let path = fx.root.join(&rel);
+            let request = Request {
+                body: Body::Text(wisp_core::request::TextBody {
+                    content: "original".into(),
+                    sidecar: Some("sidecar.txt".into()),
+                }),
+                ..Request::default()
+            };
+            save_request(&path, &request).unwrap();
+            fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+            let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+            tab.update(cx, |t, cx| {
+                t.edit(|r| r.url = "https://mine.test/".into(), cx)
+            });
+            let sidecar = fx.root.join("sidecar.txt");
+            std::fs::write(&sidecar, b"outside body").unwrap();
+            std::fs::remove_file(&path).unwrap();
+            if keep {
+                fx.ws
+                    .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+                assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+                fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+                assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+            } else {
+                assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+                assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+            }
+            let error = fx
+                .ws
+                .update(cx, |w, cx| w.save(&tab, cx))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("sidecar.txt"));
+            assert!(!path.exists());
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside body");
+            assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    #[gpui::test]
+    fn keep_mine_without_a_refusal_does_not_record_unseen_non_utf8_sidecar_bytes(
+        cx: &mut TestAppContext,
+    ) {
+        for malformed in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let path = fx.root.join(&rel);
+            let sidecar = fx.root.join("sidecar.txt");
+            std::fs::write(&sidecar, b"outside \xffbody").unwrap();
+            if malformed {
+                std::fs::write(&path, b"broken = [toml").unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            fx.ws
+                .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside \xffbody");
+            assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    fn sidecar_tab(fx: &Fx, cx: &mut TestAppContext) -> (Entity<RequestTab>, PathBuf) {
+        let rel = PathBuf::from("sidecar.toml");
+        let request = Request {
+            body: Body::Text(wisp_core::request::TextBody {
+                content: "original".into(),
+                sidecar: Some("sidecar.txt".into()),
+            }),
+            ..Request::default()
+        };
+        save_request(&fx.root.join(&rel), &request).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        tab.update(cx, |t, cx| {
+            t.edit(
+                |r| {
+                    if let Body::Text(b) = &mut r.body {
+                        b.content = "edited".into();
+                    }
+                },
+                cx,
+            )
+        });
+        (tab, rel)
+    }
+
+    #[gpui::test]
+    fn save_recreates_a_deleted_request_over_a_sidecar_unchanged_since_load(
+        cx: &mut TestAppContext,
+    ) {
+        for keep in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let path = fx.root.join(&rel);
+            std::fs::remove_file(&path).unwrap();
+            if keep {
+                fx.ws
+                    .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+                fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            } else {
+                assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+            }
+            fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(fx.root.join("sidecar.txt")).unwrap(),
+                "edited"
+            );
+            assert!(path.exists());
+            assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    fn saved_body(path: &Path) -> String {
+        match load_request(path).unwrap().body {
+            Body::Text(b) => b.content,
+            _ => panic!("text body"),
+        }
+    }
+
+    fn save_err(fx: &Fx, tab: &Entity<RequestTab>, cx: &mut TestAppContext) -> String {
+        fx.ws
+            .update(cx, |w, cx| w.save(tab, cx))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[gpui::test]
+    fn a_refused_sidecar_save_over_a_missing_request_recovers_through_keep_mine(
+        cx: &mut TestAppContext,
+    ) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        save_err(&fx, &tab, cx);
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert!(!path.exists());
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn a_sidecar_that_changes_again_after_keep_mine_is_refused_again(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        save_err(&fx, &tab, cx);
+        save_err(&fx, &tab, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        std::fs::write(&sidecar, b"outside again").unwrap();
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside again");
+        assert_ne!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+    }
+
+    /// Replace the sidecar behind a dirty tab and let the watcher notice.
+    fn break_sidecar(
+        fx: &Fx,
+        tab: &Entity<RequestTab>,
+        bytes: Option<&[u8]>,
+        cx: &mut TestAppContext,
+    ) {
+        let sidecar = fx.root.join("sidecar.txt");
+        match bytes {
+            Some(b) => std::fs::write(&sidecar, b).unwrap(),
+            None => std::fs::remove_file(&sidecar).unwrap(),
+        }
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(tab, &fx.root, cx));
+    }
+
+    #[gpui::test]
+    fn a_deleted_or_non_utf8_sidecar_under_a_readable_request_recovers_through_keep_mine(
+        cx: &mut TestAppContext,
+    ) {
+        for bytes in [None, Some(b"\xff".as_slice())] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let sidecar = fx.root.join("sidecar.txt");
+            break_sidecar(&fx, &tab, bytes, cx);
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+            if bytes.is_some() {
+                // The first Keep records nothing; the guard refuses the unseen bytes, and a
+                // second Keep mine promotes that refusal.
+                assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+                assert_eq!(std::fs::read(&sidecar).unwrap(), b"\xff");
+                assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+                fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            }
+            fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+            assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+            assert_eq!(saved_body(&fx.root.join(&rel)), "edited");
+            assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    #[gpui::test]
+    fn a_non_utf8_sidecar_beside_a_deleted_request_recovers_through_keep(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&sidecar, b"\xff").unwrap();
+        save_err(&fx, &tab, cx);
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+        let err = save_err(&fx, &tab, cx);
+        assert!(
+            err.contains("sidecar.txt") && !err.contains("Keep mine"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"\xff");
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn a_non_utf8_sidecar_that_changes_again_after_keep_mine_is_refused(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, _rel) = sidecar_tab(&fx, cx);
+        let sidecar = fx.root.join("sidecar.txt");
+        break_sidecar(&fx, &tab, Some(b"\xff"), cx);
+        save_err(&fx, &tab, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        std::fs::write(&sidecar, b"\xfe again").unwrap();
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"\xfe again");
+        assert_ne!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        // Keep mine again records the new bytes, and the save then goes through.
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+    }
+
+    #[gpui::test]
+    fn a_refused_sidecar_save_over_a_malformed_request_recovers_through_keep_mine(
+        cx: &mut TestAppContext,
+    ) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::write(&path, b"broken = [toml").unwrap();
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"broken = [toml");
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+    }
+
+    #[gpui::test]
+    fn keep_mine_on_a_changed_sidecar_then_a_deleted_request_is_not_stuck(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        save_err(&fx, &tab, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        std::fs::remove_file(&path).unwrap();
+        save_err(&fx, &tab, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert_ne!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+    }
+
+    #[gpui::test]
+    fn keep_mine_over_another_sidecar_or_inline_body_keeps_an_externally_edited_sidecar(
+        cx: &mut TestAppContext,
+    ) {
+        for inline in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let path = fx.root.join(&rel);
+            let external = Request {
+                body: Body::Text(wisp_core::request::TextBody {
+                    content: "elsewhere".into(),
+                    sidecar: (!inline).then(|| "b.txt".into()),
+                }),
+                ..Request::default()
+            };
+            save_request(&path, &external).unwrap();
+            let sidecar = fx.root.join("sidecar.txt");
+            std::fs::write(&sidecar, b"outside body").unwrap();
+            fx.ws
+                .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            let bytes = std::fs::read(&path).unwrap();
+            let error = fx
+                .ws
+                .update(cx, |w, cx| w.save(&tab, cx))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("sidecar.txt"));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside body");
+            assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    #[gpui::test]
+    fn save_recreates_deleted_file_and_clears_banner_but_refuses_reappearance(
+        cx: &mut TestAppContext,
+    ) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        std::fs::remove_file(&path).unwrap();
+        // First save discovers deletion without a watcher; the next may recreate it.
+        assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        std::fs::remove_file(&path).unwrap();
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        let bytes = b"recreated = [outside";
+        std::fs::write(&path, bytes).unwrap();
+        assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+    }
+
+    #[gpui::test]
+    fn reload_replaces_a_kept_baseline_for_the_next_checked_save(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        conflict(&fx, &tab, &rel, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        let path = fx.root.join(&rel);
+        let mut external = load_request(&path).unwrap();
+        external.url = "http://reload.test/".into();
+        save_request(&path, &external).unwrap();
+        fx.ws.update(cx, |w, cx| w.reload_from_disk(&tab, cx));
+        assert!(tab.read_with(cx, |t, _| t.kept_disk.is_none()));
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine-again.test/".into(), cx)
+        });
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(load_request(&path).unwrap().url, "http://mine-again.test/");
+    }
+
+    #[gpui::test]
+    fn save_all_failure_keeps_every_tab_open_and_clears_prompt(cx: &mut TestAppContext) {
+        use crate::save_close::{self, ClosePrompt};
+        for prompt in [ClosePrompt::Collection, ClosePrompt::Quit] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let mut tabs = Vec::new();
+            for _ in 0..3 {
+                let (tab, rel) = open_tab(&fx, cx);
+                tab.update(cx, |t, cx| {
+                    t.edit(|r| r.url = "http://mine.test/".into(), cx)
+                });
+                tabs.push((tab, rel));
+            }
+            let outside = b"bad = [external";
+            std::fs::write(fx.root.join(&tabs[1].1), outside).unwrap();
+            let entities: Vec<_> = tabs.iter().map(|(tab, _)| tab.clone()).collect();
+            let close = fx.ws.update(cx, |w, cx| {
+                w.prompt_up = true;
+                save_close::finish(prompt, Some(0), &entities, w, cx)
+            });
+            assert!(!close);
+            fx.ws.read_with(cx, |w, _| {
+                assert!(!w.prompt_up);
+                assert_eq!(w.collections.len(), 1);
+                assert_eq!(w.collections[0].group.tabs, entities);
+            });
+            assert!(!tabs[0].0.read_with(cx, |t, _| t.is_dirty()));
+            assert!(tabs[1].0.read_with(cx, |t, _| t.is_dirty()));
+            assert!(tabs[2].0.read_with(cx, |t, _| t.is_dirty()));
+            assert_eq!(std::fs::read(fx.root.join(&tabs[1].1)).unwrap(), outside);
+            assert_ne!(
+                load_request(&fx.root.join(&tabs[2].1)).unwrap().url,
+                "http://mine.test/"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn quit_saves_collection_tabs_and_names_scratch_drafts_it_discards(cx: &mut TestAppContext) {
+        use crate::save_close::{self, ClosePrompt};
+        let fx = fixture(cx);
+        let scratch = fx.ws.update(cx, |w, cx| {
+            w.new_scratch_tab("http://scratch.test/".into(), cx)
+        });
+        scratch.update(cx, |t, cx| t.edit(|r| r.name = "Draft".into(), cx));
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine.test/".into(), cx)
+        });
+        let plan = fx.ws.read_with(cx, save_close::quit_plan);
+        assert_eq!(plan.prompt, ClosePrompt::Quit);
+        assert_eq!(plan.tabs, vec![tab.clone()]);
+        assert!(plan.detail.contains("\"Draft\""), "{}", plan.detail);
+        assert!(plan.detail.contains("discarded"), "{}", plan.detail);
+        let quit = fx.ws.update(cx, |w, cx| {
+            w.prompt_up = true;
+            save_close::finish(plan.prompt, Some(0), &plan.tabs, w, cx)
+        });
+        assert!(quit);
+        assert_eq!(
+            load_request(&fx.root.join(&rel)).unwrap().url,
+            "http://mine.test/"
+        );
+        assert!(scratch.read_with(cx, |t, _| t.is_dirty() && t.path.is_none()));
+        // Only a scratch draft is dirty: nothing to save, so Save is not offered.
+        let plan = fx.ws.read_with(cx, save_close::quit_plan);
+        assert_eq!(plan.prompt, ClosePrompt::QuitDiscardOnly);
+        assert_eq!(plan.prompt.buttons(), ["Discard", "Cancel"]);
+        assert!(plan.detail.contains("\"Draft\""), "{}", plan.detail);
+        assert!(fx.ws.update(cx, |w, cx| {
+            save_close::finish(plan.prompt, Some(0), &plan.tabs, w, cx)
+        }));
+        assert!(!fx.ws.update(cx, |w, cx| {
+            save_close::finish(plan.prompt, Some(1), &plan.tabs, w, cx)
+        }));
+    }
+
+    #[gpui::test]
+    fn close_prompt_clears_prompt_on_success_discard_cancel_and_missing_collection(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::save_close::{self, ClosePrompt};
+        let fx = fixture(cx);
+        let tab = fx.ws.update(cx, |w, cx| {
+            w.new_scratch_tab("http://mine.test/".into(), cx)
+        });
+        for (can_save, button, expected) in [
+            (true, Some(0), false),
+            (false, Some(0), true),
+            (false, Some(1), false),
+            (true, None, false),
+        ] {
+            let close = fx.ws.update(cx, |w, cx| {
+                w.prompt_up = true;
+                save_close::finish(
+                    ClosePrompt::Tab { can_save },
+                    button,
+                    std::slice::from_ref(&tab),
+                    w,
+                    cx,
+                )
+            });
+            assert_eq!(close, expected);
+            assert!(!fx.ws.read_with(cx, |w, _| w.prompt_up));
+            assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+        open(&fx, cx);
+        let (tab, _) = open_tab(&fx, cx);
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine.test/".into(), cx)
+        });
+        assert!(fx.ws.update(cx, |w, cx| {
+            w.prompt_up = true;
+            save_close::finish(
+                ClosePrompt::Tab { can_save: true },
+                Some(0),
+                std::slice::from_ref(&tab),
+                w,
+                cx,
+            )
+        }));
+        assert!(!fx.ws.read_with(cx, |w, _| w.prompt_up));
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
     }
 
     #[gpui::test]

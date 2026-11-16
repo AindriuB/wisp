@@ -12,6 +12,7 @@ mod highlight;
 mod pager;
 mod palette;
 mod pretty;
+mod save_close;
 mod settings;
 mod tab;
 mod theme;
@@ -110,19 +111,23 @@ fn request_quit(ws: &Entity<Workspace>, window: &mut Window, cx: &mut gpui::App)
         QuitStep::Quit => quit_app(cx),
         QuitStep::Prompt => {
             ws.update(cx, |w, _| w.prompt_up = true);
+            let plan = save_close::quit_plan(ws.read(cx), cx);
+            let prompt = plan.prompt;
             let answer = window.prompt(
                 PromptLevel::Warning,
-                "Discard unsaved changes?",
-                Some("Quitting closes all tabs."),
-                &["Discard", "Cancel"],
+                "Save unsaved changes?",
+                Some(&plan.detail),
+                prompt.buttons(),
                 cx,
             );
             let ws = ws.clone();
             cx.spawn(async move |cx| {
-                let discard = matches!(answer.await, Ok(0));
+                let button = answer.await.ok();
                 cx.update(|cx| {
-                    ws.update(cx, |w, _| w.prompt_up = false);
-                    if discard {
+                    let quit = ws.update(cx, |w, cx| {
+                        save_close::finish(prompt, button, &plan.tabs, w, cx)
+                    });
+                    if quit {
                         quit_app(cx);
                     }
                 });

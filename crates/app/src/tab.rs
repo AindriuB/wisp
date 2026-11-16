@@ -9,6 +9,8 @@ use wisp_core::body::BodyHandle;
 use wisp_core::request::{Body, Request};
 use wisp_core::{EngineError, Header, HttpVersion, RequestId};
 
+use wisp_storage::request::DiskBaseline;
+
 use crate::draft;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +149,8 @@ pub struct RequestTab {
     pub path: Option<PathBuf>,
     /// Snapshot as last loaded or saved.
     pub saved: Option<Request>,
+    /// After Keep, compare against the accepted disk state instead of the saved draft.
+    pub kept_disk: Option<DiskBaseline>,
     pub draft: Request,
     /// Bumped only by `replace_draft`.
     pub revision: u64,
@@ -167,6 +171,7 @@ impl RequestTab {
         Self {
             path,
             saved,
+            kept_disk: None,
             draft,
             revision: 0,
             disk: DiskState::InSync,
@@ -216,6 +221,7 @@ impl RequestTab {
     }
 
     pub fn replace_draft(&mut self, request: Request, cx: &mut Context<Self>) {
+        self.kept_disk = None;
         self.draft = request;
         self.revision += 1;
         cx.emit(TabEvent::DraftReplaced);
@@ -224,6 +230,8 @@ impl RequestTab {
     pub fn mark_saved(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.path = Some(path);
         self.saved = Some(self.draft.clone());
+        self.kept_disk = None;
+        self.disk = DiskState::InSync;
         cx.emit(TabEvent::Saved);
     }
 

@@ -19,6 +19,7 @@ use crate::actions::{
     ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
+use crate::save_close::{self, ClosePrompt};
 use crate::settings::{SplitAxis, ThemeMode};
 use crate::tab::{DiskState, RequestTab};
 use crate::theme;
@@ -53,19 +54,29 @@ fn request_close_tab(
         CloseStep::Close => ws.update(cx, |w, cx| w.close_tab_entity(tab, cx)),
         CloseStep::Prompt => {
             ws.update(cx, |w, _| w.prompt_up = true);
+            let can_save = ws
+                .read(cx)
+                .collections
+                .iter()
+                .any(|c| c.group.tabs.contains(tab));
+            let prompt = ClosePrompt::Tab { can_save };
+            let detail = if can_save {
+                format!("\"{title}\" has unsaved changes.")
+            } else {
+                "Open a collection to save".into()
+            };
             let answer = window.prompt(
                 PromptLevel::Warning,
-                "Discard unsaved changes?",
-                Some(&format!("\"{title}\" has unsaved changes.")),
-                &["Discard", "Cancel"],
+                "Close tab with unsaved changes?",
+                Some(&detail),
+                prompt.buttons(),
                 cx,
             );
             let (ws, tab) = (ws.clone(), tab.clone());
             cx.spawn(async move |cx| {
-                let discard = matches!(answer.await, Ok(0));
+                let button = answer.await.ok();
                 ws.update(cx, |w, cx| {
-                    w.prompt_up = false;
-                    if discard {
+                    if save_close::finish(prompt, button, std::slice::from_ref(&tab), w, cx) {
                         w.close_tab_entity(&tab, cx);
                     }
                 });
@@ -478,20 +489,24 @@ impl WorkspaceView {
             return;
         };
         self.workspace.update(cx, |w, _| w.prompt_up = true);
+        let prompt = ClosePrompt::Collection;
         let answer = window.prompt(
             PromptLevel::Warning,
-            "Discard unsaved changes?",
+            "Close collection with unsaved changes?",
             Some("Closing this collection closes its tabs."),
-            &["Discard", "Cancel"],
+            prompt.buttons(),
             cx,
         );
         let ws = self.workspace.clone();
         cx.spawn(async move |_, cx| {
-            let close = matches!(answer.await, Ok(0));
+            let button = answer.await.ok();
             ws.update(cx, |w, cx| {
-                w.prompt_up = false;
-                // Indices may have shifted while the prompt was up: resolve by root.
-                if let Some(ix) = confirmed_open(close, w.coll_ix(&root)) {
+                let Some(ix) = w.coll_ix(&root) else {
+                    w.prompt_up = false;
+                    return;
+                };
+                let tabs = w.collections[ix].group.tabs.clone();
+                if save_close::finish(prompt, button, &tabs, w, cx) {
                     w.close_collection(ix, cx);
                 }
             });
