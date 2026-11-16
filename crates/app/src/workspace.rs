@@ -2973,6 +2973,9 @@ impl Workspace {
                     Ok((mut stored, handle)) => {
                         let cix = still_open.unwrap_or_default();
                         let origin = sanitized_origin(&entry, &mut stored.request);
+                        // The tab is path-less: its body is inline from the start, so no
+                        // editor stash ever holds the original request's sidecar name.
+                        stored.request.body = inline_sidecar_body(stored.request.body);
                         let response =
                             history_ui::stored_response(&entry, stored.response_headers, handle);
                         let tab =
@@ -3163,7 +3166,11 @@ impl Workspace {
             }
             if !was_path {
                 // The file just written is inline; later saves must not name the old sidecar.
-                t.draft.body = inline_sidecar_body(t.draft.body.clone());
+                let mut inlined = t.draft.clone();
+                inlined.body = inline_sidecar_body(inlined.body);
+                if inlined != t.draft {
+                    t.replace_draft(inlined, cx);
+                }
             }
             t.mark_saved(rel, cx)
         });
@@ -3219,17 +3226,6 @@ impl Workspace {
 
 /// The notice `Workspace::send` already showed for a refused redacted body, if
 /// this error is that refusal. Callers must not replace it with their own.
-/// A Json/Text/Xml body that names a sidecar becomes the same body inline (`sidecar: None`,
-/// content kept). Every other body is returned as it is.
-fn inline_sidecar_body(body: Body) -> Body {
-    match body {
-        Body::Json(b) if b.sidecar.is_some() => Body::Json(TextBody { sidecar: None, ..b }),
-        Body::Text(b) if b.sidecar.is_some() => Body::Text(TextBody { sidecar: None, ..b }),
-        Body::Xml(b) if b.sidecar.is_some() => Body::Xml(TextBody { sidecar: None, ..b }),
-        other => other,
-    }
-}
-
 pub(crate) fn refused_body_message(e: &ResolveError) -> Option<&str> {
     match e.problems.as_slice() {
         [
@@ -3239,6 +3235,17 @@ pub(crate) fn refused_body_message(e: &ResolveError) -> Option<&str> {
             },
         ] if message.starts_with("Edit the request body") => Some(message),
         _ => None,
+    }
+}
+
+/// A Json/Text/Xml body that names a sidecar becomes the same body inline (`sidecar: None`,
+/// content kept). Every other body is returned as it is.
+fn inline_sidecar_body(body: Body) -> Body {
+    match body {
+        Body::Json(b) if b.sidecar.is_some() => Body::Json(TextBody { sidecar: None, ..b }),
+        Body::Text(b) if b.sidecar.is_some() => Body::Text(TextBody { sidecar: None, ..b }),
+        Body::Xml(b) if b.sidecar.is_some() => Body::Xml(TextBody { sidecar: None, ..b }),
+        other => other,
     }
 }
 
@@ -6114,6 +6121,40 @@ mod env_wiring_tests {
             b"{\"name\":\"edited on disk\"}"
         );
         assert_eq!(new_tomls(&fx.root, &["create-user.toml"]).len(), 1);
+    }
+
+    #[gpui::test]
+    fn history_tab_and_editor_stash_never_carry_the_sidecar(cx: &mut TestAppContext) {
+        use crate::ui::request::body::{BodyKind, Stash};
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let original = json_sidecar_request("create-user.body.json", "{\"name\":\"ann\"}");
+        save_request(&fx.root.join("create-user.toml"), &original).unwrap();
+        let tab = history_tab(&fx, original, cx);
+        let sidecar = fx.root.join("create-user.body.json");
+        std::fs::write(&sidecar, b"{\"name\":\"edited on disk\"}").unwrap();
+        // What the body editor does: absorb the draft, later commit stash edits to the draft.
+        let mut stash = Stash::default();
+        tab.read_with(cx, |t, _| {
+            assert_eq!(json_content(&t.draft).1, &None);
+            stash.absorb(&t.draft.body);
+        });
+        assert_eq!(stash.text.sidecar, None);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        for content in ["{\"name\":\"bob\"}", "{\"name\":\"cy\"}"] {
+            stash.text.content = content.into();
+            let body = stash.body_for(BodyKind::Json);
+            tab.update(cx, |t, cx| t.edit(|r| r.body = body, cx));
+            fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(&sidecar).unwrap(),
+            b"{\"name\":\"edited on disk\"}"
+        );
+        let made = new_tomls(&fx.root, &["create-user.toml"]);
+        assert_eq!(made.len(), 1, "{made:?}");
+        let saved = load_request(&made[0]).unwrap();
+        assert_eq!(json_content(&saved), ("{\"name\":\"cy\"}", &None));
     }
 
     #[gpui::test]
