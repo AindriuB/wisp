@@ -50,6 +50,26 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 ### Hardening backlog (post-0.2.0)
 `docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled. The 🔒 items in "Follow-ups from 0.3.0 wave 1" join this backlog.
 
+### Follow-ups from task 144 (history hardening; PRs #94, #103)
+🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Items 103-1 to 103-6 are from the fresh review of PR #103 (round 8); the rest are from the `/verify` reviewer at 33e6c75. All are Low or Nit.
+- 🔒 The lock file's symlink check runs lstat and then open, which leaves a window; open with O_NOFOLLOW via `custom_flags` (`history.rs:918-927`).
+- 🔒 Refresh and Location credential pairs after `#` (an OAuth implicit-flow fragment) are stored as is; this predates 144 in `redact_url`.
+- 🔒 `authority_start` in the import path has the same special-scheme gap (`https:user:pw@h`, `https:\user:pw@h`; `\` is never a slash), so import may keep userinfo (`import/mod.rs:267`).
+- 🔒 `redact_ignoring_newlines` does not trim leading or trailing C0 and space as WHATWG does; a request URL like ` https:/alice:secret@h/` would keep its credentials if untrimmed URLs reach storage; check whether they can (`history.rs:147`).
+- `open_scrubs_old_entries_once` sleeps 20 ms and relies on mtimes; compare bytes or inode and drop the sleep (`tests/history.rs`).
+- Design question: the global `APPEND_LOCK` queues appends across every collection, so N queued appends can wait N × 5 s; consider a per-collection mutex.
+- A `mailto:alice@example.com` Location is redacted because `authority_start` returns 0 and the whole value is treated as authority; this over-redaction is pinned by `mailto_location_is_handled_by_the_existing_rule`, and the round-2 decision was left to the orchestrator, so decide it. A no-scheme `a@b` Location is likewise mangled to `@b` (no leak).
+- No test for a request URL `https:/alice:secret@h/` (only headers are pinned), and the redaction of a non-special no-slash `custom:a:b@h` is untested.
+- The fifth `CONTROL_CHAR_HEADERS` entry (`https://ali\r\nce:sec\r\nret@h/`) is vacuous: JSON escapes CR and LF, so `secret` never appears on disk anyway.
+- The `leading_whitespace_headers` tests cover Location and Content-Location only; none pins leading C0 for Refresh or for request URLs.
+- `file_scheme_without_userinfo_stays_unchanged` lacks `file:/p` and `file:p` (round-8 Low).
+- 103-1: the `authority_start` doc comment does not mention the `file:` two-or-more-slash rule (`history.rs:103-104`).
+- 🔒 103-2: stores marked `.scrubbed-1` by unreleased post-#94 main builds never re-scrub `file:\\` values; bump the marker to `.scrubbed-2` before 0.3.0, or record the dev data as accepted.
+- 103-3: `file:////srv@x/share` is over-redacted (authority is taken after all the slashes; WHATWG takes it after exactly two); start after two, or pin it with a test.
+- 103-4: the new `file:` tests use a fixed request URL, not the looped one.
+- 103-5 (Nit): the new `file:` branch duplicates the special-scheme return; merge the conditions.
+- 103-6 (Nit): no uppercase `FILE:` or Refresh case in the new `file:` tests.
+
 ### Follow-ups from tasks 143 and 152 (PRs #101 and #102; not 0.3.0 unless scheduled)
 From PR #102's review (https://github.com/AindriuB/wisp/pull/102#pullrequestreview-5927425261):
 - [P3] 102-1: the save-time backstop in `Workspace::save` is reached by no integration test; only the open-time inlining is.
