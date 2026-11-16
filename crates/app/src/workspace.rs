@@ -2837,13 +2837,12 @@ impl Workspace {
                     old_body = t.response.body.take();
                     // Read now: the handle is released when the next request replaces it.
                     stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
-                    let facts_body = stored_body.as_deref().filter(|b| b.len() <= BODY_CAP);
                     let checks = sent.as_ref().map_or(&[][..], |s| &s.draft.assertions[..]);
                     t.response.assertions = check_outcomes(
                         checks,
                         t.response.status.unwrap_or(0),
                         &t.response.headers,
-                        facts_body,
+                        stored_body.as_deref(),
                     );
                     t.response.phase = Phase::Done;
                     t.response.total = Some(*total);
@@ -4206,6 +4205,21 @@ mod tests {
         );
         assert_eq!(records[1].hash, list[1].fingerprint());
         assert!(check_outcomes(&[], 200, &[], None).is_empty());
+    }
+
+    #[test]
+    fn check_outcomes_over_cap_body_skips_with_over_limit_reason() {
+        let list = [Assertion::Json {
+            path: "$.a".into(),
+            op: Op::Exists,
+            expected: Expected::Bool(true),
+        }];
+        let big = vec![b'x'; BODY_CAP + 1];
+        let outcomes = check_outcomes(&list, 200, &[], Some(&big));
+        match &outcomes[0].result.verdict {
+            Verdict::Skipped { reason } => assert!(reason.contains("over 1 MiB"), "{reason}"),
+            v => panic!("expected skipped, got {v:?}"),
+        }
     }
 
     #[test]
