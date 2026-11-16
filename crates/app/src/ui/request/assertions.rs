@@ -64,22 +64,13 @@ impl RowInput {
             ValueType::Float => Expected::Float(self.value.parse().ok()?),
             ValueType::Bool => Expected::Bool(self.value.parse().ok()?),
         };
-        Some(match self.kind {
-            Kind::Status => Assertion::Status {
-                op: self.op,
-                expected,
-            },
-            Kind::Header => Assertion::Header {
-                name: self.target.clone(),
-                op: self.op,
-                expected,
-            },
-            Kind::Json => Assertion::Json {
-                path: self.target.clone(),
-                op: self.op,
-                expected,
-            },
-        })
+        let (kind, target) = match self.kind {
+            Kind::Status => ("status", None),
+            Kind::Header => ("header", Some(self.target.as_str())),
+            Kind::Json => ("json", Some(self.target.as_str())),
+        };
+        // Use the same schema gate as the storage reader before replacing the draft row.
+        Assertion::from_parts(kind, target, self.op.as_str(), Some(expected)).ok()
     }
     fn reset_value_type(&mut self) {
         let ty = if self.op == Op::Exists {
@@ -112,13 +103,13 @@ fn row_error(row: &RowInput) -> Option<String> {
             if row.value.parse::<i64>().is_err() {
                 "Status must be an integer between 100 and 599; this input is not saved"
             } else {
-                "Status must be between 100 and 599"
+                "Status must be between 100 and 599; this input is not saved"
             }
             .into(),
         );
     }
     if row.kind == Kind::Header && row.target.is_empty() {
-        return Some("Header name is required".into());
+        return Some("Header name is required; this input is not saved".into());
     }
     if row.kind == Kind::Json
         && let Err(e) = check_path(&row.target)
@@ -617,6 +608,67 @@ mod tests {
             replace_row(&mut rows, 0, &input);
             assert_eq!(rows[0], input.assertion().unwrap());
             assert_ne!(rows[0], saved);
+        }
+    }
+    #[test]
+    fn invalid_schema_edits_preserve_editable_assertions_after_save_and_reopen() {
+        use wisp_core::request::Request;
+        use wisp_storage::request::{load_request, save_request};
+        let cases = [
+            (
+                row(Kind::Status, Op::Equals, "", "200", ValueType::Int),
+                row(Kind::Status, Op::Equals, "", "99", ValueType::Int),
+                row(Kind::Status, Op::Equals, "", "201", ValueType::Int),
+            ),
+            (
+                row(Kind::Status, Op::Equals, "", "200", ValueType::Int),
+                row(Kind::Status, Op::Equals, "", "600", ValueType::Int),
+                row(Kind::Status, Op::Equals, "", "599", ValueType::Int),
+            ),
+            (
+                row(
+                    Kind::Header,
+                    Op::Equals,
+                    "X-Old",
+                    "value",
+                    ValueType::String,
+                ),
+                row(Kind::Header, Op::Equals, "", "value", ValueType::String),
+                row(
+                    Kind::Header,
+                    Op::Equals,
+                    "X-New",
+                    "value",
+                    ValueType::String,
+                ),
+            ),
+            (
+                row(Kind::Header, Op::Exists, "X-Old", "true", ValueType::Bool),
+                row(Kind::Header, Op::Exists, "", "true", ValueType::Bool),
+                row(Kind::Header, Op::Exists, "X-New", "false", ValueType::Bool),
+            ),
+        ];
+        for (valid, invalid, corrected) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("request.toml");
+            let saved = valid.assertion().unwrap();
+            let mut request = Request {
+                assertions: vec![saved.clone()],
+                ..Request::default()
+            };
+            assert!(row_error(&invalid).is_some());
+            replace_row(&mut request.assertions, 0, &invalid);
+            assert_eq!(request.assertions, vec![saved.clone()]);
+            save_request(&path, &request).unwrap();
+            let mut reopened = load_request(&path).unwrap();
+            assert_eq!(reopened.assertions, vec![saved]);
+            assert!(RowInput::from_assertion(&reopened.assertions[0]).is_some());
+            replace_row(&mut reopened.assertions, 0, &corrected);
+            save_request(&path, &reopened).unwrap();
+            assert_eq!(
+                load_request(&path).unwrap().assertions,
+                vec![corrected.assertion().unwrap()]
+            );
         }
     }
 }
