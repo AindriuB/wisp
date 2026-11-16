@@ -1199,6 +1199,15 @@ fn recorded_request(scope_path: Option<&Path>) -> Option<String> {
     scope_path.map(|p| p.to_string_lossy().into_owned())
 }
 
+/// A request's sidecar as the user last saw it, for tabs whose save the sidecar guard refused.
+#[derive(Default)]
+struct SidecarSeen {
+    /// Name and content when the guard refused; Keep mine promotes it to `kept`.
+    refused: Option<(String, String)>,
+    /// Name and content the user kept: the known content for the next guarded save.
+    kept: Option<(String, String)>,
+}
+
 pub struct Workspace {
     pub engine: Engine,
     pub settings: Settings,
@@ -1222,6 +1231,8 @@ pub struct Workspace {
     cookie_busy: bool,
     /// Sends waiting for a collection id to be created, by tab, with their token.
     id_waits: HashMap<EntityId, u64>,
+    /// Sidecar content per tab; cleared wherever the tab's `kept_disk` is.
+    sidecar_seen: HashMap<EntityId, SidecarSeen>,
     next_wait: u64,
     cookie_ticker: Option<Task<()>>,
     _quit_sub: Option<gpui::Subscription>,
@@ -1467,6 +1478,7 @@ impl Workspace {
             collections: Vec::new(),
             active_collection: None,
             scratch: TabGroup::default(),
+            sidecar_seen: HashMap::new(),
             routes: HashMap::new(),
             auth_routes: HashMap::new(),
             sent: HashMap::new(),
@@ -2193,6 +2205,7 @@ impl Workspace {
             match draft::on_disk_change(t.is_dirty(), expected, observed) {
                 ReloadAction::Reload => {
                     if let Some(Ok(req)) = loaded {
+                        self.sidecar_seen.remove(&tab.entity_id());
                         t.saved = Some((*req).clone());
                         t.replace_draft(*req, cx);
                         t.set_disk_state(DiskState::InSync, cx);
@@ -2215,11 +2228,17 @@ impl Workspace {
         };
         match load_request(&root.join(&rel)) {
             Ok(req) => tab.update(cx, |t, cx| {
+                self.sidecar_seen.remove(&tab.entity_id());
                 t.saved = Some(req.clone());
                 t.replace_draft(req, cx);
                 t.set_disk_state(DiskState::InSync, cx);
             }),
-            Err(e) => cx.emit(WorkspaceEvent::Notice(format!("Reload failed: {e}").into())),
+            Err(e) => cx.emit(WorkspaceEvent::Notice(
+                format!(
+                    "Cannot reload: the request file is missing or cannot be read ({e}). Choose Keep mine to overwrite it"
+                )
+                .into(),
+            )),
         }
     }
 
@@ -2231,11 +2250,29 @@ impl Workspace {
         let Some(root) = self.owner_of(tab).and_then(|o| self.root_of(o)) else {
             return;
         };
-        let Some(rel) = &tab.read(cx).path else {
+        let Some(rel) = tab.read(cx).path.clone() else {
             return;
         };
-        match wisp_storage::request::DiskBaseline::read(&root.join(rel)) {
+        let abs = root.join(rel);
+        match wisp_storage::request::DiskBaseline::read(&abs) {
             Ok(baseline) => tab.update(cx, |t, cx| {
+                // A refused sidecar is kept as it is now; any other Keep clears older content.
+                let refused = self
+                    .sidecar_seen
+                    .remove(&tab.entity_id())
+                    .and_then(|seen| seen.refused);
+                if let Some((name, _)) = refused
+                    && let Some(dir) = abs.parent()
+                    && let Ok(content) = std::fs::read_to_string(dir.join(&name))
+                {
+                    self.sidecar_seen.insert(
+                        tab.entity_id(),
+                        SidecarSeen {
+                            refused: None,
+                            kept: Some((name, content)),
+                        },
+                    );
+                }
                 t.kept_disk = Some(baseline);
                 t.set_disk_state(DiskState::InSync, cx);
             }),
@@ -3022,11 +3059,17 @@ impl Workspace {
             };
             let abs = root.join(&rel);
             // `saved` is always the last content read from or written to disk for this tab.
-            let known = t.saved.as_ref().and_then(|saved| match &saved.body {
-                Body::Json(b) | Body::Text(b) | Body::Xml(b) => {
-                    b.sidecar.clone().map(|name| (name, b.content.clone()))
-                }
-                _ => None,
+            let kept = self
+                .sidecar_seen
+                .get(&tab.entity_id())
+                .and_then(|seen| seen.kept.clone());
+            let known = kept.or_else(|| {
+                t.saved.as_ref().and_then(|saved| match &saved.body {
+                    Body::Json(b) | Body::Text(b) | Body::Xml(b) => {
+                        b.sidecar.clone().map(|name| (name, b.content.clone()))
+                    }
+                    _ => None,
+                })
             });
             let outcome = save_request_if_unchanged(
                 &abs,
@@ -3041,8 +3084,25 @@ impl Workspace {
                     && let Body::Json(b) | Body::Text(b) | Body::Xml(b) = &draft.body
                     && let Some(name) = &b.sidecar
                 {
+                    let seen = abs
+                        .parent()
+                        .and_then(|dir| std::fs::read_to_string(dir.join(name)).ok());
+                    let Some(content) = seen else {
+                        anyhow::bail!("Not saved: sidecar `{name}` cannot be read");
+                    };
+                    let state = if matches!(baseline, DiskBaseline::Missing) {
+                        DiskState::DeletedOnDisk
+                    } else {
+                        DiskState::ChangedOnDisk
+                    };
+                    let name = name.clone();
+                    self.sidecar_seen
+                        .entry(tab.entity_id())
+                        .or_default()
+                        .refused = Some((name.clone(), content));
+                    tab.update(cx, |t, cx| t.set_disk_state(state, cx));
                     anyhow::bail!(
-                        "Not saved: sidecar `{name}` was changed outside Wisp or cannot be read; Reload to take the files on disk"
+                        "Not saved: sidecar `{name}` was changed outside Wisp; choose Keep mine to overwrite it"
                     );
                 }
                 let missing = std::fs::symlink_metadata(&abs)
@@ -3073,6 +3133,7 @@ impl Workspace {
         };
         // Only a successful write marks the draft saved.
         let name = draft.name;
+        self.sidecar_seen.remove(&tab.entity_id());
         tab.update(cx, |t, cx| {
             if t.draft.name.is_empty() {
                 t.edit(|r| r.name = name, cx);
@@ -5208,6 +5269,111 @@ mod env_wiring_tests {
             assert!(path.exists());
             assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
         }
+    }
+
+    fn saved_body(path: &Path) -> String {
+        match load_request(path).unwrap().body {
+            Body::Text(b) => b.content,
+            _ => panic!("text body"),
+        }
+    }
+
+    fn save_err(fx: &Fx, tab: &Entity<RequestTab>, cx: &mut TestAppContext) -> String {
+        fx.ws
+            .update(cx, |w, cx| w.save(tab, cx))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[gpui::test]
+    fn a_refused_sidecar_save_over_a_missing_request_recovers_through_keep_mine(
+        cx: &mut TestAppContext,
+    ) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        save_err(&fx, &tab, cx);
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert!(!path.exists());
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::DeletedOnDisk);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn a_sidecar_that_changes_again_after_keep_mine_is_refused_again(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        save_err(&fx, &tab, cx);
+        save_err(&fx, &tab, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        std::fs::write(&sidecar, b"outside again").unwrap();
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside again");
+        assert_ne!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+    }
+
+    #[gpui::test]
+    fn a_refused_sidecar_save_over_a_malformed_request_recovers_through_keep_mine(
+        cx: &mut TestAppContext,
+    ) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::write(&path, b"broken = [toml").unwrap();
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"broken = [toml");
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
+    }
+
+    #[gpui::test]
+    fn keep_mine_on_a_changed_sidecar_then_a_deleted_request_is_not_stuck(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel) = sidecar_tab(&fx, cx);
+        let path = fx.root.join(&rel);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::write(&sidecar, b"outside body").unwrap();
+        save_err(&fx, &tab, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        std::fs::remove_file(&path).unwrap();
+        save_err(&fx, &tab, cx);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+        assert_ne!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(saved_body(&path), "edited");
     }
 
     #[gpui::test]
