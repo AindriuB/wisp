@@ -23,6 +23,7 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - **Wave 0 complete:** 129 (the three openapi wall-clock tests count work, `substitute` is linear; PR #78) and theme-palette (PR #79).
 - **Wave 1 contracts merged (PRs #78-#84):** 130 explain core report, 131 assertions core and storage, 132 environment info and hint, 134 create collection and environment, 135 `wisp-cli` scaffold and `inspect`. Main CI green on all three platforms.
 - **Wave 1 complete (PRs #86-#90, main CI green on all three platforms):** 133 `storage validate`, 136 measure wave 1, 137 history provenance fields, 138 `wisp-core` at opt-level "z". Windows GUI is now 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger on current numbers.
+- **H1 history hardening merged (task 144, PRs #94, #103):** its open items are under "Follow-ups from task 144".
 - **Next:** plan 0.3.0 wave 2 (UI): 2A UI seams first, then 2B, 2C, 2D, 2E in parallel, then 2F wiring and the sidebar and palette task for creating a collection. The theme is merged, so UI work is unblocked.
 - **Planned small task:** DNS flake fix. Unit-test `classify` (`crates/core/src/engine.rs`) with a synthetic DNS error, and give `a_failed_lookup_is_still_a_dns_error` (`crates/core/tests/timings.rs:169`) a short timeout. `known-flakes.md` already names it.
 
