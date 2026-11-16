@@ -16,7 +16,7 @@ use gpui_component::button::Button;
 use gpui_component::{ActiveTheme as _, v_flex};
 use wisp_core::body::BodyHandle;
 use wisp_core::{EngineError, Method};
-use wisp_storage::history::{HistoryEntry, Outcome};
+use wisp_storage::history::{AssertionRecord, AssertionState, HistoryEntry, Outcome};
 
 use crate::actions::CancelRequest;
 use crate::tab::{HistoryOrigin, Phase, ResponseState};
@@ -68,6 +68,7 @@ pub fn resend_notice(
     redacted: &[String],
     original_missing: bool,
     url_edited: bool,
+    had_assertions: bool,
 ) -> String {
     let mut text = format!(
         "Resent with the current environment ({})",
@@ -89,7 +90,27 @@ pub fn resend_notice(
             "; the URL was edited, so only collection defaults applied, not the original folder's",
         );
     }
+    if had_assertions {
+        text.push_str("; assertions are not resent");
+    }
     text
+}
+
+/// `"<passed>/<total> checks"` for an entry's records, or `None` when it has none.
+pub fn checks_chip(records: &[AssertionRecord]) -> Option<String> {
+    if records.is_empty() {
+        return None;
+    }
+    let passed = records
+        .iter()
+        .filter(|r| r.state == AssertionState::Pass)
+        .count();
+    Some(format!("{passed}/{} checks", records.len()))
+}
+
+/// Whether any record failed.
+pub fn checks_failed(records: &[AssertionRecord]) -> bool {
+    records.iter().any(|r| r.state == AssertionState::Fail)
 }
 
 /// The line above the response of a from-history tab.
@@ -262,6 +283,22 @@ impl Render for HistoryView {
                                 .truncate()
                                 .child(SharedString::from(e.url.clone())),
                         )
+                        .children(e.environment.clone().map(|name| {
+                            div()
+                                .flex_none()
+                                .text_color(muted)
+                                .child(SharedString::from(name))
+                        }))
+                        .children(checks_chip(&e.assertions).map(|chip| {
+                            div()
+                                .flex_none()
+                                .text_color(if checks_failed(&e.assertions) {
+                                    cx.theme().danger
+                                } else {
+                                    muted
+                                })
+                                .child(chip)
+                        }))
                         .child(
                             div()
                                 .flex_none()
@@ -369,11 +406,11 @@ mod tests {
     #[test]
     fn resend_notice_with_and_without_names_and_environment() {
         assert_eq!(
-            resend_notice(Some("dev"), &[], &[], false, false),
+            resend_notice(Some("dev"), &[], &[], false, false, false),
             "Resent with the current environment (dev)"
         );
         assert_eq!(
-            resend_notice(None, &[], &[], false, false),
+            resend_notice(None, &[], &[], false, false, false),
             "Resent with the current environment (no environment)"
         );
         assert_eq!(
@@ -382,6 +419,7 @@ mod tests {
                 &[],
                 &["Authorization".into(), "token".into()],
                 false,
+                false,
                 false
             ),
             "Resent with the current environment (dev); redacted values were not stored: Authorization, token"
@@ -389,9 +427,35 @@ mod tests {
     }
 
     #[test]
+    fn resend_notice_says_assertions_are_not_resent() {
+        assert_eq!(
+            resend_notice(Some("dev"), &[], &[], false, false, true),
+            "Resent with the current environment (dev); assertions are not resent"
+        );
+    }
+
+    #[test]
+    fn checks_chip_counts_passed_over_total() {
+        let rec = |state| AssertionRecord {
+            label: "status".into(),
+            hash: "h".into(),
+            state,
+        };
+        assert_eq!(checks_chip(&[]), None);
+        let v = [
+            rec(AssertionState::Pass),
+            rec(AssertionState::Fail),
+            rec(AssertionState::Skipped),
+        ];
+        assert_eq!(checks_chip(&v).as_deref(), Some("1/3 checks"));
+        assert!(checks_failed(&v));
+        assert!(!checks_failed(&v[..1]));
+    }
+
+    #[test]
     fn resend_notice_says_when_the_original_request_is_gone() {
         assert_eq!(
-            resend_notice(None, &[], &[], true, false),
+            resend_notice(None, &[], &[], true, false, false),
             "Resent with the current environment (no environment); the original request was not found, so only collection defaults applied"
         );
     }
@@ -407,7 +471,8 @@ mod tests {
                 ],
                 &[],
                 false,
-                true
+                true,
+                false
             ),
             "Resent with the current environment (dev); because values were not stored: disabled header Authorization, reset auth to inherit; the URL was edited, so only collection defaults applied, not the original folder's"
         );
