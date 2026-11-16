@@ -49,3 +49,12 @@ sidebar buttons as a separate, cuttable commit.
 - Storage changes (134 is merged; a defect is reported, not fixed).
 - The guard palette command and `actions.rs`/`palette.rs` edits for it (wave 3, 3A, after this task).
 - Templates or a starter request in a new collection.
+
+## Review round 1 — findings
+Reviewed HEAD 80e165a858bba36aa9d6a54186ff7ad55d57927d.
+- [STYLE] crates/app/src/ui/create.rs:182 — the test name `env_name_table` is a noun phrase, not a sentence. docs/conventions.md:106 says "Test names read as sentences". The two tests next to it in the same module follow that rule: `collection_outcomes_map_to_notices` (create.rs:205) and `create_env_writes_once_and_refuses_the_rest` (create.rs:224). A fitting rename is `env_names_are_checked_for_empty_bad_characters_and_duplicates`.
+
+## Wave verified — ffb045ff536b29b8cfdc854c5089ae4eb571aefa
+
+## Outcome
+Merged via PR #108, verified at ffb045ff536b29b8cfdc854c5089ae4eb571aefa (tester PASS, reviewer APPROVE). The palette commands "New collection..." and "New environment..." and the two sidebar buttons (a separate, revertable commit) are in. One review round, a test rename only. Follow-ups are in PLAN under "Follow-ups from task 148".
