@@ -20,12 +20,10 @@ than no plan.
 
 ### v0.3.0 (in progress)
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendment 1; roadmap: `docs/plan/roadmap.md`.
-- **Wave 0 complete:** 129 (the three openapi wall-clock tests count work, `substitute` is linear; PR #78) and theme-palette (PR #79).
-- **Wave 1 contracts merged (PRs #78-#84):** 130 explain core report, 131 assertions core and storage, 132 environment info and hint, 134 create collection and environment, 135 `wisp-cli` scaffold and `inspect`. Main CI green on all three platforms.
-- **Wave 1 complete (PRs #86-#90, main CI green on all three platforms):** 133 `storage validate`, 136 measure wave 1, 137 history provenance fields, 138 `wisp-core` at opt-level "z". Windows GUI is now 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger on current numbers.
-- **H1 history hardening merged (task 144, PRs #94, #103):** its open items are under "Follow-ups from task 144".
-- **Wave 2 merged and recorded:** 139 UI seams (PR #97), 140 Explain pane and context strip (PR #99), 141 assertions editor and Checks pane (PR #100), 142 `wisp-cli validate` and `explain` (PR #95), 144 history hardening, 145 DNS classify unit test (PR #93), 146 README portable-mode sentence (PR #92), 150 SigV4 access key mask (PR #96), 151 Explain hidden-set consistency (PR #98), 143 save and close (PR #101), 152 history-tab sidecar overwrite (PR #102).
-- **Next:** 147 (assertion and history wiring) is verified and recorded (PR open); 148 is PR #108; then 149 (measure wave 2) last.
+- **Waves 0 and 1 complete (PRs #78-#90):** 129, theme-palette, 130-138; main CI green on all three platforms. Windows GUI 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger. Detail in `docs/plan/archive/2026-11-16-closed-sections.md`.
+- **Wave 2 merged and recorded (PRs #92-#102):** 139-146, 150-152. Detail in `docs/plan/archive/2026-11-16-closed-sections.md` and HISTORY.
+- **147 and 148 recorded (PRs #109 and #108):** assertion and history wiring, and the new collection and environment UI. Follow-ups are under "Follow-ups from task 147" and "Follow-ups from task 148".
+- **Next:** 149 (measure wave 2) is next and last.
 
 ### v0.2.0 (published 2026-11-14)
 Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.md` and HISTORY.
@@ -35,12 +33,6 @@ Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.
 - SignPath Foundation application, then the repository secret and variables (`scripts/release/sign-windows/README.md`).
 - Confirm the winget PackageIdentifier and open the winget-pkgs PR after 0.2.0 is published (`packaging/winget/README.md`).
 - Partner Center account, the `MSIX_*` repository variables and Store submission (`packaging/msix/STORE-SUBMISSION.md`).
-
-### v0.1.0 is tagged
-Tagged 2026-11-03 before the Windows hand test; the macOS Apple-silicon candidate was hand-tested and passed. See HISTORY. The Windows build was hand-tested afterwards and passed.
-
-### v0.1.1 wave
-Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies resent on 307/308), 84 (secrets redacted from Debug output in wisp-core), 85 (storage rejects Windows-unsafe and aliasing names), 83 (ask before discarding unsaved changes on quit and close), 88 (narrow-window layout limits and Cookies scrollbar) and 87 (Linux window icon, app id and desktop launcher; Linux hand checks still pending) and 89 (workspace version 0.1.1); see HISTORY. Remaining before tagging: a release-candidate dry run, the user's hand tests (the checklist in task 83's HISTORY entry), then tag and publish with the user's approval.
 
 ### Storage-safety follow-ups (from task 85, not v0.1.1)
 - The Windows test `sidecar_rejects_8dot3_short_name_of_sibling_toml` fails rather than skips on a volume with 8.3 names off; it should return early when `B~1.TOM` does not exist.
@@ -59,6 +51,11 @@ None of these is marked 🔒 in the review notes (🔒 would mark a security-rel
 - 142 (P3): `explain_keychain_secret_shadows_lower_scope` does not assert the label (text `secret tok (not set)`, JSON `resolved:false present:false`), and `contains("secret")` always passes. The text says "not set" plus a `keychain: not loaded by the CLI` line, not "unavailable" as AC2 words it.
 - 142 (Note): `explain` checks `confined` for symlinks and then `load_request` reopens the file, a TOCTOU race that needs a concurrent writer.
 - 139 (P3): `history_scope` shows `Pending` for `IdState::Failed` (the id cannot be read or created); it should be `Off(reason)`.
+
+### Follow-ups from task 148 (PR #108; not 0.3.0 unless scheduled)
+- [P3] `root.rs:481-487`: a folder whose `collection.toml` exists but cannot be opened (malformed, a directory, a symlink) shows "Already a collection: opened it" and then "Cannot open: ...".
+- [Note] `create.rs:51` `check_env_name` is looser than storage `valid_name`: a leading or trailing '.', '..', '.secrets' and reserved device names get storage's generic "invalid environment name".
+- [Note] `sidebar.rs:320-352` edits reach `sync_env` and `choose_env`, beyond the Owns note's "environment select's row only"; the change is confined to that select.
 
 ### Follow-ups from task 144 (history hardening; PRs #94, #103)
 🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Items 103-1 to 103-6 are from the fresh review of PR #103 (round 8); the rest are from the `/verify` reviewer at 33e6c75. All are Low or Nit.

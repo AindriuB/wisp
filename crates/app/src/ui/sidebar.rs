@@ -20,11 +20,12 @@ use wisp_core::Method;
 use wisp_storage::collection::Node;
 use wisp_storage::ops;
 
-use crate::actions::{OpenCollection, OpenPalette, palette_hint};
+use crate::actions::{NewCollection, NewEnvironment, OpenCollection, OpenPalette, palette_hint};
 use crate::ui::collections::{CloseRequested, CollectionSwitcher};
 use crate::workspace::{Workspace, WorkspaceEvent, confirmed_open};
 
 const NO_ENV: &str = "No environment";
+const NEW_ENV: &str = "New environment…";
 const METHOD_WIDTH: f32 = 46.0;
 
 /// One visible tree row.
@@ -317,15 +318,17 @@ impl Sidebar {
 
     /// Bring the select's items and selection in line with the workspace.
     fn sync_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (names, active) = match self.workspace.read(cx).active_collection() {
+        let (names, active, has_collection) = match self.workspace.read(cx).active_collection() {
             Some(c) => (
                 c.environments.clone(),
                 c.active_env.as_ref().map(|e| e.name.clone()),
+                true,
             ),
-            None => (Vec::new(), None),
+            None => (Vec::new(), None, false),
         };
         let items: Vec<SharedString> = std::iter::once(SharedString::from(NO_ENV))
             .chain(names.iter().map(|n| SharedString::from(n.clone())))
+            .chain(has_collection.then(|| SharedString::from(NEW_ENV)))
             .collect();
         let row = active
             .and_then(|a| names.iter().position(|n| *n == a))
@@ -341,6 +344,12 @@ impl Sidebar {
     }
 
     fn choose_env(&mut self, value: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if value.as_ref() == NEW_ENV {
+            // Not an environment: ask for a name, and put the selection back.
+            self.sync_env(window, cx);
+            window.dispatch_action(Box::new(NewEnvironment), cx);
+            return;
+        }
         let name = (value.as_ref() != NO_ENV).then(|| value.to_string());
         let result = self
             .workspace
@@ -883,13 +892,26 @@ impl Render for Sidebar {
             .py_1();
         if !open {
             body = body.child(
-                div().p_2().child(
-                    Button::new("sidebar-open")
-                        .label("Open collection…")
-                        .on_click(|_: &ClickEvent, window, cx| {
-                            window.dispatch_action(Box::new(OpenCollection), cx)
-                        }),
-                ),
+                div()
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap_1()
+                    .child(
+                        Button::new("sidebar-new")
+                            .label("New collection…")
+                            .on_click(|_: &ClickEvent, window, cx| {
+                                window.dispatch_action(Box::new(NewCollection), cx)
+                            }),
+                    )
+                    .child(
+                        Button::new("sidebar-open")
+                            .label("Open collection…")
+                            .on_click(|_: &ClickEvent, window, cx| {
+                                window.dispatch_action(Box::new(OpenCollection), cx)
+                            }),
+                    ),
             );
         } else {
             if let Some(e) = error {

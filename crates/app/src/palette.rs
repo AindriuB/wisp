@@ -11,6 +11,8 @@ pub enum CommandId {
     NewRequest,
     CloseTab,
     OpenCollection,
+    NewCollection,
+    NewEnvironment,
     SwitchCollection,
     CloseCollection,
     SwitchEnvironment,
@@ -57,12 +59,14 @@ pub struct Match {
 }
 
 impl CommandId {
-    pub const ALL: [CommandId; 18] = [
+    pub const ALL: [CommandId; 20] = [
         CommandId::Send,
         CommandId::Save,
         CommandId::NewRequest,
         CommandId::CloseTab,
         CommandId::OpenCollection,
+        CommandId::NewCollection,
+        CommandId::NewEnvironment,
         CommandId::SwitchCollection,
         CommandId::CloseCollection,
         CommandId::SwitchEnvironment,
@@ -85,6 +89,8 @@ impl CommandId {
             CommandId::NewRequest => "New request",
             CommandId::CloseTab => "Close tab",
             CommandId::OpenCollection => "Open collection",
+            CommandId::NewCollection => "New collection…",
+            CommandId::NewEnvironment => "New environment…",
             CommandId::SwitchCollection => "Switch collection…",
             CommandId::CloseCollection => "Close collection",
             CommandId::SwitchEnvironment => "Switch environment",
@@ -128,11 +134,17 @@ pub fn items(
             if let Some(t) = tree {
                 collect_requests(&t.nodes, &mut out);
             }
-            out.extend(CommandId::ALL.iter().map(|c| PaletteItem {
-                label: c.label().to_string(),
-                detail: String::new(),
-                kind: PaletteKind::Command(*c),
-            }));
+            // An environment needs a collection to live in.
+            out.extend(
+                CommandId::ALL
+                    .iter()
+                    .filter(|c| tree.is_some() || **c != CommandId::NewEnvironment)
+                    .map(|c| PaletteItem {
+                        label: c.label().to_string(),
+                        detail: String::new(),
+                        kind: PaletteKind::Command(*c),
+                    }),
+            );
         }
         // Built by `collection_items`: the list is not part of the tree.
         PaletteMode::Collections => {}
@@ -297,6 +309,14 @@ mod tests {
     #[test]
     fn keychain_share_command_is_absent_from_an_unbound_root() {
         let all = items(None, &[], None, PaletteMode::All);
+        assert!(
+            !all.iter()
+                .any(|i| i.kind == PaletteKind::Command(CommandId::NewEnvironment))
+        );
+        assert!(
+            all.iter()
+                .any(|i| i.kind == PaletteKind::Command(CommandId::NewCollection))
+        );
         let has = |v: &[PaletteItem]| {
             v.iter()
                 .any(|i| i.kind == PaletteKind::Command(CommandId::ShareSecrets))
@@ -350,7 +370,7 @@ mod tests {
         assert_eq!(all[2].label, "Send request");
         assert_eq!(
             items(None, &[], None, PaletteMode::All).len(),
-            CommandId::ALL.len()
+            CommandId::ALL.len() - 1
         );
 
         let envs = vec!["dev".to_string(), "prod".to_string()];

@@ -15,6 +15,8 @@ actions!(
         OpenPalette,
         SwitchEnvironment,
         OpenCollection,
+        NewCollection,
+        NewEnvironment,
         SwitchCollection,
         CloseCollection,
         ReloadFromDisk,

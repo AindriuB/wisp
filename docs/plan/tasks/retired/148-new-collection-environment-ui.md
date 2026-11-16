@@ -49,3 +49,31 @@ sidebar buttons as a separate, cuttable commit.
 - Storage changes (134 is merged; a defect is reported, not fixed).
 - The guard palette command and `actions.rs`/`palette.rs` edits for it (wave 3, 3A, after this task).
 - Templates or a starter request in a new collection.
+
+## Review round 1 — findings
+Reviewed HEAD 80e165a858bba36aa9d6a54186ff7ad55d57927d.
+- [STYLE] crates/app/src/ui/create.rs:182 — the test name `env_name_table` is a noun phrase, not a sentence. docs/conventions.md:106 says "Test names read as sentences". The two tests next to it in the same module follow that rule: `collection_outcomes_map_to_notices` (create.rs:205) and `create_env_writes_once_and_refuses_the_rest` (create.rs:224). A fitting rename is `env_names_are_checked_for_empty_bad_characters_and_duplicates`.
+
+## Wave verified — ffb045ff536b29b8cfdc854c5089ae4eb571aefa
+
+## External review — findings
+Key sha256:7f60c61304f7 · reviewed head 5e6d874a10fc82f48c0a5f41a5a4261dc27a90bc · round 2 (pasted by the user; static read-only review of PR #108)
+* [P2] Restore focus when dismissing the environment dialog — `crates/app/src/ui/create.rs:155`, also line 130. Cancelling or successfully submitting removes the focused dialog without restoring workspace focus. Workspace shortcuts then stop working until the user clicks a focusable control. Capture the previous focus and restore it before both dismissal paths, as existing dialogs do.
+
+## Wave verified — d416847efc0907133e56cc8f40a260d8ee4a94bd
+
+## External review — findings
+Key sha256:170513b0a094 · reviewed head d416847efc0907133e56cc8f40a260d8ee4a94bd · round 3 (pasted by the user; static read-only review of PR #108)
+* [P2] Bind the environment dialog to its opening collection — `crates/app/src/ui/create.rs:125–133`. Open “New environment” in collection A, use Cmd/Ctrl+O to open B, then submit the still-open dialog: it creates and selects the environment in B. Capture the opening collection’s root and validate it before writing, as `ImportView` does.
+
+## Wave verified — 4fb51e9991af886b5ce24561d923aa2d8fe6c743
+
+## External review — findings
+Key sha256:a8b4ef5ae0ee · reviewed head d416847efc0907133e56cc8f40a260d8ee4a94bd (sidebar.rs unchanged at current head 4fb51e9) · round 4 (pasted by the user; static read-only review of PR #108)
+* [P2] Keep both empty-state buttons visible — `crates/app/src/ui/sidebar.rs:897–900`. The new horizontal layout places two nonshrinking buttons on one line. Their combined widths exceed the default 240 px sidebar, pushing “Open collection…” outside the visible area. Stack the buttons vertically or allow wrapping.
+
+## Wave verified — d5aed9e8c3a42db1ccbc047c029c3459650ac85c
+Cutting the sidebar work under D-A now means reverting d5aed9e then 2ae2e2b (both sidebar.rs only); reverting 2ae2e2b alone conflicts.
+
+## Outcome
+Merged via PR #108, verified at ffb045ff536b29b8cfdc854c5089ae4eb571aefa (tester PASS, reviewer APPROVE). The palette commands "New collection..." and "New environment..." and the two sidebar buttons (a separate, revertable commit) are in. Four review rounds: round 1 (internal) was a test rename only; rounds 2-4 were external, each with one P2, fixed in d416847 (restore focus when the new-environment dialog is dismissed), 4fb51e9 (bind that dialog to the collection it was opened in) and d5aed9e (stack the sidebar empty-state buttons vertically). The branch head is d5aed9e. Cutting the sidebar work under D-A means reverting d5aed9e then 2ae2e2b. Follow-ups are in PLAN under "Follow-ups from task 148".
