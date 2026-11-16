@@ -22,7 +22,7 @@ than no plan.
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendment 1; roadmap: `docs/plan/roadmap.md`.
 - **Waves 0 and 1 complete (PRs #78-#90):** 129, theme-palette, 130-138; main CI green on all three platforms. Windows GUI 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger. Detail in `docs/plan/archive/2026-11-16-closed-sections.md`.
 - **Wave 2 merged and recorded (PRs #92-#102):** 139-146, 150-152. Detail in `docs/plan/archive/2026-11-16-closed-sections.md` and HISTORY.
-- **148 (new collection and environment UI):** PR #108 open, verified at ffb045f; its follow-ups are under "Follow-ups from task 148".
+- **148 (new collection and environment UI):** recorded, PR #108, last verified at d5aed9e; its follow-ups are under "Follow-ups from task 148".
 - **Next:** 147 (assertion and history wiring, in flight; edits the `workspace.rs` serial queue 139 -> 143 -> 147), then 149 (measure wave 2) last.
 
 ### v0.2.0 (published 2026-11-14)
