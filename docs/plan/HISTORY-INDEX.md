@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-16 | 152 | saving a history tab no longer overwrites a sidecar; bodies inlined on open, save-time backstop via replace_draft | ## 2026-11-16 — A history tab no longer overwrites a sidecar on save (task 152) |
+| 2026-11-16 | 143 | checked saves (conflict check against disk baseline), save-and-close and quit prompts, sidecar guard | ## 2026-11-16 — Checked saves and save-and-close prompts (task 143) |
 | 2026-11-16 | 141 | Assertions sub-tab editor (matrix-valid controls, row_error, Unrecognised preserved) and Checks pane; evaluation is 147 | ## 2026-11-16 — Assertions editor and Checks pane (task 141) |
 | 2026-11-16 | 140 | Explain pane and URL-row context strip through pure text functions; secret canary test | ## 2026-11-16 — Explain pane and context strip (task 140) |
 | 2026-11-16 | 151 | explain report: hidden-set variables hidden in headers, params, URL, body, auth; shared work budget | ## 2026-11-16 — Explain hides every expansion of a hidden variable (task 151) |

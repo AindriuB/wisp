@@ -24,8 +24,7 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - **Wave 1 contracts merged (PRs #78-#84):** 130 explain core report, 131 assertions core and storage, 132 environment info and hint, 134 create collection and environment, 135 `wisp-cli` scaffold and `inspect`. Main CI green on all three platforms.
 - **Wave 1 complete (PRs #86-#90, main CI green on all three platforms):** 133 `storage validate`, 136 measure wave 1, 137 history provenance fields, 138 `wisp-core` at opt-level "z". Windows GUI is now 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger on current numbers.
 - **H1 history hardening merged (task 144, PRs #94, #103):** its open items are under "Follow-ups from task 144".
-- **Wave 2 merged and recorded:** 139 UI seams (PR #97), 140 Explain pane and context strip (PR #99), 141 assertions editor and Checks pane (PR #100), 142 `wisp-cli validate` and `explain` (PR #95), 144 history hardening, 145 DNS classify unit test (PR #93), 146 README portable-mode sentence (PR #92), 150 SigV4 access key mask (PR #96), 151 Explain hidden-set consistency (PR #98).
-- **Merged, being recorded:** 143 save and close (PR #101) and 152 (PR #102) are being recorded in PR #104 (branch `record/152`).
+- **Wave 2 merged and recorded:** 139 UI seams (PR #97), 140 Explain pane and context strip (PR #99), 141 assertions editor and Checks pane (PR #100), 142 `wisp-cli validate` and `explain` (PR #95), 144 history hardening, 145 DNS classify unit test (PR #93), 146 README portable-mode sentence (PR #92), 150 SigV4 access key mask (PR #96), 151 Explain hidden-set consistency (PR #98), 143 save and close (PR #101), 152 history-tab sidecar overwrite (PR #102).
 - **Next:** 147 (assertion and history wiring) and 148 (new collection and environment UI), which both depend on 143 and edit the `workspace.rs` serial queue 139 -> 143 -> 147; then 149 (measure wave 2) last. 140 and 141 are recorded here.
 
 ### v0.2.0 (published 2026-11-14)
@@ -80,6 +79,22 @@ None of these is marked 🔒 in the review notes (🔒 would mark a security-rel
 - 103-4: the new `file:` tests use a fixed request URL, not the looped one.
 - 103-5 (Nit): the new `file:` branch duplicates the special-scheme return; merge the conditions.
 - 103-6 (Nit): no uppercase `FILE:` or Refresh case in the new `file:` tests.
+
+### Follow-ups from tasks 143 and 152 (PRs #101 and #102; not 0.3.0 unless scheduled)
+From PR #102's review (https://github.com/AindriuB/wisp/pull/102#pullrequestreview-5927425261):
+- [P3] 102-1: the save-time backstop in `Workspace::save` is reached by no integration test; only the open-time inlining is.
+- [P3] 102-2: inlining runs after `sanitized_origin`, so `HistoryOrigin.stored_body` still names the sidecar.
+- [P3] 102-3: the editor-stash test uses a hand-built `Stash`, not the `BodyEditor`.
+- [Nit] 102-4: wording of the `new_tomls` doc comment.
+
+From PR #101 (task 143, save and close):
+- [P3] 101-3 and 101-4: Lows the owner deferred; text not recorded on PR #101 or in the 143 task file. 101-1 and 101-2 were fixed in 91f09b5 and a53bbd6.
+- [P3] `sidecar_seen` entries are never removed when a tab closes.
+- [P3] Keep mine records the sidecar as it is at click time, not the version the refusal saw.
+- [P3] The quit prompt fixes its tab list before it opens.
+- [P3] Test `a_non_utf8_sidecar_that_changes_again_after_keep_mine_is_refused` does not exercise the refused-then-changed path.
+- [P3] TOCTOU between the sidecar check and the write.
+- [P3] The sidecar is written before the TOML.
 
 ### Follow-ups from 0.3.0 wave 1 (tasks 130-138, PRs #80-#90; not 0.3.0 unless scheduled)
 🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Task 134's Lows 81-1 to 81-5 are listed below as 81-1 to 81-5.
