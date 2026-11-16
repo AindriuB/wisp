@@ -247,6 +247,14 @@ impl ExplainPane {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::observe(workspace, tab, cx)
+    }
+
+    fn observe(
+        workspace: Entity<Workspace>,
+        tab: Entity<RequestTab>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let subs = vec![
             cx.subscribe(&tab, |this, _, event: &TabEvent, cx| {
                 if matches!(
@@ -265,6 +273,7 @@ impl ExplainPane {
                     WorkspaceEvent::EnvironmentChanged
                         | WorkspaceEvent::SecretsChanged
                         | WorkspaceEvent::CollectionChanged
+                        | WorkspaceEvent::ActiveTabChanged
                 ) {
                     this.refresh(cx);
                 }
@@ -278,10 +287,12 @@ impl ExplainPane {
         }
     }
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.tab.read(cx).response_tab != ResponseSubTab::Explain {
+        let ws = self.workspace.read(cx);
+        if ws.active_tab().as_ref() != Some(&self.tab)
+            || self.tab.read(cx).response_tab != ResponseSubTab::Explain
+        {
             return;
         }
-        let ws = self.workspace.read(cx);
         let folders = tab_folders(ws, &self.tab, cx);
         let report = explain(&self.tab.read(cx).draft, &ws.send_scope(&self.tab, cx));
         self.sections = report_sections(&report, &folders);
@@ -326,6 +337,69 @@ mod tests {
     use crate::workspace::HistoryScope;
     use wisp_core::request::{Auth, CollectionDefaults, Environment, KeyValue, Request, Var};
     use wisp_core::resolve::{Scope, explain_auth};
+
+    #[gpui::test]
+    fn explain_skips_hidden_updates_and_refreshes_on_reactivation(cx: &mut gpui::TestAppContext) {
+        use crate::settings::Settings;
+        use gpui::AppContext as _;
+        use std::sync::Arc;
+        use wisp_storage::vault::MemoryStore;
+
+        let workspace = cx.new(|cx| {
+            Workspace::new(
+                Settings::default(),
+                None,
+                None,
+                Arc::new(MemoryStore::new()),
+                cx,
+            )
+        });
+        let tab = workspace.update(cx, |w, cx| {
+            w.new_scratch_tab("https://before.test/".into(), cx)
+        });
+        let pane = cx.new(|cx| ExplainPane::observe(workspace.clone(), tab.clone(), cx));
+        tab.update(cx, |t, cx| {
+            t.response_tab = ResponseSubTab::Explain;
+            cx.emit(TabEvent::ResponseChanged);
+        });
+        cx.run_until_parked();
+        let before = pane.read_with(cx, |p, _| p.sections.clone());
+        assert!(before[1].1[0].contains("https://before.test/"));
+
+        workspace.update(cx, |w, cx| {
+            w.new_scratch_tab("https://other.test/".into(), cx);
+        });
+        tab.update(cx, |t, cx| {
+            t.edit(|d| d.url = "https://after.test/".into(), cx);
+            cx.emit(TabEvent::ResponseChanged);
+        });
+        workspace.update(cx, |_, cx| {
+            cx.emit(WorkspaceEvent::EnvironmentChanged);
+            cx.emit(WorkspaceEvent::SecretsChanged);
+        });
+        cx.run_until_parked();
+        assert_eq!(pane.read_with(cx, |p, _| p.sections.clone()), before);
+
+        workspace.update(cx, |w, cx| w.activate_tab(0, cx));
+        cx.run_until_parked();
+        let reactivated = pane.read_with(cx, |p, _| p.sections.clone());
+        assert!(reactivated[1].1[0].contains("https://after.test/"));
+
+        tab.update(cx, |t, cx| {
+            t.response_tab = ResponseSubTab::Body;
+            t.edit(|d| d.url = "https://latest.test/".into(), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(pane.read_with(cx, |p, _| p.sections.clone()), reactivated);
+        tab.update(cx, |t, cx| {
+            t.response_tab = ResponseSubTab::Explain;
+            cx.emit(TabEvent::ResponseChanged);
+        });
+        cx.run_until_parked();
+        assert!(pane.read_with(cx, |p, _| {
+            p.sections[1].1[0].contains("https://latest.test/")
+        }));
+    }
 
     #[test]
     fn explain_parts_and_origins_are_safe_and_readable() {
