@@ -1412,6 +1412,23 @@ impl Workspace {
         self.all_tabs().any(|t| t.read(cx).is_dirty())
     }
 
+    /// Every collection tab, and the titles of dirty scratch tabs.
+    pub fn quit_tabs(&self, cx: &gpui::App) -> (Vec<Entity<RequestTab>>, Vec<String>) {
+        let tabs = self
+            .collections
+            .iter()
+            .flat_map(|c| c.group.tabs.iter().cloned())
+            .collect();
+        let scratch = self
+            .scratch
+            .tabs
+            .iter()
+            .filter(|t| t.read(cx).is_dirty())
+            .map(|t| t.read(cx).title().to_string())
+            .collect();
+        (tabs, scratch)
+    }
+
     /// True when closing collection `ix` would discard unsaved changes.
     pub fn collection_dirty(&self, ix: usize, cx: &gpui::App) -> bool {
         self.collections
@@ -5310,6 +5327,47 @@ mod env_wiring_tests {
                 "http://mine.test/"
             );
         }
+    }
+
+    #[gpui::test]
+    fn quit_saves_collection_tabs_and_names_scratch_drafts_it_discards(cx: &mut TestAppContext) {
+        use crate::save_close::{self, ClosePrompt};
+        let fx = fixture(cx);
+        let scratch = fx.ws.update(cx, |w, cx| {
+            w.new_scratch_tab("http://scratch.test/".into(), cx)
+        });
+        scratch.update(cx, |t, cx| t.edit(|r| r.name = "Draft".into(), cx));
+        open(&fx, cx);
+        let (tab, rel) = open_tab(&fx, cx);
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine.test/".into(), cx)
+        });
+        let plan = fx.ws.read_with(cx, save_close::quit_plan);
+        assert_eq!(plan.prompt, ClosePrompt::Quit);
+        assert_eq!(plan.tabs, vec![tab.clone()]);
+        assert!(plan.detail.contains("\"Draft\""), "{}", plan.detail);
+        assert!(plan.detail.contains("discarded"), "{}", plan.detail);
+        let quit = fx.ws.update(cx, |w, cx| {
+            w.prompt_up = true;
+            save_close::finish(plan.prompt, Some(0), &plan.tabs, w, cx)
+        });
+        assert!(quit);
+        assert_eq!(
+            load_request(&fx.root.join(&rel)).unwrap().url,
+            "http://mine.test/"
+        );
+        assert!(scratch.read_with(cx, |t, _| t.is_dirty() && t.path.is_none()));
+        // Only a scratch draft is dirty: nothing to save, so Save is not offered.
+        let plan = fx.ws.read_with(cx, save_close::quit_plan);
+        assert_eq!(plan.prompt, ClosePrompt::QuitDiscardOnly);
+        assert_eq!(plan.prompt.buttons(), ["Discard", "Cancel"]);
+        assert!(plan.detail.contains("\"Draft\""), "{}", plan.detail);
+        assert!(fx.ws.update(cx, |w, cx| {
+            save_close::finish(plan.prompt, Some(0), &plan.tabs, w, cx)
+        }));
+        assert!(!fx.ws.update(cx, |w, cx| {
+            save_close::finish(plan.prompt, Some(1), &plan.tabs, w, cx)
+        }));
     }
 
     #[gpui::test]

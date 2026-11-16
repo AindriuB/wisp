@@ -111,11 +111,12 @@ fn request_quit(ws: &Entity<Workspace>, window: &mut Window, cx: &mut gpui::App)
         QuitStep::Quit => quit_app(cx),
         QuitStep::Prompt => {
             ws.update(cx, |w, _| w.prompt_up = true);
-            let prompt = save_close::ClosePrompt::Quit;
+            let plan = save_close::quit_plan(ws.read(cx), cx);
+            let prompt = plan.prompt;
             let answer = window.prompt(
                 PromptLevel::Warning,
                 "Save unsaved changes?",
-                Some("Quitting closes all tabs."),
+                Some(&plan.detail),
                 prompt.buttons(),
                 cx,
             );
@@ -124,8 +125,7 @@ fn request_quit(ws: &Entity<Workspace>, window: &mut Window, cx: &mut gpui::App)
                 let button = answer.await.ok();
                 cx.update(|cx| {
                     let quit = ws.update(cx, |w, cx| {
-                        let tabs: Vec<_> = w.all_tabs().cloned().collect();
-                        save_close::finish(prompt, button, &tabs, w, cx)
+                        save_close::finish(prompt, button, &plan.tabs, w, cx)
                     });
                     if quit {
                         quit_app(cx);

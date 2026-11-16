@@ -5,18 +5,22 @@ use gpui::{Context, Entity};
 use crate::tab::RequestTab;
 use crate::workspace::{Workspace, WorkspaceEvent};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClosePrompt {
-    Tab { can_save: bool },
+    Tab {
+        can_save: bool,
+    },
     Collection,
     Quit,
+    /// Quit with only scratch drafts dirty: nothing can be saved.
+    QuitDiscardOnly,
 }
 
 impl ClosePrompt {
     pub fn buttons(self) -> &'static [&'static str] {
         match self {
             Self::Tab { can_save: true } => &["Save and close", "Discard", "Cancel"],
-            Self::Tab { can_save: false } => &["Discard", "Cancel"],
+            Self::Tab { can_save: false } | Self::QuitDiscardOnly => &["Discard", "Cancel"],
             Self::Collection => &["Save all and close", "Discard", "Cancel"],
             Self::Quit => &["Save all and quit", "Discard", "Cancel"],
         }
@@ -44,7 +48,10 @@ fn decide(
     button: Option<usize>,
     mut saves: impl Iterator<Item = Result<(), String>>,
 ) -> Decision {
-    let can_save = prompt != (ClosePrompt::Tab { can_save: false });
+    let can_save = !matches!(
+        prompt,
+        ClosePrompt::Tab { can_save: false } | ClosePrompt::QuitDiscardOnly
+    );
     match (can_save, button) {
         (true, Some(0)) => match saves.find_map(Result::err) {
             Some(notice) => Decision::KeepOpen(notice),
@@ -52,6 +59,44 @@ fn decide(
         },
         (true, Some(1)) | (false, Some(0)) => Decision::Close,
         _ => Decision::Cancel,
+    }
+}
+
+/// What the quit prompt asks and which tabs "Save all and quit" may write.
+pub struct QuitPlan {
+    pub prompt: ClosePrompt,
+    pub detail: String,
+    /// Collection tabs only: a scratch tab has nowhere to be saved.
+    pub tabs: Vec<Entity<RequestTab>>,
+}
+
+pub fn quit_plan(workspace: &Workspace, cx: &gpui::App) -> QuitPlan {
+    let (tabs, scratch) = workspace.quit_tabs(cx);
+    let collection_dirty = tabs.iter().any(|t| t.read(cx).is_dirty());
+    let list = scratch
+        .iter()
+        .map(|t| format!("\"{t}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (prompt, detail) = match (collection_dirty, scratch.is_empty()) {
+        (true, true) => (ClosePrompt::Quit, "Quitting closes all tabs.".into()),
+        (true, false) => (
+            ClosePrompt::Quit,
+            format!(
+                "Quitting closes all tabs. Unsaved scratch drafts cannot be saved and will be discarded: {list}."
+            ),
+        ),
+        (false, _) => (
+            ClosePrompt::QuitDiscardOnly,
+            format!(
+                "Open a collection to save. Quitting will discard unsaved scratch drafts: {list}."
+            ),
+        ),
+    };
+    QuitPlan {
+        prompt,
+        detail,
+        tabs,
     }
 }
 
