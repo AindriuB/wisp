@@ -3,7 +3,7 @@
 //! The pure helpers at the top (name check, outcome-to-notice mapping) are
 //! what the unit tests cover; the view below only wires them to an input.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
     AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
@@ -72,9 +72,38 @@ pub fn create_env(root: &std::path::Path, name: &str, existing: &[String]) -> Re
         .map_err(|e| e.to_string())
 }
 
+/// The collection the environment goes into: the one captured when the dialog opened, and
+/// only while it is still open and active (`set_environment` acts on the active collection).
+fn resolve_env_target(
+    target: Option<&Path>,
+    open_ix: Option<usize>,
+    active_ix: Option<usize>,
+) -> Result<PathBuf, String> {
+    let label = |t: &Path| {
+        t.file_name().map_or_else(
+            || t.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    };
+    match (target, open_ix) {
+        (None, _) => Err("Open a collection first".to_string()),
+        (Some(t), None) => Err(format!(
+            "The collection \"{}\" was closed; no environment was created.",
+            label(t)
+        )),
+        (Some(t), Some(i)) if active_ix != Some(i) => Err(format!(
+            "The collection \"{}\" is no longer active; no environment was created.",
+            label(t)
+        )),
+        (Some(t), Some(_)) => Ok(t.to_path_buf()),
+    }
+}
+
 /// A one-line dialog asking for the new environment's name.
 pub struct NewEnvironmentView {
     workspace: Entity<Workspace>,
+    /// The collection the dialog was opened for.
+    target: Option<PathBuf>,
     input: Entity<InputState>,
     error: Option<SharedString>,
     focus: FocusHandle,
@@ -100,8 +129,13 @@ impl NewEnvironmentView {
         })
         .detach();
         input.update(cx, |s, cx| s.focus(window, cx));
+        let target = workspace
+            .read(cx)
+            .active_collection()
+            .map(|c| c.tree.root.clone());
         Self {
             workspace,
+            target,
             input,
             error: None,
             focus: cx.focus_handle(),
@@ -121,12 +155,24 @@ impl NewEnvironmentView {
         let name = self.input.read(cx).value().trim().to_string();
         let (root, existing) = {
             let ws = self.workspace.read(cx);
-            let Some(c) = ws.active_collection() else {
-                self.error = Some("Open a collection first".into());
-                cx.notify();
-                return;
+            let open_ix = self.target.as_deref().and_then(|r| ws.coll_ix(r));
+            let root = match resolve_env_target(
+                self.target.as_deref(),
+                open_ix,
+                ws.active_collection_ix(),
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.error = Some(e.into());
+                    cx.notify();
+                    return;
+                }
             };
-            (c.tree.root.clone(), c.environments.clone())
+            let existing = ws
+                .active_collection()
+                .map(|c| c.environments.clone())
+                .unwrap_or_default();
+            (root, existing)
         };
         match create_env(&root, &name, &existing) {
             Ok(()) => {
@@ -181,6 +227,21 @@ impl Render for NewEnvironmentView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_target_is_the_captured_active_collection_or_a_refusal() {
+        let t = Path::new("/work/alpha");
+        assert_eq!(
+            resolve_env_target(Some(t), Some(1), Some(1)),
+            Ok(t.to_path_buf())
+        );
+        let e = resolve_env_target(Some(t), None, Some(0)).unwrap_err();
+        assert!(e.contains("alpha") && e.contains("closed"), "{e}");
+        let e = resolve_env_target(Some(t), Some(1), Some(0)).unwrap_err();
+        assert!(e.contains("alpha") && e.contains("no longer active"), "{e}");
+        assert!(resolve_env_target(Some(t), Some(1), None).is_err());
+        assert!(resolve_env_target(None, Some(0), Some(0)).is_err());
+    }
 
     fn exists() -> StorageError {
         StorageError::Exists {
