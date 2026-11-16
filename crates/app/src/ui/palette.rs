@@ -12,10 +12,10 @@ use gpui_component::kbd::Kbd;
 use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath, h_flex};
 
 use crate::actions::{
-    CancelRequest, ClearHistory, CloseCollection, CloseTab, NewRequest, OpenCollection, OpenImport,
-    OpenPalette, ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar,
-    ShowEnvSecrets, ShowHistory, SwitchCollection, SwitchEnvironment, ToggleHistoryBodies,
-    ToggleLayout, ToggleTheme,
+    CancelRequest, ClearHistory, CloseCollection, CloseTab, NewCollection, NewEnvironment,
+    NewRequest, OpenCollection, OpenImport, OpenPalette, ReloadFromDisk, SaveRequest, SendRequest,
+    ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory, SwitchCollection,
+    SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::{self, CommandId, Match, PaletteItem, PaletteKind, PaletteMode};
 use crate::workspace::{Workspace, WorkspaceEvent};
@@ -31,6 +31,8 @@ fn action_for(id: CommandId) -> Box<dyn Action> {
         CommandId::NewRequest => Box::new(NewRequest),
         CommandId::CloseTab => Box::new(CloseTab),
         CommandId::OpenCollection => Box::new(OpenCollection),
+        CommandId::NewCollection => Box::new(NewCollection),
+        CommandId::NewEnvironment => Box::new(NewEnvironment),
         CommandId::SwitchCollection => Box::new(SwitchCollection),
         CommandId::CloseCollection => Box::new(CloseCollection),
         CommandId::SwitchEnvironment => Box::new(SwitchEnvironment),

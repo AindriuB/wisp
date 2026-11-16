@@ -13,10 +13,10 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 
 use crate::actions::{
-    CancelRequest, ClearHistory, CloseCollection, CloseTab, KeepMine, NewRequest, NextTab,
-    OpenCollection, OpenImport, OpenPalette, PrevTab, ReloadFromDisk, SaveRequest, SendRequest,
-    ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory, SwitchEnvironment,
-    ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    CancelRequest, ClearHistory, CloseCollection, CloseTab, KeepMine, NewCollection,
+    NewEnvironment, NewRequest, NextTab, OpenCollection, OpenImport, OpenPalette, PrevTab,
+    ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets,
+    ShowHistory, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::PaletteMode;
 use crate::save_close::{self, ClosePrompt};
@@ -25,6 +25,7 @@ use crate::tab::{DiskState, RequestTab};
 use crate::theme;
 use crate::ui::collections::CloseRequested;
 use crate::ui::cookie_jar::CookieJarView;
+use crate::ui::create::{self, NewEnvironmentView};
 use crate::ui::env_secrets::EnvSecretsView;
 use crate::ui::history::HistoryView;
 use crate::ui::import::ImportView;
@@ -100,6 +101,7 @@ pub struct WorkspaceView {
     views: HashMap<EntityId, TabViews>,
     palette: Option<(Entity<PaletteView>, Subscription)>,
     import: Option<(Entity<ImportView>, Subscription)>,
+    new_env: Option<(Entity<NewEnvironmentView>, Subscription)>,
     history: Option<(Entity<HistoryView>, Subscription)>,
     cookies: Option<(Entity<CookieJarView>, Subscription)>,
     secrets: Option<(Entity<EnvSecretsView>, Subscription)>,
@@ -179,6 +181,7 @@ impl WorkspaceView {
             views: HashMap::new(),
             palette: None,
             import: None,
+            new_env: None,
             history: None,
             cookies: None,
             secrets: None,
@@ -457,6 +460,60 @@ impl WorkspaceView {
             }
         })
         .detach();
+    }
+
+    fn on_new_collection(&mut self, _: &NewCollection, _: &mut Window, cx: &mut Context<Self>) {
+        let ws = self.workspace.clone();
+        cx.spawn(async move |_, cx| {
+            let rx = cx.update(|cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: Some("Create".into()),
+                })
+            });
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(path) = paths.first()
+            {
+                let outcome =
+                    create::collection_outcome(&wisp_storage::ops::create_collection(path));
+                let (notice, open) = create::collection_notice(&outcome);
+                ws.update(cx, |w, cx| {
+                    if let Some(n) = notice {
+                        cx.emit(WorkspaceEvent::Notice(n.into()));
+                    }
+                    if open && let Err(e) = w.open_collection(path, cx) {
+                        cx.emit(WorkspaceEvent::Notice(format!("Cannot open: {e:#}").into()));
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn on_new_environment(
+        &mut self,
+        _: &NewEnvironment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace.read(cx).active_collection_ix().is_none() {
+            self.workspace.update(cx, |_, cx| {
+                cx.emit(WorkspaceEvent::Notice("Open a collection first".into()))
+            });
+            return;
+        }
+        if self.new_env.is_some() {
+            return;
+        }
+        let dialog = cx.new(|cx| NewEnvironmentView::new(self.workspace.clone(), window, cx));
+        let sub = cx.subscribe(&dialog, |this, _, _: &DismissEvent, cx| {
+            this.new_env = None;
+            cx.notify();
+        });
+        self.new_env = Some((dialog, sub));
+        cx.notify();
     }
 
     fn on_close_collection(
@@ -743,6 +800,19 @@ impl Render for WorkspaceView {
                 .child(d.clone())
         });
 
+        let new_env_overlay = self.new_env.as_ref().map(|(d, _)| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .bg(cx.theme().overlay)
+                .flex()
+                .justify_center()
+                .pt(px(60.))
+                .child(d.clone())
+        });
+
         let history_overlay = self.history.as_ref().map(|(d, _)| {
             div()
                 .absolute()
@@ -795,6 +865,8 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_send))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_open_collection))
+            .on_action(cx.listener(Self::on_new_collection))
+            .on_action(cx.listener(Self::on_new_environment))
             .on_action(cx.listener(Self::on_close_collection))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_toggle_layout))
@@ -884,6 +956,7 @@ impl Render for WorkspaceView {
             }))
             .children(overlay)
             .children(import_overlay)
+            .children(new_env_overlay)
             .children(history_overlay)
             .children(cookies_overlay)
             .children(secrets_overlay)
