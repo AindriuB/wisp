@@ -50,6 +50,22 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 ### Hardening backlog (post-0.2.0)
 `docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled. The 🔒 items in "Follow-ups from 0.3.0 wave 1" join this backlog.
 
+### Follow-ups from tasks 143 and 152 (PRs #101 and #102; not 0.3.0 unless scheduled)
+From PR #102's review (https://github.com/AindriuB/wisp/pull/102#pullrequestreview-5927425261):
+- [P3] 102-1: the save-time backstop in `Workspace::save` is reached by no integration test; only the open-time inlining is.
+- [P3] 102-2: inlining runs after `sanitized_origin`, so `HistoryOrigin.stored_body` still names the sidecar.
+- [P3] 102-3: the editor-stash test uses a hand-built `Stash`, not the `BodyEditor`.
+- [Nit] 102-4: wording of the `new_tomls` doc comment.
+
+From PR #101 (task 143, save and close):
+- [P3] 101-3 and 101-4: Lows the owner deferred; not recorded in the 143 task file, read PR #101 for the text.
+- [P3] `sidecar_seen` entries are never removed when a tab closes.
+- [P3] Keep mine records the sidecar as it is at click time, not the version the refusal saw.
+- [P3] The quit prompt fixes its tab list before it opens.
+- [P3] Test `a_non_utf8_sidecar_that_changes_again_after_keep_mine_is_refused` does not exercise the refused-then-changed path.
+- [P3] TOCTOU between the sidecar check and the write.
+- [P3] The sidecar is written before the TOML.
+
 ### Follow-ups from 0.3.0 wave 1 (tasks 130-138, PRs #80-#90; not 0.3.0 unless scheduled)
 🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Task 134's Lows 81-1 to 81-5 are listed below as 81-1 to 81-5.
 

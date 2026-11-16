@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-16 — A history tab no longer overwrites a sidecar on save (task 152)
+Merged as PR #102 (9c3e5b2). `open_history_entry` now inlines Json, Text and Xml sidecar bodies before building the tab, and a save-time backstop inlines again and applies the change through `replace_draft`. Saving a tab opened from history therefore creates a self-contained request instead of writing the history body (possibly the redacted copy) over the original request's sidecar or an unrelated root file of the same name. Only `crates/app/src/workspace.rs` changed; 1331 tests passed and CI was green on macOS, Ubuntu and Windows.
+**Cost:** The tab kept the stored draft's sidecar name, so the path-less create branch ran with no conflict check. Review round 1 found a High: the body editor's stash brought the sidecar back after a save, so updating the tab alone was not enough and the fix had to go through `replace_draft` (7765d1f). Inlining after `sanitized_origin` leaves `stored_body` naming the sidecar, and the backstop has no integration test (PLAN 102-1, 102-2).
+
 ## 2026-11-15 — wisp-core built at opt-level z (task 138)
 Merged as PR #90 (db79d76), a small user-approved task with no task file. `wisp-core` is compiled at opt-level "z" for size. Measure run 43704237455: Windows GUI 15,179,264 B (-267,776), macOS 11,585,856 B (-230,464), Linux 25,867,912 B (-236,544); Windows headroom under the 15,500,000 B gate is now 320,736 B.
 **Cost:** Size came from a build setting, not from removing code. The theme (#79) had cost +236,032 B (spike run 43703000956 on eaee115), so this recovers more than the theme added; the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" no longer triggers.

@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-16 | 152 | history tab opened from history inlines sidecar bodies, save-time backstop, replace_draft, editor stash | ## 2026-11-16 — A history tab no longer overwrites a sidecar on save (task 152) |
 | 2026-11-15 | 138 | wisp-core opt-level z, Windows headroom 320,736 B | ## 2026-11-15 — wisp-core built at opt-level z (task 138) |
 | 2026-11-15 | 137 | history provenance fields, AC4 header decision | ## 2026-11-15 — History provenance fields (task 137) |
 | 2026-11-15 | 136 | measure wave 1, wisp-cli size budget, theme cost | ## 2026-11-15 — Measure wave 1 (task 136) |
