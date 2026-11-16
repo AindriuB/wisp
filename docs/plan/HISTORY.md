@@ -17,6 +17,14 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-16 — Assertions editor and Checks pane (task 141)
+Merged as PR #100 (a28e5e7, 2026-11-16) at bb12c83. A request's `[[assert]]` entries can be added, removed, reordered and edited in the Assertions sub-tab, with kind and operator controls limited to the valid pairs and inline errors from `row_error`. The Checks sub-tab lists pass, fail and skipped with expected and actual cut to 80 characters; `Unrecognised` entries stay read-only and keep their position.
+**Cost:** An invalid row (an out-of-range status, an empty header name) cannot be written to the schema, so the draft keeps the last schema-valid assertion and the row is marked unsaved until corrected; save and reopen tests cover both cases. Nothing runs assertions yet: evaluation, `Sent.environment` and history wiring are task 147. Nothing was hand-tested visually; that is task 149.
+
+## 2026-11-16 — Explain pane and context strip (task 140)
+Merged as PR #99 (afb9812, 2026-11-16) at 38d8d21. The response pane's Explain sub-tab shows where each variable, parameter, header, auth setting, request setting and body came from, and a one-line strip under the URL row shows the environment, auth source and history scope. Text comes from pure `part_text`, `origin_text` and `strip_text` functions, and a canary test checks that no secret marker reaches any of them.
+**Cost:** The pane rebuilds only while it is visible, so changes made while another sub-tab was showing had to be caught up on reactivation. The strip is cached, and it had to refresh when history recording was turned off, when collection-id resolution finished, and on repeated id failures after the once-only notice; a headless GPUI test covers those transitions. The strip calls `explain_auth` only, never `explain`. Nothing was hand-tested visually; that is task 149.
+
 ## 2026-11-16 — Explain hides every expansion of a hidden variable (task 151)
 Merged as PR #98 (08a781f, 2026-11-15) at 873b777. A variable in the Explain report's final hidden set now renders as `Hidden(Credential)` wherever the report expands it, not only in the variable list, and a body that expands one reports no byte count. Problems still come from the discovery walk, with a fixed marker in place of any text taken from a hidden value.
 **Cost:** The first render hid a variable that supplied `?`, `&` or `@`, which broke query and userinfo parsing and showed literal credentials; a cut-count heuristic then failed on path placeholders. The rule that held is that a hidden-set variable anywhere in the URL hides the whole URL as one part. The userinfo sub-walker had its own budget and pushed real work to about 4 x `MAX_EXPANSIONS`; it now shares the discovery counter. Do not add a second render budget or a fixpoint. `explain_auth` and header-name merging are open (PLAN).

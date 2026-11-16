@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-16 | 141 | Assertions sub-tab editor (matrix-valid controls, row_error, Unrecognised preserved) and Checks pane; evaluation is 147 | ## 2026-11-16 — Assertions editor and Checks pane (task 141) |
+| 2026-11-16 | 140 | Explain pane and URL-row context strip through pure text functions; secret canary test | ## 2026-11-16 — Explain pane and context strip (task 140) |
 | 2026-11-16 | 151 | explain report: hidden-set variables hidden in headers, params, URL, body, auth; shared work budget | ## 2026-11-16 — Explain hides every expansion of a hidden variable (task 151) |
 | 2026-11-16 | 142 | wisp-cli validate/explain, text and --json, canary and read-only tests | ## 2026-11-16 — wisp-cli validate and explain (task 142) |
 | 2026-11-16 | 139 | UI seams: stub panes, dirty flag, CheckOutcome, confirm_send, workspace scope accessors | ## 2026-11-16 — Wave-2 UI seams (task 139) |
