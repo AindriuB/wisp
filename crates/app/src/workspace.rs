@@ -204,7 +204,7 @@ pub enum WorkspaceEvent {
     TabsChanged,
     ActiveTabChanged,
     Notice(SharedString),
-    /// The open collection's history gained or lost entries.
+    /// History entries or recording availability changed for an open collection.
     HistoryChanged,
     /// The open collection's cookie persistence state changed.
     CookiesChanged,
@@ -2838,6 +2838,7 @@ impl Workspace {
     fn history_off(&mut self, root: &Path, reason: String, cx: &mut Context<Self>) {
         if let Some(ix) = self.coll_ix(root) {
             self.collections[ix].history = HistoryState::Off(reason.clone());
+            cx.emit(WorkspaceEvent::HistoryChanged);
         }
         self.history_notice(root, format!("History is off: {reason}"), cx);
     }
@@ -3229,6 +3230,7 @@ impl Workspace {
             IdState::Reading | IdState::Absent => {}
         }
         cx.emit(WorkspaceEvent::CookiesChanged);
+        cx.emit(WorkspaceEvent::HistoryChanged);
         cx.notify();
     }
 
@@ -4717,6 +4719,38 @@ mod env_wiring_tests {
         fx.ws
             .update(cx, |w, cx| w.open_collection(&root, cx).unwrap());
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn history_availability_changes_refresh_the_cached_context_strip(cx: &mut TestAppContext) {
+        use crate::ui::url_bar::UrlBar;
+        cx.update(gpui_component::init);
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, _) = open_tab(&fx, cx);
+        fx.ws.update(cx, |w, _| {
+            w.collections[0].coll_id = IdState::Reading;
+        });
+        let window =
+            cx.add_window(|window, cx| UrlBar::new(fx.ws.clone(), tab.clone(), window, cx));
+        let bar = window.root(cx).unwrap();
+        assert!(bar.read_with(cx, |b, _| {
+            b.context_strip_text().contains("history: pending")
+        }));
+        fx.ws.update(cx, |w, cx| {
+            w.apply_id(&fx.root, IdState::Known(ID.into()), true, cx)
+        });
+        cx.run_until_parked();
+        assert!(bar.read_with(cx, |b, _| b.context_strip_text().contains("records under")));
+        // A repeated failure must invalidate even after the once-only notice was shown.
+        for reason in ["first failure", "second failure"] {
+            fx.ws
+                .update(cx, |w, cx| w.history_off(&fx.root, reason.into(), cx));
+            cx.run_until_parked();
+            let text = bar.read_with(cx, |b, _| b.context_strip_text().to_string());
+            assert!(text.contains(&format!("off: {reason}")), "{text}");
+            assert!(!text.contains("records under"), "{text}");
+        }
     }
 
     fn env_name(fx: &Fx, cx: &mut TestAppContext) -> Option<String> {

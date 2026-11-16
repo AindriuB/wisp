@@ -209,6 +209,11 @@ impl UrlBar {
         this
     }
 
+    #[cfg(test)]
+    pub(crate) fn context_strip_text(&self) -> &str {
+        &self.context_strip
+    }
+
     fn on_method(
         &mut self,
         _: &Entity<SelectState<Vec<SharedString>>>,
