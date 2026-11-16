@@ -23,7 +23,9 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - **Waves 0 and 1 complete (PRs #78-#90):** 129, theme-palette, 130-138; main CI green on all three platforms. Windows GUI 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger. Detail in `docs/plan/archive/2026-11-16-closed-sections.md`.
 - **Wave 2 merged and recorded (PRs #92-#102):** 139-146, 150-152. Detail in `docs/plan/archive/2026-11-16-closed-sections.md` and HISTORY.
 - **147 and 148 recorded (PRs #109 and #108):** assertion and history wiring, and the new collection and environment UI. Follow-ups are under "Follow-ups from task 147" and "Follow-ups from task 148".
-- **Next:** 149 (measure wave 2) is next and last.
+- **149 measured wave 2 (PR open):** Windows GUI 15,494,656 B, 94,656 B over the 15.4 MB soft line and 5,344 B under the 15,500,000 B gate (wave-2 delta +315,392 B on 15,179,264 B). Nothing is cut. **Decision with the user, not yet made:** the cut order (148's sidebar buttons then the rest of 148; the `suggest_confirm` hint; Checks expected/actual detail, 141; Explain's shadowed-layer list, 140). Detail: `scripts/measure/results/wave-2-size.json`.
+- **Follow-up (149):** the CLI roughly tripled since wave 1 (macOS 552,528 → 1,415,600 B); cause not investigated.
+- **Next:** the user's cut-order decision, then the macOS hand test.
 
 ### v0.2.0 (published 2026-11-14)
 Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.md` and HISTORY.
@@ -671,16 +673,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] `history.rs:617-622`: index lines with no valid id are dropped silently on rewrite; add a comment or test.
 - [P3] `tests/history.rs` `sweep_keeps_entries_with_unparseable_index_lines`: set a low entry cap so eviction runs and the verbatim-rewrite path is covered.
 - [NOTE] Text/XML bodies containing any credential fragment are not stored (fail closed); a bare `{{ref}}` with characters outside letters, digits, `_`, `-`, `.` makes a JSON body drop. Accepted, safe side.
-
-### Follow-ups from task 92 (not for 0.2.0 wave 1)
-- [P3] `ensure_collection_id` (`collection.rs:242-257`) has a read-modify-write race: two instances adding an ID at once means the last rename wins. `save_collection_defaults` has the same window.
-- [P3] `ensure_private_dir` (`data_dir.rs:92-101`): a trailing slash (e.g. `WISP_DATA_DIR="/x/link/"`) gets past the symlink refusal on macOS. Normalise before the lstat.
-- [NOTE] An existing data dir wider than 0700 is not tightened (task 93 may care).
-
-### Pane-scrollbar defects (tasks 46-49, fixed and hand-checked 2026-11-02)
-All four defects found hand-checking 43-45 are fixed (see HISTORY). Combined binary 19,014,912 B (+0 B).
-**Residuals:** many inherited headers can squeeze the request-header table (the inherited list keeps natural height per spec). (Path, Auth, Settings, Multipart and File sub-tabs now scroll; task 52.) Do not add `.flex()` to the `div().w_full()` wrapper around KvTable virtual rows (46).
-**Header limit (47, resolved by 50):** the limit is now 1,000 headers; see the Task 50 residuals below.
 
 ### Reqwest 0.13 follow-ups (task 50)
 Optional, none blocking. Closed by 51: the runtime TLS test (`crates/core/tests/tls.rs`) and the `webpki-root-certs` `default-features = false` consistency fix. The `engine.rs:87`, `install_crypto_provider` and `https://localhost` residuals were closed by task 56 (see HISTORY).

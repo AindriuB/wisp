@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-16 | 149 | wave-2 size: Windows GUI 15,494,656 B, over the soft line, under the gate; cut order is the user's call | ## 2026-11-16 — Measure wave 2 (task 149) |
 | 2026-11-16 | 148 | New collection and New environment palette commands and sidebar buttons; pure name check and notice mapping in ui/create.rs | ## 2026-11-16 — New collection and New environment from the app (task 148) |
 
 | 2026-11-16 | 147 | assertions evaluated per send into Checks pane; history records environment and per-assertion records; chip and Resend notice; AC2 amended (unfiltered body) | ## 2026-11-16 — Assertions run after each send and history records environment and checks (task 147) |

@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-16 — Measure wave 2 (task 149)
+Recorded `scripts/measure/results/wave-2-size.json` from a `measure.yml` dispatch on main at 4769107 (run 43976706350, all targets green). The Windows GUI is 15,494,656 B: +315,392 B on the wave-1 baseline of 15,179,264 B, 94,656 B over the 15.4 MB soft line and 5,344 B under the 15,500,000 B gate. Nothing was cut.
+
+**Cost:** The soft line is breached, so the spec's cut order applies (148 sidebar buttons, `suggest_confirm`, Checks detail, Explain shadowed layers) and the choice is the user's. With 5,344 B of headroom, any wave-3 GUI growth breaches the gate. The CLI also roughly tripled since wave 1 (macOS 552,528 to 1,415,600 B); the cause was not investigated.
+
 ## 2026-11-16 — New collection and New environment from the app (task 148)
 Merged as PR #108. The palette has "New collection..." (folder prompt, `create_collection`, then open; an existing `collection.toml` gives "Already a collection: opened it") and "New environment..." (listed only with an active collection; a name input, `create_environment`, then made active). The sidebar empty state and the environment select carry buttons for the same two actions, in their own commit. The name check and outcome-to-notice mapping are pure, table-tested functions in `ui/create.rs`.
 
