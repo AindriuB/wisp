@@ -91,25 +91,29 @@ pub(crate) fn parse_method(s: &str) -> Option<Method> {
 pub fn load_request(path: &Path) -> Result<Request, StorageError> {
     let text = fs::read_to_string(path)?;
     let doc = codec::parse(path, &text)?;
+    request_from_doc(path, &doc)
+}
+
+fn request_from_doc(path: &Path, doc: &Table) -> Result<Request, StorageError> {
     let dir = dir_of(path);
 
-    let name = codec::read_str(&doc, "name", path)?;
-    let method_text = codec::read_str(&doc, "method", path)?;
+    let name = codec::read_str(doc, "name", path)?;
+    let method_text = codec::read_str(doc, "method", path)?;
     let method = parse_method(&method_text)
         .ok_or_else(|| invalid(path, "method", format!("unknown method `{method_text}`")))?;
-    let url = codec::read_str(&doc, "url", path)?;
+    let url = codec::read_str(doc, "url", path)?;
     Ok(Request {
         name,
         method,
         url,
-        path: codec::read_vars(&doc, "path", path)?,
-        params: codec::read_key_values(&doc, "params", path)?,
-        headers: codec::read_key_values(&doc, "headers", path)?,
-        auth: codec::read_auth(&doc, Auth::Inherit, path)?,
-        body: read_body(&doc, dir, path)?,
-        vars: codec::read_vars(&doc, "vars", path)?,
-        settings: read_settings(&doc, path)?,
-        assertions: codec::read_assertions(&doc),
+        path: codec::read_vars(doc, "path", path)?,
+        params: codec::read_key_values(doc, "params", path)?,
+        headers: codec::read_key_values(doc, "headers", path)?,
+        auth: codec::read_auth(doc, Auth::Inherit, path)?,
+        body: read_body(doc, dir, path)?,
+        vars: codec::read_vars(doc, "vars", path)?,
+        settings: read_settings(doc, path)?,
+        assertions: codec::read_assertions(doc),
     })
 }
 
@@ -326,10 +330,77 @@ fn read_body(doc: &Table, dir: &Path, path: &Path) -> Result<Body, StorageError>
     })
 }
 
+/// The request last seen on disk. A parseable request includes its sidecar content.
+#[derive(PartialEq)]
+pub enum DiskBaseline {
+    Request(Box<Request>),
+    Missing,
+    Unreadable(Vec<u8>),
+}
+
+impl DiskBaseline {
+    pub fn read(path: &Path) -> Result<Self, StorageError> {
+        read_disk_document(path).map(|(baseline, _)| baseline)
+    }
+}
+
+/// Parse the same bytes used to identify a malformed request after an explicit Keep.
+fn read_disk_document(path: &Path) -> Result<(DiskBaseline, DocumentMut), StorageError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e)
+            if e.kind() == std::io::ErrorKind::NotFound
+                && std::fs::symlink_metadata(path)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok((DiskBaseline::Missing, DocumentMut::new()));
+        }
+        Err(source) => {
+            return Err(StorageError::Io {
+                path: path.into(),
+                source,
+            });
+        }
+    };
+    let Some(doc) = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| s.parse::<DocumentMut>().ok())
+    else {
+        return Ok((DiskBaseline::Unreadable(bytes), DocumentMut::new()));
+    };
+    let baseline = match request_from_doc(path, &doc) {
+        Ok(request) => DiskBaseline::Request(Box::new(request)),
+        Err(_) => DiskBaseline::Unreadable(bytes),
+    };
+    Ok((baseline, doc))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Written,
+    Conflict,
+}
+
+/// Re-read the request just before saving. Conflicts leave both files untouched.
+pub fn save_request_if_unchanged(
+    path: &Path,
+    expected: &DiskBaseline,
+    draft: &Request,
+) -> Result<SaveOutcome, StorageError> {
+    let Ok((current, doc)) = read_disk_document(path) else {
+        // Without readable bytes even an earlier Keep cannot authorize a write.
+        return Ok(SaveOutcome::Conflict);
+    };
+    if &current != expected {
+        return Ok(SaveOutcome::Conflict);
+    }
+    write_request(path, draft, doc)?;
+    Ok(SaveOutcome::Written)
+}
+
 /// Save a request, editing the existing file in place when there is one.
 pub fn save_request(path: &Path, request: &Request) -> Result<(), StorageError> {
-    let dir = dir_of(path);
-    let mut doc = match std::fs::read_to_string(path) {
+    let doc = match std::fs::read_to_string(path) {
         Ok(text) => codec::parse(path, &text)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
         Err(e) => {
@@ -339,6 +410,11 @@ pub fn save_request(path: &Path, request: &Request) -> Result<(), StorageError> 
             });
         }
     };
+    write_request(path, request, doc)
+}
+
+fn write_request(path: &Path, request: &Request, mut doc: DocumentMut) -> Result<(), StorageError> {
+    let dir = dir_of(path);
     let had_auth = doc.get("auth").is_some();
     if let Body::Json(tb) | Body::Text(tb) | Body::Xml(tb) = &request.body
         && let Some(name) = &tb.sidecar
@@ -632,6 +708,122 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         let r = load_request(&p).unwrap();
         save_request(&p, &r).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), EXAMPLE);
+    }
+
+    #[test]
+    fn save_request_if_unchanged_writes_and_preserves_comments() {
+        let (_d, p) = example();
+        let expected = DiskBaseline::read(&p).unwrap();
+        let mut draft = load_request(&p).unwrap();
+        draft.url = "https://mine.test/".into();
+        assert_eq!(
+            save_request_if_unchanged(&p, &expected, &draft).unwrap(),
+            SaveOutcome::Written
+        );
+        assert_eq!(load_request(&p).unwrap(), draft);
+        assert!(
+            std::fs::read_to_string(&p)
+                .unwrap()
+                .contains("# query lives in [[params]]")
+        );
+    }
+
+    #[test]
+    fn save_request_if_unchanged_conflicts_without_touching_request_or_sidecar() {
+        for change in [
+            "request",
+            "deleted",
+            "sidecar",
+            "malformed",
+            "missing sidecar",
+        ] {
+            let (d, p) = example();
+            let expected = DiskBaseline::read(&p).unwrap();
+            let mut draft = load_request(&p).unwrap();
+            draft.url = "https://mine.test/".into();
+            let sidecar = d.path().join("create-user.body.json");
+            match change {
+                "request" => {
+                    let mut external = draft.clone();
+                    external.url = "https://theirs.test/".into();
+                    save_request(&p, &external).unwrap();
+                }
+                "deleted" => std::fs::remove_file(&p).unwrap(),
+                "sidecar" => std::fs::write(&sidecar, "external body").unwrap(),
+                "malformed" => std::fs::write(&p, b"\xffmalformed").unwrap(),
+                "missing sidecar" => std::fs::remove_file(&sidecar).unwrap(),
+                _ => unreachable!(),
+            }
+            let request_bytes = std::fs::read(&p).ok();
+            let body_bytes = std::fs::read(&sidecar).ok();
+            assert_eq!(
+                save_request_if_unchanged(&p, &expected, &draft).unwrap(),
+                SaveOutcome::Conflict,
+                "{change}"
+            );
+            assert_eq!(std::fs::read(&p).ok(), request_bytes, "{change}");
+            assert_eq!(std::fs::read(&sidecar).ok(), body_bytes, "{change}");
+        }
+    }
+
+    #[test]
+    fn save_request_if_unchanged_recreates_only_a_still_missing_file() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("request.toml");
+        let draft = Request::default();
+        assert_eq!(
+            save_request_if_unchanged(&p, &DiskBaseline::Missing, &draft).unwrap(),
+            SaveOutcome::Written
+        );
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(
+            save_request_if_unchanged(&p, &DiskBaseline::Missing, &draft).unwrap(),
+            SaveOutcome::Conflict
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), bytes);
+    }
+
+    #[test]
+    fn save_request_if_unchanged_accepts_only_the_kept_unreadable_bytes() {
+        for bytes in [b"not = [toml".as_slice(), b"\xffnot utf8", b"method = 7"] {
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join("request.toml");
+            std::fs::write(&p, bytes).unwrap();
+            let expected = DiskBaseline::read(&p).unwrap();
+            assert!(matches!(&expected, DiskBaseline::Unreadable(raw) if raw == bytes));
+            std::fs::write(&p, b"different = [broken").unwrap();
+            assert_eq!(
+                save_request_if_unchanged(&p, &expected, &Request::default()).unwrap(),
+                SaveOutcome::Conflict
+            );
+            assert_eq!(std::fs::read(&p).unwrap(), b"different = [broken");
+            std::fs::write(&p, bytes).unwrap();
+            assert_eq!(
+                save_request_if_unchanged(&p, &expected, &Request::default()).unwrap(),
+                SaveOutcome::Written
+            );
+            assert_eq!(load_request(&p).unwrap(), Request::default());
+        }
+    }
+
+    #[test]
+    fn save_request_if_unchanged_rechecks_a_kept_sidecar_request() {
+        let (d, p) = example();
+        let draft = load_request(&p).unwrap();
+        let sidecar = d.path().join("create-user.body.json");
+        std::fs::write(&sidecar, "kept body").unwrap();
+        let expected = DiskBaseline::read(&p).unwrap();
+        std::fs::write(&sidecar, "new outside body").unwrap();
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(
+            save_request_if_unchanged(&p, &expected, &draft).unwrap(),
+            SaveOutcome::Conflict
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read_to_string(&sidecar).unwrap(),
+            "new outside body"
+        );
     }
 
     #[test]

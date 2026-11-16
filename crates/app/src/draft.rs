@@ -69,19 +69,13 @@ pub fn dirty_sections(saved: Option<&Request>, draft: &Request) -> DirtySections
 pub fn on_disk_change(
     dirty: bool,
     saved: Option<&Request>,
-    disk: Option<Result<Request, String>>,
+    disk: Option<Result<&Request, ()>>,
 ) -> ReloadAction {
     match disk {
         None => ReloadAction::MarkDeleted,
-        Some(Err(_)) => {
-            if dirty {
-                ReloadAction::ShowBanner
-            } else {
-                ReloadAction::Ignore
-            }
-        }
+        Some(Err(())) => ReloadAction::ShowBanner,
         Some(Ok(d)) => {
-            if saved == Some(&d) {
+            if saved == Some(d) {
                 ReloadAction::Ignore
             } else if dirty {
                 ReloadAction::ShowBanner
@@ -253,18 +247,21 @@ mod tests {
         let s = base();
         let mut other = s.clone();
         other.url = "z".into();
-        let ok = |r: &Request| Some(Ok(r.clone()));
+
         assert_eq!(
-            on_disk_change(false, Some(&s), ok(&s)),
+            on_disk_change(false, Some(&s), Some(Ok(&s))),
             ReloadAction::Ignore
         );
-        assert_eq!(on_disk_change(true, Some(&s), ok(&s)), ReloadAction::Ignore);
         assert_eq!(
-            on_disk_change(false, Some(&s), ok(&other)),
+            on_disk_change(true, Some(&s), Some(Ok(&s))),
+            ReloadAction::Ignore
+        );
+        assert_eq!(
+            on_disk_change(false, Some(&s), Some(Ok(&other))),
             ReloadAction::Reload
         );
         assert_eq!(
-            on_disk_change(true, Some(&s), ok(&other)),
+            on_disk_change(true, Some(&s), Some(Ok(&other))),
             ReloadAction::ShowBanner
         );
         assert_eq!(
@@ -275,11 +272,14 @@ mod tests {
             on_disk_change(true, Some(&s), None),
             ReloadAction::MarkDeleted
         );
-        let err = || Some(Err("bad".to_string()));
+        let err = || Some(Err(()));
         assert_eq!(
             on_disk_change(true, Some(&s), err()),
             ReloadAction::ShowBanner
         );
-        assert_eq!(on_disk_change(false, Some(&s), err()), ReloadAction::Ignore);
+        assert_eq!(
+            on_disk_change(false, Some(&s), err()),
+            ReloadAction::ShowBanner
+        );
     }
 }
