@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 use wisp_core::Method;
+use wisp_core::assert::{Assertion, Expected};
 use wisp_core::request::{Auth, Body, Part, PartValue, Request, RequestSettings, TextBody};
 
 use crate::{StorageError, codec, fs};
@@ -331,11 +332,105 @@ fn read_body(doc: &Table, dir: &Path, path: &Path) -> Result<Body, StorageError>
 }
 
 /// The request last seen on disk. A parseable request includes its sidecar content.
-#[derive(PartialEq)]
 pub enum DiskBaseline {
     Request(Box<Request>),
     Missing,
     Unreadable(Vec<u8>),
+}
+
+impl PartialEq for DiskBaseline {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Request(left), Self::Request(right)) => requests_equal(left, right),
+            (Self::Missing, Self::Missing) => true,
+            (Self::Unreadable(left), Self::Unreadable(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+/// Compare authoring snapshots, including TOML's supported NaN assertion values.
+pub fn requests_equal(left: &Request, right: &Request) -> bool {
+    let Request {
+        name,
+        method,
+        url,
+        path,
+        params,
+        headers,
+        auth,
+        body,
+        vars,
+        settings,
+        assertions,
+    } = left;
+    name == &right.name
+        && method == &right.method
+        && url == &right.url
+        && path == &right.path
+        && params == &right.params
+        && headers == &right.headers
+        && auth == &right.auth
+        && body == &right.body
+        && vars == &right.vars
+        && settings == &right.settings
+        && assertions_equal(assertions, &right.assertions)
+}
+
+/// Assertion equality for authoring state: two NaNs represent the same TOML literal.
+pub fn assertions_equal(left: &[Assertion], right: &[Assertion]) -> bool {
+    let expected_equal = |a: &Expected, b: &Expected| {
+        a == b
+            || matches!((a, b), (Expected::Float(a), Expected::Float(b)) if a.is_nan() && b.is_nan())
+    };
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(a, b)| match (a, b) {
+            (
+                Assertion::Status {
+                    op: a_op,
+                    expected: a,
+                },
+                Assertion::Status {
+                    op: b_op,
+                    expected: b,
+                },
+            ) => a_op == b_op && expected_equal(a, b),
+            (
+                Assertion::Header {
+                    name: a_name,
+                    op: a_op,
+                    expected: a,
+                },
+                Assertion::Header {
+                    name: b_name,
+                    op: b_op,
+                    expected: b,
+                },
+            ) => a_name == b_name && a_op == b_op && expected_equal(a, b),
+            (
+                Assertion::Json {
+                    path: a_path,
+                    op: a_op,
+                    expected: a,
+                },
+                Assertion::Json {
+                    path: b_path,
+                    op: b_op,
+                    expected: b,
+                },
+            ) => a_path == b_path && a_op == b_op && expected_equal(a, b),
+            (
+                Assertion::Unrecognised {
+                    raw: a_raw,
+                    reason: a_reason,
+                },
+                Assertion::Unrecognised {
+                    raw: b_raw,
+                    reason: b_reason,
+                },
+            ) => a_raw == b_raw && a_reason == b_reason,
+            _ => false,
+        })
 }
 
 impl DiskBaseline {
@@ -370,6 +465,8 @@ fn read_disk_document(path: &Path) -> Result<(DiskBaseline, DocumentMut), Storag
     };
     let baseline = match request_from_doc(path, &doc) {
         Ok(request) => DiskBaseline::Request(Box::new(request)),
+        // An unreadable sidecar has no captured body baseline, so Keep cannot authorize it.
+        Err(error @ StorageError::Io { .. }) => return Err(error),
         Err(_) => DiskBaseline::Unreadable(bytes),
     };
     Ok((baseline, doc))
@@ -726,6 +823,71 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
                 .unwrap()
                 .contains("# query lives in [[params]]")
         );
+    }
+
+    #[test]
+    fn save_request_if_unchanged_accepts_unchanged_nan_assertions() {
+        let text = "name = \"NaN\"\nmethod = \"GET\"\nurl = \"http://example.test/\"\n\n[[assert]]\nkind = \"json\"\npath = \"$.n\"\nop = \"equals\"\nvalue = nan # keep this comment\n";
+        let (_d, p) = setup(text);
+        let expected = DiskBaseline::read(&p).unwrap();
+        let draft = load_request(&p).unwrap();
+        assert!(
+            matches!(&draft.assertions[0], Assertion::Json { expected: Expected::Float(value), .. } if value.is_nan())
+        );
+        assert_eq!(
+            save_request_if_unchanged(&p, &expected, &draft).unwrap(),
+            SaveOutcome::Written
+        );
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
+        assert!(requests_equal(&load_request(&p).unwrap(), &draft));
+    }
+
+    #[test]
+    fn save_request_if_unchanged_detects_real_changes_in_requests_with_nan_assertions() {
+        let text = "name = \"NaN\"\nmethod = \"GET\"\nurl = \"http://example.test/\"\n\n[[assert]]\nkind = \"json\"\npath = \"$.n\"\nop = \"equals\"\nvalue = nan\n";
+        for changed in [
+            text.replace("value = nan", "value = 0.0"),
+            text.replace("value = nan", "value = inf"),
+            text.replace("path = \"$.n\"", "path = \"$.other\""),
+            text.replace("op = \"equals\"", "op = \"contains\""),
+            text.replace("http://example.test/", "http://outside.test/"),
+            text.replace(
+                "[[assert]]\nkind = \"json\"\npath = \"$.n\"\nop = \"equals\"\nvalue = nan\n",
+                "",
+            ),
+        ] {
+            let (_d, p) = setup(text);
+            let expected = DiskBaseline::read(&p).unwrap();
+            let draft = load_request(&p).unwrap();
+            std::fs::write(&p, &changed).unwrap();
+            assert_eq!(
+                save_request_if_unchanged(&p, &expected, &draft).unwrap(),
+                SaveOutcome::Conflict
+            );
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), changed);
+        }
+    }
+
+    #[test]
+    fn save_request_if_unchanged_refuses_unreadable_sidecars() {
+        let (d, p) = example();
+        let draft = load_request(&p).unwrap();
+        let expected = DiskBaseline::read(&p).unwrap();
+        let sidecar = d.path().join("create-user.body.json");
+        let request_bytes = std::fs::read(&p).unwrap();
+        for body in [
+            b"\xffunreadable body".as_slice(),
+            b"\xffchanged unreadable body",
+        ] {
+            std::fs::write(&sidecar, body).unwrap();
+            assert!(DiskBaseline::read(&p).is_err());
+            assert_eq!(
+                save_request_if_unchanged(&p, &expected, &draft).unwrap(),
+                SaveOutcome::Conflict
+            );
+            assert_eq!(std::fs::read(&p).unwrap(), request_bytes);
+            assert_eq!(std::fs::read(&sidecar).unwrap(), body);
+        }
     }
 
     #[test]

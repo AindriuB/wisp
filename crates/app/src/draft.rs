@@ -1,6 +1,7 @@
 //! Draft vs saved comparison and the disk-change decision table.
 
 use wisp_core::request::Request;
+use wisp_storage::request::{assertions_equal, requests_equal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DirtySections {
@@ -33,8 +34,8 @@ pub fn blank_request() -> Request {
 
 pub fn is_dirty(saved: Option<&Request>, draft: &Request) -> bool {
     match saved {
-        Some(s) => s != draft,
-        None => *draft != blank_request(),
+        Some(s) => !requests_equal(s, draft),
+        None => !requests_equal(draft, &blank_request()),
     }
 }
 
@@ -62,7 +63,7 @@ pub fn dirty_sections(saved: Option<&Request>, draft: &Request) -> DirtySections
         auth: base.auth != draft.auth,
         body: base.body != draft.body,
         settings: base.settings != draft.settings,
-        assertions: base.assertions != draft.assertions,
+        assertions: !assertions_equal(&base.assertions, &draft.assertions),
     }
 }
 
@@ -75,7 +76,7 @@ pub fn on_disk_change(
         None => ReloadAction::MarkDeleted,
         Some(Err(())) => ReloadAction::ShowBanner,
         Some(Ok(d)) => {
-            if saved == Some(d) {
+            if saved.is_some_and(|saved| requests_equal(saved, d)) {
                 ReloadAction::Ignore
             } else if dirty {
                 ReloadAction::ShowBanner
@@ -110,6 +111,33 @@ mod tests {
         assert_eq!(blank_request().name, "Untitled");
         assert!(!is_dirty(None, &blank_request()));
         assert!(is_dirty(None, &base()));
+    }
+
+    #[test]
+    fn nan_assertions_are_clean_until_the_definition_changes() {
+        let mut saved = base();
+        saved.assertions = vec![Assertion::Json {
+            path: "$.n".into(),
+            op: Op::Equals,
+            expected: Expected::Float(f64::NAN),
+        }];
+        let mut draft = saved.clone();
+        assert!(!is_dirty(Some(&saved), &draft));
+        assert_eq!(
+            dirty_sections(Some(&saved), &draft),
+            DirtySections::default()
+        );
+        assert_eq!(
+            on_disk_change(false, Some(&saved), Some(Ok(&draft))),
+            ReloadAction::Ignore
+        );
+        draft.assertions = vec![Assertion::Json {
+            path: "$.n".into(),
+            op: Op::Equals,
+            expected: Expected::Float(0.0),
+        }];
+        assert!(is_dirty(Some(&saved), &draft));
+        assert!(dirty_sections(Some(&saved), &draft).assertions);
     }
 
     #[test]

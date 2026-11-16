@@ -4907,6 +4907,57 @@ mod env_wiring_tests {
     }
 
     #[gpui::test]
+    fn save_accepts_nan_assertion_baselines_after_load_and_keep(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let rel = PathBuf::from("nan.toml");
+        let path = fx.root.join(&rel);
+        let text = "name = \"NaN\"\nmethod = \"GET\"\nurl = \"http://example.test/\"\n\n[[assert]]\nkind = \"json\"\npath = \"$.n\"\nop = \"equals\"\nvalue = nan\n";
+        std::fs::write(&path, text).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        assert!(!tab.read_with(cx, |t, _| {
+            crate::draft::dirty_sections(t.saved.as_ref(), &t.draft).assertions
+        }));
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "http://mine.test/".into(), cx)
+        });
+        let outside = text.replace("http://example.test/", "http://outside.test/");
+        std::fs::write(&path, &outside).unwrap();
+        assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+        let saved = load_request(&path).unwrap();
+        assert_eq!(saved.url, "http://mine.test/");
+        assert!(
+            matches!(&saved.assertions[0], wisp_core::assert::Assertion::Json { expected: wisp_core::assert::Expected::Float(value), .. } if value.is_nan())
+        );
+        use crate::save_close::{self, ClosePrompt};
+        let close = fx.ws.update(cx, |w, cx| {
+            w.prompt_up = true;
+            save_close::finish(
+                ClosePrompt::Tab { can_save: true },
+                Some(0),
+                std::slice::from_ref(&tab),
+                w,
+                cx,
+            )
+        });
+        assert!(close);
+        assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        assert!(!fx.ws.read_with(cx, |w, _| w.prompt_up));
+    }
+
+    #[gpui::test]
     fn save_rechecks_external_changes_after_keep_and_edit(cx: &mut TestAppContext) {
         let fx = fixture(cx);
         open(&fx, cx);
