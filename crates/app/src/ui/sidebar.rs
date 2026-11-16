@@ -895,7 +895,8 @@ impl Render for Sidebar {
                 div()
                     .p_2()
                     .flex()
-                    .flex_row()
+                    .flex_col()
+                    .items_start()
                     .gap_1()
                     .child(
                         Button::new("sidebar-new")
