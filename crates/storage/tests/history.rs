@@ -1704,3 +1704,68 @@ fn backslashes_end_special_authorities_and_custom_paths_stay_unchanged() {
         }
     }
 }
+
+const FILE_BACKSLASH_URLS: [&str; 3] = [
+    r"file:\\alice:secret@h/",
+    r"file:/\alice:secret@h/",
+    r" file:\\alice:secret@h/",
+];
+
+#[test]
+fn file_scheme_backslashes_do_not_hide_userinfo_on_append() {
+    for url in FILE_BACKSLASH_URLS {
+        for name in ["Location", "Content-Location"] {
+            let (_d, data, store) = setup();
+            let mut ne = plain(r"file:\\alice:secret@h/");
+            ne.response_headers = vec![Header {
+                name: name.into(),
+                value: url.into(),
+            }];
+            store.append(ne, None).unwrap();
+            let mut text = String::new();
+            all_text(&hist_dir(&data), &mut text);
+            for credential in ["alice", "secret"] {
+                assert!(!text.contains(credential), "{name}: {url}");
+            }
+        }
+    }
+}
+
+#[test]
+fn file_scheme_backslashes_do_not_hide_userinfo_in_legacy_scrub() {
+    for url in FILE_BACKSLASH_URLS {
+        for name in ["Location", "Content-Location"] {
+            let (_d, data, store) = setup();
+            let e = store.append(plain("http://a/"), None).unwrap();
+            let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
+            v["request"]["url"] = serde_json::json!(r"file:\\alice:secret@h/");
+            v["response_headers"] = serde_json::json!([{"name": name, "value": url}]);
+            fs::write(&req, serde_json::to_vec(&v).unwrap()).unwrap();
+            let _ = fs::remove_file(hist_dir(&data).join(".scrubbed-1"));
+            let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+            let mut text = String::new();
+            all_text(&hist_dir(&data), &mut text);
+            for credential in ["alice", "secret"] {
+                assert!(!text.contains(credential), "{name}: {url}");
+            }
+        }
+    }
+}
+
+#[test]
+fn file_scheme_without_userinfo_stays_unchanged() {
+    let (_d, _data, store) = setup();
+    for url in ["file:///etc/x", "file://h/p"] {
+        for name in ["Location", "Content-Location"] {
+            let mut ne = plain("http://a/");
+            ne.response_headers = vec![Header {
+                name: name.into(),
+                value: url.into(),
+            }];
+            let e = store.append(ne, None).unwrap();
+            assert_eq!(store.load(&e.id).unwrap().response_headers[0].value, url);
+        }
+    }
+}
