@@ -53,6 +53,7 @@ None of these is marked 🔒 in the review notes (🔒 would mark a security-rel
 - 142 (P3): `explain_keychain_secret_shadows_lower_scope` does not assert the label (text `secret tok (not set)`, JSON `resolved:false present:false`), and `contains("secret")` always passes. The text says "not set" plus a `keychain: not loaded by the CLI` line, not "unavailable" as AC2 words it.
 - 142 (Note): `explain` checks `confined` for symlinks and then `load_request` reopens the file, a TOCTOU race that needs a concurrent writer.
 - 139 (P3): `history_scope` shows `Pending` for `IdState::Failed` (the id cannot be read or created); it should be `Off(reason)`.
+- (P3) Replace the `1234` canary in `redacts_secrets_in_url_params_vars_and_bodies` with a distinctive one; see `known-flakes.md`.
 
 ### Follow-ups from task 148 (PR #108; not 0.3.0 unless scheduled)
 - [P3] `root.rs:481-487`: a folder whose `collection.toml` exists but cannot be opened (malformed, a directory, a symlink) shows "Already a collection: opened it" and then "Cannot open: ...".
