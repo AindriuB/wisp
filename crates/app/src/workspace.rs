@@ -3003,6 +3003,11 @@ impl Workspace {
                     }
                 },
             };
+            if baseline.lacks_sidecar_baseline(&draft) {
+                anyhow::bail!(
+                    "Cannot verify the sidecar while the request file is unreadable: restore the request file or use an inline body"
+                );
+            }
             let abs = root.join(&rel);
             let outcome = save_request_if_unchanged(&abs, baseline, &draft)
                 .map_err(|_| anyhow::anyhow!("Could not write the request file"))?;
@@ -5035,6 +5040,44 @@ mod env_wiring_tests {
         }
         fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
         assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "original");
+    }
+
+    #[gpui::test]
+    fn save_after_keeping_malformed_toml_preserves_external_sidecar_edits(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let rel = PathBuf::from("sidecar.toml");
+        let path = fx.root.join(&rel);
+        let request = Request {
+            body: Body::Text(wisp_core::request::TextBody {
+                content: "original".into(),
+                sidecar: Some("sidecar.txt".into()),
+            }),
+            ..Request::default()
+        };
+        save_request(&path, &request).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        tab.update(cx, |t, cx| {
+            t.edit(|r| r.url = "https://mine.test/".into(), cx)
+        });
+        let malformed = b"broken = [toml";
+        std::fs::write(&path, malformed).unwrap();
+        fx.ws
+            .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+        fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+        assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+        let sidecar = fx.root.join("sidecar.txt");
+        std::fs::write(&sidecar, b"outside after Keep").unwrap();
+        let error = fx
+            .ws
+            .update(cx, |w, cx| w.save(&tab, cx))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("sidecar") && error.contains("restore the request file"));
+        assert_eq!(std::fs::read(&path).unwrap(), malformed);
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside after Keep");
+        assert!(tab.read_with(cx, |t, _| t.is_dirty()));
     }
 
     #[gpui::test]

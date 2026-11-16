@@ -434,6 +434,13 @@ pub fn assertions_equal(left: &[Assertion], right: &[Assertion]) -> bool {
 }
 
 impl DiskBaseline {
+    /// Raw malformed-request bytes do not capture the sidecar this draft would overwrite.
+    pub fn lacks_sidecar_baseline(&self, draft: &Request) -> bool {
+        matches!(self, Self::Unreadable(_))
+            && matches!(&draft.body, Body::Json(body) | Body::Text(body) | Body::Xml(body)
+                if body.sidecar.is_some())
+    }
+
     pub fn read(path: &Path) -> Result<Self, StorageError> {
         read_disk_document(path).map(|(baseline, _)| baseline)
     }
@@ -488,7 +495,7 @@ pub fn save_request_if_unchanged(
         // Without readable bytes even an earlier Keep cannot authorize a write.
         return Ok(SaveOutcome::Conflict);
     };
-    if &current != expected {
+    if &current != expected || expected.lacks_sidecar_baseline(draft) {
         return Ok(SaveOutcome::Conflict);
     }
     write_request(path, draft, doc)?;
@@ -965,6 +972,35 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
                 SaveOutcome::Written
             );
             assert_eq!(load_request(&p).unwrap(), Request::default());
+        }
+    }
+
+    #[test]
+    fn kept_malformed_requests_cannot_overwrite_sidecars_without_a_baseline() {
+        for kind in ["json", "text", "xml"] {
+            for malformed in [b"not = [toml".as_slice(), b"\xffnot utf8", b"method = 7"] {
+                let (d, path) = example();
+                let mut draft = load_request(&path).unwrap();
+                let Body::Json(body) = draft.body else {
+                    panic!("example body")
+                };
+                draft.body = match kind {
+                    "text" => Body::Text(body),
+                    "xml" => Body::Xml(body),
+                    _ => Body::Json(body),
+                };
+                std::fs::write(&path, malformed).unwrap();
+                let kept = DiskBaseline::read(&path).unwrap();
+                assert!(matches!(&kept, DiskBaseline::Unreadable(_)));
+                let sidecar = d.path().join("create-user.body.json");
+                std::fs::write(&sidecar, b"outside body after Keep").unwrap();
+                assert_eq!(
+                    save_request_if_unchanged(&path, &kept, &draft).unwrap(),
+                    SaveOutcome::Conflict
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), malformed);
+                assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside body after Keep");
+            }
         }
     }
 
