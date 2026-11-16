@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui::{
     AppContext as _, Context, Entity, EntityId, EventEmitter, SharedString, Task, WeakEntity,
 };
+use wisp_core::assert::{Assertion, Facts, evaluate};
 use wisp_core::auth::EngineAuth;
 use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::cookies::{CookieJar, CookieJars};
@@ -16,7 +17,8 @@ use wisp_core::request::{
 };
 use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
 use wisp_core::{
-    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, PreparedRequest, RequestId,
+    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, Header, PreparedRequest,
+    RequestId,
 };
 use wisp_storage::collection::{
     CollectionId, assign_new_collection_id, ensure_collection_id, read_collection_id,
@@ -25,14 +27,17 @@ use wisp_storage::collection::{CollectionTree, Node, open_collection};
 use wisp_storage::cookies::{CookieFile, StoredCookie};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::list_environments;
-use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry};
+use wisp_storage::history::{
+    AssertionRecord, BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry,
+};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
 
 use crate::draft::{self, ReloadAction};
 use crate::settings::{self, Settings};
 use crate::tab::{
-    AuthorizeState, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent,
+    AuthorizeState, CheckOutcome, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState,
+    TabEvent,
 };
 use crate::ui::cookie_jar::{self as cookie_ui, Debounce};
 use crate::ui::history as history_ui;
@@ -223,6 +228,8 @@ struct Sent {
     request: Option<String>,
     /// The root of the sending tab's collection; the history entry goes there.
     root: Option<PathBuf>,
+    /// The environment the request was resolved under, by name.
+    environment: Option<String>,
 }
 
 /// Where history writing stands for the open collection.
@@ -863,6 +870,34 @@ fn strip_userinfo(url: &str) -> Option<String> {
     Some(format!("{}{}", &url[..start], &url[start + at + 1..]))
 }
 
+/// Evaluate `assertions` over a response; each outcome keeps its definition.
+fn check_outcomes(
+    assertions: &[Assertion],
+    status: u16,
+    headers: &[Header],
+    body: Option<&[u8]>,
+) -> Vec<CheckOutcome> {
+    let facts = Facts {
+        status,
+        headers,
+        body,
+    };
+    assertions
+        .iter()
+        .cloned()
+        .zip(evaluate(assertions, &facts))
+        .map(|(assertion, result)| CheckOutcome { assertion, result })
+        .collect()
+}
+
+/// The history records of `outcomes`, in order: label, fingerprint and state only.
+fn assertion_records(outcomes: &[CheckOutcome]) -> Vec<AssertionRecord> {
+    outcomes
+        .iter()
+        .map(|o| AssertionRecord::from_result(&o.assertion, &o.result))
+        .collect()
+}
+
 /// Sanitise a stored request in place and describe where it came from.
 fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigin {
     let (adjustments, redacted) = sanitize_redacted(request, &entry.redacted);
@@ -875,7 +910,7 @@ fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigi
         request: entry.request.clone(),
         url: request.url.clone(),
         stored_body: request.body.clone(),
-        had_assertions: false,
+        had_assertions: !entry.assertions.is_empty(),
     }
 }
 
@@ -1186,6 +1221,7 @@ fn prepare_send(
             &o.redacted,
             original_missing,
             url_edited,
+            o.had_assertions,
         )
     });
     Ok(SendPlan {
@@ -2543,6 +2579,7 @@ impl Workspace {
     ) -> RequestId {
         plan.prepared.client.collection = partition;
         let scope_path = plan.scope_path;
+        let environment = plan.prepared.environment.clone();
         let id = self.engine.submit(Command::Send(plan.prepared));
         if let Some(notice) = plan.notice {
             cx.emit(WorkspaceEvent::Notice(notice.into()));
@@ -2554,6 +2591,7 @@ impl Workspace {
                 request: recorded_request(scope_path.as_deref()),
                 draft,
                 root,
+                environment,
             },
         );
         self.show_sending(tab, Some(id), cx);
@@ -2799,6 +2837,14 @@ impl Workspace {
                     old_body = t.response.body.take();
                     // Read now: the handle is released when the next request replaces it.
                     stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
+                    let facts_body = stored_body.as_deref().filter(|b| b.len() <= BODY_CAP);
+                    let checks = sent.as_ref().map_or(&[][..], |s| &s.draft.assertions[..]);
+                    t.response.assertions = check_outcomes(
+                        checks,
+                        t.response.status.unwrap_or(0),
+                        &t.response.headers,
+                        facts_body,
+                    );
                     t.response.phase = Phase::Done;
                     t.response.total = Some(*total);
                     t.response.dns = timings.dns;
@@ -2886,8 +2932,8 @@ impl Workspace {
             connect: r.connect,
             size: r.size,
             response_headers: r.headers.clone(),
-            environment: None,
-            assertions: Vec::new(),
+            environment: sent.environment,
+            assertions: assertion_records(&r.assertions),
         };
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move {
@@ -3701,7 +3747,9 @@ impl Workspace {
 mod tests {
     use super::*;
     use wisp_core::Method;
+    use wisp_core::assert::{Expected, Op, Verdict};
     use wisp_core::request::{KeyValue, TextBody, Var};
+    use wisp_storage::history::AssertionState;
 
     #[test]
     fn quit_save_only_when_saving_and_dirty() {
@@ -4119,6 +4167,68 @@ mod tests {
         assert_eq!(c.coll_id, IdState::Known(new));
     }
 
+    fn status_is(code: i64) -> Assertion {
+        Assertion::Status {
+            op: Op::Equals,
+            expected: Expected::Int(code),
+        }
+    }
+
+    #[test]
+    fn check_outcomes_records_pass_fail_skipped_in_order() {
+        let list = [
+            status_is(200),
+            status_is(500),
+            Assertion::Json {
+                path: "a".into(),
+                op: Op::Exists,
+                expected: Expected::Bool(true),
+            },
+        ];
+        let outcomes = check_outcomes(&list, 200, &[], None);
+        assert_eq!(outcomes.len(), 3);
+        assert_eq!(outcomes[1].assertion, list[1]);
+        assert!(matches!(outcomes[0].result.verdict, Verdict::Pass));
+        assert!(matches!(outcomes[1].result.verdict, Verdict::Fail { .. }));
+        assert!(matches!(
+            outcomes[2].result.verdict,
+            Verdict::Skipped { .. }
+        ));
+        let records = assertion_records(&outcomes);
+        let states: Vec<_> = records.iter().map(|r| r.state).collect();
+        assert_eq!(
+            states,
+            [
+                AssertionState::Pass,
+                AssertionState::Fail,
+                AssertionState::Skipped
+            ]
+        );
+        assert_eq!(records[1].hash, list[1].fingerprint());
+        assert!(check_outcomes(&[], 200, &[], None).is_empty());
+    }
+
+    #[test]
+    fn history_records_hold_no_expected_or_header_values() {
+        let list = [
+            Assertion::Header {
+                name: "x-thing".into(),
+                op: Op::Equals,
+                expected: Expected::Str("CANARY-EXPECTED".into()),
+            },
+            status_is(200),
+        ];
+        let headers = [Header {
+            name: "x-thing".into(),
+            value: "CANARY-HEADER".into(),
+        }];
+        let records = assertion_records(&check_outcomes(&list, 200, &headers, None));
+        let text = format!("{records:?}");
+        assert!(!text.contains("CANARY"), "{text}");
+        let json = serde_json::to_string(&records).unwrap();
+        assert!(!json.contains("CANARY"), "{json}");
+    }
+
     #[test]
     fn collections_history_goes_to_the_sending_collection() {
         let dir = tempfile::tempdir().unwrap();
@@ -4131,6 +4241,7 @@ mod tests {
             draft: Request::default(),
             request: None,
             root: Some(cols[1].tree.root.clone()),
+            environment: None,
         };
         let (ix, job) = history_target(&cols, sent.root.as_deref().unwrap(), Some(&data)).unwrap();
         assert_eq!(ix, 1);
