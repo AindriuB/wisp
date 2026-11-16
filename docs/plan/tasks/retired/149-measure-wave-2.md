@@ -35,3 +35,9 @@ sizes, and hand the user a macOS hand-test checklist for the wave's UI.
 - Any size reduction or cut (the orchestrator decides with the user).
 - Windows and Ubuntu hand tests (mac-first, Amendment 1).
 - `docs/architecture.md#budgets` (scribe).
+
+## Outcome
+Measured and recorded (PR open). Windows GUI 15,494,656 B: over the 15.4 MB soft line by 94,656 B, under the gate by 5,344 B. Nothing cut; the cut order is the user's decision.
+
+## Wave verified — ccef97c1c5804cdced36184c88e2363bda0d55b1
+Orchestrator check: run 43976706350 success at 4769107; result-file bytes match the run log; diff is the result file only.
