@@ -2257,39 +2257,26 @@ impl Workspace {
         let abs = root.join(rel);
         match wisp_storage::request::DiskBaseline::read(&abs) {
             Ok(baseline) => tab.update(cx, |t, cx| {
-                // A refused sidecar is kept as it is now. Without a refusal, only a sidecar the
-                // banner itself reported (missing or not UTF-8) is kept; a readable one the user
-                // has not seen stays guarded. Any other Keep clears older content.
+                // Only a sidecar the guard refused is kept, as it is now: the user saw that
+                // refusal. Without one nothing is recorded and any older entry is cleared, so
+                // bytes the banner did not concern stay guarded (a missing sidecar needs no
+                // record: the guard allows NotFound).
                 let refused = self
                     .sidecar_seen
                     .remove(&tab.entity_id())
                     .and_then(|seen| seen.refused)
                     .map(|(name, _)| name);
-                let had_refusal = refused.is_some();
-                let name = refused.or_else(|| match &t.draft.body {
-                    Body::Json(b) | Body::Text(b) | Body::Xml(b) => b.sidecar.clone(),
-                    _ => None,
-                });
-                if let Some(name) = name
+                if let Some(name) = refused
                     && let Some(dir) = abs.parent()
+                    && let Ok(bytes) = std::fs::read(dir.join(&name))
                 {
-                    let content = match std::fs::read(dir.join(&name)) {
-                        Ok(bytes) if had_refusal || std::str::from_utf8(&bytes).is_err() => {
-                            Some(Some(bytes))
-                        }
-                        Ok(_) => None,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
-                        Err(_) => None,
-                    };
-                    if let Some(content) = content {
-                        self.sidecar_seen.insert(
-                            tab.entity_id(),
-                            SidecarSeen {
-                                refused: None,
-                                kept: Some((name, content)),
-                            },
-                        );
-                    }
+                    self.sidecar_seen.insert(
+                        tab.entity_id(),
+                        SidecarSeen {
+                            refused: None,
+                            kept: Some((name, Some(bytes))),
+                        },
+                    );
                 }
                 t.kept_disk = Some(baseline);
                 t.set_disk_state(DiskState::InSync, cx);
@@ -5249,6 +5236,31 @@ mod env_wiring_tests {
         }
     }
 
+    #[gpui::test]
+    fn keep_mine_without_a_refusal_does_not_record_unseen_non_utf8_sidecar_bytes(
+        cx: &mut TestAppContext,
+    ) {
+        for malformed in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let path = fx.root.join(&rel);
+            let sidecar = fx.root.join("sidecar.txt");
+            std::fs::write(&sidecar, b"outside \xffbody").unwrap();
+            if malformed {
+                std::fs::write(&path, b"broken = [toml").unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            fx.ws
+                .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside \xffbody");
+            assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
     fn sidecar_tab(fx: &Fx, cx: &mut TestAppContext) -> (Entity<RequestTab>, PathBuf) {
         let rel = PathBuf::from("sidecar.toml");
         let request = Request {
@@ -5391,6 +5403,14 @@ mod env_wiring_tests {
             assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
             fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
             assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::InSync);
+            if bytes.is_some() {
+                // The first Keep records nothing; the guard refuses the unseen bytes, and a
+                // second Keep mine promotes that refusal.
+                assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
+                assert_eq!(std::fs::read(&sidecar).unwrap(), b"\xff");
+                assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+                fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            }
             fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
             assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "edited");
             assert_eq!(saved_body(&fx.root.join(&rel)), "edited");
@@ -5429,6 +5449,7 @@ mod env_wiring_tests {
         let (tab, _rel) = sidecar_tab(&fx, cx);
         let sidecar = fx.root.join("sidecar.txt");
         break_sidecar(&fx, &tab, Some(b"\xff"), cx);
+        save_err(&fx, &tab, cx);
         fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
         std::fs::write(&sidecar, b"\xfe again").unwrap();
         assert!(save_err(&fx, &tab, cx).contains("sidecar.txt"));
