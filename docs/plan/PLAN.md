@@ -23,8 +23,10 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - **Wave 0 complete:** 129 (the three openapi wall-clock tests count work, `substitute` is linear; PR #78) and theme-palette (PR #79).
 - **Wave 1 contracts merged (PRs #78-#84):** 130 explain core report, 131 assertions core and storage, 132 environment info and hint, 134 create collection and environment, 135 `wisp-cli` scaffold and `inspect`. Main CI green on all three platforms.
 - **Wave 1 complete (PRs #86-#90, main CI green on all three platforms):** 133 `storage validate`, 136 measure wave 1, 137 history provenance fields, 138 `wisp-core` at opt-level "z". Windows GUI is now 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger on current numbers.
-- **Next:** plan 0.3.0 wave 2 (UI): 2A UI seams first, then 2B, 2C, 2D, 2E in parallel, then 2F wiring and the sidebar and palette task for creating a collection. The theme is merged, so UI work is unblocked.
-- **Planned small task:** DNS flake fix. Unit-test `classify` (`crates/core/src/engine.rs`) with a synthetic DNS error, and give `a_failed_lookup_is_still_a_dns_error` (`crates/core/tests/timings.rs:169`) a short timeout. `known-flakes.md` already names it.
+- **H1 history hardening merged (task 144, PRs #94, #103):** its open items are under "Follow-ups from task 144".
+- **Wave 2 merged and recorded:** 139 UI seams (PR #97), 140 Explain pane and context strip (PR #99), 141 assertions editor and Checks pane (PR #100), 142 `wisp-cli validate` and `explain` (PR #95), 144 history hardening, 145 DNS classify unit test (PR #93), 146 README portable-mode sentence (PR #92), 150 SigV4 access key mask (PR #96), 151 Explain hidden-set consistency (PR #98).
+- **Merged, being recorded:** 143 save and close (PR #101) and 152 (PR #102) are being recorded in PR #104 (branch `record/152`).
+- **Next:** 147 (assertion and history wiring) and 148 (new collection and environment UI), which both depend on 143 and edit the `workspace.rs` serial queue 139 -> 143 -> 147; then 149 (measure wave 2) last. 140 and 141 are recorded here.
 
 ### v0.2.0 (published 2026-11-14)
 Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.md` and HISTORY.
@@ -49,6 +51,15 @@ Patch release after v0.1.0. Done: tasks 86 (streamed File and Multipart bodies r
 
 ### Hardening backlog (post-0.2.0)
 `docs/plan/tasks/99-hardening-0-2-0.md` stays as the backlog: its done ACs are ticked, and the many "-> task 99" citations in this file keep resolving. Open for 0.2.0: AC39 (size gate). Every other unticked AC is deferred past 0.2.0 by triage; split it into new tasks when scheduled. The 🔒 items in "Follow-ups from 0.3.0 wave 1" join this backlog.
+
+### Follow-ups from 0.3.0 wave 2 (tasks 139, 142, 150, 151; PRs #95-#98; not 0.3.0 unless scheduled)
+None of these is marked 🔒 in the review notes (🔒 would mark a security-relevant item for the task 99 backlog). Items from task 144 are under "Follow-ups from task 144".
+- 151: `explain_auth` walks auth alone, so it can still show a SigV4 region whose variable is hidden by a header; task 140 uses only its kind and origin.
+- 151 (P3): a header name that comes from a hidden variable gets the key `MARK h:<name>` and no longer merges with a same-named header, so the report lists a header that is not sent and can duplicate `Content-Type` or `Authorization`.
+- 142 (P3): the canary fixture never references `{{api_token}}` or the secret `{{k}}`; the golden JSON checks only four fields; non-File secrets modes are all labelled "keychain" (an Unknown mode from a newer Wisp is mislabelled).
+- 142 (P3): `explain_keychain_secret_shadows_lower_scope` does not assert the label (text `secret tok (not set)`, JSON `resolved:false present:false`), and `contains("secret")` always passes. The text says "not set" plus a `keychain: not loaded by the CLI` line, not "unavailable" as AC2 words it.
+- 142 (Note): `explain` checks `confined` for symlinks and then `load_request` reopens the file, a TOCTOU race that needs a concurrent writer.
+- 139 (P3): `history_scope` shows `Pending` for `IdState::Failed` (the id cannot be read or created); it should be `Off(reason)`.
 
 ### Follow-ups from task 144 (history hardening; PRs #94, #103)
 🔒 marks a security-relevant item; each is also part of the post-0.2.0 hardening backlog above (task 99). Items 103-1 to 103-6 are from the fresh review of PR #103 (round 8); the rest are from the `/verify` reviewer at 33e6c75. All are Low or Nit.
@@ -365,7 +376,6 @@ PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real
 - [P3] 46-1 Cargo.toml:38 new deps tower-layer, tower-service, http, h2, bytes omit `default-features = false` (conventions: Dependencies).
 - [P3] 46-2 tests/timings.rs:81 the concurrent test blocks on a Barrier with no timeout (hangs instead of failing); wrap in a 10 s timeout naming the accepted count.
 - [P3] 46-3 tests/timings.rs:110 keep-alive tests assume the pooled connection is idle before the next connect wins (small race).
-- [P3] 46-4 tests/timings.rs:163 the DNS-error test depends on the host resolver failing `.invalid` (NXDOMAIN rewriting breaks it); test classification with a failing test resolver.
 - [Nit] 46-5 timing.rs:24 the Timings doc doesn't say what phases mean through a proxy.
 - [NOTE] Registry MAX_ENTRIES=64 FIFO: >64 unclaimed concurrent connects could evict a real entry (reported None); unreachable today (no runner/bulk send). Intermediate redirect hops and lost-race connects are never claimed and rely on the cap.
 - [NOTE] With reqwest-followed redirects the timings describe the final connection; with the engine's own loop, the first hop that opened a connection.
@@ -630,7 +640,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] 33-8 `engine.rs:772`: an unsupported Digest algorithm or qop turns the 401 into an engine error that hides the response. Return the 401 with a warning, and truncate the echoed algorithm.
 - [P3] 33-11 `sigv4.rs:148`: `sign` returns `Result<_, String>` and `DigestError` hand-implements `Error`; derive thiserror errors per the conventions.
 - [P3] 33-12 `tests/auth.rs:146`: hand-made temp files leak on panic; use `tempfile::NamedTempFile`.
-- [P3] 33-13 `ui/request/auth.rs:219`: the access key field is unmasked while Debug redacts it.
 - [NOTE] 33-15 `tests/auth.rs:306`: use `assert_eq!`.
 - [P3] `sigv4.rs:114` `canonical_query` decodes lossily, so `%FF` is signed as `%EF%BF%BD`. Fix: percent-encode the decoded bytes directly.
 - [P3] No test signs a multipart body for a non-S3 service, so the boundary bytes are covered by no test.

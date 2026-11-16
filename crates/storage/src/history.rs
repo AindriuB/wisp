@@ -123,6 +123,9 @@ fn authority_start(base: &str) -> (usize, bool) {
         if is_special_scheme(scheme) {
             return (offset + scheme.len() + 1 + slashes(rest), true);
         }
+        if scheme.eq_ignore_ascii_case("file") && slashes(rest) >= 2 {
+            return (offset + scheme.len() + 1 + slashes(rest), true);
+        }
         if rest.starts_with("//") {
             return (offset + scheme.len() + 3, backslash_delimiter);
         }
