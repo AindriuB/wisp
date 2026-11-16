@@ -78,6 +78,7 @@ pub struct NewEnvironmentView {
     input: Entity<InputState>,
     error: Option<SharedString>,
     focus: FocusHandle,
+    prev_focus: Option<FocusHandle>,
 }
 
 impl EventEmitter<DismissEvent> for NewEnvironmentView {}
@@ -90,10 +91,11 @@ impl Focusable for NewEnvironmentView {
 
 impl NewEnvironmentView {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let prev_focus = window.focused(cx);
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Environment name"));
-        cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, _, cx| {
+        cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| {
             if matches!(ev, InputEvent::PressEnter { .. }) {
-                this.commit(cx);
+                this.commit(window, cx);
             }
         })
         .detach();
@@ -103,10 +105,19 @@ impl NewEnvironmentView {
             input,
             error: None,
             focus: cx.focus_handle(),
+            prev_focus,
         }
     }
 
-    fn commit(&mut self, cx: &mut Context<Self>) {
+    /// Return focus to where it was, then ask the host to close the dialog.
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(h) = self.prev_focus.take() {
+            window.focus(&h, cx);
+        }
+        cx.emit(DismissEvent);
+    }
+
+    fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.input.read(cx).value().trim().to_string();
         let (root, existing) = {
             let ws = self.workspace.read(cx);
@@ -127,7 +138,7 @@ impl NewEnvironmentView {
                         ));
                     }
                 });
-                cx.emit(DismissEvent);
+                self.dismiss(window, cx);
             }
             Err(m) => {
                 self.error = Some(m.into());
@@ -152,7 +163,7 @@ impl Render for NewEnvironmentView {
             .border_1()
             .border_color(theme.border)
             .rounded_md()
-            .on_action(cx.listener(|_, _: &CancelRequest, _, cx| cx.emit(DismissEvent)))
+            .on_action(cx.listener(|this, _: &CancelRequest, window, cx| this.dismiss(window, cx)))
             .child(
                 div()
                     .text_xs()
