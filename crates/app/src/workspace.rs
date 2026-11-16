@@ -3004,14 +3004,30 @@ impl Workspace {
                 },
             };
             let abs = root.join(&rel);
-            if baseline.lacks_sidecar_baseline(&abs, &draft) {
-                anyhow::bail!(
-                    "Cannot verify the sidecar while the request file is missing or unreadable: restore the request file or use an inline body"
-                );
-            }
-            let outcome = save_request_if_unchanged(&abs, baseline, &draft)
-                .map_err(|_| anyhow::anyhow!("Could not write the request file"))?;
+            // `saved` is always the last content read from or written to disk for this tab.
+            let known = t.saved.as_ref().and_then(|saved| match &saved.body {
+                Body::Json(b) | Body::Text(b) | Body::Xml(b) => {
+                    b.sidecar.clone().map(|name| (name, b.content.clone()))
+                }
+                _ => None,
+            });
+            let outcome = save_request_if_unchanged(
+                &abs,
+                baseline,
+                &draft,
+                known.as_ref().map(|(n, c)| (n.as_str(), c.as_str())),
+            )
+            .map_err(|_| anyhow::anyhow!("Could not write the request file"))?;
             if outcome == SaveOutcome::Conflict {
+                // The request file still matches the baseline, so the sidecar blocked the save.
+                if DiskBaseline::read(&abs).is_ok_and(|current| &current == baseline)
+                    && let Body::Json(b) | Body::Text(b) | Body::Xml(b) = &draft.body
+                    && let Some(name) = &b.sidecar
+                {
+                    anyhow::bail!(
+                        "Not saved: sidecar `{name}` was changed outside Wisp or cannot be read; Reload to take the files on disk"
+                    );
+                }
                 let missing = std::fs::symlink_metadata(&abs)
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
                 let state = if missing {
@@ -5074,7 +5090,7 @@ mod env_wiring_tests {
             .update(cx, |w, cx| w.save(&tab, cx))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("sidecar") && error.contains("restore the request file"));
+        assert!(error.contains("sidecar.txt"));
         assert_eq!(std::fs::read(&path).unwrap(), malformed);
         assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside after Keep");
         assert!(tab.read_with(cx, |t, _| t.is_dirty()));
@@ -5118,8 +5134,96 @@ mod env_wiring_tests {
                 .update(cx, |w, cx| w.save(&tab, cx))
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains("sidecar") && error.contains("restore the request file"));
+            assert!(error.contains("sidecar.txt"));
             assert!(!path.exists());
+            assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside body");
+            assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    fn sidecar_tab(fx: &Fx, cx: &mut TestAppContext) -> (Entity<RequestTab>, PathBuf) {
+        let rel = PathBuf::from("sidecar.toml");
+        let request = Request {
+            body: Body::Text(wisp_core::request::TextBody {
+                content: "original".into(),
+                sidecar: Some("sidecar.txt".into()),
+            }),
+            ..Request::default()
+        };
+        save_request(&fx.root.join(&rel), &request).unwrap();
+        fx.ws.update(cx, |w, cx| w.open_request(&rel, cx));
+        let tab = fx.ws.read_with(cx, |w, _| w.active_tab().unwrap());
+        tab.update(cx, |t, cx| {
+            t.edit(
+                |r| {
+                    if let Body::Text(b) = &mut r.body {
+                        b.content = "edited".into();
+                    }
+                },
+                cx,
+            )
+        });
+        (tab, rel)
+    }
+
+    #[gpui::test]
+    fn save_recreates_a_deleted_request_over_a_sidecar_unchanged_since_load(
+        cx: &mut TestAppContext,
+    ) {
+        for keep in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let path = fx.root.join(&rel);
+            std::fs::remove_file(&path).unwrap();
+            if keep {
+                fx.ws
+                    .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+                fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            } else {
+                assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+            }
+            fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(fx.root.join("sidecar.txt")).unwrap(),
+                "edited"
+            );
+            assert!(path.exists());
+            assert!(!tab.read_with(cx, |t, _| t.is_dirty()));
+        }
+    }
+
+    #[gpui::test]
+    fn keep_mine_over_another_sidecar_or_inline_body_keeps_an_externally_edited_sidecar(
+        cx: &mut TestAppContext,
+    ) {
+        for inline in [false, true] {
+            let fx = fixture(cx);
+            open(&fx, cx);
+            let (tab, rel) = sidecar_tab(&fx, cx);
+            let path = fx.root.join(&rel);
+            let external = Request {
+                body: Body::Text(wisp_core::request::TextBody {
+                    content: "elsewhere".into(),
+                    sidecar: (!inline).then(|| "b.txt".into()),
+                }),
+                ..Request::default()
+            };
+            save_request(&path, &external).unwrap();
+            let sidecar = fx.root.join("sidecar.txt");
+            std::fs::write(&sidecar, b"outside body").unwrap();
+            fx.ws
+                .update(cx, |w, cx| w.apply_disk_state(&tab, &fx.root, cx));
+            assert_eq!(tab.read_with(cx, |t, _| t.disk), DiskState::ChangedOnDisk);
+            fx.ws.update(cx, |w, cx| w.keep_mine(&tab, cx));
+            let bytes = std::fs::read(&path).unwrap();
+            let error = fx
+                .ws
+                .update(cx, |w, cx| w.save(&tab, cx))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("sidecar.txt"));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
             assert_eq!(std::fs::read(&sidecar).unwrap(), b"outside body");
             assert!(tab.read_with(cx, |t, _| t.is_dirty()));
         }
