@@ -93,20 +93,44 @@ mod tests {
         s
     }
 
+    fn confirm_settings() -> Settings {
+        settings(&[("c1", "prod"), ("c1", "a:b")])
+    }
+
     #[test]
-    fn needs_confirm_table() {
-        let s = settings(&[("c1", "prod"), ("c1", "a:b")]);
-        let cases = [
-            (Some("c1"), Some("prod"), true),
-            (Some("c1"), Some("dev"), false),
-            (Some("c2"), Some("prod"), false),
-            (None, Some("prod"), false),
-            (Some("c1"), None, false),
-            (Some("c1"), Some("a:b"), true),
-        ];
-        for (id, env, want) in cases {
-            assert_eq!(needs_confirm(&s, id, env), want, "{id:?} {env:?}");
-        }
+    fn a_guarded_collection_and_environment_needs_confirmation() {
+        let s = confirm_settings();
+        assert!(needs_confirm(&s, Some("c1"), Some("prod")));
+    }
+
+    #[test]
+    fn an_unguarded_environment_of_a_guarded_collection_needs_none() {
+        let s = confirm_settings();
+        assert!(!needs_confirm(&s, Some("c1"), Some("dev")));
+    }
+
+    #[test]
+    fn the_same_environment_in_another_collection_needs_none() {
+        let s = confirm_settings();
+        assert!(!needs_confirm(&s, Some("c2"), Some("prod")));
+    }
+
+    #[test]
+    fn a_request_without_a_collection_needs_none() {
+        let s = confirm_settings();
+        assert!(!needs_confirm(&s, None, Some("prod")));
+    }
+
+    #[test]
+    fn a_request_without_an_environment_needs_none() {
+        let s = confirm_settings();
+        assert!(!needs_confirm(&s, Some("c1"), None));
+    }
+
+    #[test]
+    fn an_environment_name_containing_a_colon_is_guarded() {
+        let s = confirm_settings();
+        assert!(needs_confirm(&s, Some("c1"), Some("a:b")));
     }
 
     fn t(tab: u64, root: &str, env: Option<&str>) -> Target {
@@ -117,51 +141,79 @@ mod tests {
         }
     }
 
+    fn confirmed() -> Target {
+        t(1, "/a", Some("prod"))
+    }
+
     #[test]
-    fn after_prompt_table() {
-        let c = t(1, "/a", Some("prod"));
-        let cases = [
-            (Some(c.clone()), Answer::Cancel, false, Next::Abort),
-            (Some(c.clone()), Answer::Confirm, true, Next::Send),
-            (
-                Some(t(1, "/a", Some("dev"))),
-                Answer::Confirm,
-                true,
-                Next::Reprompt,
-            ),
-            (
-                Some(t(1, "/a", Some("dev"))),
-                Answer::Confirm,
-                false,
-                Next::AbortChanged,
-            ),
-            (
-                Some(t(1, "/a", None)),
-                Answer::Confirm,
-                false,
-                Next::AbortChanged,
-            ),
-            (
-                Some(t(1, "/b", Some("prod"))),
-                Answer::Confirm,
-                true,
-                Next::Abort,
-            ),
-            (
-                Some(t(2, "/a", Some("prod"))),
-                Answer::Confirm,
-                true,
-                Next::Abort,
-            ),
-            (None, Answer::Confirm, false, Next::Abort),
-        ];
-        for (cur, ans, guarded, want) in cases {
-            assert_eq!(
-                after_prompt(&c, cur.as_ref(), ans, guarded),
-                want,
-                "{cur:?}"
-            );
-        }
+    fn cancelling_the_prompt_aborts() {
+        let c = confirmed();
+        assert_eq!(
+            after_prompt(&c, Some(&c), Answer::Cancel, false),
+            Next::Abort
+        );
+    }
+
+    #[test]
+    fn confirming_an_unchanged_target_sends() {
+        let c = confirmed();
+        assert_eq!(
+            after_prompt(&c, Some(&c), Answer::Confirm, true),
+            Next::Send
+        );
+    }
+
+    #[test]
+    fn confirming_after_a_switch_to_another_guarded_environment_prompts_again() {
+        let cur = t(1, "/a", Some("dev"));
+        assert_eq!(
+            after_prompt(&confirmed(), Some(&cur), Answer::Confirm, true),
+            Next::Reprompt
+        );
+    }
+
+    #[test]
+    fn confirming_after_a_switch_to_an_unguarded_environment_aborts_as_changed() {
+        let cur = t(1, "/a", Some("dev"));
+        assert_eq!(
+            after_prompt(&confirmed(), Some(&cur), Answer::Confirm, false),
+            Next::AbortChanged
+        );
+    }
+
+    #[test]
+    fn confirming_after_the_environment_was_cleared_aborts_as_changed() {
+        let cur = t(1, "/a", None);
+        assert_eq!(
+            after_prompt(&confirmed(), Some(&cur), Answer::Confirm, false),
+            Next::AbortChanged
+        );
+    }
+
+    #[test]
+    fn confirming_after_the_collection_root_changed_aborts() {
+        let cur = t(1, "/b", Some("prod"));
+        assert_eq!(
+            after_prompt(&confirmed(), Some(&cur), Answer::Confirm, true),
+            Next::Abort
+        );
+    }
+
+    #[test]
+    fn confirming_after_the_tab_changed_aborts() {
+        let cur = t(2, "/a", Some("prod"));
+        assert_eq!(
+            after_prompt(&confirmed(), Some(&cur), Answer::Confirm, true),
+            Next::Abort
+        );
+    }
+
+    #[test]
+    fn confirming_after_the_tab_closed_aborts() {
+        assert_eq!(
+            after_prompt(&confirmed(), None, Answer::Confirm, false),
+            Next::Abort
+        );
     }
 
     #[test]
