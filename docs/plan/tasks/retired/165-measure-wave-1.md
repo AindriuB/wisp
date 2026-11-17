@@ -34,3 +34,8 @@ roadmap's +10 KB GUI target, before wave 2 starts.
 ## Out of scope
 - Any size reduction or cut (the orchestrator decides with the user; spec cut order :445).
 - Changing `cli-budgets.json` (172).
+
+## Wave verified — 561e5a9c351ac008b7bea60ff6edcbc04ad2fdaf
+
+## Outcome
+Merged at 561e5a9. Measure run 44181832340 (built commit 40975f4, the wave-1 head) was green on every target. The result file `scripts/measure/results/v0.4.0-wave-1-size.json` records the figures. The Windows GUI is 15,560,192 B, which is +26,624 B against +10,240 B allowed, so it is 16,384 B over the 15,543,808 B wave-1 target. It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut. The CLI grew on Windows (+2,560 B to 1,633,792 B) and Linux (+3,312 B to 1,970,056 B); macOS +0. Verdict: PASS (tester) and APPROVE (reviewer, AC1-AC4).

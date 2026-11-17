@@ -20,7 +20,12 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 162, 163, 164, 160 and 161 are recorded; next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded; next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
+
+**Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 165 (wave-1 size measurement; not scheduled)
+- NOTE: spec `docs/plan/specs/2026-11-17-wisp-0-4-0.md:461` expects "CLI unchanged" for wave 1, but `wisp-cli` grew +2,560 B on Windows (1,633,792 B) and +3,312 B on Linux (1,970,056 B); macOS +0. All are far under the 4 MiB limit. Fix the spec wording or note the growth when 172 sets the CLI budgets.
 
 ### Follow-ups from task 161 (service outcome and history; not scheduled)
 - NOTE (for 166, which is planned from this API): `crates/service/src/history.rs:23-48` `record` never builds `RecordError::Open`, because `HistoryStore::open` cannot fail, so the GUI's `Open` arm at `crates/app/src/workspace.rs:2752` is unreachable.
