@@ -1612,8 +1612,8 @@ async fn redirect_loop_fails_on_the_tenth_redirect_with_the_too_many_redirects_e
 
 // ---- one handle for hash and send (task 167) ----
 
-fn sigv4_auth() -> EngineAuth {
-    EngineAuth::AwsSigV4 {
+fn sigv4_auth() -> wisp_core::auth::EngineAuth {
+    wisp_core::auth::EngineAuth::AwsSigV4 {
         access_key: "AKIDEXAMPLE".into(),
         secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(),
         session_token: String::new(),
@@ -1660,18 +1660,49 @@ async fn hash_file_swapped_mid_hash_never_sends_other_bytes_under_the_old_hash()
         Event::Completed { .. } => {
             let reqs = server.received_requests().await.unwrap();
             let got = &reqs[0];
-            let signed = got
-                .headers
-                .get("x-amz-content-sha256")
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_owned();
             let actual: String = sha2::Sha256::digest(&got.body)
                 .iter()
                 .map(|b| format!("{b:02x}"))
                 .collect();
-            assert_eq!(signed, actual);
+            let hv = |n: &str| got.headers.get(n).unwrap().to_str().unwrap().to_owned();
+            let auth = hv("authorization");
+            let stamp = hv("x-amz-date");
+            let names: Vec<String> = auth
+                .split("SignedHeaders=")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+                .split(';')
+                .map(str::to_owned)
+                .collect();
+            let headers: Vec<(String, String)> = names
+                .iter()
+                .filter(|n| !matches!(n.as_str(), "host" | "x-amz-date"))
+                .map(|n| (n.clone(), hv(n)))
+                .collect();
+            let creds = wisp_core::auth::sigv4::Credentials {
+                access_key: "AKIDEXAMPLE",
+                secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+                session_token: "",
+                region: "us-east-1",
+                service: "ec2",
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let matched = (now - 300..=now).any(|t| {
+                wisp_core::auth::sigv4::sign("POST", &server.uri(), &headers, &actual, &creds, t)
+                    .is_ok_and(|s| {
+                        s.added
+                            .iter()
+                            .any(|(n, v)| n == "x-amz-date" && *v == stamp)
+                            && s.authorization == auth
+                    })
+            });
+            assert!(matched, "received bytes do not hash to the signed value");
         }
         other => panic!("unexpected terminal {other:?}"),
     }
