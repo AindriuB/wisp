@@ -13,7 +13,10 @@ use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath};
 use wisp_core::Method;
-use wisp_core::resolve::{AuthReport, Location, Problem, explain_auth, resolve};
+use wisp_core::request::Request;
+use wisp_core::resolve::{
+    AuthReport, Location, Placeholder, Problem, Scope, explain_auth, resolve_with,
+};
 use wisp_storage::vault::LoadStatus;
 
 use crate::actions::{SendRequest, ToggleConfirmSend};
@@ -133,6 +136,15 @@ pub(crate) fn location_text(location: &Location) -> String {
         Location::Auth => "auth".to_string(),
         Location::Body => "body".to_string(),
         Location::Var(n) => format!("variable {n}"),
+    }
+}
+
+/// The live problem lines for a draft. Resolves with `Placeholder`, so `{{$uuid}}`
+/// and friends are fixed values and the output is the same on every call.
+pub(crate) fn preview_problems(draft: &Request, scope: &Scope) -> Vec<String> {
+    match resolve_with(draft, scope, &mut Placeholder) {
+        Ok(_) => Vec::new(),
+        Err(e) => e.problems.iter().map(problem_text).collect(),
     }
 }
 
@@ -405,10 +417,7 @@ impl UrlBar {
                 }
             })
             .collect();
-        self.problems = match resolve(&draft, &scope) {
-            Ok(_) => Vec::new(),
-            Err(e) => e.problems.iter().map(problem_text).collect(),
-        };
+        self.problems = preview_problems(&draft, &scope);
     }
 
     fn on_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -571,6 +580,26 @@ mod tests {
             after_prompt(&confirmed, Some(&current), Answer::Confirm, guarded),
             Next::Abort
         );
+    }
+
+    #[test]
+    fn metadata_preview_is_deterministic_and_uses_placeholder() {
+        let mut draft = Request::default();
+        draft.url = "https://x.test/{{$uuid}}/{{missing}}".into();
+        let defaults = wisp_core::request::CollectionDefaults::default();
+        let scope = Scope {
+            collection: &defaults,
+            folders: vec![],
+            environment: None,
+        };
+        let a = preview_problems(&draft, &scope);
+        let b = preview_problems(&draft, &scope);
+        assert_eq!(a, b);
+        assert!(!a.is_empty());
+        assert!(a.iter().all(|l| !l.contains("uuid")));
+        let mut d2 = Request::default();
+        d2.url = "https://x.test/{{$uuid}}".into();
+        assert!(preview_problems(&d2, &scope).is_empty());
     }
 
     #[test]
