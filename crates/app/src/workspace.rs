@@ -2694,6 +2694,41 @@ impl Workspace {
         let body = history_ui::body_to_store(self.settings.history_bodies, body);
         match known_id(&self.collections[cix].coll_id) {
             Some(id) => self.spawn_record(task_root, data, id, new, body, cx),
+            None if matches!(self.collections[cix].coll_id, IdState::Failed { .. }) => {
+                // A cached read failure: re-read the id for this append only, so a repaired
+                // file recovers history. The shared `coll_id` (cookies, secrets, clash
+                // handling, notices) is left as it is.
+                cx.spawn(async move |this, cx| {
+                    let r = task_root.clone();
+                    let state = cx
+                        .background_executor()
+                        .spawn(async move { read_id_state(&r) })
+                        .await;
+                    this.update(cx, |this, cx| {
+                        if this.coll_ix(&task_root).is_none() {
+                            return;
+                        }
+                        match state {
+                            IdState::Known(id) => match CollectionId::parse(&id) {
+                                Some(id) => this.spawn_record(task_root, data, id, new, body, cx),
+                                None => {
+                                    this.history_off(&task_root, "invalid collection id".into(), cx)
+                                }
+                            },
+                            IdState::Failed { reason, .. } => {
+                                this.history_off(&task_root, reason, cx)
+                            }
+                            _ => this.history_off(
+                                &task_root,
+                                "the collection id is not available".into(),
+                                cx,
+                            ),
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             None => {
                 let root = task_root.clone();
                 self.resolve_id_then(Some(root), cx, move |this, _, cx| {
@@ -4789,6 +4824,56 @@ mod env_wiring_tests {
                 .history_dir(&CollectionId::parse(other).unwrap())
                 .exists()
         );
+    }
+
+    #[gpui::test]
+    fn history_recovers_when_a_failed_collection_id_is_repaired(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let root = fx.root.clone();
+        let toml = std::fs::read(root.join("collection.toml")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"bad id\"\n",
+        )
+        .unwrap();
+        fx.ws.update(cx, |w, _| {
+            w.collections[0].coll_id = read_id_state(&root);
+            assert!(matches!(w.collections[0].coll_id, IdState::Failed { .. }));
+        });
+        std::fs::write(root.join("collection.toml"), toml).unwrap();
+        let new = NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        let r = root.clone();
+        let before = fx.ws.read_with(cx, |w, _| {
+            (w.cookie_files.len(), w.jars.jar(Some(ID)).generation())
+        });
+        fx.ws.update(cx, |w, cx| w.append_history(r, new, None, cx));
+        cx.run_until_parked();
+        let data = DataDir::at(fx._dir.path().join("data"));
+        let store = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
+        assert_eq!(store.list().unwrap().len(), 1);
+        fx.ws.read_with(cx, |w, _| {
+            assert!(matches!(w.collections[0].coll_id, IdState::Failed { .. }));
+            assert_eq!(
+                (w.cookie_files.len(), w.jars.jar(Some(ID)).generation()),
+                before
+            );
+        });
     }
 
     #[gpui::test]
