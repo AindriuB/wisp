@@ -349,8 +349,6 @@ struct Flags {
     method: Option<String>,
     /// Every URL-looking positional and `--url` value, in order.
     urls: Vec<String>,
-    /// `--url` values; the first beats every positional.
-    explicit_urls: Vec<String>,
     /// First option the importer does not know, by name.
     unknown: Option<String>,
     headers: Vec<String>,
@@ -412,7 +410,7 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                 "form" => f.form.push(need(&mut args, &arg)?),
                 "user" => f.user = Some(need(&mut args, &arg)?),
                 "cookie" => f.cookie = Some(need(&mut args, &arg)?),
-                "url" => f.explicit_urls.push(need(&mut args, &arg)?),
+                "url" => set_url(&mut f, need(&mut args, &arg)?),
                 "digest" => f.scheme = Some("--digest"),
                 "ntlm" => f.scheme = Some("--ntlm"),
                 "negotiate" => f.scheme = Some("--negotiate"),
@@ -482,18 +480,6 @@ fn set_url(f: &mut Flags, url: String) {
 /// argument counts; none or several is an error naming the option.
 fn pick_url(f: &mut Flags) -> Result<String, ImportError> {
     let mut urls = std::mem::take(&mut f.urls);
-    let explicit = std::mem::take(&mut f.explicit_urls);
-    if !explicit.is_empty() {
-        urls.splice(0..0, explicit);
-        let url = urls.remove(0);
-        for extra in &urls {
-            f.warn(format!(
-                "extra URL (host `{}`) is not imported",
-                super::url_host(extra)
-            ));
-        }
-        return Ok(url);
-    }
     if let Some(opt) = f.unknown.clone() {
         let with_scheme: Vec<usize> = urls
             .iter()
@@ -803,11 +789,19 @@ mod tests {
     }
 
     #[test]
-    fn h4_explicit_url_beats_positionals() {
-        let (r, _) = req("curl other.example.com --url https://real.example.com/x");
-        assert_eq!(r.url, "https://real.example.com/x");
-        let (r, _) = req("curl --frobnicate v --url https://real.example.com/x other.example.com");
-        assert_eq!(r.url, "https://real.example.com/x");
+    fn h4_urls_are_taken_in_order_with_url_option() {
+        let (r, _) = req("curl api.example.com --url https://other.example.com");
+        assert!(r.url.contains("api.example.com"), "{}", r.url);
+    }
+
+    #[test]
+    fn h4_unknown_option_value_never_reaches_warnings() {
+        let res = parse("curl --frobnicate SECRETVAL --url https://real/x");
+        let text = match &res {
+            Ok(r) => format!("{:?}", r.warnings),
+            Err(e) => format!("{e:?} {e}"),
+        };
+        assert!(!text.contains("SECRETVAL"), "{text}");
     }
 
     #[test]
