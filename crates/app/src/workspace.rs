@@ -15,15 +15,17 @@ use wisp_core::cookies::{CookieJar, CookieJars};
 use wisp_core::request::{
     Auth, Body, CollectionDefaults, Environment, PartValue, Request, TextBody,
 };
-use wisp_core::resolve::{Location, Problem, ResolveError, Scope, resolve};
+use wisp_core::resolve::{Location, Problem, Recording, ResolveError, Scope};
 use wisp_core::{
-    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, Header, PreparedRequest,
-    RequestId,
+    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, Header, RequestId,
 };
+pub(crate) use wisp_service::plan::scope_path_for;
+use wisp_service::plan::{ResendFacts, SendInput, SendPlan, prepare, prepare_authorize};
+use wisp_service::send::{SentRecord as Sent, submit};
 use wisp_storage::collection::{
     CollectionId, assign_new_collection_id, ensure_collection_id, read_collection_id,
 };
-use wisp_storage::collection::{CollectionTree, Node, open_collection};
+use wisp_storage::collection::{CollectionTree, open_collection};
 use wisp_storage::cookies::{CookieFile, StoredCookie};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::list_environments;
@@ -224,17 +226,6 @@ pub enum WorkspaceEvent {
         root: PathBuf,
         env: String,
     },
-}
-
-/// What was sent, kept for the history entry written at the terminal event.
-struct Sent {
-    /// The unresolved draft; the store redacts it.
-    draft: Request,
-    request: Option<String>,
-    /// The root of the sending tab's collection; the history entry goes there.
-    root: Option<PathBuf>,
-    /// The environment the request was resolved under, by name.
-    environment: Option<String>,
 }
 
 /// Where history writing stands for the open collection.
@@ -661,14 +652,6 @@ fn saving_ids_of(cols: &[OpenCollection], files: &HashMap<String, CookieStatus>)
         .collect()
 }
 
-fn tree_has_request(nodes: &[Node], rel: &Path) -> bool {
-    nodes.iter().any(|n| match n {
-        Node::Request(m) => m.path == rel,
-        Node::Folder { children, .. } => tree_has_request(children, rel),
-        Node::Invalid { path, .. } => path == rel,
-    })
-}
-
 /// Which history records a tab's Explain/Checks views may show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // seam: read by tasks 140/141/143/147
@@ -712,36 +695,6 @@ fn choose_history_scope(
         (_, _, true) => HistoryScope::UrlEdited,
         (Some(p), _, _) => HistoryScope::Records(p),
         (None, _, _) => HistoryScope::Scratch,
-    }
-}
-
-/// A tab's own path wins. A from-history tab has none, so its entry's original
-/// request path scopes the resolve, but only while the tab's URL is still the
-/// stored one. Flags: the original path is gone; the URL was edited. Either way
-/// only the collection defaults apply.
-pub(crate) fn scope_path_for(
-    tree: &CollectionTree,
-    tab_path: Option<&Path>,
-    origin: Option<&HistoryOrigin>,
-    draft_url: &str,
-) -> (Option<PathBuf>, bool, bool) {
-    if let Some(p) = tab_path {
-        return (Some(p.to_path_buf()), false, false);
-    }
-    let Some(origin) = origin else {
-        return (None, false, false);
-    };
-    let Some(orig) = origin.request.as_deref() else {
-        return (None, false, false);
-    };
-    if origin.url != draft_url {
-        return (None, false, true);
-    }
-    let rel = PathBuf::from(orig);
-    if tree_has_request(&tree.nodes, &rel) {
-        (Some(rel), false, false)
-    } else {
-        (None, true, false)
     }
 }
 
@@ -919,190 +872,6 @@ fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigi
     }
 }
 
-/// Whether any of `fields` (dotted paths) names a JSON string leaf that is
-/// `""`, or `None` when the text does not scan as JSON or nests past 128. Bare `{{ref}}` values are skipped, as history
-/// masks them; arrays do not add to the path.
-fn empty_json_leaves(text: &str, fields: &[&str]) -> Option<bool> {
-    const MAX_DEPTH: usize = 128;
-    struct Scan<'a> {
-        b: &'a [u8],
-        i: usize,
-        fields: &'a [&'a str],
-        found: bool,
-    }
-    impl Scan<'_> {
-        fn ws(&mut self) {
-            while self.b.get(self.i).is_some_and(u8::is_ascii_whitespace) {
-                self.i += 1;
-            }
-        }
-        fn eat(&mut self, c: u8) -> Option<()> {
-            self.ws();
-            (self.b.get(self.i) == Some(&c)).then(|| self.i += 1)
-        }
-        fn string(&mut self) -> Option<String> {
-            self.eat(b'"')?;
-            let start = self.i;
-            while let Some(&c) = self.b.get(self.i) {
-                match c {
-                    b'\\' => self.i += 2,
-                    b'"' => {
-                        let s = String::from_utf8_lossy(&self.b[start..self.i]).into_owned();
-                        self.i += 1;
-                        return Some(s);
-                    }
-                    _ => self.i += 1,
-                }
-            }
-            None
-        }
-        fn value(&mut self, path: &mut String, depth: usize) -> Option<()> {
-            if depth > MAX_DEPTH {
-                return None;
-            }
-            self.ws();
-            match *self.b.get(self.i)? {
-                b'{' if self.b[self.i..].starts_with(b"{{") => {
-                    let end = self.b[self.i..].windows(2).position(|w| w == b"}}")?;
-                    self.i += end + 2;
-                }
-                b'{' => {
-                    self.i += 1;
-                    if self.eat(b'}').is_some() {
-                        return Some(());
-                    }
-                    loop {
-                        let key = self.string()?;
-                        self.eat(b':')?;
-                        let keep = path.len();
-                        if !path.is_empty() {
-                            path.push('.');
-                        }
-                        path.push_str(&key);
-                        self.value(path, depth + 1)?;
-                        path.truncate(keep);
-                        if self.eat(b',').is_none() {
-                            return self.eat(b'}');
-                        }
-                    }
-                }
-                b'[' => {
-                    self.i += 1;
-                    if self.eat(b']').is_some() {
-                        return Some(());
-                    }
-                    loop {
-                        self.value(path, depth + 1)?;
-                        if self.eat(b',').is_none() {
-                            return self.eat(b']');
-                        }
-                    }
-                }
-                b'"' => {
-                    if self.string()?.is_empty() {
-                        self.found |= self.fields.contains(&path.as_str());
-                    }
-                }
-                _ => {
-                    let start = self.i;
-                    while self
-                        .b
-                        .get(self.i)
-                        .is_some_and(|c| !c.is_ascii_whitespace() && !b",]}".contains(c))
-                    {
-                        self.i += 1;
-                    }
-                    if self.i == start {
-                        return None;
-                    }
-                }
-            }
-            Some(())
-        }
-    }
-    let mut s = Scan {
-        b: text.as_bytes(),
-        i: 0,
-        fields,
-        found: false,
-    };
-    s.value(&mut String::new(), 0)?;
-    s.ws();
-    (s.i == s.b.len()).then_some(s.found)
-}
-
-/// Why a from-history tab may not be sent: a redacted body value has not been
-/// filled in since. A redacted JSON leaf is unedited while it is still `""`
-/// (a removed or non-empty leaf counts as edited); a dropped body is unedited
-/// while it is empty. A body that does not scan is refused. `None` when no
-/// body was redacted.
-fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option<String> {
-    let mut whole = false;
-    let mut fields: Vec<&str> = Vec::new();
-    for n in &origin.redacted {
-        if n == "body" {
-            whole = true;
-        } else if let Some(f) = n.strip_prefix("body.") {
-            fields.push(f);
-        }
-    }
-    if !whole && fields.is_empty() {
-        return None;
-    }
-    let text = match &draft.body {
-        Body::Json(t) | Body::Text(t) | Body::Xml(t) => Some(t.content.as_str()),
-        _ => None,
-    };
-    let unedited = if whole {
-        text.is_none_or(|t| t.trim().is_empty())
-            && matches!(
-                &draft.body,
-                Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
-            )
-    } else {
-        match text.map(|t| empty_json_leaves(t, &fields)) {
-            Some(Some(found)) => found,
-            Some(None) => true,
-            None => false,
-        }
-    };
-    if !unedited {
-        return None;
-    }
-    let what = if whole {
-        "the body was not stored".to_string()
-    } else {
-        format!("{} was not stored", fields.join(", "))
-    };
-    Some(format!("Edit the request body before resending: {what}"))
-}
-
-/// A request ready to send, the scope path it resolved with, and the Resend
-/// notice of a from-history tab.
-struct SendPlan {
-    prepared: PreparedRequest,
-    scope_path: Option<PathBuf>,
-    notice: Option<String>,
-}
-
-/// The `AuthorizeStart` for a resolved request, or `None` when its auth is not authorization
-/// code. `client` is what Send would use, with `collection` set to the same partition; the
-/// environment partitions the cached token.
-fn authorize_command(prepared: PreparedRequest, collection: Option<String>) -> Option<Command> {
-    let auth = prepared.auth?;
-    if !matches!(auth, EngineAuth::OAuth2AuthCode { .. }) {
-        return None;
-    }
-    let mut client = prepared.client;
-    client.collection = collection;
-    Some(Command::AuthorizeStart {
-        auth,
-        client,
-        environment: prepared.environment,
-        timeout: prepared.timeout,
-    })
-}
-
 /// True when the app may hand `url` to the system browser: `https`, or `http` to a loopback host.
 pub(crate) fn may_open_in_browser(url: &str) -> bool {
     if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
@@ -1174,72 +943,16 @@ fn failure_state(error: &EngineError) -> AuthorizeState {
     }
 }
 
-/// Resolve a draft for an authorize command, through the same path as Send. `Ok(None)` when the
-/// resolved auth is not authorization code. Pure: everything it reads is passed in.
-fn prepare_authorize(
-    draft: &Request,
-    tab_path: Option<&Path>,
-    origin: Option<&HistoryOrigin>,
-    tree: Option<&CollectionTree>,
-    empty_defaults: &CollectionDefaults,
-    env: Option<&Environment>,
-    collection: Option<String>,
-) -> Result<Option<Command>, ResolveError> {
-    let plan = prepare_send(draft, tab_path, origin, tree, empty_defaults, env)?;
-    Ok(authorize_command(plan.prepared, collection))
-}
-
-/// Resolve a draft for sending. Pure: everything it reads is passed in.
-fn prepare_send(
-    draft: &Request,
-    tab_path: Option<&Path>,
-    origin: Option<&HistoryOrigin>,
-    tree: Option<&CollectionTree>,
-    empty_defaults: &CollectionDefaults,
-    env: Option<&Environment>,
-) -> Result<SendPlan, ResolveError> {
-    let (scope_path, original_missing, url_edited) = match tree {
-        Some(t) => scope_path_for(t, tab_path, origin, &draft.url),
-        None => (tab_path.map(Path::to_path_buf), false, false),
-    };
-    let scope = match tree {
-        Some(t) => t.scope_for(scope_path.as_deref().unwrap_or(Path::new("")), env),
-        None => Scope {
-            collection: empty_defaults,
-            folders: Vec::new(),
-            environment: None,
-        },
-    };
-    if let Some(message) = origin.and_then(|o| body_redaction_refusal(draft, o)) {
-        return Err(ResolveError {
-            problems: vec![Problem::Syntax {
-                location: Location::Body,
-                message,
-            }],
-        });
-    }
-    let prepared = resolve(draft, &scope)?;
-    let notice = origin.map(|o| {
-        history_ui::resend_notice(
-            env.map(|e| e.name.as_str()),
-            &o.adjustments,
-            &o.redacted,
-            original_missing,
-            url_edited,
-            o.had_assertions,
-        )
-    });
-    Ok(SendPlan {
-        prepared,
-        scope_path,
-        notice,
-    })
-}
-
-/// The request path a history entry records: the scope path used to resolve,
-/// so resending a from-history entry keeps its folder defaults.
-fn recorded_request(scope_path: Option<&Path>) -> Option<String> {
-    scope_path.map(|p| p.to_string_lossy().into_owned())
+/// The Resend notice for a from-history send.
+fn resend_notice_text(f: &ResendFacts) -> String {
+    history_ui::resend_notice(
+        f.env.as_deref(),
+        &f.adjustments,
+        &f.redacted,
+        f.original_missing,
+        f.url_edited,
+        f.had_assertions,
+    )
 }
 
 /// A request's sidecar as the user last saw it, for tabs whose save the sidecar guard refused.
@@ -2546,13 +2259,17 @@ impl Workspace {
             .as_deref()
             .and_then(|r| self.coll_ix(r))
             .map(|i| &self.collections[i]);
-        let plan = prepare_send(
-            &draft,
-            path.as_deref(),
-            origin.as_ref(),
-            c.map(|c| &c.tree),
-            &self.empty_defaults,
-            c.and_then(|c| c.active_env.as_ref()),
+        let mut recording = Recording::new();
+        let plan = prepare(
+            &SendInput {
+                draft: &draft,
+                tab_path: path.as_deref(),
+                origin: origin.as_ref(),
+                tree: c.map(|c| &c.tree),
+                empty_defaults: &self.empty_defaults,
+                env: c.and_then(|c| c.active_env.as_ref()),
+            },
+            &mut recording,
         )
         .inspect_err(|e| {
             // A refused body is explained here; callers skip their own notice.
@@ -2561,6 +2278,7 @@ impl Workspace {
             }
         })?;
         let mut plan = plan;
+        plan.dynamics = recording.into_values();
         if let Some(auth) = plan.prepared.auth.as_mut() {
             mark_persist(&self.refresh_store, c, auth);
         }
@@ -2603,23 +2321,14 @@ impl Workspace {
         root: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> RequestId {
-        plan.prepared.client.collection = partition;
-        let scope_path = plan.scope_path;
-        let environment = plan.prepared.environment.clone();
-        let id = self.engine.submit(Command::Send(plan.prepared));
-        if let Some(notice) = plan.notice {
-            cx.emit(WorkspaceEvent::Notice(notice.into()));
+        let resend = plan.resend.take();
+        let submitted = submit(&self.engine, plan, draft, partition, root);
+        let id = submitted.id;
+        if let Some(facts) = resend {
+            cx.emit(WorkspaceEvent::Notice(resend_notice_text(&facts).into()));
         }
         self.routes.insert(id, tab.downgrade());
-        self.sent.insert(
-            id,
-            Sent {
-                request: recorded_request(scope_path.as_deref()),
-                draft,
-                root,
-                environment,
-            },
-        );
+        self.sent.insert(id, submitted.record);
         self.show_sending(tab, Some(id), cx);
         id
     }
@@ -2671,12 +2380,14 @@ impl Workspace {
             .map(|i| &self.collections[i]);
         let partition = self.partition_for(root.as_deref());
         let command = prepare_authorize(
-            &draft,
-            path.as_deref(),
-            origin.as_ref(),
-            c.map(|c| &c.tree),
-            &self.empty_defaults,
-            c.and_then(|c| c.active_env.as_ref()),
+            &SendInput {
+                draft: &draft,
+                tab_path: path.as_deref(),
+                origin: origin.as_ref(),
+                tree: c.map(|c| &c.tree),
+                empty_defaults: &self.empty_defaults,
+                env: c.and_then(|c| c.active_env.as_ref()),
+            },
             partition.clone().flatten(),
         )?;
         let Some(mut command) = command else {
@@ -4458,13 +4169,16 @@ mod tests {
         o: &HistoryOrigin,
         e: &Environment,
     ) -> SendPlan {
-        prepare_send(
-            draft,
-            None,
-            Some(o),
-            Some(tree),
-            &CollectionDefaults::default(),
-            Some(e),
+        prepare(
+            &SendInput {
+                draft,
+                tab_path: None,
+                origin: Some(o),
+                tree: Some(tree),
+                empty_defaults: &CollectionDefaults::default(),
+                env: Some(e),
+            },
+            &mut Recording::new(),
         )
         .unwrap()
     }
@@ -4514,21 +4228,17 @@ mod tests {
     }
 
     fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {
-        prepare_send(
-            draft,
-            None,
-            Some(o),
-            None,
-            &CollectionDefaults::default(),
-            None,
+        prepare(
+            &SendInput {
+                draft,
+                tab_path: None,
+                origin: Some(o),
+                tree: None,
+                empty_defaults: &CollectionDefaults::default(),
+                env: None,
+            },
+            &mut Recording::new(),
         )
-    }
-
-    fn refusal(e: ResolveError) -> String {
-        match e.problems.as_slice() {
-            [Problem::Syntax { message, .. }] => message.clone(),
-            other => panic!("unexpected {other:?}"),
-        }
     }
 
     fn json(text: &str) -> Body {
@@ -4536,102 +4246,6 @@ mod tests {
             content: text.into(),
             ..TextBody::default()
         })
-    }
-
-    #[test]
-    fn redacted_json_leaf_body_is_refused_until_edited() {
-        let stored = json(r#"{"name":"x","webhook_secret":""}"#);
-        let o = body_origin(stored.clone(), &["body.webhook_secret"]);
-        let mut d = draft();
-        d.body = stored;
-        let msg = refusal(try_send(&d, &o).err().expect("refused"));
-        assert_eq!(
-            msg,
-            "Edit the request body before resending: webhook_secret was not stored"
-        );
-        d.body = json(r#"{"name":"x","webhook_secret":"s"}"#);
-        assert!(try_send(&d, &o).is_ok());
-    }
-
-    #[test]
-    fn deeply_nested_body_is_refused_without_overflow() {
-        let o = body_origin(json("{}"), &["body.s"]);
-        let mut d = draft();
-        d.body = json(&format!("{}1{}", "[".repeat(200), "]".repeat(200)));
-        assert!(try_send(&d, &o).is_err());
-        d.body = json(&"{\"a\":".repeat(50_000));
-        assert!(try_send(&d, &o).is_err());
-    }
-
-    #[test]
-    fn long_key_with_many_empty_leaves_is_fast() {
-        let o = body_origin(json("{}"), &["body.s"]);
-        let mut d = draft();
-        let mut t = format!("{{\"{}\":{{", "k".repeat(400_000));
-        for i in 0..100_000 {
-            t.push_str(&format!("\"{i}\":\"\","));
-        }
-        t.push_str("\"z\":\"\"}}");
-        d.body = json(&t);
-        let start = std::time::Instant::now();
-        assert!(try_send(&d, &o).is_ok());
-        assert!(start.elapsed().as_secs_f32() < 1.0);
-    }
-
-    #[test]
-    fn dropped_body_is_refused_until_edited() {
-        let stored = Body::Xml(TextBody::default());
-        let o = body_origin(stored.clone(), &["body"]);
-        let mut d = draft();
-        d.body = stored;
-        let msg = refusal(try_send(&d, &o).err().expect("refused"));
-        assert!(msg.ends_with("the body was not stored"));
-        d.body = Body::Xml(TextBody {
-            content: "<a/>".into(),
-            ..TextBody::default()
-        });
-        assert!(try_send(&d, &o).is_ok());
-    }
-
-    #[test]
-    fn redaction_refusal_follows_the_leaf_not_the_text() {
-        let o = body_origin(json("{}"), &["body.webhook_secret"]);
-        let mut d = draft();
-        let cases = [
-            ("{\n  \"name\": \"x\",\n  \"webhook_secret\": \"\"\n}", true),
-            (" {\"name\":\"x\",\"webhook_secret\":\"\"}\n", true),
-            ("{\"a\":{{id}},\"webhook_secret\":\"\"}", true),
-            ("{\"webhook_secret\":", true),
-            ("{\"webhook_secret\":\"s\"}", false),
-            ("{\"webhook_secret\":\"{{secret}}\"}", false),
-            ("{\"webhook_secret\":{{secret}}}", false),
-            ("{\"name\":\"x\"}", false),
-        ];
-        for (body, refused) in cases {
-            d.body = json(body);
-            let got = try_send(&d, &o).err().is_some_and(|e| {
-                matches!(e.problems.as_slice(),
-                    [Problem::Syntax { message, .. }] if message.starts_with("Edit the request body"))
-            });
-            assert_eq!(got, refused, "{body}");
-        }
-    }
-
-    #[test]
-    fn dropped_body_whitespace_is_still_refused() {
-        let o = body_origin(Body::Xml(TextBody::default()), &["body"]);
-        let mut d = draft();
-        d.body = Body::Xml(TextBody {
-            content: " \n".into(),
-            ..TextBody::default()
-        });
-        assert!(try_send(&d, &o).is_err());
-    }
-
-    #[test]
-    fn entry_without_body_redaction_is_not_refused() {
-        let o = body_origin(Body::None, &["Authorization"]);
-        assert!(try_send(&draft(), &o).is_ok());
     }
 
     #[test]
@@ -4649,72 +4263,6 @@ mod tests {
         assert_eq!(o.redacted, vec!["body.k"]);
         assert_eq!(o.stored_body, json("{}"));
         assert_eq!(o.request.as_deref(), Some("users/get.toml"));
-    }
-
-    #[test]
-    fn folder_bearer_token_follows_the_environment() {
-        let (_d, tree) = auth_collection();
-        let o = origin(Some("users/get.toml"));
-        let dev = plan(&tree, &draft(), &o, &env("dev", "dev-tok"));
-        let prod = plan(&tree, &draft(), &o, &env("prod", "prod-tok"));
-        assert_eq!(header(&dev, "authorization"), Some("Bearer dev-tok"));
-        assert_eq!(header(&prod, "authorization"), Some("Bearer prod-tok"));
-        assert!(dev.notice.unwrap().contains("(dev)"));
-        assert!(prod.notice.unwrap().contains("(prod)"));
-    }
-
-    #[test]
-    fn edited_url_drops_the_folder_scope() {
-        let (_d, tree) = auth_collection();
-        let mut d = draft();
-        d.url = "http://other.test/".into();
-        let p = plan(
-            &tree,
-            &d,
-            &origin(Some("users/get.toml")),
-            &env("prod", "prod-tok"),
-        );
-        assert_eq!(header(&p, "authorization"), None);
-        assert_eq!(p.scope_path, None);
-        assert!(p.notice.unwrap().contains("URL was edited"));
-    }
-
-    #[test]
-    fn missing_original_falls_back_to_collection_defaults() {
-        let (d, _) = auth_collection();
-        std::fs::remove_file(d.path().join("users/get.toml")).unwrap();
-        let tree = open_collection(d.path()).unwrap();
-        let p = plan(
-            &tree,
-            &draft(),
-            &origin(Some("users/get.toml")),
-            &env("dev", "t"),
-        );
-        assert_eq!(header(&p, "authorization"), None);
-        assert!(p.notice.unwrap().contains("original request was not found"));
-        // A tab with its own path is unaffected.
-        let own = scope_path_for(&tree, Some(Path::new("a.toml")), Some(&origin(None)), URL);
-        assert_eq!(own, (Some(PathBuf::from("a.toml")), false, false));
-    }
-
-    #[test]
-    fn resend_chain_keeps_scope() {
-        let (_d, tree) = auth_collection();
-        let first = plan(
-            &tree,
-            &draft(),
-            &origin(Some("users/get.toml")),
-            &env("dev", "t"),
-        );
-        let recorded = recorded_request(first.scope_path.as_deref());
-        assert_eq!(recorded.as_deref(), Some("users/get.toml"));
-        let again = plan(
-            &tree,
-            &draft(),
-            &origin(recorded.as_deref()),
-            &env("prod", "p"),
-        );
-        assert_eq!(header(&again, "authorization"), Some("Bearer p"));
     }
 
     fn kv(name: &str, value: &str) -> KeyValue {
@@ -4776,7 +4324,9 @@ mod tests {
         assert_eq!(header(&p, "authorization"), Some("Bearer prod-tok"));
         assert_eq!(header(&p, "x-api-key"), None);
         assert_eq!(header(&p, "accept"), Some("*/*"));
-        assert!(p.notice.unwrap().contains("disabled header X-Api-Key"));
+        assert!(
+            resend_notice_text(p.resend.as_ref().unwrap()).contains("disabled header X-Api-Key")
+        );
     }
 
     #[test]
@@ -4907,12 +4457,14 @@ mod tests {
         collection: Option<&str>,
     ) -> Result<Option<Command>, ResolveError> {
         prepare_authorize(
-            draft,
-            None,
-            None,
-            tree,
-            &CollectionDefaults::default(),
-            env,
+            &SendInput {
+                draft,
+                tab_path: None,
+                origin: None,
+                tree,
+                empty_defaults: &CollectionDefaults::default(),
+                env,
+            },
             collection.map(str::to_string),
         )
     }
@@ -4928,13 +4480,16 @@ mod tests {
         let with = oauth_prepare(&draft, Some(&tree), Some(&e), Some("col-1"))
             .unwrap()
             .unwrap();
-        let send = prepare_send(
-            &draft,
-            None,
-            None,
-            None,
-            &CollectionDefaults::default(),
-            None,
+        let send = prepare(
+            &SendInput {
+                draft: &draft,
+                tab_path: None,
+                origin: None,
+                tree: None,
+                empty_defaults: &CollectionDefaults::default(),
+                env: None,
+            },
+            &mut Recording::new(),
         )
         .unwrap()
         .prepared;

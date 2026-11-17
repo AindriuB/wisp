@@ -5,7 +5,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 2
 fail=0
 
-for c in wisp-core wisp-storage wisp-cli; do
+for c in wisp-core wisp-storage wisp-service wisp-cli; do
     tree=$(cargo tree -p "$c" -e normal,build --target all --all-features --locked --prefix none 2>&1) || {
         echo "check-boundaries: cargo tree failed for $c" >&2
         echo "$tree" >&2
@@ -34,6 +34,25 @@ for pat in 'net::' 'TcpStream' 'UdpSocket' 'process::Command' 'Command::new' \
         fail=1
     fi
 done
+
+# Exactly one Command::Send( outside core, in the service crate's send.rs.
+sends=$(grep -rn 'Command::Send(' crates --include='*.rs' | grep -v '^crates/core/')
+case "$sends" in
+    crates/service/src/send.rs:*) ;;
+    *) echo "check-boundaries: Command::Send( must occur only in crates/service/src/send.rs" >&2
+       printf '%s\n' "$sends" >&2
+       fail=1 ;;
+esac
+if [ "$(printf '%s\n' "$sends" | grep -c .)" -ne 1 ]; then
+    echo "check-boundaries: Command::Send( must occur exactly once outside crates/core" >&2
+    fail=1
+fi
+
+# The GUI plans through the service: no free-function resolve( above the tests.
+if sed '/^#\[cfg(test)\]/,$d' crates/app/src/workspace.rs | grep -nE '(^|[^:.[:alnum:]_])resolve\('; then
+    echo "check-boundaries: crates/app/src/workspace.rs calls resolve(" >&2
+    fail=1
+fi
 
 [ "$fail" -eq 0 ] && echo "check-boundaries: ok"
 exit "$fail"
