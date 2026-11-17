@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Release 0.3.0
+PR #118 bumped the version to 0.3.0 and added the `docs/release.md` runbook, the README asset names and `docs/plan/release-notes-0.3.0.md`; tag v0.3.0 at ffdccc1 published at 2026-11-17T12:28Z with `Wisp-0.3.0-macos-arm64.zip`, `Wisp-0.3.0-windows-x64.zip`, `Wisp-0.3.0-linux-x64.tar.gz` and `SHA256SUMS`. The macOS zip checksum matches and `spctl` reports "Notarized Developer ID"; the winget manifest has PackageVersion 0.3.0 (the winget-pkgs PR is the user's), and the dry-run draft dryrun-44046922250 was deleted.
+**Cost:** Only the macOS hand test was done before publishing; Windows and Ubuntu are tested later. The 0.2.0 asset names in the README and the dry-run archives were stale until this bump, so the dry run could not show final names.
+
 ## 2026-11-17 — Wave 3 measured and release dry-run green (task 158)
 Measure run 44045146818 and a draft release dry run (44046922250) on d314c5f both pass. The Windows GUI is 15,533,568 B, 466,432 B under the 16,000,000 B gate and 366,432 B under the soft line; the CLI is unchanged at 1,415,600 / 1,631,232 / 1,966,744 B. Every archive holds `wisp-cli`, macOS is notarized, and the Windows `wisp-cli.exe` is unsigned with the notes saying so.
 **Cost:** The macOS archive's `wisp-cli` is 1,425,616 B against measure's 1,415,600 B (+10,016 B), probably signature bytes; not investigated. Archives are named `Wisp-0.2.0-*` because the 0.3.0 bump is not done. The task's `only-result` Check fails on macOS because BSD wc pads the count; use `test "$(... | wc -l)" -eq 0`. The dry-run draft stays for the user to delete.

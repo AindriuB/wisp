@@ -18,7 +18,7 @@ than no plan.
 **In flight:** 01, 02
 -->
 
-### v0.3.0 (in progress)
+### v0.3.0 (released 2026-11-17)
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendments 1 and 2; roadmap: `docs/plan/roadmap.md`.
 - **Waves 0 to 2 and tasks 147 and 148 are recorded (PRs #78-#110):** detail in `docs/plan/archive/2026-11-16-closed-sections.md`, `docs/plan/archive/2026-11-17-closed-sections.md` and HISTORY. Open follow-ups are under the "Follow-ups from ..." sections below.
 - **149 measured wave 2 (PR #110):** Windows GUI 15,494,656 B, 94,656 B over the old 15.4 MB soft line and 5,344 B under the old 15,500,000 B gate. Detail: `scripts/measure/results/wave-2-size.json`.
@@ -43,14 +43,14 @@ Explain Request, Save and close with the environment guard, assertions with hist
   - [P3] docs/cli.md wrongly says a keychain environment is "not opened at all"; the env file loads and only the secret store is skipped (`cmd/explain.rs:68-88`).
   - [P3] docs/cli.md exit code 2: usage text goes to stderr only for parse errors; unknown env prints only "wisp-cli: unknown environment"; non-UTF-8 env name or path also exits 2 (`main.rs:40-41`, `:60`).
   - [P3] architecture.md "How they talk" overstates `scripts/check-boundaries.sh` (`:8-38`): it checks banned deps and patterns, not dependency direction.
-  - [Note] README says `Wisp-0.2.0-*` archives contain `wisp-cli`; true only after the 0.3.0 version bump. The docs/cli.md Usage block is a synopsis, not literal `--help`. The Windows soft line 15,900,000 B is enforced nowhere (`release.yml:177`). The `SIGNPATH_SIGNS_CLI` name looks blanked in PLAN.md:30, HISTORY.md:26 and `scripts/release/sign-windows/README.md:22,:33`.
+  - [Note] The docs/cli.md Usage block is a synopsis, not literal `--help`. The Windows soft line 15,900,000 B is enforced nowhere (`release.yml:177`). The `SIGNPATH_SIGNS_CLI` name looks blanked in PLAN.md:30, HISTORY.md:26 and `scripts/release/sign-windows/README.md:22,:33`.
   - [Low] the `scope` Check in tasks 157 and 158 (`wc -l | grep -x 0`) fails on macOS because BSD wc pads the count.
 - **158 recorded:** wave-3 measure (run 44045146818) and release dry run (run 44046922250) are green on d314c5f. Windows GUI 15,533,568 B, under the gate and soft line; the CLI is unchanged. Follow-ups (none fixed; detail in `docs/plan/tasks/retired/158-measure-and-release-dry-run.md`):
   - [Note] the macOS archive's `wisp-cli` is 1,425,616 B against measure's 1,415,600 B (+10,016 B), probably signature bytes; ties to the 156 follow-up (a).
   - [Low] the `only-result` Check (`wc -l | grep -x 0`) fails on macOS because BSD wc pads the count, as for 157's `scope` Check.
   - [P3, 116-1] README.md:81 macOS `ln -s ... /usr/local/bin/wisp-cli` fails on a fresh Apple silicon Mac (directory missing or root-owned): add sudo and `mkdir -p`, or use a user-owned directory.
   - [User] delete draft release `dryrun-44046922250` when done with it.
-- **Wave 3 done:** 157 recorded and merged (PR #116); 158 recorded. **Next:** the user's macOS hand test (checklist in the 158 PR body), then the 0.3.0 version bump and tag.
+- **0.3.0 released 2026-11-17:** release PR #118, tag v0.3.0 at ffdccc1, release run 44080607742, winget run 44083496633 (manifest built; the winget-pkgs PR is the user's). macOS hand test passed; Windows and Ubuntu hand tests later (mac-first). Release runbook: `docs/release.md`.
 
 ### User setup (optional release channels)
 **User setup (optional channels):** none of these block 0.2.0.
