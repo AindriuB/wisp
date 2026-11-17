@@ -856,6 +856,30 @@ fn assertion_records(outcomes: &[CheckOutcome]) -> Vec<AssertionRecord> {
         .collect()
 }
 
+/// The history entry for a sent request's terminal `event` and the tab's response so far.
+fn build_entry(sent: Sent, event: &Event, r: &ResponseState, at: SystemTime) -> NewEntry {
+    let outcome = match event {
+        Event::Completed { .. } => Outcome::Completed,
+        Event::Failed { error, .. } => Outcome::Failed { kind: error.kind },
+        _ => Outcome::Cancelled,
+    };
+    NewEntry {
+        at,
+        request_path: sent.request,
+        request: sent.draft,
+        outcome,
+        status: r.status,
+        ttfb: r.ttfb,
+        total: r.total,
+        dns: r.dns,
+        connect: r.connect,
+        size: r.size,
+        response_headers: r.headers.clone(),
+        environment: sent.environment,
+        assertions: assertion_records(&r.assertions),
+    }
+}
+
 /// Sanitise a stored request in place and describe where it came from.
 fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigin {
     let (adjustments, redacted) = sanitize_redacted(request, &entry.redacted);
@@ -2650,27 +2674,7 @@ impl Workspace {
             }
         };
         let body = history_ui::body_to_store(self.settings.history_bodies, body);
-        let r = &tab.read(cx).response;
-        let outcome = match event {
-            Event::Completed { .. } => Outcome::Completed,
-            Event::Failed { error, .. } => Outcome::Failed { kind: error.kind },
-            _ => Outcome::Cancelled,
-        };
-        let new = NewEntry {
-            at: SystemTime::now(),
-            request_path: sent.request,
-            request: sent.draft,
-            outcome,
-            status: r.status,
-            ttfb: r.ttfb,
-            total: r.total,
-            dns: r.dns,
-            connect: r.connect,
-            size: r.size,
-            response_headers: r.headers.clone(),
-            environment: sent.environment,
-            assertions: assertion_records(&r.assertions),
-        };
+        let new = build_entry(sent, event, &tab.read(cx).response, SystemTime::now());
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move {
                 let store = job.open().map_err(|e| (true, e))?;
@@ -3918,6 +3922,68 @@ mod tests {
             op: Op::Equals,
             expected: Expected::Int(code),
         }
+    }
+
+    /// `NewEntry` as JSON, for the golden shared with the service crate's test.
+    fn entry_json(e: &NewEntry) -> String {
+        let ms = |d: Option<Duration>| d.map(|d| d.as_millis() as u64);
+        serde_json::json!({
+            "at_ms": e.at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64,
+            "request_path": e.request_path,
+            "request": e.request,
+            "outcome": e.outcome,
+            "status": e.status,
+            "ttfb_ms": ms(e.ttfb),
+            "total_ms": ms(e.total),
+            "dns_ms": ms(e.dns),
+            "connect_ms": ms(e.connect),
+            "size": e.size,
+            "response_headers": e.response_headers,
+            "environment": e.environment,
+            "assertions": e.assertions,
+        })
+        .to_string()
+    }
+
+    const GOLDEN_ENTRY: &str = r#"{"at_ms":10000,"request_path":"a.toml","request":{"name":"Untitled","method":"Get","url":"http://example.test/x","path":[],"params":[],"headers":[],"auth":"Inherit","body":"None","vars":[],"settings":{"timeout":null,"follow_redirects":true,"verify_tls":true},"assertions":[{"Status":{"op":"Equals","expected":{"Int":200}}},{"Status":{"op":"Equals","expected":{"Int":500}}}],"description":"","expected_status":[]},"outcome":{"Failed":{"kind":"Timeout"}},"status":200,"ttfb_ms":5,"total_ms":9,"dns_ms":2,"connect_ms":3,"size":2,"response_headers":[{"name":"X","value":"y"}],"environment":"dev","assertions":[{"label":"status equals","hash":"123681db9b04d061","state":"pass"},{"label":"status equals","hash":"123681db9b04d061","state":"fail"}]}"#;
+
+    #[test]
+    fn golden_new_entry_for_a_fixed_send() {
+        let mut draft = crate::draft::blank_request();
+        draft.url = "http://example.test/x".into();
+        draft.assertions = vec![status_is(200), status_is(500)];
+        let sent = Sent {
+            draft: draft.clone(),
+            request: Some("a.toml".into()),
+            root: None,
+            environment: Some("dev".into()),
+        };
+        let headers = vec![Header {
+            name: "X".into(),
+            value: "y".into(),
+        }];
+        let r = ResponseState {
+            status: Some(200),
+            headers: headers.clone(),
+            ttfb: Some(Duration::from_millis(5)),
+            total: Some(Duration::from_millis(9)),
+            dns: Some(Duration::from_millis(2)),
+            connect: Some(Duration::from_millis(3)),
+            size: Some(2),
+            assertions: check_outcomes(&draft.assertions, 200, &headers, Some(b"{}")),
+            ..ResponseState::default()
+        };
+        let event = Event::Failed {
+            id: RequestId(1),
+            error: wisp_core::EngineError {
+                kind: wisp_core::ErrorKind::Timeout,
+                message: "timed out".into(),
+            },
+            nothing_sent: false,
+        };
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let e = build_entry(sent, &event, &r, at);
+        assert_eq!(entry_json(&e), GOLDEN_ENTRY);
     }
 
     #[test]
