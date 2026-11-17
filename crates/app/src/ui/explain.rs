@@ -98,6 +98,33 @@ fn setting_text(name: &str, setting: &Setting) -> String {
     format!("{name}: {} ({source}){note}", setting.value)
 }
 
+/// The read-only "Description" and "Expected status" sections; each is omitted when empty.
+fn metadata_sections(report: &ResolutionReport) -> Vec<(&'static str, Vec<String>)> {
+    let mut out = Vec::new();
+    let description: String = report
+        .description
+        .0
+        .iter()
+        .map(|p| match p {
+            ShownPart::Text(t) => t.clone(),
+            other => part_text(other, &[]),
+        })
+        .collect();
+    if !description.is_empty() {
+        out.push(("Description", vec![description]));
+    }
+    if !report.expected_status.is_empty() {
+        let list = report
+            .expected_status
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(("Expected status", vec![list]));
+    }
+    out
+}
+
 fn report_sections(
     report: &ResolutionReport,
     folders: &[String],
@@ -223,7 +250,8 @@ fn report_sections(
             message,
         } => format!("{name}: invalid pattern {pattern}: {message}"),
     }));
-    vec![
+    let mut sections = metadata_sections(report);
+    sections.extend([
         ("Variables", variables),
         ("URL and params", url),
         ("Headers", headers),
@@ -231,7 +259,8 @@ fn report_sections(
         ("Settings", settings),
         ("Body", body),
         ("Problems and warnings", findings),
-    ]
+    ]);
+    sections
 }
 
 pub struct ExplainPane {
@@ -337,6 +366,44 @@ mod tests {
     use crate::workspace::HistoryScope;
     use wisp_core::request::{Auth, CollectionDefaults, Environment, KeyValue, Request, Var};
     use wisp_core::resolve::{Scope, explain_auth};
+
+    #[test]
+    fn metadata_sections_cover_empty_one_both_and_long() {
+        let mut r = Request::default();
+        let defaults = CollectionDefaults::default();
+        let scope = Scope {
+            collection: &defaults,
+            folders: vec![],
+            environment: None,
+        };
+        let rep = |r: &Request| explain(r, &scope);
+        assert!(metadata_sections(&rep(&r)).is_empty());
+        r.expected_status = vec![200, 204];
+        let m = metadata_sections(&rep(&r));
+        assert_eq!(m, vec![("Expected status", vec!["200, 204".to_string()])]);
+        r.description = "hello".into();
+        let m = metadata_sections(&rep(&r));
+        assert_eq!(m[0], ("Description", vec!["hello".to_string()]));
+        assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn metadata_description_is_capped_with_ellipsis() {
+        let mut r = Request::default();
+        let defaults = CollectionDefaults::default();
+        let scope = Scope {
+            collection: &defaults,
+            folders: vec![],
+            environment: None,
+        };
+        let rep = |r: &Request| explain(r, &scope);
+        r.description = "a".repeat(1_000);
+        let m = metadata_sections(&rep(&r));
+        assert_eq!(m[0].1[0].chars().count(), 1_000);
+        r.description = "a".repeat(1_500);
+        let m = metadata_sections(&rep(&r));
+        assert!(m[0].1[0].ends_with('…'));
+    }
 
     #[gpui::test]
     fn explain_skips_hidden_updates_and_refreshes_on_reactivation(cx: &mut gpui::TestAppContext) {
