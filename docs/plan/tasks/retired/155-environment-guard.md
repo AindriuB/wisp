@@ -84,5 +84,23 @@ Reviewer REQUEST CHANGES at b638dccc31c71fb722cc4b4816f147cb8af5bf74. The `guard
 
 ## Wave verified — 9d5837a548e8d81769c165ac9753d87b0ae242d4
 
+## External review — findings
+
+Key sha256:69ac024ec1f8 · reviewed head e9ea58881a030227463e4b6c49a89dd2398501f7 (PR #115, record/155; task code at 9d5837a) · round 3
+
+## AindriuB/wisp#115 · Changes suggested · head e9ea58881a03
+0 P1 · 1 P2 · 0 P3
+| ID | Sev | Where | Issue | Failing input | Fix |
+|---|---|---|---|---|---|
+| 115-1 | P2 | `crates/app/src/ui/url_bar.rs:64` | The guard fails open. guard_state only treats a target as guarded when known_collection_id returns Some. That needs IdState::Known, but every collection opens in IdState::Reading (workspace.rs:90) and can end in IdState::Failed. In both states on_send skips the prompt and sends at once. The same gap lets offer_guard re-offer the hint for an environment that is already guarded. No test covers the send wiring. | The user guards prod in collection C, restarts Wisp and presses Send (button or keyboard) on a prod request before the background id read finishes. Or the id file cannot be read this run, so the state is Failed. In either case the request goes to prod with no "Send to prod?" prompt and no notice. | In on_send, treat Reading as needing an answer: wait for the id, for example through resolve_id_then, then decide. Treat Failed with a selected environment as guarded or refuse with a notice. Add a test that a send with coll_id Reading and a guarded key does not go out without the prompt. |
+Not assessed: GPUI runtime behaviour (where window.dispatch_action sends SendRequest from the URL bar, how prompts stack), SignPath matching and the release and winget workflows on a live run. Nothing was built or run.
+
+## Wave stopped — step 7 — 115-1 disputes the recorded decision at spec :136 (fail-open while the collection id is not Known is accepted); for the user
+
+## Wave resumed — user decision 2026-11-17: 115-1 accepted as a known residual
+
+Known residual (115-1): the guard applies only once the collection id is `Known`. While the id is `Reading` (startup) or `Failed`, Send goes out without the "Send to <env>?" prompt, and the suggest_confirm hint may be re-offered for an already-guarded environment. This is the fail-open the spec already accepts at docs/plan/specs/2026-11-14-wisp-0-3-0.md:136 (accident guard, user decision). Task 158's hand test and task 157's docs should state it. No code change.
+
 ## Outcome
 Merged via record/155 at 9d5837a (stacked on record/156 and record/154). Sends to a guarded environment ask first, `suggest_confirm` offers to enable the guard with the spec's text, and a palette command and badge show and toggle it. Two rounds: review round 1 (hint wording, doc comment) and Attempt 2 (guard-unit gate, table tests split). Tester: app 375, guard-unit 15, fmt and clippy clean, no flakes. Follow-ups are in PLAN.
+115-1 (guard fails open while the collection id is Reading or Failed) accepted as a known residual by the user, 2026-11-17; it matches spec :136.

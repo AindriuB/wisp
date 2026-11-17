@@ -34,6 +34,7 @@ Explain Request, Save and close with the environment guard, assertions with hist
   - [Note] `guard.rs:72-79` `host_of` cuts at `/ ? #` before stripping userinfo, so a typed password containing those characters is partly shown.
   - [Note] `ui/url_bar.rs:499-517`: the badge may be clipped on a narrow window with a long context strip.
   - [Note, for 158's hand test] keyboard Send on a guarded tab that is already Sending now prompts before re-sending.
+  - [Known residual, 115-1, accepted by the user 2026-11-17] the guard fails open while the collection id is Reading or Failed; this matches spec :136. Tasks 157 (docs) and 158 (hand test) must state it.
 - **Wave 3 open (157, 158):** 157 docs for the CLI and guard, 158 measure and release dry run.
 - **Next:** wave 3, then the macOS hand test.
 
