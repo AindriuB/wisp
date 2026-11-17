@@ -430,6 +430,28 @@ pub fn load_environment_with(
     stores: &dyn SecretStores,
     ctx: &VaultCtx,
 ) -> Result<LoadedEnvironment, StorageError> {
+    load_inner(root, name, id, stores, Some(ctx))
+}
+
+/// [`load_environment_with`] for a machine with no per-user data directory.
+/// A file-mode environment loads as usual. A store-mode (keychain) environment
+/// is refused with [`StorageError::Invalid`] on key `secrets`: with nowhere to
+/// keep bindings, nothing can be bound and no secrets are read.
+pub fn load_environment_without_data_dir(
+    root: &Path,
+    name: &str,
+    stores: &dyn SecretStores,
+) -> Result<LoadedEnvironment, StorageError> {
+    load_inner(root, name, None, stores, None)
+}
+
+fn load_inner(
+    root: &Path,
+    name: &str,
+    id: Option<&CollectionId>,
+    stores: &dyn SecretStores,
+    ctx: Option<&VaultCtx>,
+) -> Result<LoadedEnvironment, StorageError> {
     check_name(root, name)?;
     let pp = plain_path(root, name);
     let doc = codec::parse(&pp, &crate::environment::read_plain_text(root, &pp)?)?;
@@ -471,6 +493,14 @@ pub fn load_environment_with(
         Mode::Unknown(s) => return Ok(failed(FailReason::UnknownStoreKind(s))),
         Mode::Store(k) => k,
     };
+    let Some(ctx) = ctx else {
+        return Err(StorageError::Invalid {
+            path: pp,
+            key: "secrets".into(),
+            message: "there is no per-user data directory, so keychain secrets are unavailable"
+                .into(),
+        });
+    };
     let store = match stores.get(kind) {
         Some(s) => Bounded::new(s, ctx.deadline),
         None => {
@@ -501,7 +531,9 @@ pub fn load_environment_with(
             return Ok(failed(FailReason::IdBoundElsewhere { bound_root }));
         }
         // `check` never returns `LooksLikeCopy`; fail closed if it ever did.
-        Err(BindError::Unbound | BindError::LooksLikeCopy { .. }) => {
+        Err(
+            BindError::Unbound | BindError::LooksLikeCopy { .. } | BindError::Unverified { .. },
+        ) => {
             return Ok(failed(FailReason::Unbound));
         }
         Err(BindError::Storage(e)) => return Err(e),
@@ -555,6 +587,40 @@ pub enum SecretsError {
     /// changed. Pass `allow_drop_unresolved` to drop them.
     #[error("secret names without a value in the store: {}", names.join(", "))]
     UnresolvedNames { names: Vec<String> },
+    /// `import_secrets_file` found names whose stored value differs from the
+    /// file's; nothing was changed. Call again with `confirm_overwrite` to
+    /// overwrite them. Names only, never values.
+    #[error("the keychain already holds different values for: {}", names.join(", "))]
+    ImportConflict { names: Vec<String> },
+    /// The secrets file is tracked by git, so its values may already be in a
+    /// repository's history; nothing was changed.
+    #[error("the secrets file is tracked by git: {}", path.display())]
+    TrackedSecretsFile { path: PathBuf },
+}
+
+/// True when `git` reports `path` as tracked in the repository around `root`.
+/// No `git` binary, no repository, or any other answer is "not tracked": only
+/// a clean `ls-files --error-unmatch` hit counts.
+fn is_git_tracked(root: &Path, path: &Path) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn refuse_tracked(root: &Path, sp: &Path) -> Result<(), SecretsError> {
+    if is_git_tracked(root, sp) {
+        return Err(SecretsError::TrackedSecretsFile {
+            path: sp.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 /// A store entry that could not be deleted after `migrate_to_file`.
@@ -586,6 +652,7 @@ fn map_bind(e: BindError) -> SecretsError {
         BindError::BoundElsewhere { bound_root } => SecretsError::IdBoundElsewhere { bound_root },
         BindError::Unbound => SecretsError::Unbound,
         BindError::LooksLikeCopy { bound_root } => SecretsError::LooksLikeCopy { bound_root },
+        BindError::Unverified { bound_roots } => SecretsError::UnverifiedCheckout { bound_roots },
     }
 }
 
@@ -612,13 +679,7 @@ pub fn bind_additional_checkout(
     id: &CollectionId,
     new_root: &Path,
 ) -> Result<(), SecretsError> {
-    require_same_id(id, new_root)?;
-    if binding::verified_siblings(data, id, new_root)?.is_empty() {
-        return Err(SecretsError::UnverifiedCheckout {
-            bound_roots: binding::bound_roots(data, id)?,
-        });
-    }
-    binding::bind_additional_confirmed(data, id, new_root).map_err(map_bind)
+    binding::bind_additional_verified(data, id, new_root).map_err(map_bind)
 }
 
 /// "Share keychain secrets with another folder": the user started from
@@ -630,20 +691,7 @@ pub fn share_with_folder(
     from_root: &Path,
     new_root: &Path,
 ) -> Result<(), SecretsError> {
-    binding::check(data, id, from_root).map_err(map_bind)?;
-    require_same_id(id, new_root)?;
-    binding::bind_additional_confirmed(data, id, new_root).map_err(map_bind)
-}
-
-fn require_same_id(id: &CollectionId, root: &Path) -> Result<(), SecretsError> {
-    match crate::collection::read_collection_id(root)? {
-        Some(found) if &found == id => Ok(()),
-        _ => Err(invalid(
-            root,
-            "id",
-            "the folder does not carry this collection id",
-        )),
-    }
+    binding::share_confirmed(data, id, from_root, new_root).map_err(map_bind)
 }
 
 /// Move `id`'s binding to `new_root` after the user confirmed the move. Refused
@@ -710,8 +758,9 @@ fn copy_into_store(
 
 /// Refuse a secrets path that is, or sits behind, a symlink, or that resolves
 /// outside the collection. A missing file is fine.
-fn check_secrets_path(root: &Path, sp: &Path) -> Result<(), StorageError> {
-    crate::fs::confined_regular_file(root, sp, "secrets file").map(|_| ())
+/// `Ok(true)` when the file exists and is safe.
+fn check_secrets_path(root: &Path, sp: &Path) -> Result<bool, StorageError> {
+    crate::fs::confined_regular_file(root, sp, "secrets file")
 }
 
 fn remove_secrets_file(name: &str, sp: &Path) -> Option<LeftoverFileWarning> {
@@ -777,11 +826,17 @@ pub fn migrate_to_store(
 /// to `secret_names`, then delete the file. Same rollback rules as
 /// [`migrate_to_store`]: a failure before the file is deleted restores
 /// pre-existing store values; a failed final delete is a warning.
+///
+/// A git-tracked file is refused ([`SecretsError::TrackedSecretsFile`]). When
+/// the store already holds a different value for a name in the file, nothing
+/// is changed and [`SecretsError::ImportConflict`] lists those names, unless
+/// `confirm_overwrite` is set.
 pub fn import_secrets_file(
     root: &Path,
     name: &str,
     id: &CollectionId,
     store: &dyn SecretStore,
+    confirm_overwrite: bool,
     ctx: &VaultCtx,
 ) -> Result<Option<LeftoverFileWarning>, SecretsError> {
     check_name(root, name)?;
@@ -791,15 +846,28 @@ pub fn import_secrets_file(
         return Err(invalid(&pp, "secrets", "environment is not in store mode"));
     }
     let sp = secrets_path(root, name);
-    check_secrets_path(root, &sp)?;
-    if !sp.exists() {
+    if !check_secrets_path(root, &sp)? {
         return Err(invalid(&sp, "path", "no secrets file to import"));
     }
-    let secrets = crate::environment::load_vars(&sp)?;
+    refuse_tracked(root, &sp)?;
+    let secrets = crate::environment::load_vars_nofollow(&sp)?;
     let mut names = read_names(&doc, &pp)?;
     check_bind(ctx, id, root)?;
     let bounded = Bounded::new(store, ctx.deadline);
     bounded.probe()?;
+    if !confirm_overwrite {
+        let mut differing = Vec::new();
+        for v in &secrets {
+            if let Some(old) = bounded.get(&secret_account(id, name, &v.name))?
+                && old.expose() != v.value
+            {
+                differing.push(v.name.clone());
+            }
+        }
+        if !differing.is_empty() {
+            return Err(SecretsError::ImportConflict { names: differing });
+        }
+    }
     let touched = copy_into_store(store, &bounded, id, name, &secrets)?;
 
     for v in &secrets {
@@ -856,15 +924,16 @@ pub fn migrate_to_file(
     }
 
     let sp = secrets_path(root, name);
-    check_secrets_path(root, &sp)?;
-    let old_file = if sp.exists() {
-        Some(fs::read_to_string(&sp)?)
+    let sp_exists = check_secrets_path(root, &sp)?;
+    refuse_tracked(root, &sp)?;
+    let old_file = if sp_exists {
+        Some(crate::environment::read_nofollow(&sp)?)
     } else {
         None
     };
     // Overlay the store values on what the file already holds; never drop keys.
-    let mut merged = if old_file.is_some() {
-        crate::environment::load_vars(&sp)?
+    let mut merged = if sp_exists {
+        crate::environment::load_vars_nofollow(&sp)?
     } else {
         Vec::new()
     };
@@ -877,14 +946,14 @@ pub fn migrate_to_file(
     let text = render(&sp, &merged)?;
     let dir = root.join(crate::environment::DIR);
     ensure_gitignore(&dir)?;
-    fs::atomic_write_force_private(&sp, text.as_bytes())?;
+    crate::environment::write_nofollow(&sp, text.as_bytes())?;
 
     doc["secrets"] = toml_edit::value(StoreKind::File.as_str());
     doc.remove("secret_names");
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
         match &old_file {
             Some(old) => {
-                let _ = fs::atomic_write_force_private(&sp, old.as_bytes());
+                let _ = crate::environment::write_nofollow(&sp, old.as_bytes());
             }
             None => {
                 let _ = std::fs::remove_file(&sp);

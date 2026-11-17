@@ -47,6 +47,10 @@ pub(crate) enum BindError {
     LooksLikeCopy {
         bound_root: PathBuf,
     },
+    /// The folder is not a verified checkout of a bound root.
+    Unverified {
+        bound_roots: Vec<PathBuf>,
+    },
 }
 
 /// One registry row: the bound canonical root and the nonce its marker holds.
@@ -69,12 +73,47 @@ fn io(path: &Path, source: std::io::Error) -> StorageError {
     }
 }
 
-fn canonical(root: &Path) -> Result<PathBuf, StorageError> {
-    std::fs::canonicalize(root).map_err(|e| io(root, e))
+/// The canonical root and its registry key. A path that is not valid UTF-8
+/// fails closed: a lossy key could make two distinct roots share a binding.
+fn canonical(root: &Path) -> Result<(PathBuf, String), StorageError> {
+    let canon = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
+    let key = canon
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| StorageError::Invalid {
+            path: canon.clone(),
+            key: "path".into(),
+            message: "the collection path is not valid UTF-8".into(),
+        })?;
+    Ok((canon, key))
 }
 
-fn key(p: &Path) -> String {
-    p.to_string_lossy().into_owned()
+/// Both registry locks, released on drop.
+struct RegistryGuard {
+    _mutex: std::sync::MutexGuard<'static, ()>,
+    _file: FileLock,
+}
+
+fn lock_registry(data: &DataDir) -> Result<RegistryGuard, StorageError> {
+    let mutex = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_private_dir(data.root())?;
+    let file = lock_file(&registry_path(data).with_extension("lock"))?;
+    Ok(RegistryGuard {
+        _mutex: mutex,
+        _file: file,
+    })
+}
+
+/// The id must be the one the root's own `collection.toml` carries.
+fn require_id(id: &CollectionId, canon: &Path) -> Result<(), BindError> {
+    match crate::collection::read_collection_id(canon)? {
+        Some(found) if &found == id => Ok(()),
+        _ => Err(BindError::Storage(StorageError::Invalid {
+            path: canon.to_path_buf(),
+            key: "id".into(),
+            message: "the folder does not carry this collection id".into(),
+        })),
+    }
 }
 
 /// Advisory cross-process lock, released when dropped.
@@ -212,10 +251,14 @@ fn read_marker_entries(root: &Path) -> Result<BTreeMap<String, String>, StorageE
         Ok(None) | Err(StorageError::Invalid { .. }) => return Ok(BTreeMap::new()),
         Err(e) => return Err(e),
     };
-    let text = match std::fs::read_to_string(&p) {
+    let text = match crate::environment::read_nofollow(&p) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(e) => return Err(io(&p, e)),
+        Err(StorageError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        // A link swapped in after the check reads as no marker.
+        Err(StorageError::Invalid { .. }) => return Ok(BTreeMap::new()),
+        Err(e) => return Err(e),
     };
     Ok(text
         .lines()
@@ -241,23 +284,21 @@ fn write_marker(root: &Path, registry_id: &str) -> Result<String, StorageError> 
     let nonce = new_nonce();
     entries.insert(registry_id.to_string(), nonce.clone());
     let text: String = entries.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
-    fs::atomic_write_force_private(&marker_path(root), text.as_bytes())?;
+    crate::environment::write_nofollow(&marker_path(root), text.as_bytes())?;
     Ok(nonce)
 }
 
-/// Check `id` against `root`. An unbound id, or a root whose marker entry for
-/// this registry does not hold the row's nonce, is an error; only
-/// [`bind_confirmed`] and [`bind_additional_confirmed`] create a row.
-pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), BindError> {
-    let canon = canonical(root)?;
-    let path = registry_path(data);
-    let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_private_dir(data.root())?;
-    let _f = lock_file(&path.with_extension("lock"))?;
-    let reg = read_registry(&path)?;
+/// The binding check against an already-read registry. `canon` is canonical and
+/// `ckey` its registry key. The id must also be the one `canon`'s own
+/// `collection.toml` carries; a caller-supplied id that differs fails closed.
+fn check_in(reg: &Registry, id: &CollectionId, canon: &Path, ckey: &str) -> Result<(), BindError> {
+    match crate::collection::read_collection_id(canon)? {
+        Some(found) if &found == id => {}
+        _ => return Err(BindError::Unbound),
+    }
     let rows = reg.rows.get(id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
-    match rows.iter().find(|r| r.root == key(&canon)) {
-        Some(r) => match read_marker(&canon, &reg.id)? {
+    match rows.iter().find(|r| r.root == ckey) {
+        Some(r) => match read_marker(canon, &reg.id)? {
             Some(n) if n == r.nonce => Ok(()),
             _ => Err(BindError::Unbound),
         },
@@ -270,23 +311,32 @@ pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<()
     }
 }
 
-fn bind_inner(
+/// Check `id` against `root`. An unbound id, or a root whose marker entry for
+/// this registry does not hold the row's nonce, is an error; only
+/// [`bind_confirmed`] and [`bind_additional_confirmed`] create a row.
+pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), BindError> {
+    let (canon, ckey) = canonical(root)?;
+    let _l = lock_registry(data)?;
+    let reg = read_registry(&registry_path(data))?;
+    check_in(&reg, id, &canon, &ckey)
+}
+
+/// Bind under the registry lock the caller holds. `canon`/`ckey` are the
+/// canonical root; the root must carry `id` in its own `collection.toml`.
+fn bind_locked(
     data: &DataDir,
+    reg: &mut Registry,
     id: &CollectionId,
-    root: &Path,
+    canon: &Path,
+    ckey: &str,
     additional: bool,
 ) -> Result<(), BindError> {
-    let canon = canonical(root)?;
-    let path = registry_path(data);
-    let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_private_dir(data.root())?;
-    let _f = lock_file(&path.with_extension("lock"))?;
-    let mut reg = read_registry(&path)?;
+    require_id(id, canon)?;
     let reg_id = reg.id.clone();
     let rows = reg.rows.entry(id.as_str().to_string()).or_default();
-    let existing = rows.iter().position(|r| r.root == key(&canon));
+    let existing = rows.iter().position(|r| r.root == ckey);
     if let Some(i) = existing {
-        if read_marker(&canon, &reg_id)?.as_deref() == Some(&rows[i].nonce) {
+        if read_marker(canon, &reg_id)?.as_deref() == Some(&rows[i].nonce) {
             return Ok(());
         }
     } else if !additional && let Some(r) = rows.first() {
@@ -294,16 +344,28 @@ fn bind_inner(
             bound_root: PathBuf::from(&r.root),
         });
     }
-    let nonce = write_marker(&canon, &reg_id)?;
+    let nonce = write_marker(canon, &reg_id)?;
     match existing {
         Some(i) => rows[i].nonce = nonce,
         None => rows.push(Row {
-            root: key(&canon),
+            root: ckey.to_string(),
             nonce,
         }),
     }
-    write_registry(&path, &reg)?;
+    write_registry(&registry_path(data), reg)?;
     Ok(())
+}
+
+fn bind_inner(
+    data: &DataDir,
+    id: &CollectionId,
+    root: &Path,
+    additional: bool,
+) -> Result<(), BindError> {
+    let (canon, ckey) = canonical(root)?;
+    let _l = lock_registry(data)?;
+    let mut reg = read_registry(&registry_path(data))?;
+    bind_locked(data, &mut reg, id, &canon, &ckey, additional)
 }
 
 /// Bind `id` to `root` after the user confirmed it: new nonce into the row and
@@ -319,14 +381,38 @@ pub(crate) fn bind_confirmed(
     bind_inner(data, id, root, false)
 }
 
-/// Add `root` to the roots `id` is bound to (another checkout of the same
-/// collection), after the user confirmed it. Existing roots stay bound.
-pub(crate) fn bind_additional_confirmed(
+/// Verify that `new_root` is a checkout of a bound root and bind it, with the
+/// root canonicalised once and both steps under one registry lock.
+pub(crate) fn bind_additional_verified(
     data: &DataDir,
     id: &CollectionId,
-    root: &Path,
+    new_root: &Path,
 ) -> Result<(), BindError> {
-    bind_inner(data, id, root, true)
+    let (canon, ckey) = canonical(new_root)?;
+    let _l = lock_registry(data)?;
+    let mut reg = read_registry(&registry_path(data))?;
+    require_id(id, &canon)?;
+    if verified_siblings_in(&reg, id, &canon)?.is_empty() {
+        let bound_roots = bound_roots_in(&reg, id);
+        return Err(BindError::Unverified { bound_roots });
+    }
+    bind_locked(data, &mut reg, id, &canon, &ckey, true)
+}
+
+/// Check `from_root`, then add `new_root` (which must carry `id`), both
+/// canonicalised once and under one registry lock.
+pub(crate) fn share_confirmed(
+    data: &DataDir,
+    id: &CollectionId,
+    from_root: &Path,
+    new_root: &Path,
+) -> Result<(), BindError> {
+    let (from, from_key) = canonical(from_root)?;
+    let (canon, ckey) = canonical(new_root)?;
+    let _l = lock_registry(data)?;
+    let mut reg = read_registry(&registry_path(data))?;
+    check_in(&reg, id, &from, &from_key)?;
+    bind_locked(data, &mut reg, id, &canon, &ckey, true)
 }
 
 const GIT_FILE_CAP: u64 = 4096;
@@ -532,16 +618,21 @@ fn anchor_common_dir(root: &Path) -> Option<PathBuf> {
 /// The bound roots of `id` (that still pass the binding check) whose git
 /// common directory equals `new_root`'s. Empty means `new_root` is unverified.
 /// Only bound main checkouts (real `.git` directory) anchor: a new folder is
-/// one-click verifiable only as a worktree of a bound main checkout.
-pub(crate) fn verified_siblings(
-    data: &DataDir,
+/// one-click verifiable only as a worktree of a bound main checkout. Runs on an
+/// already-read registry, so the caller holds the registry lock and `new_root`
+/// is canonical.
+fn verified_siblings_in(
+    reg: &Registry,
     id: &CollectionId,
     new_root: &Path,
 ) -> Result<Vec<PathBuf>, StorageError> {
     // Trusted first: the common dirs of the bound roots, from local paths.
     let mut bound = Vec::new();
-    for r in bound_roots(data, id)? {
-        if check(data, id, &r).is_err() {
+    for r in bound_roots_in(reg, id) {
+        let Ok((canon, ckey)) = canonical(&r) else {
+            continue;
+        };
+        if check_in(reg, id, &canon, &ckey).is_err() {
             continue;
         }
         if let Some(c) = anchor_common_dir(&r) {
@@ -557,6 +648,13 @@ pub(crate) fn verified_siblings(
         .filter(|(_, c)| *c == want)
         .map(|(r, _)| r)
         .collect())
+}
+
+fn bound_roots_in(reg: &Registry, id: &CollectionId) -> Vec<PathBuf> {
+    reg.rows
+        .get(id.as_str())
+        .map(|rs| rs.iter().map(|r| PathBuf::from(&r.root)).collect())
+        .unwrap_or_default()
 }
 
 /// Every canonical root `id` is bound to (in binding order).
@@ -585,23 +683,30 @@ pub(crate) fn rebind_confirmed(
     id: &CollectionId,
     new_root: &Path,
 ) -> Result<(), BindError> {
-    let canon = canonical(new_root)?;
+    let (canon, ckey) = canonical(new_root)?;
+    let _l = lock_registry(data)?;
     let path = registry_path(data);
-    let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_private_dir(data.root())?;
-    let _f = lock_file(&path.with_extension("lock"))?;
     let mut reg = read_registry(&path)?;
+    require_id(id, &canon)?;
     let reg_id = reg.id.clone();
     let rows = reg.rows.entry(id.as_str().to_string()).or_default();
-    let is_new = !rows.iter().any(|r| r.root == key(&canon));
+    let is_new = !rows.iter().any(|r| r.root == ckey);
     let mut live_other = None;
     let mut keep = Vec::new();
     for r in rows.iter() {
-        if r.root == key(&canon) {
+        if r.root == ckey {
             continue;
         }
         let old = PathBuf::from(&r.root);
-        if old.exists() && crate::collection::read_collection_id(&old)?.as_ref() == Some(id) {
+        // `try_exists`: any error but NotFound fails closed, so a root that
+        // cannot be inspected is never taken for a moved one.
+        let exists = old.try_exists().map_err(|e| io(&old, e))?;
+        // Still the bound checkout: it exists, carries the id and holds the
+        // row's nonce in its marker.
+        if exists
+            && crate::collection::read_collection_id(&old)?.as_ref() == Some(id)
+            && read_marker(&old, &reg_id)?.as_deref() == Some(r.nonce.as_str())
+        {
             live_other.get_or_insert(old);
             keep.push(r.clone());
         }
@@ -613,10 +718,7 @@ pub(crate) fn rebind_confirmed(
         return Err(BindError::LooksLikeCopy { bound_root: old });
     }
     let nonce = write_marker(&canon, &reg_id)?;
-    keep.push(Row {
-        root: key(&canon),
-        nonce,
-    });
+    keep.push(Row { root: ckey, nonce });
     *rows = keep;
     write_registry(&path, &reg)?;
     Ok(())
@@ -630,9 +732,9 @@ pub(crate) struct EnvLock {
     _file: FileLock,
 }
 
-fn fnv(s: &str) -> u64 {
+fn fnv(s: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
+    for b in s.iter().copied() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
@@ -654,10 +756,10 @@ pub(crate) fn env_lock(data: &DataDir, plain: &Path) -> Result<EnvLock, StorageE
             .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
     };
     let guard = m.lock().unwrap_or_else(|e| e.into_inner());
-    let lock_path = data
-        .root()
-        .join("locks")
-        .join(format!("env-{:016x}.lock", fnv(&key(&canon))));
+    let lock_path = data.root().join("locks").join(format!(
+        "env-{:016x}.lock",
+        fnv(canon.as_os_str().as_encoded_bytes())
+    ));
     let f = lock_file(&lock_path)?;
     Ok(EnvLock {
         _mutex: guard,

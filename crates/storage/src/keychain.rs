@@ -83,11 +83,42 @@ impl Backend for OsBackend {
     }
 }
 
+/// Why a keychain service name is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidService {
+    /// The name is empty.
+    Empty,
+    /// The name contains `.`. On Linux the Secret Service attributes are
+    /// matched by name, so `a.b` and a service `a` with an account that starts
+    /// `b` could address the same item (an `Ambiguous` outcome); the name is
+    /// refused everywhere so behaviour does not differ by OS.
+    ContainsDot,
+}
+
+/// Check a keychain service name. The default, `wisp`, is valid.
+pub fn check_service(service: &str) -> Result<(), InvalidService> {
+    if service.is_empty() {
+        Err(InvalidService::Empty)
+    } else if service.contains('.') {
+        Err(InvalidService::ContainsDot)
+    } else {
+        Ok(())
+    }
+}
+
 /// Open the OS keychain store for `service`. With `portable` the store does
-/// nothing: `probe` is `Unavailable { Portable }` and no OS call is made.
+/// nothing: `probe` is `Unavailable { Portable }` and no OS call is made. A
+/// service that fails [`check_service`] gives an inert store whose every call
+/// fails with `Other { code: None }` and which makes no OS call; it is not an
+/// "absent" reason, so a store-mode environment fails closed rather than
+/// falling back to its secrets file. The Linux `Ambiguous` outcome (two items
+/// matching one address) is reported as `Other`, never as a value.
 pub fn open(service: &str, portable: bool) -> Box<dyn SecretStore> {
     if portable {
         return Box::new(PortableStore);
+    }
+    if check_service(service).is_err() {
+        return Box::new(InvalidServiceStore);
     }
     open_with(
         Arc::new(OsBackend {
@@ -95,6 +126,23 @@ pub fn open(service: &str, portable: bool) -> Box<dyn SecretStore> {
         }),
         Timeouts::default(),
     )
+}
+
+struct InvalidServiceStore;
+
+impl SecretStore for InvalidServiceStore {
+    fn probe(&self) -> Result<(), SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
+    fn get(&self, _: &str) -> Result<Option<SecretValue>, SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
+    fn set(&self, _: &str, _: &SecretValue) -> Result<(), SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
+    fn delete(&self, _: &str) -> Result<(), SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
 }
 
 /// A store over any backend, with explicit timeouts.
