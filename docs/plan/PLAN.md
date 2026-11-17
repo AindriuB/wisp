@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) and 166 (`wisp-cli run`) are recorded; 167, 169, 170 and 174 are in flight (170 is in PR #130); next are 172 (CLI budgets measurement) and 173 (CLI snapshot and metadata) once their dependencies land.
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) 166 (`wisp-cli run`) and 169 (secret store and binding hardening) are recorded; 167, 170 and 174 are in flight (170 is in PR #130); next are 172 (CLI budgets measurement) and 173 (CLI snapshot and metadata) once their dependencies land.
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
 
@@ -31,6 +31,16 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] `crates/service/src/run.rs:978` uses a 200 ms sleep against the "no sleeps" rule.
 - [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
 - [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
+
+### Follow-ups from task 169 (secret store and binding hardening; not scheduled)
+- [P3] `collection.toml` becomes 0600 when an id is written (`write_nofollow` ignores the old mode).
+- [P3] Windows `open_nofollow` has no file-identity check after open (std has no file-index API).
+- [P3] `open_nofollow` lacks O_NONBLOCK; a FIFO swapped in can hang the read.
+- [P3] `is_git_tracked` (`crates/storage/src/vault.rs`) has no timeout and fails open on any git error.
+- [P3] `gains_moved_name` (`crates/storage/src/environment.rs`) reads via `load_vars`, which follows symlinks.
+- [Low] `keyring-core = "1"` is not in `[workspace.dependencies]`.
+- [Low] The no-data-dir refusal is only `Invalid{key:"secrets"}`.
+- NOTE: the `cfg(windows)` keychain path is unbuilt locally; Windows CI is the proof.
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
 - [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it.
