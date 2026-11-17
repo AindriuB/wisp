@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Dynamic values through a DynamicSource (task 159)
+Resolution now draws `{{$uuid}}`-style dynamic values from a `DynamicSource`, and a recording source lists each occurrence in order (URL, header, then body). `resolve()` keeps its signature and behaviour. Tester: workspace suite exit 0, clippy and `cargo fmt --all --check` clean.
+**Cost:** Review round 1 rejected AC5: the recording test compared only the URL values and never checked the header or the two body values, so a source that recorded the right names with different values would pass; 9b555a7 adds those assertions. Commit c27526f ("assert header and body values in recording test") does not compile and 9b555a7 fixes it; the branch was merged as is, so do not bisect through c27526f. `lookup_var` still uses `Fresh`, so GUI hover and highlight generate a new UUID (see PLAN follow-up).
+
 ## 2026-11-17 — Request metadata (task 162)
 Requests now carry an optional `description` and an `expected_status` list. The storage loader and writer round-trip both, an empty `expected_status` array is rejected on load, and the resolution report includes them. Tester: suite 1369 passed, 0 failed, 4 ignored.
 **Cost:** Review round 1 caught that saving an empty `expected_status` draft over a file that had the key wrote `expected_status = []`, which the loader rejects; the writer now removes the key, with a reload test. The importer literal sites needed no edit (they use `..Request::default()`), so `codec.rs` and `import/*` are unchanged. `cargo fmt` has to run as `cargo fmt --all --check`.

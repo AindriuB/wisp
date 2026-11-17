@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-17 | 159 | DynamicSource trait for dynamic values; recording source lists each occurrence in order | ## 2026-11-17 — Dynamic values through a DynamicSource (task 159) |
 | 2026-11-17 | 162 | description and expected_status on requests, stored and shown in the resolution report | ## 2026-11-17 — Request metadata (task 162) |
 | 2026-11-17 | 163 | Collection id/defaults serialised, private dir hardened, cookie parse error redacted | ## 2026-11-17 — Storage hardening A (task 163) |
 | 2026-11-17 | 0.3.0 release | PR #118 bump, runbook, notes; tag v0.3.0 at ffdccc1 published; macOS notarized, winget manifest built | ## 2026-11-17 — Release 0.3.0 |

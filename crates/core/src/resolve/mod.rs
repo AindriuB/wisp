@@ -83,7 +83,10 @@ mod report;
 #[cfg(test)]
 mod tests;
 
-pub use engine::{VarLookup, VarSource, lookup_var, resolve};
+pub use engine::{
+    DynamicSource, DynamicValue, Fresh, Placeholder, Recording, VarLookup, VarSource, lookup_var,
+    resolve, resolve_with,
+};
 pub use report::{
     AuthApplication, AuthField, AuthKind, AuthReport, BodyKind, BodyReport, EnvReport,
     HeaderReport, HideReason, Origin, ParamKind, ParamReport, ReportWarning, ResolutionReport,
