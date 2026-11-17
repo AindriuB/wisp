@@ -409,6 +409,7 @@ pub(crate) fn share_confirmed(
 ) -> Result<(), BindError> {
     let (from, from_key) = canonical(from_root)?;
     let (canon, ckey) = canonical(new_root)?;
+    crate::environment::test_point("share:after-canonical");
     let _l = lock_registry(data)?;
     let mut reg = read_registry(&registry_path(data))?;
     check_in(&reg, id, &from, &from_key)?;
@@ -770,6 +771,47 @@ pub(crate) fn env_lock(data: &DataDir, plain: &Path) -> Result<EnvLock, StorageE
 #[cfg(test)]
 mod tests {
     use super::is_remote_or_device;
+
+    #[cfg(unix)]
+    #[test]
+    fn h3_share_binds_the_folder_it_checked_when_the_path_is_swapped() {
+        use crate::collection::CollectionId;
+        use crate::data_dir::DataDir;
+        let id = CollectionId::parse("abcdef0123456789").unwrap();
+        let carry = |r: &std::path::Path| {
+            std::fs::write(
+                r.join("collection.toml"),
+                format!("format = 1\nid = \"{}\"\n", id.as_str()),
+            )
+            .unwrap();
+        };
+        let (a, b, c) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        carry(a.path());
+        carry(b.path());
+        carry(c.path());
+        let data = DataDir::at(tempfile::tempdir().unwrap().keep());
+        crate::vault::bind(&data, &id, a.path()).unwrap();
+        let link = a.path().join("pick");
+        std::os::unix::fs::symlink(b.path(), &link).unwrap();
+        // After the path is resolved, the link is repointed at another folder.
+        let (l, cp) = (link.clone(), c.path().to_path_buf());
+        crate::environment::set_test_hook(Some(Box::new(move |s| {
+            if s == "share:after-canonical" {
+                std::fs::remove_file(&l).unwrap();
+                std::os::unix::fs::symlink(&cp, &l).unwrap();
+            }
+        })));
+        let r = crate::vault::share_with_folder(&data, &id, a.path(), &link);
+        crate::environment::set_test_hook(None);
+        r.unwrap();
+        let roots = crate::vault::bound_roots(&data, &id).unwrap();
+        assert!(roots.contains(&std::fs::canonicalize(b.path()).unwrap()));
+        assert!(!roots.contains(&std::fs::canonicalize(c.path()).unwrap()));
+    }
 
     #[cfg(windows)]
     #[test]

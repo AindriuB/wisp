@@ -601,10 +601,17 @@ pub enum SecretsError {
 /// True when `git` reports `path` as tracked in the repository around `root`.
 /// No `git` binary, no repository, or any other answer is "not tracked": only
 /// a clean `ls-files --error-unmatch` hit counts.
+///
+/// The folder may not be the user's own, and git reads its `.git/config`, so
+/// the repository's config must not be able to run a command: `core.fsmonitor`
+/// is forced off on the command line (which outranks every config file) and
+/// optional index locks are disabled.
 fn is_git_tracked(root: &Path, path: &Path) -> bool {
     std::process::Command::new("git")
         .arg("-C")
         .arg(root)
+        .args(["-c", "core.fsmonitor=false"])
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(path)
         .stdin(std::process::Stdio::null())
@@ -1037,4 +1044,46 @@ pub fn delete_secret(
         fs::atomic_write(&pp, doc.to_string().as_bytes())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A repository whose own config names an fsmonitor command must not get
+    /// that command run by the tracked-file check.
+    #[test]
+    fn h3_tracked_check_does_not_run_repo_configured_commands() {
+        let git = |dir: &Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+        };
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path();
+        if !matches!(git(root, &["init", "-q"]), Ok(s) if s.success()) {
+            eprintln!("skipped: git is not available");
+            return;
+        }
+        let secrets = root.join("dev.secrets.toml");
+        std::fs::write(&secrets, "[vars]\n").unwrap();
+        let marker = root.join("RAN");
+        let hook = root.join("hook.sh");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ok = |a: &[&str]| matches!(git(root, a), Ok(s) if s.success());
+        assert!(ok(&["add", "dev.secrets.toml"]));
+        assert!(ok(&["config", "core.fsmonitor", &hook.display().to_string()]));
+        // Tracked is still reported; the configured command is not run.
+        assert!(is_git_tracked(root, &secrets));
+        assert!(!marker.exists(), "repo-configured fsmonitor ran");
+    }
 }
