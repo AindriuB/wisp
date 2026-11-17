@@ -107,20 +107,13 @@ fn capped_text(v: Option<&Value>, budget: &mut usize) -> Result<String, ImportEr
     Ok(out)
 }
 
-/// Longest imported description, in bytes.
-const MAX_DESCRIPTION_BYTES: usize = 16 * 1024;
-
-/// An operation description, cut on a char boundary and charged to the budget.
-fn capped_description(v: Option<&Value>, budget: &mut usize) -> Result<String, ImportError> {
+/// An operation description, imported whole and charged to the budget.
+fn description(v: Option<&Value>, budget: &mut usize) -> Result<String, ImportError> {
     let Some(Value::String(s)) = v else {
         return Ok(String::new());
     };
-    let mut end = s.len().min(MAX_DESCRIPTION_BYTES);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    spend(budget, end)?;
-    Ok(s[..end].to_string())
+    spend(budget, s.len())?;
+    Ok(s.clone())
 }
 
 fn text(v: Option<&Value>) -> String {
@@ -530,7 +523,7 @@ fn operation(
     let mut req = Request {
         name: name.clone(),
         method,
-        description: capped_description(op.get("description"), budget)?,
+        description: description(op.get("description"), budget)?,
         url: format!("{{{{baseUrl}}}}{path}"),
         ..Request::default()
     };

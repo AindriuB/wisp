@@ -28,16 +28,10 @@ fn text(v: Option<&Value>) -> String {
 
 /// A Postman description is a string or `{"content": "..."}`.
 fn description_of(v: Option<&Value>) -> String {
-    let mut t = match v {
+    match v {
         Some(Value::Object(o)) => text(o.get("content")),
         other => text(other),
-    };
-    let mut end = t.len().min(16 * 1024);
-    while !t.is_char_boundary(end) {
-        end -= 1;
     }
-    t.truncate(end);
-    t
 }
 
 fn array(v: Option<&Value>) -> &[Value] {

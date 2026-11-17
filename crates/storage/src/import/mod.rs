@@ -303,6 +303,84 @@ pub(crate) fn url_host(url: &str) -> String {
     auth.rsplit('@').next().unwrap_or(auth).to_string()
 }
 
+/// The request fields that are expanded when it is sent. Never `name` or
+/// `description`: a description is not expanded.
+fn template_fields(r: &Request) -> Vec<&str> {
+    use wisp_core::request::{Auth, Body, PartValue};
+    let mut f: Vec<&str> = vec![r.url.as_str()];
+    f.extend(r.path.iter().chain(&r.vars).map(|v| v.value.as_str()));
+    for kv in r.params.iter().chain(&r.headers) {
+        f.push(&kv.name);
+        f.push(&kv.value);
+    }
+    match &r.auth {
+        Auth::None | Auth::Inherit => {}
+        Auth::Basic { username, password } | Auth::Digest { username, password } => {
+            f.extend([username.as_str(), password.as_str()]);
+        }
+        Auth::Bearer { token } => f.push(token),
+        Auth::ApiKey { name, value, .. } => f.extend([name.as_str(), value.as_str()]),
+        Auth::AwsSigV4 {
+            access_key,
+            secret_key,
+            session_token,
+            region,
+            service,
+        } => f.extend([
+            access_key.as_str(),
+            secret_key.as_str(),
+            session_token.as_str(),
+            region.as_str(),
+            service.as_str(),
+        ]),
+        Auth::OAuth2ClientCredentials {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            ..
+        } => f.extend([
+            token_url.as_str(),
+            client_id.as_str(),
+            client_secret.as_str(),
+            scope.as_str(),
+        ]),
+        Auth::OAuth2AuthCode {
+            auth_url,
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            ..
+        } => f.extend([
+            auth_url.as_str(),
+            token_url.as_str(),
+            client_id.as_str(),
+            client_secret.as_str(),
+            scope.as_str(),
+        ]),
+    }
+    match &r.body {
+        Body::None | Body::File(_) => {}
+        Body::Json(t) | Body::Text(t) | Body::Xml(t) => f.push(&t.content),
+        Body::Form(kvs) => {
+            for kv in kvs {
+                f.push(&kv.name);
+                f.push(&kv.value);
+            }
+        }
+        Body::Multipart(parts) => {
+            for p in parts {
+                f.push(&p.name);
+                if let PartValue::Text(t) = &p.value {
+                    f.push(t);
+                }
+            }
+        }
+    }
+    f
+}
+
 /// One warning per `{{var}}` that the imported requests use and the import
 /// does not define. Names only, never values.
 pub(crate) fn warn_undefined_vars(result: &mut ImportResult) {
@@ -322,20 +400,19 @@ pub(crate) fn warn_undefined_vars(result: &mut ImportResult) {
         match item {
             ImportItem::Folder { items, .. } => stack.extend(items.iter()),
             ImportItem::Request { request, .. } => {
-                let text = format!("{request:?}");
-                let mut rest = text.as_str();
-                while let Some(i) = rest.find("{{") {
-                    rest = &rest[i + 2..];
-                    let Some(j) = rest.find("}}") else { break };
-                    let name = rest[..j].trim();
-                    if !name.is_empty()
-                        && name.len() <= 100
-                        && !name.starts_with('$')
-                        && !name.contains(['{', '}', '"', '\\'])
-                        && !defined.contains(name)
-                        && seen.insert(name.to_string())
-                    {
-                        used.push(name.to_string());
+                for text in template_fields(request) {
+                    for r in wisp_core::template::var_refs(text) {
+                        let name = r.name.as_str();
+                        if r.terminated
+                            && !name.is_empty()
+                            && name.len() <= 100
+                            && !name.starts_with('$')
+                            && !name.contains(['{', '}', '"', '\\'])
+                            && !defined.contains(name)
+                            && seen.insert(name.to_string())
+                        {
+                            used.push(name.to_string());
+                        }
                     }
                 }
             }
@@ -593,6 +670,66 @@ pub(crate) fn method_name(m: wisp_core::Method) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    fn result_with(request: Request) -> ImportResult {
+        ImportResult {
+            items: vec![ImportItem::Request {
+                name: "r".into(),
+                request,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn undefined_var_in_bearer_token_warns_once() {
+        use wisp_core::request::Auth;
+        let mut r = result_with(Request {
+            auth: Auth::Bearer {
+                token: "{{api_token}}".into(),
+            },
+            ..Default::default()
+        });
+        warn_undefined_vars(&mut r);
+        let n = r
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("`api_token`"))
+            .count();
+        assert_eq!(n, 1, "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn brace_heavy_body_is_scanned_linearly() {
+        use wisp_core::request::{Body, TextBody};
+        // `{{` repeated and closed once: a scan that restarts at each `{{`
+        // and searches on for `}}` re-reads the whole tail every time (about
+        // 5e11 byte reads here). A linear scan takes milliseconds, so the
+        // generous bound only trips on the quadratic one.
+        for content in [
+            format!("{}}}}}", "{{".repeat(1024 * 1024)),
+            "{{a}".repeat(1024 * 1024 / 4),
+        ] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            // The scan runs on its own thread so a quadratic one fails the
+            // test at the deadline instead of hanging it.
+            std::thread::spawn(move || {
+                let mut r = result_with(Request {
+                    body: Body::Text(TextBody {
+                        content,
+                        sidecar: None,
+                    }),
+                    ..Default::default()
+                });
+                warn_undefined_vars(&mut r);
+                let _ = tx.send(r.warnings);
+            });
+            let warnings = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("scan did not finish in 10s: not linear");
+            assert!(warnings.is_empty(), "{warnings:?}");
+        }
+    }
+
     #[test]
     fn split_userinfo_ignores_at_after_authority() {
         assert_eq!(super::split_userinfo("http://h/a@b").0, "http://h/a@b");
