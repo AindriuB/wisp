@@ -164,6 +164,7 @@ jobs:
         shell: pwsh
         run: |
           scripts/release/sign-windows/verify.ps1 -Path "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($env:WISP_WINDOWS_SIGN_CLI -eq 'true') {
             scripts/release/sign-windows/verify.ps1 -Path "target/${{ matrix.target }}/release/${{ matrix.cli_binary }}"
           }
