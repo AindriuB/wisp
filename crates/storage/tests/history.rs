@@ -1942,7 +1942,10 @@ fn snapshot_dir(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64, SystemTi
         for f in fs::read_dir(&d).unwrap().flatten() {
             let m = f.metadata().unwrap();
             if m.is_dir() {
+                // Directory mtime/len can update lazily on NTFS; list it by path only.
                 stack.push(f.path());
+                out.push((f.path(), 0, SystemTime::UNIX_EPOCH));
+                continue;
             }
             out.push((f.path(), m.len(), m.modified().unwrap()));
         }

@@ -33,6 +33,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
+- [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it.
 - [P3] Spec: AC4 contradicts itself. Its acronym rule splits `OAuth` into O+Auth, so `X-OAuth-Scopes` is now redacted (fail-safe over-redaction), while its example says `OAuth2Token` gives oauth, 2, token. Decide which is intended and fix the wording or the rule.
 - NOTE: the strong-fragment suffix rule also redacts ordinary words that end in one (possession, obsession), in history and in the importers.
 - [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
