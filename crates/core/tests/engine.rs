@@ -1609,3 +1609,188 @@ async fn redirect_loop_fails_on_the_tenth_redirect_with_the_too_many_redirects_e
     }
     assert_eq!(server.received_requests().await.unwrap().len(), 10);
 }
+
+// ---- one handle for hash and send (task 167) ----
+
+fn sigv4_auth() -> wisp_core::auth::EngineAuth {
+    wisp_core::auth::EngineAuth::AwsSigV4 {
+        access_key: "AKIDEXAMPLE".into(),
+        secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(),
+        session_token: String::new(),
+        region: "us-east-1".into(),
+        service: "ec2".into(),
+    }
+}
+
+fn sparse_file(tag: &str, len: u64) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("wisp-{tag}-{}.bin", std::process::id()));
+    std::fs::File::create(&p).unwrap().set_len(len).unwrap();
+    p
+}
+
+fn signed_file_post(url: String, file: std::path::PathBuf) -> PreparedRequest {
+    let mut req = post_with(url, PreparedBody::File(file));
+    req.auth = Some(sigv4_auth());
+    req
+}
+
+/// Sends a signed file POST after running `hook` between hashing and sending.
+async fn signed_post_with_hook(
+    server: &MockServer,
+    path: &std::path::Path,
+    hook: impl Fn() + Send + Sync + 'static,
+) -> Vec<Event> {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.set_after_hash_hook(hook);
+    engine.submit(Command::Send(signed_file_post(
+        server.uri(),
+        path.to_owned(),
+    )));
+    collect_until_terminal(&rx).await
+}
+
+async fn ok_server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn hash_file_replaced_between_hash_and_send_sends_the_hashed_bytes_or_fails() {
+    // A rename over the path leaves the open handle on the old inode: the old bytes go out.
+    let server = ok_server().await;
+    let data = pattern(TWO_MIB);
+    let path = temp_file("hash-swap", &data);
+    let other = std::env::temp_dir().join(format!("wisp-hash-swap-new-{}.bin", std::process::id()));
+    let (swap, new) = (path.clone(), other.clone());
+    let evs = signed_post_with_hook(&server, &path, move || {
+        std::fs::write(&new, vec![7u8; TWO_MIB]).unwrap();
+        std::fs::rename(&new, &swap).unwrap();
+    })
+    .await;
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&other);
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => assert_eq!(error.kind, ErrorKind::BodyFile),
+        Event::Completed { .. } => {
+            let reqs = server.received_requests().await.unwrap();
+            assert!(
+                reqs[0].body == data,
+                "received bytes differ from the hashed file"
+            );
+        }
+        other => panic!("unexpected terminal {other:?}"),
+    }
+}
+
+async fn in_place_overwrite_fails(tag: &str, len: usize) {
+    use std::io::Write;
+    let server = ok_server().await;
+    let path = temp_file(tag, &pattern(len));
+    let target = path.clone();
+    let evs = signed_post_with_hook(&server, &path, move || {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&target)
+            .unwrap();
+        f.write_all(&vec![0xAAu8; len]).unwrap();
+    })
+    .await;
+    let _ = std::fs::remove_file(&path);
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => {
+            assert_eq!(error.kind, ErrorKind::BodyFile);
+            assert_eq!(error.message, "the body file changed after it was signed");
+        }
+        other => panic!("unexpected terminal {other:?}"),
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn hash_file_overwritten_in_place_fails_on_the_gathered_path() {
+    in_place_overwrite_fails("hash-inplace-small", 4096).await;
+}
+
+#[tokio::test]
+async fn hash_file_overwritten_in_place_fails_on_the_streamed_path() {
+    in_place_overwrite_fails("hash-inplace-big", TWO_MIB).await;
+}
+
+#[tokio::test]
+async fn hash_file_unchanged_streamed_body_is_sent_under_its_hash() {
+    let server = ok_server().await;
+    let data = pattern(TWO_MIB);
+    let path = temp_file("hash-same", &data);
+    let evs = signed_post_with_hook(&server, &path, || {}).await;
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        matches!(evs.last().unwrap(), Event::Completed { .. }),
+        "{evs:?}"
+    );
+    assert!(server.received_requests().await.unwrap()[0].body == data);
+}
+
+#[tokio::test]
+async fn hash_file_cancel_during_hashing_ends_cancelled() {
+    let server = MockServer::start().await;
+    let path = sparse_file("hash-cancel", 4 << 30);
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    let id = engine.submit(Command::Send(signed_file_post(server.uri(), path.clone())));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    engine.submit(Command::Cancel(id));
+    let ev = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let e = rx.recv().await.unwrap();
+            if matches!(
+                e,
+                Event::Completed { .. } | Event::Failed { .. } | Event::Cancelled { .. }
+            ) {
+                return e;
+            }
+        }
+    })
+    .await
+    .expect("a terminal event");
+    let _ = std::fs::remove_file(&path);
+    assert!(matches!(ev, Event::Cancelled { .. }), "got {ev:?}");
+}
+
+#[tokio::test]
+async fn hash_file_timeout_shorter_than_hashing_ends_in_timeout() {
+    let server = MockServer::start().await;
+    let path = sparse_file("hash-timeout", 4 << 30);
+    let mut req = signed_file_post(server.uri(), path.clone());
+    req.timeout = Some(Duration::from_millis(100));
+    let kind = tokio::time::timeout(Duration::from_secs(20), failure(req))
+        .await
+        .expect("a terminal event");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(kind, ErrorKind::Timeout);
+}
+
+#[tokio::test]
+async fn hash_file_timeout_covers_hashing_plus_the_response() {
+    // Hashing (stood in for by the hook) takes 600 ms and the server 700 ms: a per-phase
+    // budget of 1 s would pass; one budget of 1 s must not.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(700)))
+        .mount(&server)
+        .await;
+    let path = temp_file("hash-budget", &pattern(4096));
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.set_after_hash_hook(|| std::thread::sleep(Duration::from_millis(600)));
+    let mut req = signed_file_post(server.uri(), path.clone());
+    req.timeout = Some(Duration::from_millis(1000));
+    engine.submit(Command::Send(req));
+    let evs = collect_until_terminal(&rx).await;
+    let _ = std::fs::remove_file(&path);
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => assert_eq!(error.kind, ErrorKind::Timeout),
+        other => panic!("unexpected terminal {other:?}"),
+    }
+}
