@@ -35,6 +35,9 @@ Explain Request, Save and close with the environment guard, assertions with hist
   - [Note] `ui/url_bar.rs:499-517`: the badge may be clipped on a narrow window with a long context strip.
   - [Note, for 158's hand test] keyboard Send on a guarded tab that is already Sending now prompts before re-sending.
   - [Known residual, 115-1, accepted by the user 2026-11-17] the guard fails open while the collection id is Reading or Failed; this matches spec :136. Tasks 157 (docs) and 158 (hand test) must state it.
+  - [For 158's hand test] a tab switch while "Send to <env>?" is up, then Confirm, must abort (no test drives the root.rs callback).
+  - [For 158's hand test] whether a Reprompt is refused by `has_active_prompt()` inside `done`.
+  - [P3] the prompt detail is not re-checked against the draft at send time, so an edit or disk reload during the prompt can send a different URL.
 - **Wave 3 open (157, 158):** 157 docs for the CLI and guard, 158 measure and release dry run.
 - **Next:** wave 3, then the macOS hand test.
 

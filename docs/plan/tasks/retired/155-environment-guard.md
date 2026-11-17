@@ -101,6 +101,32 @@ Not assessed: GPUI runtime behaviour (where window.dispatch_action sends SendReq
 
 Known residual (115-1): the guard applies only once the collection id is `Known`. While the id is `Reading` (startup) or `Failed`, Send goes out without the "Send to <env>?" prompt, and the suggest_confirm hint may be re-offered for an already-guarded environment. This is the fail-open the spec already accepts at docs/plan/specs/2026-11-14-wisp-0-3-0.md:136 (accident guard, user decision). Task 158's hand test and task 157's docs should state it. No code change.
 
+## External review — findings
+
+Key sha256:3858336f855f · reviewed head e7d9b17a6384c158c75c4224060bd0d622954410 (PR #115, pasted by the user; task code at 9d5837a) · round 4
+
+[P2] Recheck the active tab before accepting confirmation — `crates/app/src/ui/root.rs:519–522` (changed lines)
+The callback checks that the captured tab remains open, then checks guard state using that same tab. Switching tabs or collections while confirmation is open therefore bypasses the required abort. Confirming can send a request from the previously active, now hidden tab. Compare against `ws.active_tab()` before proceeding.
+Overall impact: Changes suggested for this localized defect. No other actionable P0–P2 defects were found during static review. Interactive behavior and release workflows were not executed.
+Reviewed target: `main`
+* Base: `acd5f79d616717c0eff13fc8e1b17101f6671725`
+* Head: `e7d9b17a6384c158c75c4224060bd0d622954410`
+
+Orchestrator check: confirmed. root.rs builds `current` from the captured `tab` via `guard_state(ws, &tab)`, so `after_prompt`'s `current.tab != confirmed.tab` arm can never fire on a tab or collection switch.
+
+## Wave stopped — step 7 — design-pass trigger: second freshness finding in the guard (115-1, then this); /design invariant derivation before round 4
+
+## Wave resumed — user decision 2026-11-17: round 4 fixes the External review round-4 finding with the architect's shared active-target lookup
+
+Design pass (architect, opus) result for round 4, the task's last:
+- Root cause: the confirm callback (crates/app/src/ui/root.rs:517-532) re-derives `current` from the captured tab, breaking C1 (tab sent = tab active at answer = tab active at request), C2 (owning collection unchanged) and C5 (Reprompt prompts for the active tab).
+- Fix: add `active_guard_state(ws) -> Option<(Entity<RequestTab>, Target, bool)>` in crates/app/src/ui/url_bar.rs (returns `ws.active_tab()` with that tab's `guard_state`). Use it in `on_send` (root.rs:432-435) and in the confirm callback in place of the open-scan plus `guard_state(&tab)`; `current` is its target, or `None` when no tab is active. Send (root.rs:528) and Reprompt (:532) use the returned active tab. No change to guard.rs or workspace.rs (AC9 holds).
+- Test: one `#[gpui::test]` in url_bar.rs on the harness pattern at crates/app/src/ui/explain.rs:341-356 — two scratch tabs; `active_guard_state` with A active, `activate_tab` to B, again; assert the returned tab is B and `after_prompt(&confirmed_A, Some(&current_B), Answer::Confirm, false)` is `Next::Abort`. Name reads as a sentence.
+- Out of scope (follow-up for task 158's hand test): the prompt detail is not compared with the draft at send time, and whether a Reprompt is refused by `has_active_prompt()` inside `done`.
+
+## Wave verified — 93ce7eb528682821a5f67984dec4b64cb13a36c2
+
 ## Outcome
 Merged via record/155 at 9d5837a (stacked on record/156 and record/154). Sends to a guarded environment ask first, `suggest_confirm` offers to enable the guard with the spec's text, and a palette command and badge show and toggle it. Two rounds: review round 1 (hint wording, doc comment) and Attempt 2 (guard-unit gate, table tests split). Tester: app 375, guard-unit 15, fmt and clippy clean, no flakes. Follow-ups are in PLAN.
 115-1 (guard fails open while the collection id is Reading or Failed) accepted as a known residual by the user, 2026-11-17; it matches spec :136.
+Round 4 (external review pasted by the user, 2026-11-17; design pass by architect): confirm and Reprompt now use the tab active at the answer via `active_guard_state`, so a tab or collection switch aborts. Life count 4 rounds.
