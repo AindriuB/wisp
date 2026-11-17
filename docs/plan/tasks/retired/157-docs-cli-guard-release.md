@@ -43,3 +43,28 @@ after 155 and 156 merge so the docs describe merged behaviour, not plans.
 - PLAN.md, the spec and the roadmap (task 153 and later records).
 - The README's 0.2.0 introduction and release-notes text for 0.3.0: written at release time with the user.
 - Any code or workflow change; a doc that disagrees with the code is reported, not fixed in code.
+
+## Review round 1 — findings
+Reviewed HEAD 8e48ba8d37a2c50fa037fe6b3e862b387a62889d.
+- [P2] README.md ("Confirm before send" section): says the guard can be turned on by clicking the "Confirm before send" badge. The badge renders only when the guard is on (`crates/app/src/ui/url_bar.rs:510`, `guarded.then(...)`) and clicking it turns the guard off (tooltip `:518`); the palette command (`crates/app/src/palette.rs:107`) is the only way to turn it on.
+- [P2] docs/cli.md ("explain" JSON fields): display-text parts are internally tagged by a `kind` key and a text part carries a `text` field (`crates/cli/src/dto.rs:109-116`, `#[serde(tag = "kind", rename_all = "lowercase")]`), e.g. `{"kind":"text","text":"..."}`, `{"kind":"secret","name":..,"resolved":..}`; the doc does not say so, so `url`, `params`, `headers`, `auth.target`, `auth.fields` and `variables` values cannot be parsed from it.
+
+## Wave verified — df2ce7b05b3e30630dadbbe8c4566416004ee9eb
+
+## Follow-ups from review (none fixed)
+- [P3] docs/cli.md explain JSON: nested shapes missing. `params[]` {kind query|path, name, value, origin}; `headers[]` name/value part lists; `auth.fields[]` {name, value}; `settings[]` {name timeout|follow_redirects|verify_tls, value, source request|default}; `body` {kind, bytes, vars}; `variables[]` also value, shadowed, locations; `problems[].kind` unresolved-var|missing-path-param|syntax|var-cycle with nullable name/location/message; warnings are strings (`crates/cli/src/dto.rs:118-180`, `cmd/explain.rs:156-184`).
+- [P3] docs/cli.md contract: "an environment whose secrets live in the OS keychain is not opened at all" is wrong. The env file loads and its variables apply; only the secret store is skipped, and declared secret names become empty unresolved secrets (`cmd/explain.rs:68-88`).
+- [P3] docs/cli.md exit code 2: usage text goes to stderr only for parse errors; an unknown env exits 2 with only "wisp-cli: unknown environment" (`main.rs:40-41` vs `:60`); a non-UTF-8 env name or path also exits 2, unlisted.
+- [P3] docs/architecture.md "How they talk": overstates `scripts/check-boundaries.sh` (`:8-38`), which checks only the absence of GPUI/winresource deps in core/storage/cli and banned patterns in `crates/cli/src`, not dependency direction.
+- [Note] README Install text says `Wisp-0.2.0-*` archives contain `wisp-cli`; true only once version strings are bumped at the 0.3.0 release.
+- [Note] docs/cli.md "Usage" block is a synopsis, not literal `--help` (`args.rs:55-69`).
+- [Note] The Windows soft line 15,900,000 B is enforced nowhere (`release.yml:177` checks only the gate).
+- [Note] The `SIGNPATH_SIGNS_CLI` variable name appears blanked in PLAN.md:30, HISTORY.md:26 and `scripts/release/sign-windows/README.md:22,:33`; likely a redaction artefact.
+- [Low] This task's `scope` Check (`wc -l | grep -x 0`) fails on macOS because BSD wc pads the count; task 158's `only-result` check has the same pattern.
+
+## Outcome
+Merged via record/157 at df2ce7b. Added docs/cli.md, fixed the architecture drift items, updated the README (CLI section, guard paragraph, Install subsections, Save-first prompts). Review round 1 fixed two P2s (the guard badge only turns the guard off; display-text parts carry a `kind` tag). Follow-ups above are open.
+
+## External review — findings
+Round 2. Source: review pasted by the user in chat, 2026-11-17; reviewed PR #116 head 09d6ac10eaa2d13a27a15afb3dfcf60606f101b6 (base d314c5f).
+- [P2] Installation instructions require a newer release — `README.md:59`. The README names `Wisp-0.2.0-*` archives but now instructs users to install `wisp-cli`, which ships from 0.3.0. The Linux command fails with `cannot stat 'wisp-cli'`; macOS instructions create a dangling symlink. State the 0.3.0 requirement or update the referenced release.

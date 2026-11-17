@@ -31,7 +31,7 @@ unzip Wisp-0.2.0-macos-arm64.zip
 
 The zip holds a `Wisp-0.2.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is signed with a Developer ID certificate and notarised by Apple, so it opens without a Gatekeeper warning. A build you make from source is not signed, and macOS may block it.
 
-The command palette opens with ⌘K.
+From Wisp 0.3.0, the archive also holds the command-line tool as `Wisp.app/Contents/MacOS/wisp-cli`, signed and notarised with the app (see "Command line" below). The command palette opens with ⌘K.
 
 ### Windows (x64)
 
@@ -42,7 +42,7 @@ The asset is `Wisp-0.2.0-windows-x64.zip`.
 Select-String Wisp-0.2.0-windows-x64.zip SHA256SUMS
 ```
 
-The two hashes must match, ignoring case. Unpack the zip (Extract All in Explorer, or `Expand-Archive`). It holds a `Wisp-0.2.0-windows-x64` folder with `wisp.exe`; put the folder wherever you like and run `wisp.exe`. The executable is not signed, so SmartScreen shows "Windows protected your PC" on first launch. Click "More info", then "Run anyway". The command palette opens with Ctrl+K.
+The two hashes must match, ignoring case. Unpack the zip (Extract All in Explorer, or `Expand-Archive`). It holds a `Wisp-0.2.0-windows-x64` folder with `wisp.exe`; put the folder wherever you like and run `wisp.exe`. From Wisp 0.3.0, `wisp-cli.exe`, the command-line tool, is in the same folder. The executable is not signed, so SmartScreen shows "Windows protected your PC" on first launch. Click "More info", then "Run anyway". The command-line tool `wisp-cli.exe` is not signed either, unless the release notes say it is, so SmartScreen may warn about it too. The command palette opens with Ctrl+K.
 
 ### Linux (x64)
 
@@ -53,12 +53,14 @@ sha256sum -c --ignore-missing SHA256SUMS
 tar -xzf Wisp-0.2.0-linux-x64.tar.gz
 ```
 
-The archive holds a `Wisp-0.2.0-linux-x64` folder. The folder holds the `wisp` binary, an `icons/` folder and a `share/` folder. To install it for your user, from inside that folder run:
+The archive holds a `Wisp-0.2.0-linux-x64` folder. The folder holds the `wisp` binary, an `icons/` folder and a `share/` folder; from Wisp 0.3.0 it also holds the `wisp-cli` command-line tool. To install it for your user, from inside that folder run:
 
 ```sh
 cp wisp ~/.local/bin/
 cp -r share/* ~/.local/share/
 ```
+
+From Wisp 0.3.0, also copy `wisp-cli` to `~/.local/bin/`.
 
 `wisp` must be on your `PATH`, because the launcher entry runs `Exec=wisp`. The window icon shows on X11 only; on Wayland the icon comes from the installed launcher entry. The command palette opens with Ctrl+K.
 
@@ -71,13 +73,31 @@ sudo apt install libvulkan1 mesa-vulkan-drivers libxcb1 libx11-6 libx11-xcb1 \
 
 The Vulkan driver depends on your GPU: `mesa-vulkan-drivers` covers AMD, Intel and the software renderer, and for NVIDIA you install the vendor's driver instead. Of the other packages, the `wisp` binary links `libxcb`, `libxkbcommon`, `libxkbcommon-x11`, `libgcc_s`, `libm` and `libc` directly; `libx11-6`, `libx11-xcb1` and the Wayland client library are loaded by the graphics stack. Other distributions have equivalent packages under their own names.
 
+## Command line
+
+`wisp-cli` ships from Wisp 0.3.0; the 0.2.0 archives do not contain it.
+
+`wisp-cli` is a read-only tool for a terminal, a script or an agent: `wisp-cli validate <collection>` reports every problem in a collection, `wisp-cli inspect <collection>` summarises it, and `wisp-cli explain <collection> <request-path> --env <name>` shows where each variable, header and auth setting of a request comes from. It never sends a request, writes a file or prints a secret value, and `--json` prints one versioned JSON document. Commands, exit codes and the JSON fields are in [docs/cli.md](docs/cli.md).
+
+Where it is: on macOS inside the app, at `Wisp.app/Contents/MacOS/wisp-cli`; on Windows as `wisp-cli.exe` beside `wisp.exe`; on Linux as `wisp-cli` beside `wisp`. To use it from any macOS terminal, link it onto your `PATH`:
+
+```sh
+ln -s /Applications/Wisp.app/Contents/MacOS/wisp-cli /usr/local/bin/wisp-cli
+```
+
+The Windows package for winget also installs the `wisp-cli` command; the Microsoft Store (MSIX) package does not include it.
+
+## Confirm before send
+
+You can ask Wisp to confirm before it sends to a chosen environment, to guard against sending to production by accident. Turn it on from the command palette ("Toggle confirm before send (this environment)"). While it is on, a "Confirm before send" badge shows in the URL bar, and clicking the badge turns the guard off. The setting is per user, kept in your `settings.toml`, and keyed by collection and environment name, so it is not shared through git and a renamed environment loses it. An environment file can commit `suggest_confirm = true`, and Wisp then offers once per run to turn the guard on. The guard covers sending a request; it does not cover OAuth2 Authorize. It is an accident guard, not a security control: while Wisp is still reading a collection's id, or failed to read it, the guard fails open and the send goes through without asking.
+
 ## Platform testing
 
 The maintainer hand-tested 0.1.0 on macOS (Apple silicon) and Windows x64, and hand-checked the new 0.2.0 features on macOS during development. Keychain behaviour with the signed macOS build is checked in the release hand test. Linux x64 has not been tested by hand. In CI it is built, its tests are run, and the binary is run under Xvfb with a software Vulkan driver, where its memory is measured and a screenshot of the window is taken and inspected. If something breaks on Linux with a real GPU, please report it.
 
 ## Unsaved changes
 
-Wisp asks before it discards unsaved edits when you quit with ⌘Q (Ctrl+Q on Windows and Linux), choose Quit Wisp, close the window, or close a tab. It cannot ask when the system ends the app: Dock Quit, logout and shutdown on macOS, logoff and shutdown on Windows, and SIGTERM or session end on Linux all drop unsaved drafts without a prompt. Save with ⌘S before you do any of those.
+Wisp asks before it discards unsaved edits when you quit with ⌘Q (Ctrl+Q on Windows and Linux), choose Quit Wisp, close the window, close a collection, or close a tab. The prompt offers to save first: "Save and close" for a tab, "Save all and close" for a collection and "Save all and quit" when quitting, with "Discard" and "Cancel" beside it. It cannot ask when the system ends the app: Dock Quit, logout and shutdown on macOS, logoff and shutdown on Windows, and SIGTERM or session end on Linux all drop unsaved drafts without a prompt. Save with ⌘S before you do any of those.
 
 ## Where Wisp writes
 
