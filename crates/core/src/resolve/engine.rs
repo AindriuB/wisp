@@ -811,8 +811,8 @@ mod dynamic_tests {
         assert_eq!(names, ["$uuid", "$timestamp", "$uuid", "$uuid", "$uuid"]);
         assert!(p.url.ends_with(&format!("/{}/{}", v[0].value, v[1].value)));
         assert_ne!(v[3].value, v[4].value);
-        let hdr = p.headers.iter().find(|(n, _)| n == "X-Id").unwrap();
-        assert_eq!(hdr.1, v[2].value);
+        let hdr = p.headers.iter().find(|h| h.name == "X-Id").unwrap();
+        assert_eq!(hdr.value, v[2].value);
         let PreparedBody::Bytes(b) = &p.body else {
             panic!("expected bytes body");
         };
