@@ -1,0 +1,741 @@
+//! `wisp-cli run` against a local mock server. Every test name carries `run`.
+
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use serde_json::Value;
+
+const CANARIES: [&str; 4] = [
+    "CANARY_SECRET",
+    "CANARY_ENVPLAIN",
+    "CANARY_COLLPLAIN",
+    "CANARY_KC",
+];
+
+struct Sandbox {
+    coll: tempfile::TempDir,
+    data: tempfile::TempDir,
+    tmp: tempfile::TempDir,
+}
+
+impl Sandbox {
+    fn new(id: bool) -> Self {
+        let s = Self {
+            coll: tempfile::tempdir().unwrap(),
+            data: tempfile::tempdir().unwrap(),
+            tmp: tempfile::tempdir().unwrap(),
+        };
+        let idline = if id {
+            "id = \"abcdefgh12345678\"\n"
+        } else {
+            ""
+        };
+        s.w(
+            "collection.toml",
+            &format!("format = 1\n{idline}\n[vars]\napi_token = \"CANARY_COLLPLAIN\"\n"),
+        );
+        s.w(
+            "environments/dev.toml",
+            "[vars]\napi_token = \"CANARY_ENVPLAIN\"\n",
+        );
+        s.w(
+            "environments/dev.secrets.toml",
+            "[vars]\nk = \"CANARY_SECRET\"\n",
+        );
+        s.w(
+            "environments/prod.toml",
+            "secrets = \"keychain\"\nsecret_names = [\"kc\"]\n",
+        );
+        s
+    }
+
+    fn w(&self, rel: &str, text: &str) {
+        let p = self.coll.path().join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    }
+
+    fn root(&self) -> &str {
+        self.coll.path().to_str().unwrap()
+    }
+
+    fn cmd(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_wisp-cli"));
+        c.args(args)
+            .env("WISP_DATA_DIR", self.data.path())
+            .env("TMPDIR", self.tmp.path())
+            .env("TMP", self.tmp.path())
+            .env("TEMP", self.tmp.path())
+            .env_remove("WISP_KEYCHAIN_SERVICE");
+        c
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.cmd(args).output().unwrap()
+    }
+
+    /// `wisp-cli run <root> <req> <extra...>`.
+    fn go(&self, req: &str, extra: &[&str]) -> Output {
+        let mut a = vec!["run", self.root(), req];
+        a.extend_from_slice(extra);
+        self.run(&a)
+    }
+
+    fn json(&self, req: &str, extra: &[&str]) -> (i32, Value) {
+        let mut a = extra.to_vec();
+        a.push("--json");
+        let o = self.go(req, &a);
+        let v = serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
+        (o.status.code().unwrap(), v)
+    }
+}
+
+fn text(o: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
+}
+
+/// A server answering every connection with `status`, echoing the canaries in a header
+/// and the whole request head in the body.
+fn serve(status: u16) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let body = format!("{}\n{}", String::from_utf8_lossy(&buf), CANARIES.join(" "));
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nX-Echo: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        CANARIES.join(" "),
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            });
+        }
+    });
+    addr
+}
+
+/// A server that accepts and never answers.
+fn silent() -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for s in l.incoming().flatten() {
+            held.push(s);
+        }
+    });
+    addr
+}
+
+/// An address nothing listens on.
+fn closed() -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap()
+}
+
+/// A request reading every canary kind: secret in path, query, header and auth, a plain
+/// variable named `api_token`, with userinfo in the URL.
+fn canary_request(addr: SocketAddr, method: &str, extra: &str) -> String {
+    format!(
+        "name = \"c\"\nmethod = \"{method}\"\nurl = \"http://u:pw@{addr}/{{{{k}}}}/{{{{api_token}}}}?key={{{{k}}}}&t={{{{api_token}}}}\"\n{extra}\n[[headers]]\nname = \"X-Key\"\nvalue = \"{{{{k}}}}\"\nenabled = true\n\n[auth]\ntype = \"bearer\"\ntoken = \"{{{{k}}}}\"\n"
+    )
+}
+
+fn plain_request(addr: SocketAddr, method: &str, extra: &str) -> String {
+    format!("name = \"p\"\nmethod = \"{method}\"\nurl = \"http://{addr}/p\"\n{extra}")
+}
+
+const STATUS_201: &str = "[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = 201\n";
+
+#[test]
+fn run_exit_0_passed() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(200), "GET", ""));
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 0);
+    assert_eq!(v["result"], "passed");
+    assert_eq!(v["exit"], 0);
+    assert_eq!(v["status"], 200);
+    assert_eq!(v["status_ok"], true);
+    assert_eq!(v["delivery"], "responded");
+}
+
+#[test]
+fn run_exit_1_assertion_failed() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(200), "GET", STATUS_201));
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 1);
+    assert_eq!(v["result"], "assertion_failed");
+    assert_eq!(v["assertions"][0]["state"], "fail");
+    assert_eq!(v["assertions"][0]["label"], "status equals");
+}
+
+#[test]
+fn run_exit_4_not_prepared() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &plain_request(
+            closed(),
+            "GET",
+            "\n[[headers]]\nname = \"X\"\nvalue = \"{{missing}}\"\nenabled = true\n",
+        ),
+    );
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 4);
+    assert_eq!(v["result"], "not_prepared");
+    assert_eq!(v["delivery"], "not_sent");
+    assert_eq!(v["retry_safe"], true);
+    assert_eq!(v["status"], Value::Null);
+    assert_eq!(v["problems"][0]["kind"], "unresolved-var");
+    assert_eq!(v["problems"][0]["name"], "missing");
+}
+
+#[test]
+fn run_exit_5_transport_failed_not_sent() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(closed(), "POST", ""));
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 5);
+    assert_eq!(v["result"], "transport_failed");
+    assert_eq!(v["delivery"], "not_sent");
+    assert_eq!(v["retry_safe"], true);
+    assert_eq!(v["error"]["kind"], "connect");
+}
+
+#[test]
+fn run_exit_6_outcome_unknown_and_retry_safe_follows_the_method() {
+    let s = Sandbox::new(true);
+    let addr = silent();
+    let slow = "\n[settings]\ntimeout_ms = 300\n";
+    s.w("post.toml", &plain_request(addr, "POST", slow));
+    s.w("get.toml", &plain_request(addr, "GET", slow));
+    let (code, v) = s.json("post.toml", &[]);
+    assert_eq!(code, 6);
+    assert_eq!(v["result"], "outcome_unknown");
+    assert_eq!(v["delivery"], "unknown");
+    assert_eq!(v["retry_safe"], false);
+    assert_eq!(v["error"]["kind"], "timeout");
+    let (code, v) = s.json("get.toml", &[]);
+    assert_eq!(code, 6);
+    assert_eq!(v["retry_safe"], true);
+}
+
+#[test]
+fn run_exit_7_status_unexpected() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(500), "GET", ""));
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 7);
+    assert_eq!(v["result"], "status_unexpected");
+    assert_eq!(v["status_ok"], false);
+    assert_eq!(v["delivery"], "responded");
+}
+
+#[test]
+fn run_absent_expected_status_with_404_exits_7() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(404), "GET", ""));
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 7);
+    assert_eq!(v["expected_status"], serde_json::json!([]));
+}
+
+#[test]
+fn run_declared_expected_status_makes_404_acceptable() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &format!(
+            "expected_status = [404]\n{}",
+            plain_request(serve(404), "GET", "")
+        ),
+    );
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 0);
+    assert_eq!(v["expected_status"], serde_json::json!([404]));
+    assert_eq!(v["status_ok"], true);
+}
+
+#[test]
+fn run_bad_status_and_failed_assertion_exits_7_with_both_in_json() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(500), "GET", STATUS_201));
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 7);
+    assert_eq!(v["status_ok"], false);
+    assert_eq!(v["assertions"][0]["state"], "fail");
+}
+
+#[test]
+fn run_json_golden_field_set() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &plain_request(
+            serve(200),
+            "GET",
+            &format!("{STATUS_201}\n[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = 200\n"),
+        ),
+    );
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 1);
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let mut want = vec![
+        "schema",
+        "command",
+        "request",
+        "environment",
+        "method",
+        "url",
+        "result",
+        "exit",
+        "delivery",
+        "retry_safe",
+        "status",
+        "expected_status",
+        "status_ok",
+        "timing_ms",
+        "size",
+        "error",
+        "assertions",
+        "dynamic",
+        "history",
+        "problems",
+    ];
+    want.sort_unstable();
+    assert_eq!(keys, want);
+    assert_eq!(v["schema"], "wisp-cli/1");
+    assert_eq!(v["command"], "run");
+    assert_eq!(v["request"], "a.toml");
+    assert_eq!(v["environment"], Value::Null);
+    assert_eq!(v["method"], "GET");
+    assert!(v["url"].as_str().unwrap().ends_with("/p"));
+    assert_eq!(v["result"], "assertion_failed");
+    assert_eq!(v["retry_safe"], true);
+    assert_eq!(v["error"], Value::Null);
+    assert_eq!(v["history"], "off");
+    assert_eq!(v["problems"], serde_json::json!([]));
+    assert_eq!(v["dynamic"], serde_json::json!([]));
+    let t = v["timing_ms"].as_object().unwrap();
+    assert!(t["ttfb"].is_u64() && t["total"].is_u64());
+    assert!(v["size"].is_u64());
+    assert_eq!(
+        v["assertions"],
+        serde_json::json!([
+            {"label": "status equals", "state": "fail"},
+            {"label": "status equals", "state": "pass"},
+        ])
+    );
+}
+
+#[test]
+fn run_unreadable_inputs_exit_3_to_stderr_only() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(closed(), "GET", ""));
+    s.w("bad.toml", "not toml [[[");
+    for args in [
+        vec!["run", s.root(), "nope.toml"],
+        vec!["run", s.root(), "../a.toml"],
+        vec!["run", s.root(), "bad.toml"],
+        vec!["run", s.root(), "a.toml", "--env", "nope"],
+        vec!["run", "/definitely/not/here", "a.toml"],
+    ] {
+        for json in [false, true] {
+            let mut a = args.clone();
+            if json {
+                a.push("--json");
+            }
+            let o = s.run(&a);
+            assert_eq!(o.status.code(), Some(3), "{a:?}");
+            assert!(o.stdout.is_empty(), "{a:?}");
+            assert!(!o.stderr.is_empty(), "{a:?}");
+        }
+    }
+}
+
+#[test]
+fn run_usage_errors_exit_2_to_stderr_only() {
+    let s = Sandbox::new(true);
+    for args in [
+        vec!["run", s.root()],
+        vec!["run", s.root(), "a.toml", "--bogus"],
+        vec!["explain", s.root(), "a.toml", "--keychain"],
+        vec!["inspect", s.root(), "--history"],
+    ] {
+        let o = s.run(&args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(o.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn run_keychain_env_without_flag_exits_4_with_the_message() {
+    let s = Sandbox::new(true);
+    let addr = serve(200);
+    s.w(
+        "a.toml",
+        &plain_request(
+            addr,
+            "GET",
+            "\n[[headers]]\nname = \"X\"\nvalue = \"{{kc}}\"\nenabled = true\n",
+        ),
+    );
+    let (code, v) = s.json("a.toml", &["--env", "prod"]);
+    assert_eq!(code, 4);
+    assert_eq!(v["problems"][0]["kind"], "keychain-secret");
+    assert_eq!(
+        v["problems"][0]["message"],
+        "secret kc is in the keychain; pass --keychain"
+    );
+    let o = s.go("a.toml", &["--env", "prod"]);
+    assert_eq!(o.status.code(), Some(4));
+    assert!(text(&o).contains("secret kc is in the keychain; pass --keychain"));
+}
+
+#[test]
+fn run_history_text_says_skipped_for_not_sent_and_for_no_id() {
+    let missing = "\n[[headers]]\nname = \"X\"\nvalue = \"{{missing}}\"\nenabled = true\n";
+    for (id, want) in [
+        (true, "history: skipped (not sent)"),
+        (false, "history: skipped (collection has no id)"),
+    ] {
+        let s = Sandbox::new(id);
+        s.w("a.toml", &plain_request(closed(), "GET", missing));
+        let o = s.go("a.toml", &["--history"]);
+        assert_eq!(o.status.code(), Some(4));
+        assert!(text(&o).contains(want), "id={id}: {}", text(&o));
+        assert!(!text(&o).contains("history: failed"));
+    }
+}
+
+#[test]
+fn run_text_status_line_has_reason_size_and_no_delivery_line() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &plain_request(serve(200), "GET", "expected_status = [200]\n"),
+    );
+    let o = s.go("a.toml", &[]);
+    let t = text(&o);
+    let line = t.lines().find(|l| l.starts_with("status ")).unwrap();
+    assert!(
+        line.starts_with("status 200 OK (expected 200)   "),
+        "{line}"
+    );
+    assert!(line.contains(" ms   ") && line.ends_with(" B"), "{line}");
+    assert!(!t.contains("delivery:"), "{t}");
+}
+
+#[test]
+fn run_oauth2_authorization_code_exits_4() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &plain_request(
+            closed(),
+            "GET",
+            "\n[auth]\ntype = \"oauth2_auth_code\"\nauth_url = \"http://127.0.0.1:1/a\"\ntoken_url = \"http://127.0.0.1:1/t\"\nclient_id = \"c\"\n",
+        ),
+    );
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 4);
+    assert_eq!(v["problems"][0]["kind"], "interactive-auth");
+    assert_eq!(v["delivery"], "not_sent");
+}
+
+#[test]
+fn run_text_output_has_one_line_per_item() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &format!(
+            "expected_status = [200]\n{}",
+            plain_request(
+                serve(200),
+                "GET",
+                &format!(
+                    "{STATUS_201}\n[[headers]]\nname = \"X\"\nvalue = \"{{{{$uuid}}}}\"\nenabled = true\n"
+                )
+            )
+        ),
+    );
+    let o = s.go("a.toml", &["--env", "dev"]);
+    assert_eq!(o.status.code(), Some(1));
+    let t = String::from_utf8_lossy(&o.stdout).into_owned();
+    let lines: Vec<&str> = t.lines().collect();
+    assert!(lines[0].starts_with("GET http://127.0.0.1:"), "{t}");
+    assert!(lines[0].ends_with("   env: dev"), "{t}");
+    assert!(lines[1].starts_with("status 200 OK (expected 200)"), "{t}");
+    assert!(lines.contains(&"checks 0/1: fail \"status equals\""), "{t}");
+    assert!(
+        lines.iter().any(|l| l.starts_with("dynamic $uuid = ")),
+        "{t}"
+    );
+    assert!(lines.contains(&"history: off"), "{t}");
+    assert_eq!(*lines.last().unwrap(), "result: assertion_failed (exit 1)");
+}
+
+#[test]
+fn run_url_shows_secret_markers_without_userinfo_or_query() {
+    let s = Sandbox::new(true);
+    let addr = serve(200);
+    s.w(
+        "a.toml",
+        &format!("name = \"c\"\nmethod = \"GET\"\nurl = \"http://u:pw@{addr}/{{{{k}}}}/x?key={{{{k}}}}\"\n"),
+    );
+    let (code, v) = s.json("a.toml", &["--env", "dev"]);
+    assert_eq!(code, 0);
+    let url = v["url"].as_str().unwrap();
+    assert!(url.contains("{secret k}"), "{url}");
+    assert!(!url.contains("pw"), "{url}");
+    assert!(!url.contains('?') && !url.contains("key="), "{url}");
+    assert!(!url.contains("CANARY"), "{url}");
+}
+
+#[test]
+fn run_dynamic_values_are_listed() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &plain_request(
+            serve(200),
+            "GET",
+            "\n[[headers]]\nname = \"X\"\nvalue = \"{{$uuid}}\"\nenabled = true\n",
+        ),
+    );
+    let (_, v) = s.json("a.toml", &[]);
+    assert_eq!(v["dynamic"][0]["name"], "$uuid");
+    assert_eq!(v["dynamic"][0]["value"].as_str().unwrap().len(), 36);
+}
+
+#[test]
+fn run_history_without_an_id_is_skipped_and_assigns_none() {
+    let s = Sandbox::new(false);
+    s.w("a.toml", &plain_request(serve(200), "GET", ""));
+    let (code, v) = s.json("a.toml", &["--history"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["history"], "skipped (collection has no id)");
+    assert!(
+        !fs::read_to_string(s.coll.path().join("collection.toml"))
+            .unwrap()
+            .contains("id =")
+    );
+    assert!(fs::read_dir(s.data.path()).unwrap().next().is_none());
+    let o = s.go("a.toml", &["--history"]);
+    assert!(text(&o).contains("history: skipped (collection has no id)"));
+}
+
+#[test]
+fn run_history_appends_one_parseable_entry() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(200), "GET", ""));
+    let (_, v) = s.json("a.toml", &["--history"]);
+    assert_eq!(v["history"], "recorded");
+    let index = s.data.path().join("history/abcdefgh12345678/index.jsonl");
+    let lines: Vec<String> = fs::read_to_string(index)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    assert_eq!(lines.len(), 1);
+    let e: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(e["delivery"], "responded");
+}
+
+type Snap = Vec<(PathBuf, u64, Option<std::time::SystemTime>)>;
+
+fn tree(root: &Path, out: &mut Snap) {
+    let mut es: Vec<_> = fs::read_dir(root).unwrap().map(|e| e.unwrap()).collect();
+    es.sort_by_key(|e| e.path());
+    for e in es {
+        let m = fs::metadata(e.path()).unwrap();
+        out.push((e.path(), m.len(), m.modified().ok()));
+        if m.is_dir() {
+            tree(&e.path(), out);
+        }
+    }
+}
+
+fn snap(s: &Sandbox) -> [Snap; 3] {
+    let mut a = Vec::new();
+    let mut b = Vec::new();
+    let mut c = Vec::new();
+    tree(s.coll.path(), &mut a);
+    tree(s.data.path(), &mut b);
+    tree(s.tmp.path(), &mut c);
+    [a, b, c]
+}
+
+#[test]
+fn run_without_history_leaves_collection_data_and_spill_dirs_unchanged() {
+    for id in [true, false] {
+        let s = Sandbox::new(id);
+        s.w("a.toml", &canary_request(serve(200), "GET", ""));
+        let before = snap(&s);
+        for args in [vec!["--env", "dev"], vec!["--env", "dev", "--json"], vec![]] {
+            s.go("a.toml", &args);
+        }
+        assert_eq!(snap(&s), before, "id={id}");
+        assert!(before[2].is_empty());
+    }
+}
+
+#[test]
+fn run_with_history_adds_files_only_under_history_id() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(200), "GET", ""));
+    let before = snap(&s);
+    s.go("a.toml", &["--history"]);
+    let after = snap(&s);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[2], before[2]);
+    let prefix = s.data.path().join("history/abcdefgh12345678");
+    let have: Vec<&PathBuf> = before[1].iter().map(|(p, _, _)| p).collect();
+    for (p, _, _) in &after[1] {
+        assert!(
+            have.contains(&p) || p.starts_with(s.data.path().join("history")),
+            "{p:?}"
+        );
+    }
+    assert!(after[1].iter().any(|(p, _, _)| p.starts_with(&prefix)));
+    assert!(
+        after[1]
+            .iter()
+            .filter(|(p, _, _)| !have.contains(&p) && p.is_file())
+            .all(|(p, _, _)| p.starts_with(&prefix) || p.extension().is_some_and(|e| e == "lock")),
+    );
+}
+
+fn scan(s: &Sandbox, o: &Output, what: &str) {
+    let all = text(o);
+    for c in CANARIES {
+        assert!(!all.contains(c), "{what}: {c} in output:\n{all}");
+    }
+    assert!(!all.contains("pw@"), "{what}: userinfo");
+    let mut stack = vec![s.data.path().to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            if name == "index.jsonl" || name.ends_with(".req.json") {
+                let body = fs::read_to_string(&p).unwrap();
+                for c in CANARIES {
+                    assert!(!body.contains(c), "{what}: {c} in {name}:\n{body}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn run_canaries_never_reach_output_or_history() {
+    let s = Sandbox::new(true);
+    let ok = serve(200);
+    let bad = serve(500);
+    let quiet = silent();
+    s.w("c0.toml", &canary_request(ok, "GET", ""));
+    s.w("c1.toml", &canary_request(ok, "GET", STATUS_201));
+    s.w(
+        "c4.toml",
+        &canary_request(
+            ok,
+            "GET",
+            "\n[[headers]]\nname = \"X-M\"\nvalue = \"{{missing}}\"\nenabled = true\n",
+        ),
+    );
+    s.w("c5.toml", &canary_request(closed(), "POST", ""));
+    s.w(
+        "c6.toml",
+        &canary_request(quiet, "POST", "\n[settings]\ntimeout_ms = 300\n"),
+    );
+    s.w("c7.toml", &canary_request(bad, "GET", ""));
+    for n in [0, 1, 4, 5, 6, 7] {
+        let req = format!("c{n}.toml");
+        for json in [false, true] {
+            let mut extra = vec!["--env", "dev", "--history"];
+            if json {
+                extra.push("--json");
+            }
+            let o = s.go(&req, &extra);
+            assert_eq!(o.status.code(), Some(n), "{req} json={json}");
+            scan(&s, &o, &format!("{req} json={json}"));
+        }
+    }
+}
+
+#[test]
+fn run_two_processes_both_append_to_one_index() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(200), "GET", ""));
+    let children: Vec<_> = (0..2)
+        .map(|_| {
+            s.cmd(&["run", s.root(), "a.toml", "--history"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for c in children {
+        let o = c.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(0));
+    }
+    let index = s.data.path().join("history/abcdefgh12345678/index.jsonl");
+    let lines: Vec<String> = fs::read_to_string(index)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    assert_eq!(lines.len(), 2);
+    for l in lines {
+        serde_json::from_str::<Value>(&l).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn run_output_failure_exits_8() {
+    let s = Sandbox::new(true);
+    s.w("a.toml", &plain_request(serve(200), "GET", ""));
+    let full = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let o = s
+        .cmd(&["run", s.root(), "a.toml"])
+        .stdout(full)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(8));
+}
+
+#[test]
+fn run_help_lists_the_command() {
+    let o = Sandbox::new(true).run(&["--help"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("run <collection> <request-path>"));
+}
