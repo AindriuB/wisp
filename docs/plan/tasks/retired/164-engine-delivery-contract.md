@@ -53,3 +53,19 @@ that provable the engine follows all redirects itself and reqwest never resends.
 - `hash_file` and AC2 of task 99 (167, same file, after this task).
 - `delivery`/`retry_safe` derivation and history (161, 166).
 - Loop detection beyond the 9-hop limit (spec :199: none).
+
+## Review round 1 — findings
+
+Reviewed HEAD: a90bb04e82f92aa02cdbb5a44f84004f9a204e60
+
+- [P2] crates/core/tests/engine.rs:1536 — `redirect_without_auth_or_cookie_is_followed_by_the_engine_hop_by_hop` still passes when reqwest follows the redirects (old `Policy::none` only when following is off, plus the old `own_redirects` condition). So it does not show what AC6 says it shows: that the engine, not reqwest, follows them.
+  - Fix: make the test tell the two apart. Either count the sends through the timing hook, or use a no-auth GET that gets a 302 to a closed port and assert `nothing_sent == false`.
+  - Failing input: GET /a → 302 /b → 302 /c → 200, with no auth and no Cookie header. With the revert applied, the test still sees `Completed` and 3 requests (verified in a scratch copy).
+
+## Wave verified — de286340228f51055c77fb8ce4802f2e24cf8532
+
+AC7 (the PR body answers the spec GUESSes) is met by the record PR body. The reviewer marked it [?] only because no PR existed yet.
+
+## Outcome
+
+Merged via record/164-engine-delivery-contract at de286340228f51055c77fb8ce4802f2e24cf8532 after one review round (the P2 above, fixed in de28634). Tester PASS: suite 1371 passed, 0 failed, 4 skipped; delivery-core 10 passed; exactly one `.send()` in `engine.rs`. Reviewer passed AC1-AC6 and AC8; AC7 is answered in the record PR body. Follow-ups are in PLAN.md.

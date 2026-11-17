@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Engine delivery contract (task 164)
+The engine now reports `nothing_sent` on failures that happened before any bytes left, follows every redirect itself (reqwest's redirect policy is off, capped at `MAX_REDIRECTS = 10`), and the client disables reqwest's internal retries so one `perform` opens one request on the wire. Tester: suite 1371 passed, 0 failed, 4 skipped; exactly one `.send()` in `engine.rs`.
+**Cost:** Review round 1 rejected AC6: the no-auth redirect test still passed with reqwest following the redirects, so it did not show the engine was doing it; de28634 made it tell the two apart. Two source readings are only partly verified (hyper pooled-request retry; `is_connect()` for proxy CONNECT and DNS failures) and have no tests, so do not rely on `nothing_sent == true` for those paths; if the assumption is wrong they report false, the safe direction.
+
 ## 2026-11-17 — Release 0.3.0
 PR #118 bumped the version to 0.3.0 and added the `docs/release.md` runbook, the README asset names and `docs/plan/release-notes-0.3.0.md`; tag v0.3.0 at ffdccc1 published at 2026-11-17T12:28Z with `Wisp-0.3.0-macos-arm64.zip`, `Wisp-0.3.0-windows-x64.zip`, `Wisp-0.3.0-linux-x64.tar.gz` and `SHA256SUMS`. The macOS zip checksum matches and `spctl` reports "Notarized Developer ID"; the winget manifest has PackageVersion 0.3.0 (the winget-pkgs PR is the user's), and the dry-run draft dryrun-44046922250 was deleted.
 **Cost:** Only the macOS hand test was done before publishing; Windows and Ubuntu are tested later. The 0.2.0 asset names in the README and the dry-run archives were stale until this bump, so the dry run could not show final names.

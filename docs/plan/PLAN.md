@@ -22,6 +22,13 @@ than no plan.
 
 Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Next step is `/plan` from the spec's Waves section.
 
+### Follow-ups from task 164 (engine delivery contract; not scheduled)
+- P3: `crates/core/src/resolve/engine.rs:824` has a stale comment ("reqwest returns a 307/308 instead of following it"). `plan` is redundant now that `own_redirects == follow_redirects`, and the `if own_redirects` guard on 301..=303 (~:983) and the comment at :980 describe a split that no longer exists.
+- NOTE: `crates/core/src/client.rs:41` `ClientCache` still keys on `follow_redirects`, so two identical clients can exist (two connection pools).
+- NOTE: `crates/core/src/timing.rs:26` doc comment is stale. With engine-followed redirects, `Timings` describe the first hop that opened a connection, not the final hop.
+- Suggestion: the Digest-refused test would also pass if the challenge were rejected before any retry; assert that a second connection attempt happened.
+- Open, partly verified: hyper pooled-request retry only when nothing was written (hyper's own `take_message` conditions not traced); `is_connect()` for proxy CONNECT and `TimedResolver` DNS failures (not traced, no tests).
+
 ### v0.3.0 (released 2026-11-17)
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendments 1 and 2; roadmap: `docs/plan/roadmap.md`.
 - **Waves 0 to 2 and tasks 147 and 148 are recorded (PRs #78-#110):** detail in `docs/plan/archive/2026-11-16-closed-sections.md`, `docs/plan/archive/2026-11-17-closed-sections.md` and HISTORY. Open follow-ups are under the "Follow-ups from ..." sections below.
