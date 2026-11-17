@@ -75,5 +75,33 @@ Reviewed HEAD e78aca24ad5efbfe194e3056f4e53b68cc3ba323 (full branch, after Amend
 
 ## Wave verified — 0e4325e4858368502ee17b17294a37b75509b7c2
 
+## Wave stopped — step 5 — new flake on Windows CI at PR #131 head 02326a8
+`h2_read_only_unmigrated_gives_note_and_changes_nothing` (crates/storage/tests/history.rs) failed on windows-latest in run 44201380433 (pull_request) and passed on windows-latest in run 44201364399 (push), same head 02326a81. The before/after snapshot differs only in the mtime of `history/<id>` (dir): 134394329929050772 vs 134394329929070956 (equal to `index.jsonl`'s mtime) — likely NTFS updating a directory's last-write time lazily after setup, not a write by the read-only reader. Not in known-flakes.md. Options: accept as a new known flake; or a fix round that leaves directory mtimes out of the snapshot on Windows (or settles the mtimes before snapshotting).
+
+## External review — findings
+Key sha256:28d5a8a48ca7 · pasted · reviewed head 02326a81dc6d610f391afb0618dd3642974adfbe (PR #131) · round 2
+
+Reviewed [PR #131](https://github.com/AindriuB/wisp/pull/131). One actionable finding:
+[P2] Protect history resend from truncated request bodies — `crates/storage/src/history.rs:1228`
+The new body cap truncates stored requests, but opening history discards `StoredEntry.request_truncated`. A 2 MiB text request can therefore reopen as a 1 MiB draft and be resent without warning. Form requests can likewise resend shortened or emptied fields. Carry the flag into the resend flow and require repair or explicit acknowledgement.
+Overall impact: Changes requested. The storage hardening can cause history resend to silently submit incomplete payloads.
+Reviewed target: `main`
+* Base: `f9e79b89d23684c8b1a130df855ea59770b50327`
+* Head: `02326a81dc6d610f391afb0618dd3642974adfbe`
+
+## Wave stopped — step 7 — external P2 (round 2) touches files outside Owns
+The history-resend fix needs `request_truncated` carried into the app's reopen/resend flow, with a warning or acknowledgement before a truncated body is resent. That is crates/app (outside Owns), so it is the user's call: amend Owns to add the app resend path, or record a residual and open a follow-up task. Settle it together with the Windows flake above.
+
+## Wave resumed — user: fix round for the Windows flake (leave directory mtimes out of the snapshot); external P2 accepted as a residual, follow-up task for the app resend warning
+Accepted residual (user, 2026-11-17): history drops `request_truncated` on reopen, so a capped body can be resent incomplete without warning. The fix lives in crates/app (outside Owns) and goes to a new follow-up task; 168 stays storage-only.
+
+## Review round 3 — findings
+Reviewed head 0e4325e4858368502ee17b17294a37b75509b7c2 (CI on PR #131 head 02326a8).
+- [P2] crates/storage/tests/history.rs:1968 (`h2_read_only_unmigrated_gives_note_and_changes_nothing`, and the same snapshot helper in `h2_read_only_migrated_lists_newest_up_to_limit`) — the before/after snapshot compares directory mtimes; on Windows (NTFS) a directory's last-write time can update lazily after setup, so the test fails intermittently with no write by the reader.
+  route: implementer — user decision: leave directory mtimes out of the snapshot (keep file path, size and mtime, and the directory listing), so AC6's "changes nothing" is still asserted for files.
+  input: windows-latest, run 44201380433: `history/<id>` mtime 134394329929050772 before vs 134394329929070956 after → assertion failed; run 44201364399 at the same head passed.
+
+## Wave verified — 6e0cb519e9986cbda16bf2c76a2dd28486fbb587
+
 ## Outcome
-Merged at 0e4325e (PASS + APPROVE; AC1-AC7 met; workspace 1415 passed, 0 failed). History masking and restore are single forward passes, request bodies (JSON, text, Form and Multipart) are capped at `BODY_CAP` with a `truncated` flag, and response header names are kept apart from the request-side `redacted` list. `redact.rs` now matches credential fragments at token boundaries (non-alphanumerics, case, letter/digit and acronym splits) plus suffix matching for the strong fragments, which restored the run-together names the first pass leaked (`jsessionid`, `JWTToken`, `ab%GG%74oken`). `HistoryStore::open_read_only` lists without migrating, locking or writing. One review round after Amendment 1. Follow-ups are in PLAN.md.
+Merged at 6e0cb51 (PASS + APPROVE; AC1-AC7 met; workspace 1415 passed, 0 failed at 0e4325e; round 3 changed only a test snapshot). History masking and restore are single forward passes, request bodies (JSON, text, Form and Multipart) are capped at `BODY_CAP` with a `truncated` flag, and response header names are kept apart from the request-side `redacted` list. `redact.rs` now matches credential fragments at token boundaries (non-alphanumerics, case, letter/digit and acronym splits) plus suffix matching for the strong fragments, which restored the run-together names the first pass leaked (`jsessionid`, `JWTToken`, `ab%GG%74oken`). `HistoryStore::open_read_only` lists without migrating, locking or writing. One review round after Amendment 1, then a round 3 test-only fix for a Windows flake. The external P2 (history resend of truncated bodies) is an accepted residual, covered by task 178. Follow-ups are in PLAN.md.
