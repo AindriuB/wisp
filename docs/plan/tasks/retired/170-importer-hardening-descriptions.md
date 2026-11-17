@@ -72,5 +72,31 @@ Key: pasted · reviewed head eaca40a67b7c97d8b5b99c7efa53b164189f24e7 (PR #130) 
 
 ## Wave verified — 0839ac216f838ee16cd05c7d44c7022c4b79c93a
 
+## External review — findings
+
+Key: pasted · reviewed head 3439423e6f8183d9db39c7f199458f7d037df64a (PR #130) · round 4 (the cap; not routed)
+
+- P2 — curl import can select the wrong destination: `crates/storage/src/import/curl.rs:431`: importing `curl --silent api.example.com https://other.example.com` now selects `https://other.example.com`. The importer treats the schemeless first URL as an argument to `--silent`, although that option takes no argument. `--compressed` has the same problem. Retaining headers and body while changing the destination could send credentials or payloads to the wrong endpoint.
+
+## Wave stopped — step 7 — external P2 at round 4 (cap)
+
+## Wave resumed — user: one more fix run for the round-4 curl URL P2
+
+## Wave stopped — step 2 — round-4 fix at 8f0eabb: the no-argument list fixes the P2, but the "--url wins" change (asked for in the orchestrator brief, not by the finding) leaks an unknown option value into a warning (AC1) and changes which URL is imported (DRIFT). Proposed: revert --url to in-order handling.
+
+## Wave resumed — user: revert the "--url wins" change; keep the no-argument option list
+
+## Review round 5 — findings
+
+Reviewed HEAD: 8f0eabb95e050a6009942033b1d6b2b1d13e99e5 (round-4 P2 fixed by IGNORED_LONG_NO_ARG)
+
+- [P2] crates/storage/src/import/curl.rs:486-494 — with an explicit `--url`, `pick_url` returns before the unknown-option branch, so an unknown option's value becomes an "extra URL" and its raw text goes into the warning (breaks AC1).
+  input: `curl --frobnicate SECRETVAL --url https://real/x` → warning "extra URL (host `SECRETVAL`) is not imported".
+- [DRIFT, settled by the user: revert] curl.rs:415,486-495 — `--url` now wins over an earlier positional URL; curl fetches URLs in order.
+  input: `curl api.example.com --url https://other.example.com` → imports other.example.com (0839ac2 imported api.example.com).
+  route: implementer — revert `--url` to in-order `set_url` handling as at 0839ac2, keep `IGNORED_LONG_NO_ARG`; drop or rewrite `h4_explicit_url_beats_positionals` to assert in-order behaviour; add a test for the AC1 input above.
+
+## Wave verified — e20896a6faaa6a03f885ba7035fa4091404e34d3
+
 ## Outcome
-Merged at 0839ac2 (PASS + APPROVE: workspace 1418 passed, import-h4 11 passed, fmt and clippy clean; AC1-AC10 met), after two external reviews and review rounds 1-3. Importer warnings, file names and committed URLs no longer carry credentials, an import validates folder and environment names before it writes, and Postman and OpenAPI descriptions land in `Request.description` whole (the 16 KiB cap is removed, spec :323). The undefined-variable scan is linear and reads the template fields directly: auth values are included, descriptions and names are excluded. Follow-ups are in PLAN.md.
+Merged at e20896a (PASS + APPROVE: workspace 1422 passed, fmt and clippy clean; AC1-AC10 met), after two external reviews and review rounds 1-5. Importer warnings, file names and committed URLs no longer carry credentials, an import validates folder and environment names before it writes, and Postman and OpenAPI descriptions land in `Request.description` whole (the 16 KiB cap is removed, spec :323). The undefined-variable scan is linear and reads the template fields directly: auth values are included, descriptions and names are excluded. Known curl options that take no argument no longer consume the next argument (round 4). `--url` stays in-order, as curl does: round 5 reverted an orchestrator-requested `--url` priority that leaked an unknown option's value into a warning and changed the imported URL. Follow-ups are in PLAN.md.

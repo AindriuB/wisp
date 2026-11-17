@@ -30,7 +30,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] `write.rs:134` `check_folder_rel` reports a missing folder as `ImportError::Parse` ("cannot parse input").
 - NOTE: `curl.rs:417` after an unknown option, a single positional without `://` is still taken as the URL (`curl --frobnicate SECRETVAL` writes it as the URL).
 - NOTE: `openapi.rs:222` `desc_is_safe` cannot spot a short opaque token used as an environment name.
-- [P3] `crates/storage/src/import/curl.rs:425` any unknown no-argument long option (e.g. `--compressed`, `--silent`) with two `://` URLs now fails the import instead of taking the first; an explicit `--url` value does not take priority.
+- [NOTE] `h4_unknown_option_still_never_takes_secret_as_url` passes on any Err, so it adds nothing beyond the AC2 test.
 - NOTE: assertion text is no longer scanned for undefined variables (the engine does not expand it).
 - NOTE: OpenAPI description bytes still count against the import budget.
 
