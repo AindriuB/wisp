@@ -324,8 +324,8 @@ before the app is launched. The `measure` job has `timeout-minutes: 45`.
 ### 0.3.0 limits: `wisp-cli` and the Windows GUI
 
 The Windows GUI executable gate is 16,000,000 B and its soft line is 15,900,000 B
-(user decision 2026-11-17, spec Amendment 2, replacing the earlier 15,500,000 B
-and 15,400,000 B). The gate is enforced in `.github/workflows/release.yml`. The
+(user decision 2026-11-17, spec Amendment 2, which replaced the earlier 15.5 MB
+gate and 15.4 MB soft line). The gate is enforced in `.github/workflows/release.yml`. The
 soft line is a policy line, not a CI check: crossing it applies the spec's cut
 order. `scripts/measure/budgets.json` keeps its 16 MiB (16,777,216 B) figure
 unchanged.
