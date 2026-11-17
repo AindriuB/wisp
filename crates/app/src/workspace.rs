@@ -219,6 +219,11 @@ pub enum WorkspaceEvent {
     SecretsChanged,
     /// Ask the user to confirm; the view answers through `Workspace::answer_prompt`.
     Prompt(PromptSpec),
+    /// The environment just loaded commits `suggest_confirm = true`.
+    SuggestConfirm {
+        root: PathBuf,
+        env: String,
+    },
 }
 
 /// What was sent, kept for the history entry written at the terminal event.
@@ -1956,8 +1961,29 @@ impl Workspace {
         let state = result.state();
         match result.loaded {
             Ok(loaded) => {
+                let hint = loaded.suggest_confirm;
                 c.active_env = Some(loaded.env);
-                c.env_status = Some(EnvStatus { env: name, state });
+                c.env_status = Some(EnvStatus {
+                    env: name.clone(),
+                    state,
+                });
+                match hint {
+                    wisp_storage::environment::SuggestConfirm::Yes => {
+                        cx.emit(WorkspaceEvent::SuggestConfirm {
+                            root: root.to_path_buf(),
+                            env: name,
+                        })
+                    }
+                    wisp_storage::environment::SuggestConfirm::Malformed => {
+                        cx.emit(WorkspaceEvent::Notice(
+                            format!(
+                                "suggest_confirm in {name}.toml must be true or false; ignored"
+                            )
+                            .into(),
+                        ))
+                    }
+                    wisp_storage::environment::SuggestConfirm::No => {}
+                }
             }
             Err(e) => {
                 if switching {
@@ -3480,6 +3506,16 @@ impl Workspace {
         cx.emit(WorkspaceEvent::CookiesChanged);
         cx.emit(WorkspaceEvent::HistoryChanged);
         cx.notify();
+    }
+
+    /// `resolve_id_then` for the environment guard, which has no use for the partition.
+    pub fn resolve_id_for_guard(
+        &mut self,
+        root: PathBuf,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
+        self.resolve_id_then(Some(root), cx, move |w, _, cx| then(w, cx));
     }
 
     /// Run `then` once the open collection's partition is known, creating the id on the

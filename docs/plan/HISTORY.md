@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Confirm before sending to a guarded environment (task 155)
+A per-user guard on each environment now asks "Send to {env}?" before a request goes out, from the Send button, the keyboard and the palette; a new palette command toggles the guard and a badge beside the context strip shows it. An environment marked `suggest_confirm` offers once per run to turn the guard on, using the spec's text "This environment suggests confirming sends. Enable?". The decisions are pure functions in `crates/app/src/guard.rs`.
+
+**Cost:** Review round 1 moved the hint prompt to the spec's wording (the user's decision) and put a doc comment back on `resolve_id_then`. Attempt 2 failed verify: the `guard-unit` gate needed at least 7 passing `guard::` tests but the two table tests counted as one each, so they were split into named tests; do not bundle cases in table tests where a gate counts tests. The prompt shows the host as typed, before variables resolve, and `host_of` can partly show a password containing `/ ? #`; both are listed in PLAN. Life count 2 rounds; the workspace suite passed (app 375, guard-unit 15), no flakes.
+
 ## 2026-11-17 — wisp-cli packaged in every archive and Windows gate raised (task 156)
 The release workflow builds `wisp-app` and `wisp-cli` together, checks glibc on both Linux binaries, and puts `wisp-cli` beside the GUI in the Windows zip, the Linux tarball and the macOS bundle (signed inside out before the app). The Windows GUI gate is 16,000,000 B and a CLI size step reads `cli-budgets.json`. Windows CLI signing runs only when the repository variable `SIGNPATH_SIGNS_CLI` is `true`; otherwise the draft-release notes say `wisp-cli.exe` is not code-signed. The winget template gained a `wisp-cli` portable entry and the MSIX package stays GUI-only.
 

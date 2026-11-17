@@ -77,3 +77,56 @@ Reviewed HEAD a6a118da1605052e67dc6ac59852eb46f3ac1029.
 
 - [SPEC, decided] crates/app/src/ui/root.rs:637-639 — the suggest_confirm hint prompt reads "Confirm before sending to {env}?" / "This environment asks to be guarded. …". Change it to the spec's text, "This environment suggests confirming sends. Enable?" (docs/plan/specs/2026-11-14-wisp-0-3-0.md:131), naming the environment where the prompt form needs it. Keep the buttons ["Enable", "Not now"].
 - [STYLE] crates/app/src/workspace.rs:3511 — the new `pub fn resolve_id_for_guard` sits between `resolve_id_then`'s doc comment and the function, so the comment now documents the wrapper (and misdescribes it: the wrapper drops the partition argument) and `resolve_id_then` has none. Move the wrapper so the comment stays on `resolve_id_then`, and give the wrapper its own one-line doc. Stays inside edit (d).
+
+## Attempt 2 — failed
+
+Reviewer REQUEST CHANGES at b638dccc31c71fb722cc4b4816f147cb8af5bf74. The `guard-unit` check matches only 3 tests (`needs_confirm_table`, `after_prompt_table`, `host_drops_userinfo_and_path`), and its grep needs `ok. [7-9]+ passed`, so it exits 1 although the tables cover AC1 and AC2. Fix: split the table rows of `needs_confirm_table` and `after_prompt_table` (crates/app/src/guard.rs:94-173) into individually named tests whose names read as sentences (docs/conventions.md:106), at least 7 under `guard::`, and keep every existing case. No production code change.
+
+## Wave verified — 9d5837a548e8d81769c165ac9753d87b0ae242d4
+
+## External review — findings
+
+Key sha256:69ac024ec1f8 · reviewed head e9ea58881a030227463e4b6c49a89dd2398501f7 (PR #115, record/155; task code at 9d5837a) · round 3
+
+## AindriuB/wisp#115 · Changes suggested · head e9ea58881a03
+0 P1 · 1 P2 · 0 P3
+| ID | Sev | Where | Issue | Failing input | Fix |
+|---|---|---|---|---|---|
+| 115-1 | P2 | `crates/app/src/ui/url_bar.rs:64` | The guard fails open. guard_state only treats a target as guarded when known_collection_id returns Some. That needs IdState::Known, but every collection opens in IdState::Reading (workspace.rs:90) and can end in IdState::Failed. In both states on_send skips the prompt and sends at once. The same gap lets offer_guard re-offer the hint for an environment that is already guarded. No test covers the send wiring. | The user guards prod in collection C, restarts Wisp and presses Send (button or keyboard) on a prod request before the background id read finishes. Or the id file cannot be read this run, so the state is Failed. In either case the request goes to prod with no "Send to prod?" prompt and no notice. | In on_send, treat Reading as needing an answer: wait for the id, for example through resolve_id_then, then decide. Treat Failed with a selected environment as guarded or refuse with a notice. Add a test that a send with coll_id Reading and a guarded key does not go out without the prompt. |
+Not assessed: GPUI runtime behaviour (where window.dispatch_action sends SendRequest from the URL bar, how prompts stack), SignPath matching and the release and winget workflows on a live run. Nothing was built or run.
+
+## Wave stopped — step 7 — 115-1 disputes the recorded decision at spec :136 (fail-open while the collection id is not Known is accepted); for the user
+
+## Wave resumed — user decision 2026-11-17: 115-1 accepted as a known residual
+
+Known residual (115-1): the guard applies only once the collection id is `Known`. While the id is `Reading` (startup) or `Failed`, Send goes out without the "Send to <env>?" prompt, and the suggest_confirm hint may be re-offered for an already-guarded environment. This is the fail-open the spec already accepts at docs/plan/specs/2026-11-14-wisp-0-3-0.md:136 (accident guard, user decision). Task 158's hand test and task 157's docs should state it. No code change.
+
+## External review — findings
+
+Key sha256:3858336f855f · reviewed head e7d9b17a6384c158c75c4224060bd0d622954410 (PR #115, pasted by the user; task code at 9d5837a) · round 4
+
+[P2] Recheck the active tab before accepting confirmation — `crates/app/src/ui/root.rs:519–522` (changed lines)
+The callback checks that the captured tab remains open, then checks guard state using that same tab. Switching tabs or collections while confirmation is open therefore bypasses the required abort. Confirming can send a request from the previously active, now hidden tab. Compare against `ws.active_tab()` before proceeding.
+Overall impact: Changes suggested for this localized defect. No other actionable P0–P2 defects were found during static review. Interactive behavior and release workflows were not executed.
+Reviewed target: `main`
+* Base: `acd5f79d616717c0eff13fc8e1b17101f6671725`
+* Head: `e7d9b17a6384c158c75c4224060bd0d622954410`
+
+Orchestrator check: confirmed. root.rs builds `current` from the captured `tab` via `guard_state(ws, &tab)`, so `after_prompt`'s `current.tab != confirmed.tab` arm can never fire on a tab or collection switch.
+
+## Wave stopped — step 7 — design-pass trigger: second freshness finding in the guard (115-1, then this); /design invariant derivation before round 4
+
+## Wave resumed — user decision 2026-11-17: round 4 fixes the External review round-4 finding with the architect's shared active-target lookup
+
+Design pass (architect, opus) result for round 4, the task's last:
+- Root cause: the confirm callback (crates/app/src/ui/root.rs:517-532) re-derives `current` from the captured tab, breaking C1 (tab sent = tab active at answer = tab active at request), C2 (owning collection unchanged) and C5 (Reprompt prompts for the active tab).
+- Fix: add `active_guard_state(ws) -> Option<(Entity<RequestTab>, Target, bool)>` in crates/app/src/ui/url_bar.rs (returns `ws.active_tab()` with that tab's `guard_state`). Use it in `on_send` (root.rs:432-435) and in the confirm callback in place of the open-scan plus `guard_state(&tab)`; `current` is its target, or `None` when no tab is active. Send (root.rs:528) and Reprompt (:532) use the returned active tab. No change to guard.rs or workspace.rs (AC9 holds).
+- Test: one `#[gpui::test]` in url_bar.rs on the harness pattern at crates/app/src/ui/explain.rs:341-356 — two scratch tabs; `active_guard_state` with A active, `activate_tab` to B, again; assert the returned tab is B and `after_prompt(&confirmed_A, Some(&current_B), Answer::Confirm, false)` is `Next::Abort`. Name reads as a sentence.
+- Out of scope (follow-up for task 158's hand test): the prompt detail is not compared with the draft at send time, and whether a Reprompt is refused by `has_active_prompt()` inside `done`.
+
+## Wave verified — 93ce7eb528682821a5f67984dec4b64cb13a36c2
+
+## Outcome
+Merged via record/155 at 9d5837a (stacked on record/156 and record/154). Sends to a guarded environment ask first, `suggest_confirm` offers to enable the guard with the spec's text, and a palette command and badge show and toggle it. Two rounds: review round 1 (hint wording, doc comment) and Attempt 2 (guard-unit gate, table tests split). Tester: app 375, guard-unit 15, fmt and clippy clean, no flakes. Follow-ups are in PLAN.
+115-1 (guard fails open while the collection id is Reading or Failed) accepted as a known residual by the user, 2026-11-17; it matches spec :136.
+Round 4 (external review pasted by the user, 2026-11-17; design pass by architect): confirm and Reprompt now use the tab active at the answer via `active_guard_state`, so a tab or collection switch aborts. Life count 4 rounds.

@@ -28,6 +28,7 @@ actions!(
         ShowCookieJar,
         ClearHistory,
         ToggleHistoryBodies,
+        ToggleConfirmSend,
         ShowEnvSecrets,
         ShareKeychainSecrets,
         Quit

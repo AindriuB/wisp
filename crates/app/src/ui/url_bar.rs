@@ -3,9 +3,9 @@
 use std::path::{Component, Path};
 
 use gpui::{
-    AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
-    Window, div, px,
+    Action as _, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled,
+    Subscription, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -16,6 +16,8 @@ use wisp_core::Method;
 use wisp_core::resolve::{AuthReport, Location, Problem, explain_auth, resolve};
 use wisp_storage::vault::LoadStatus;
 
+use crate::actions::{SendRequest, ToggleConfirmSend};
+use crate::guard::{self, Target};
 use crate::highlight::{self, SpanKind, VarState};
 use crate::tab::{Phase, RequestTab, TabEvent};
 use crate::ui::explain::{origin_text, tab_folders};
@@ -49,6 +51,31 @@ pub fn folder_names(path: Option<&Path>) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The send target of `tab` and whether the user guards it.
+pub(crate) fn guard_state(ws: &Workspace, tab: &Entity<RequestTab>) -> (Target, bool) {
+    let found = ws
+        .collections
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.group.tabs.contains(tab));
+    let env = found.and_then(|(_, c)| c.active_env.as_ref().map(|e| e.name.clone()));
+    let id = found.and_then(|(ix, _)| ws.known_collection_id(ix));
+    let target = Target {
+        tab: tab.entity_id().as_u64(),
+        root: found.map(|(_, c)| c.tree.root.clone()),
+        env,
+    };
+    let guarded = guard::needs_confirm(&ws.settings, id.as_deref(), target.env.as_deref());
+    (target, guarded)
+}
+
+/// The active tab with its send target and whether the user guards it; `None` without an active tab.
+pub(crate) fn active_guard_state(ws: &Workspace) -> Option<(Entity<RequestTab>, Target, bool)> {
+    let tab = ws.active_tab()?;
+    let (target, guarded) = guard_state(ws, &tab);
+    Some((tab, target, guarded))
 }
 
 pub(crate) fn strip_text(
@@ -193,6 +220,7 @@ impl UrlBar {
             cx.subscribe_in(&input, window, Self::on_input),
             cx.subscribe_in(&tab, window, Self::on_tab),
             cx.subscribe(&workspace, Self::on_workspace),
+            cx.observe(&workspace, |_, _, cx| cx.notify()),
         ];
         let mut this = Self {
             workspace,
@@ -383,13 +411,13 @@ impl UrlBar {
         };
     }
 
-    fn on_send(&mut self, cx: &mut Context<Self>) {
+    fn on_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self.tab.clone();
         if tab.read(cx).response.phase == Phase::Sending {
             self.workspace.update(cx, |w, cx| w.cancel(&tab, cx));
         } else {
-            // A refused send is already shown as problems under the strip.
-            let _ = self.workspace.update(cx, |w, cx| w.send(&tab, cx));
+            // The guarded entry point in the root view; refused sends show as problems here.
+            window.dispatch_action(SendRequest.boxed_clone(), cx);
         }
     }
 }
@@ -397,6 +425,7 @@ impl UrlBar {
 impl Render for UrlBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sending = self.tab.read(cx).response.phase == Phase::Sending;
+        let guarded = guard_state(self.workspace.read(cx), &self.tab).1;
         let theme = cx.theme();
         let mut strip = div()
             .flex()
@@ -441,7 +470,7 @@ impl Render for UrlBar {
         let button = Button::new("url-send")
             .label(if sending { "Cancel" } else { "Send" })
             .disabled(blocked && !sending)
-            .on_click(cx.listener(|this, _, _, cx| this.on_send(cx)));
+            .on_click(cx.listener(|this, _, window, cx| this.on_send(window, cx)));
         let button = if sending { button } else { button.primary() };
 
         div()
@@ -474,7 +503,25 @@ impl Render for UrlBar {
                     .text_color(theme.muted_foreground)
                     .whitespace_nowrap()
                     .overflow_hidden()
-                    .child(self.context_strip.clone()),
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(self.context_strip.clone())
+                    .children(guarded.then(|| {
+                        div()
+                            .id("guard-badge")
+                            .flex_none()
+                            .cursor_pointer()
+                            .text_color(theme.warning)
+                            .child("Confirm before send")
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Click to turn off confirm before send")
+                                    .build(window, cx)
+                            })
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(ToggleConfirmSend.boxed_clone(), cx)
+                            })
+                    })),
             )
             .child(strip)
             .child(problems)
@@ -485,6 +532,46 @@ impl Render for UrlBar {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[gpui::test]
+    fn confirming_after_switching_tabs_aborts_instead_of_sending_the_hidden_tab(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::guard::{Answer, Next, after_prompt};
+        use crate::settings::Settings;
+        use gpui::AppContext as _;
+        use std::sync::Arc;
+        use wisp_storage::vault::MemoryStore;
+
+        let workspace = cx.new(|cx| {
+            Workspace::new(
+                Settings::default(),
+                None,
+                None,
+                Arc::new(MemoryStore::new()),
+                cx,
+            )
+        });
+        let (a, b) = workspace.update(cx, |w, cx| {
+            let a = w.new_scratch_tab("https://a.test/".into(), cx);
+            let b = w.new_scratch_tab("https://b.test/".into(), cx);
+            w.activate_tab(0, cx);
+            (a, b)
+        });
+        let (tab, confirmed, _) = workspace
+            .read_with(cx, |w, _| active_guard_state(w))
+            .unwrap();
+        assert_eq!(tab, a);
+        workspace.update(cx, |w, cx| w.activate_tab(1, cx));
+        let (tab, current, guarded) = workspace
+            .read_with(cx, |w, _| active_guard_state(w))
+            .unwrap();
+        assert_eq!(tab, b);
+        assert_eq!(
+            after_prompt(&confirmed, Some(&current), Answer::Confirm, guarded),
+            Next::Abort
+        );
+    }
 
     #[test]
     fn strip_covers_history_scopes() {

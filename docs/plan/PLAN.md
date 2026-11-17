@@ -28,7 +28,17 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - **153 recorded** (PLAN.md pruned from 99,898 B to 94,230 B; decisions written into the spec and roadmap).
 - **154 recorded:** the sidebar buttons are cut (two reverts); the palette commands remain.
 - **156 recorded:** `wisp-cli` ships in all three archives, the Windows GUI gate is 16,000,000 B, and Windows CLI signing waits on the owner's `SIGNPATH_SIGNS_CLI` variable. Follow-ups (both P3, not fixed): (a) `release.yml:68-81` checks the CLI size before Authenticode signing, so a signed `wisp-cli.exe` is a few KB larger than the size checked; (b) `release.yml:72` accepts a limit stored as a JSON string (`"4194304"`). (c) 114-2 (P3): `release.yml` does not check that the CLI signing state is "signed" or "unsigned", so an empty state file yields the "not code-signed" note. The CLI growth (about 3x since wave 1, about 1.4 MB on macOS) is still not investigated.
-- **Wave 3 open (155, 157, 158):** 155 environment guard, 157 docs for the CLI and guard, 158 measure and release dry run.
+- **155 recorded:** sending to an environment with the guard on asks for confirmation, and a `suggest_confirm` environment offers to turn the guard on. Follow-ups (none fixed):
+  - [P3] `crates/app/src/ui/root.rs:594-604`: when saving settings fails, the toggle's own notice replaces "Could not save settings", so the guard looks saved but is lost on restart. `ToggleHistoryBodies` at `root.rs:1155-1165` has the same pattern.
+  - [Note] The confirm prompt detail shows the host as typed, before variables resolve (it shows `{{base}}`), which is weaker than spec :121.
+  - [Note] `guard.rs:72-79` `host_of` cuts at `/ ? #` before stripping userinfo, so a typed password containing those characters is partly shown.
+  - [Note] `ui/url_bar.rs:499-517`: the badge may be clipped on a narrow window with a long context strip.
+  - [Note, for 158's hand test] keyboard Send on a guarded tab that is already Sending now prompts before re-sending.
+  - [Known residual, 115-1, accepted by the user 2026-11-17] the guard fails open while the collection id is Reading or Failed; this matches spec :136. Tasks 157 (docs) and 158 (hand test) must state it.
+  - [For 158's hand test] a tab switch while "Send to <env>?" is up, then Confirm, must abort (no test drives the root.rs callback).
+  - [For 158's hand test] whether a Reprompt is refused by `has_active_prompt()` inside `done`.
+  - [P3] the prompt detail is not re-checked against the draft at send time, so an edit or disk reload during the prompt can send a different URL.
+- **Wave 3 open (157, 158):** 157 docs for the CLI and guard, 158 measure and release dry run.
 - **Next:** wave 3, then the macOS hand test.
 
 ### User setup (optional release channels)
