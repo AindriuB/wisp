@@ -22,26 +22,28 @@ exists: existing clients are large and memory-heavy.
   set from Milestone 0 measurements (see Budgets).
 - **v1 platforms:** macOS Apple silicon, Windows x64, Linux x64
   (Wayland or X11; GPUI needs a Vulkan-capable driver).
-- **License and version.** Apache-2.0 (`LICENSE`, `NOTICE`), version 0.2.0,
-  both set once in `[workspace.package]` and inherited by every crate.
+- **License and version.** Apache-2.0 (`LICENSE`, `NOTICE`), version 0.2.0
+  in `Cargo.toml` (0.3.0 is pending its tag, which must equal the workspace
+  version), both set once in `[workspace.package]` and inherited by every crate.
   `THIRD-PARTY-NOTICES` is generated and committed (see
-  `docs/conventions.md#dependencies`). The 0.2.0 release targets are
+  `docs/conventions.md#dependencies`). The release targets are
   `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu`;
   Intel macOS is not released (dropped for 0.1.0).
 
 ## Components
 
-A Cargo workspace of three crates under `crates/`. Port column omitted: nothing
+A Cargo workspace of four crates under `crates/`. Port column omitted: nothing
 here listens on a port.
 
 | Component | Directory | Owns |
 |---|---|---|
 | `core` | `crates/core` | Request/response model, variable and path-param resolution, auth (Basic, Bearer, API key, Digest, AWS SigV4, OAuth2), the `Engine` (reqwest on tokio, rustls only), body store, in-memory cookie jars |
 | `storage` | `crates/storage` | Reading and writing collections, environments and body files; file watcher; request history, cookie persistence and the per-user data dir; secret stores (OS keychain through `keyring`); curl, Postman and OpenAPI importers |
-| `app` | `crates/app` | GPUI and `gpui-component` UI, including the workspace that holds up to 8 open collections; the binary |
+| `app` | `crates/app` | GPUI and `gpui-component` UI, including the workspace that holds up to 8 open collections, the per-user environment guard and the assertion editor; the binary |
+| `cli` | `crates/cli` | `wisp-cli`, a read-only console tool (`validate`, `inspect`, `explain`); no GPUI, no engine, no secret store; see [`cli.md`](cli.md) |
 
-The packages are `wisp-core`, `wisp-storage` and `wisp-app` (binary `wisp`);
-see `conventions.md#naming`.
+The packages are `wisp-core`, `wisp-storage`, `wisp-app` (binary `wisp`) and
+`wisp-cli` (binary `wisp-cli`); see `conventions.md#naming`.
 
 ## Repository topology
 
@@ -53,10 +55,11 @@ worktree scripts installed from the agent-kit repo, and `agents/` and
 ## How they talk
 
 Dependencies point one way: `app` depends on `core` and `storage`; `storage`
-may depend on `core` for the model types; `core` depends on neither. A read-only
-`wisp-cli` is planned for 0.3.0 and would link `core` and `storage` directly; see
-[`plan/specs/2026-11-14-wisp-0-3-0.md`](plan/specs/2026-11-14-wisp-0-3-0.md)
-(open in PR #73).
+may depend on `core` for the model types; `core` depends on neither. `cli` links
+`core` and `storage` directly, as `app` does, and nothing links `cli`. These rules
+and the CLI's read-only rule are checked by `scripts/check-boundaries.sh` (see
+Boundaries); the 0.3.0 design is
+[`plan/specs/2026-11-14-wisp-0-3-0.md`](plan/specs/2026-11-14-wisp-0-3-0.md).
 
 ### The Engine
 
@@ -117,6 +120,11 @@ A plain library (`wisp-storage`), tested without a window. It provides:
   (`index.jsonl` plus capped body files), with auth and secret-bearing header
   values redacted when an entry is made; and cookie persistence in
   `cookies/<collection-id>.json`, on only while that file exists.
+- `[[assert]]` tables in request files (read and written with the request;
+  an unrecognised kind is kept verbatim), a tolerant `validate` walk that
+  reports every finding, and `environment_info`, which describes an environment
+  (variable and secret names, store mode, the `suggest_confirm` hint) without
+  opening a secret store or returning a value.
 - `SecretStore` and an OS-keychain store (`keyring`), for environments that
   opt in with `secrets = "<kind>"`; `*.secrets.toml` stays the default.
 - Importers for a curl command, a Postman v2.1 collection and an OpenAPI 3
@@ -184,10 +192,38 @@ present; otherwise `wisp` under the OS data directory (macOS
 `history/<id>` and `cookies/<id>.json`. Nothing is created until first use, and
 directories are made 0700 on Unix.
 
+## Guard and assertion data
+
+Where each 0.3.0 piece of state lives:
+
+- **Environment guard.** The choice to confirm before sending is per user, not
+  per collection: `confirm_send` in the per-user `settings.toml`, a list of
+  keys made of the collection id and the environment name. It is not written to
+  the collection folder, so it is not shared through git. Because the key holds
+  the environment name, a renamed environment loses its guard. The committed
+  side is only a hint: `suggest_confirm = true` in `environments/<env>.toml`
+  makes Wisp offer once per run to turn the guard on. The guard covers
+  interactive Send; an OAuth2 Authorize is not guarded. It needs a collection
+  id: while the id is still being read (or reading it failed) the guard fails
+  open and a send goes through unasked (known residual 115-1, accepted by the
+  user 2026-11-17; spec 2b).
+- **Assertions.** `[[assert]]` tables in the request's own `.toml` file
+  (`format = 1` is unchanged). They are declarative, evaluated after a send,
+  report only, and never block a send. Expected values are literals.
+- **Assertion results.** Only in history, as records of a label, a definition
+  fingerprint and a state (pass, fail or skipped), never an expected or actual
+  value; history also records the environment name. The request copy kept in a
+  history entry has its assertions cleared.
+- **No scripting.** The v1 rule stands: no scripting in v1. Assertions are data,
+  not code.
+
 ## Boundaries that must not be crossed
 
-- Only `crates/app` may depend on GPUI or `gpui-component`. `core` and
-  `storage` must build and test without them.
+- Only `crates/app` may depend on GPUI or `gpui-component`. `core`, `storage`
+  and `cli` must build and test without them. `scripts/check-boundaries.sh`
+  enforces this from `cargo tree`, and also fails when `crates/cli/src`
+  mentions network, process, engine, keychain or file-write code, so the CLI
+  stays read-only.
 - `core`'s command and event types stay plain serialisable data: no GPUI types,
   no locks, no handles to runtime internals.
 - `resolve` performs no I/O.
@@ -285,6 +321,33 @@ different device than the one GPUI picked. A `budgets.json` that is malformed or
 whose top level is not an object makes either script exit 2 with one stderr line,
 before the app is launched. The `measure` job has `timeout-minutes: 45`.
 
+### 0.3.0 limits: `wisp-cli` and the Windows GUI
+
+The Windows GUI executable gate is 16,000,000 B and its soft line is 15,900,000 B
+(user decision 2026-11-17, spec Amendment 2, replacing the earlier 15,500,000 B
+and 15,400,000 B). The gate is enforced in `.github/workflows/release.yml`. The
+soft line is a policy line, not a CI check: crossing it applies the spec's cut
+order. `scripts/measure/budgets.json` keeps its 16 MiB (16,777,216 B) figure
+unchanged.
+
+`wisp-cli` has its own limit of 4,194,304 B per target, in
+`scripts/measure/cli-budgets.json`; `release.yml` and `measure.yml` read it. The
+limit is checked on the unsigned binary, so a signed `wisp-cli.exe` is a few KB
+larger than the size checked.
+
+Sizes measured at the wave 2 head (`measure.yml` run 43976706350 on `4769107`,
+record `scripts/measure/results/wave-2-size.json`):
+
+| Target | GUI binary | `wisp-cli` | CLI limit |
+|---|---|---|---|
+| `aarch64-apple-darwin` | 11,817,952 B | 1,415,600 B | 4,194,304 B |
+| `x86_64-pc-windows-msvc` | 15,494,656 B | 1,631,232 B | 4,194,304 B |
+| `x86_64-unknown-linux-gnu` | 26,181,000 B | 1,966,744 B | 4,194,304 B |
+
+The CLI roughly tripled from the wave 1 figures (macOS 552,528 B); the cause has
+not been investigated. The Windows GUI figure above (15,494,656 B) is over the
+soft line and under the gate.
+
 No change may be justified or rejected by reference to a number that is not in
 this section.
 
@@ -294,12 +357,14 @@ this section.
 
 | Asset | Contents (inside `Wisp-<v>-<platform>/`) |
 |---|---|
-| `Wisp-<v>-macos-arm64.zip` | `Wisp.app/`, `LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES` |
-| `Wisp-<v>-windows-x64.zip` | `wisp.exe` and the three notice files |
-| `Wisp-<v>-linux-x64.tar.gz` | `wisp` (mode 0755, owner 0/0), `icons/`, `share/` (launcher and icons) and the three notice files |
+| `Wisp-<v>-macos-arm64.zip` | `Wisp.app/` (with `wisp-cli` at `Contents/MacOS/wisp-cli`, signed with the app and covered by its notarisation), `LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES` |
+| `Wisp-<v>-windows-x64.zip` | `wisp.exe`, `wisp-cli.exe` and the three notice files |
+| `Wisp-<v>-linux-x64.tar.gz` | `wisp` and `wisp-cli` (both mode 0755, owner 0/0), `icons/`, `share/` (launcher and icons) and the three notice files |
 | `SHA256SUMS` | one `sha256sum -c` line per archive |
 
-The Windows release `wisp.exe` is a GUI-subsystem executable (`windows_subsystem = "windows"` in release builds, so no console window from Explorer, and stderr goes nowhere there) with a static CRT (`+crt-static` in `.cargo/config.toml`, so no VC++ runtime is needed); measured size is 13,630,464 B, within the 16 MiB budget.
+The release workflow builds `wisp-app` and `wisp-cli` together and `package.sh` takes the CLI binary as an optional fourth argument. `wisp-cli.exe` is a console-subsystem executable, which is why the CLI is a separate binary. It is Authenticode-signed only when the repository variable `SIGNPATH_SIGNS_CLI` is `true`; otherwise it is unsigned and the draft release notes say so. The winget manifest template adds a `wisp-cli` portable command alias; the MSIX stays GUI-only (`packaging/msix/STORE-SUBMISSION.md`). `check-glibc.sh` also runs on the Linux `wisp-cli`.
+
+The Windows release `wisp.exe` is a GUI-subsystem executable (`windows_subsystem = "windows"` in release builds, so no console window from Explorer, and stderr goes nowhere there) with a static CRT (`+crt-static` in `.cargo/config.toml`, so no VC++ runtime is needed); measured size was 13,630,464 B at task 77 (see Budgets for the current figure).
 
 The bundle id is `io.github.aindriub.wisp`. `Wisp.app` is signed with a Developer ID Application certificate and notarised (see below). It carries the app icon (see below). The Linux binary is built on a pinned `ubuntu-24.04` runner (release, measure and the ci `check` job), so its measured glibc floor is 2.39: Ubuntu 24.04 or newer. `ubuntu-latest` is not used because it moved to 26.04, whose binary needed GLIBC_2.43. `scripts/release/check-glibc.sh` runs after Build in release and measure and fails if any symbol needs a glibc version above 2.39.
 
@@ -325,7 +390,7 @@ macOS: `package.sh` compiles `AppIcon.icon` with `actool` into `Assets.car`, so 
 
 Wisp has one window, and closing it quits the app: every window close is routed through `cx.quit()`, so the process never runs windowless. Quit is the `Quit` action (cmd-q on macOS, ctrl-q elsewhere) and, on macOS, the Quit item in the "Wisp" app menu. This also avoids a Touch Bar Mac abort in Dock Quit, caused upstream by `accesskit_macos` restoring the content view's class on window drop; `scripts/measure/quit-check.sh` checks a clean exit.
 
-Quit and close ask before they discard unsaved drafts. The `Quit` action and the window close button go through one function that prompts "Discard unsaved changes?" when any tab is dirty; closing a dirty tab (the × button, cmd-w, the palette and the banner) prompts the same way. A `prompt_up` flag stops a second prompt opening while one is showing. The `Quit` handler defers its work with `cx.defer`, because global action listeners run inside the active window's update, where a nested `handle.update` on that window fails with "window not found". On macOS the Wisp menu also has Hide Wisp (cmd-h), Hide Others (alt-cmd-h) and Show All.
+Quit and close ask before they discard unsaved drafts, and offer to save first (task 143, `crates/app/src/save_close.rs`). The `Quit` action and the window close button go through one function that prompts when any tab is dirty, with the buttons `Save all and quit`, `Discard` and `Cancel`; closing a dirty tab (the × button, cmd-w, the palette and the banner) offers `Save and close`, `Discard` and `Cancel`; closing a collection with unsaved tabs offers `Save all and close`, `Discard` and `Cancel`. A tab or quit that has nothing saveable (scratch drafts) offers only `Discard` and `Cancel`. A save that fails keeps the tab open and says why. A `prompt_up` flag stops a second prompt opening while one is showing. The `Quit` handler defers its work with `cx.defer`, because global action listeners run inside the active window's update, where a nested `handle.update` on that window fails with "window not found". On macOS the Wisp menu also has Hide Wisp (cmd-h), Hide Others (alt-cmd-h) and Show All.
 
 Some paths cannot ask, because GPUI 0.3.10 gives no way to veto them, so a dirty draft is dropped without a prompt:
 
