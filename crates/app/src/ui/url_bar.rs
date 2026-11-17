@@ -71,6 +71,13 @@ pub(crate) fn guard_state(ws: &Workspace, tab: &Entity<RequestTab>) -> (Target, 
     (target, guarded)
 }
 
+/// The active tab with its send target and whether the user guards it; `None` without an active tab.
+pub(crate) fn active_guard_state(ws: &Workspace) -> Option<(Entity<RequestTab>, Target, bool)> {
+    let tab = ws.active_tab()?;
+    let (target, guarded) = guard_state(ws, &tab);
+    Some((tab, target, guarded))
+}
+
 pub(crate) fn strip_text(
     environment: Option<(&str, Option<&EnvState>)>,
     auth: &AuthReport,
@@ -525,6 +532,46 @@ impl Render for UrlBar {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[gpui::test]
+    fn confirming_after_switching_tabs_aborts_instead_of_sending_the_hidden_tab(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::guard::{Answer, Next, after_prompt};
+        use crate::settings::Settings;
+        use gpui::AppContext as _;
+        use std::sync::Arc;
+        use wisp_storage::vault::MemoryStore;
+
+        let workspace = cx.new(|cx| {
+            Workspace::new(
+                Settings::default(),
+                None,
+                None,
+                Arc::new(MemoryStore::new()),
+                cx,
+            )
+        });
+        let (a, b) = workspace.update(cx, |w, cx| {
+            let a = w.new_scratch_tab("https://a.test/".into(), cx);
+            let b = w.new_scratch_tab("https://b.test/".into(), cx);
+            w.activate_tab(0, cx);
+            (a, b)
+        });
+        let (tab, confirmed, _) = workspace
+            .read_with(cx, |w, _| active_guard_state(w))
+            .unwrap();
+        assert_eq!(tab, a);
+        workspace.update(cx, |w, cx| w.activate_tab(1, cx));
+        let (tab, current, guarded) = workspace
+            .read_with(cx, |w, _| active_guard_state(w))
+            .unwrap();
+        assert_eq!(tab, b);
+        assert_eq!(
+            after_prompt(&confirmed, Some(&current), Answer::Confirm, guarded),
+            Next::Abort
+        );
+    }
 
     #[test]
     fn strip_covers_history_scopes() {

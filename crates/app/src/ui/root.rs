@@ -36,7 +36,7 @@ use crate::ui::palette::PaletteView;
 use crate::ui::request::RequestPane;
 use crate::ui::response::ResponsePane;
 use crate::ui::sidebar::Sidebar;
-use crate::ui::url_bar::{UrlBar, guard_state};
+use crate::ui::url_bar::{UrlBar, active_guard_state};
 use crate::vault::{BannerAction, EnvAction, PromptSpec};
 use crate::workspace::{CloseStep, Workspace, WorkspaceEvent, close_step, confirmed_open};
 
@@ -429,10 +429,9 @@ impl WorkspaceView {
 
     /// The one interactive send entry point: asks first when the target is guarded.
     fn on_send(&mut self, _: &SendRequest, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.workspace.read(cx).active_tab() else {
+        let Some((tab, target, guarded)) = active_guard_state(self.workspace.read(cx)) else {
             return;
         };
-        let (target, guarded) = guard_state(self.workspace.read(cx), &tab);
         if guarded {
             self.confirm_send(tab, target, window, cx);
         } else {
@@ -514,22 +513,19 @@ impl WorkspaceView {
                 } else {
                     Answer::Cancel
                 };
-                let (current, guarded) = {
-                    let ws = this.workspace.read(cx);
-                    let open = ws.collections.iter().any(|c| c.group.tabs.contains(&tab));
-                    if open {
-                        let (t, g) = guard_state(ws, &tab);
-                        (Some(t), g)
-                    } else {
-                        (None, false)
-                    }
-                };
+                let active = active_guard_state(this.workspace.read(cx));
+                let guarded = active.as_ref().is_some_and(|a| a.2);
+                let current = active.as_ref().map(|a| a.1.clone());
                 match guard::after_prompt(&target, current.as_ref(), answer, guarded) {
-                    Next::Send => this.send_now(&tab, cx),
+                    Next::Send => {
+                        if let Some((active, _, _)) = &active {
+                            this.send_now(active, cx);
+                        }
+                    }
                     Next::Abort => {}
                     Next::Reprompt => {
-                        if let Some(current) = current {
-                            this.confirm_send(tab, current, window, cx);
+                        if let Some((active, current, _)) = active {
+                            this.confirm_send(active, current, window, cx);
                         }
                     }
                     Next::AbortChanged => this.workspace.update(cx, |_, cx| {
