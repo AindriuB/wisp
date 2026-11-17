@@ -46,6 +46,7 @@ fn new_entry(req: Request) -> NewEntry {
         }],
         environment: None,
         assertions: Vec::new(),
+        delivery: None,
     }
 }
 
@@ -1768,4 +1769,29 @@ fn file_scheme_without_userinfo_stays_unchanged() {
             assert_eq!(store.load(&e.id).unwrap().response_headers[0].value, url);
         }
     }
+}
+
+#[test]
+fn history_index_line_without_delivery_loads_as_none() {
+    let line = r#"{"id":"e1","at":1,"method":"Get","url":"http://x/","outcome":"Completed"}"#;
+    let e: wisp_storage::history::HistoryEntry = serde_json::from_str(line).unwrap();
+    assert_eq!(e.delivery, None);
+}
+
+#[test]
+fn history_delivery_is_written_only_when_present() {
+    use wisp_storage::history::Delivery;
+    let (_d, _data, store) = setup();
+    let none = store.append(plain("http://x/"), None).unwrap();
+    assert!(!serde_json::to_string(&none).unwrap().contains("delivery"));
+    let mut n = plain("http://x/");
+    n.delivery = Some(Delivery::NotSent);
+    let some = store.append(n, None).unwrap();
+    assert!(
+        serde_json::to_string(&some)
+            .unwrap()
+            .contains(r#""delivery":"not_sent""#)
+    );
+    let listed = store.list().unwrap();
+    assert!(listed.iter().any(|e| e.delivery == Some(Delivery::NotSent)));
 }

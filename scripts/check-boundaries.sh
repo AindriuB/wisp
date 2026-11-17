@@ -54,5 +54,11 @@ if sed '/^#\[cfg(test)\]/,$d' crates/app/src/workspace.rs | grep -nE '(^|[^:.[:a
     fail=1
 fi
 
+# History entries are built by the service: no NewEntry { literal above the tests.
+if sed '/^#\[cfg(test)\]/,$d' crates/app/src/workspace.rs | grep -nF 'NewEntry {'; then
+    echo "check-boundaries: crates/app/src/workspace.rs builds NewEntry {" >&2
+    fail=1
+fi
+
 [ "$fail" -eq 0 ] && echo "check-boundaries: ok"
 exit "$fail"

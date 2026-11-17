@@ -8,7 +8,6 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui::{
     AppContext as _, Context, Entity, EntityId, EventEmitter, SharedString, Task, WeakEntity,
 };
-use wisp_core::assert::{Assertion, Facts, evaluate};
 use wisp_core::auth::EngineAuth;
 use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::cookies::{CookieJar, CookieJars};
@@ -16,9 +15,9 @@ use wisp_core::request::{
     Auth, Body, CollectionDefaults, Environment, PartValue, Request, TextBody,
 };
 use wisp_core::resolve::{Location, Problem, Recording, ResolveError, Scope};
-use wisp_core::{
-    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, Header, RequestId,
-};
+use wisp_core::{Command, Engine, EngineConfig, EngineError, Event, EventReceiver, RequestId};
+use wisp_service::history::{HistoryBodies, RecordError, record as record_history};
+use wisp_service::outcome::{Response, ResponseTimings, Terminal, finish};
 pub(crate) use wisp_service::plan::scope_path_for;
 use wisp_service::plan::{ResendFacts, SendInput, SendPlan, prepare, prepare_authorize};
 use wisp_service::send::{SentRecord as Sent, submit};
@@ -29,17 +28,14 @@ use wisp_storage::collection::{CollectionTree, open_collection};
 use wisp_storage::cookies::{CookieFile, StoredCookie};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::list_environments;
-use wisp_storage::history::{
-    AssertionRecord, BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry,
-};
+use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, StoredEntry};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
 
 use crate::draft::{self, ReloadAction};
 use crate::settings::{self, Settings};
 use crate::tab::{
-    AuthorizeState, CheckOutcome, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState,
-    TabEvent,
+    AuthorizeState, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent,
 };
 use crate::ui::cookie_jar::{self as cookie_ui, Debounce};
 use crate::ui::history as history_ui;
@@ -58,6 +54,12 @@ pub struct TabGroup {
     pub active: Option<usize>,
 }
 
+/// A fresh history generation, unique across the workspace.
+fn next_history_gen() -> u64 {
+    static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
 /// One open collection and everything that belongs to it alone.
 pub struct OpenCollection {
     pub tree: CollectionTree,
@@ -73,6 +75,9 @@ pub struct OpenCollection {
     /// Where the collection's id stands; resolved off the UI thread.
     coll_id: IdState,
     history: HistoryState,
+    /// Which history generation this collection is in; a resolution started under an
+    /// older one is stale. Drawn from a workspace-wide counter.
+    history_gen: u64,
     /// True once a history Notice was shown for this collection.
     history_notified: bool,
     watcher: Option<Watcher>,
@@ -91,6 +96,7 @@ impl OpenCollection {
             group: TabGroup::default(),
             coll_id: IdState::Reading,
             history: HistoryState::Unresolved,
+            history_gen: next_history_gen(),
             history_notified: false,
             watcher: None,
             _watch_task: None,
@@ -235,6 +241,13 @@ enum HistoryState {
     Ready(HistoryStore),
     /// Writing is off; the reason is shown in the history panel.
     Off(String),
+}
+
+/// Where a history append goes: the collection id, or a store already recovered from a
+/// cached `Failed` id (kept so reads and writes use the same one).
+enum RecordTo {
+    Id(CollectionId),
+    Store(HistoryStore),
 }
 
 /// Serialises every collection-id resolve so concurrent first uses agree on one id.
@@ -546,6 +559,8 @@ impl CookieJob {
 /// Everything needed to reach the open collection's history off the UI thread.
 pub struct HistoryJob {
     store: Option<HistoryStore>,
+    /// The id the workspace holds while the store is unresolved; read before the disk.
+    id: Option<CollectionId>,
     root: PathBuf,
     data: DataDir,
 }
@@ -555,9 +570,23 @@ impl HistoryJob {
     pub fn open_existing(self) -> Result<Option<HistoryStore>, String> {
         match self.store {
             Some(s) => Ok(Some(s)),
+            None if self.id.is_some() => Ok(self.id.map(|id| HistoryStore::open(&self.data, &id))),
             None => Ok(read_collection_id(&self.root)
                 .map_err(|e| e.to_string())?
                 .map(|id| HistoryStore::open(&self.data, &id))),
+        }
+    }
+
+    /// Resolve the collection id when needed and open the store. Blocking. The append no
+    /// longer goes through this: it holds the id (see `append_history`).
+    #[cfg(test)]
+    pub fn open(self) -> Result<HistoryStore, String> {
+        match self.store {
+            Some(s) => Ok(s),
+            None => {
+                let id = resolve_collection_id(&self.root)?;
+                Ok(HistoryStore::open(&self.data, &id))
+            }
         }
     }
 
@@ -599,17 +628,6 @@ impl HistoryJob {
         };
         Ok((stored, handle))
     }
-
-    /// Resolve the collection id when needed and open the store. Blocking.
-    pub fn open(self) -> Result<HistoryStore, String> {
-        match self.store {
-            Some(s) => Ok(s),
-            None => {
-                let id = resolve_collection_id(&self.root)?;
-                Ok(HistoryStore::open(&self.data, &id))
-            }
-        }
-    }
 }
 
 /// A handle to `c`'s history, or the reason there is none.
@@ -622,8 +640,13 @@ fn history_job_of(c: &OpenCollection, data: Option<&DataDir>) -> Result<HistoryJ
     let Some(data) = data.cloned() else {
         return Err("the data directory is unknown".into());
     };
+    let id = match (&store, &c.history) {
+        (None, HistoryState::Unresolved) => known_id(&c.coll_id),
+        _ => None,
+    };
     Ok(HistoryJob {
         store,
+        id,
         root: c.tree.root.clone(),
         data,
     })
@@ -638,6 +661,14 @@ fn history_target(
 ) -> Option<(usize, Result<HistoryJob, String>)> {
     let ix = cols.iter().position(|c| c.tree.root == root)?;
     Some((ix, history_job_of(&cols[ix], data)))
+}
+
+/// The collection id the workspace holds, when it is known and well formed.
+fn known_id(state: &IdState) -> Option<CollectionId> {
+    match state {
+        IdState::Known(id) => CollectionId::parse(id),
+        _ => None,
+    }
 }
 
 /// Ids of the collections whose cookie file is on and healthy.
@@ -828,34 +859,6 @@ fn strip_userinfo(url: &str) -> Option<String> {
     Some(format!("{}{}", &url[..start], &url[start + at + 1..]))
 }
 
-/// Evaluate `assertions` over a response; each outcome keeps its definition.
-fn check_outcomes(
-    assertions: &[Assertion],
-    status: u16,
-    headers: &[Header],
-    body: Option<&[u8]>,
-) -> Vec<CheckOutcome> {
-    let facts = Facts {
-        status,
-        headers,
-        body,
-    };
-    assertions
-        .iter()
-        .cloned()
-        .zip(evaluate(assertions, &facts))
-        .map(|(assertion, result)| CheckOutcome { assertion, result })
-        .collect()
-}
-
-/// The history records of `outcomes`, in order: label, fingerprint and state only.
-fn assertion_records(outcomes: &[CheckOutcome]) -> Vec<AssertionRecord> {
-    outcomes
-        .iter()
-        .map(|o| AssertionRecord::from_result(&o.assertion, &o.result))
-        .collect()
-}
-
 /// Sanitise a stored request in place and describe where it came from.
 fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigin {
     let (adjustments, redacted) = sanitize_redacted(request, &entry.redacted);
@@ -980,6 +983,10 @@ pub struct Workspace {
     auth_routes: HashMap<RequestId, WeakEntity<RequestTab>>,
     sent: HashMap<RequestId, Sent>,
     data_dir: Option<DataDir>,
+    /// Test hook: while `Some`, a recovery re-read's result waits here to be released.
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    held_recoveries: Option<Vec<Box<dyn FnOnce(&mut Workspace, &mut Context<Workspace>)>>>,
     jars: CookieJars,
     /// Persistence state per collection id, once its file was checked in this run.
     cookie_files: HashMap<String, CookieStatus>,
@@ -1220,6 +1227,24 @@ impl Workspace {
         stores: vault::SharedStores,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Under test the real data directory is never resolved: tests inject theirs.
+        #[cfg(not(test))]
+        let data_dir = DataDir::resolve();
+        #[cfg(test)]
+        let data_dir = None;
+        Self::with_data_dir(settings, settings_path, open, stores, data_dir, cx)
+    }
+
+    /// [`Workspace::new`] with the data directory given, set before any collection is
+    /// restored or anything else reads it.
+    pub(crate) fn with_data_dir(
+        settings: Settings,
+        settings_path: Option<PathBuf>,
+        open: Option<PathBuf>,
+        stores: vault::SharedStores,
+        data_dir: Option<DataDir>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let jars = CookieJars::default();
         let refresh_store = Arc::new(vault::KeychainRefreshStore::new(stores.clone()));
         let (engine, events) = Engine::start(EngineConfig {
@@ -1239,7 +1264,9 @@ impl Workspace {
             routes: HashMap::new(),
             auth_routes: HashMap::new(),
             sent: HashMap::new(),
-            data_dir: DataDir::resolve(),
+            data_dir,
+            #[cfg(test)]
+            held_recoveries: None,
             jars,
             cookie_files: HashMap::new(),
             cookie_queue: VecDeque::new(),
@@ -1879,6 +1906,7 @@ impl Workspace {
             match action {
                 EnvAction::NewId => {
                     if let Some(id) = refresh_known_id(&mut self.collections[ix]) {
+                        self.reset_history(ix, cx);
                         self.on_id_known(id, cx);
                         cx.emit(WorkspaceEvent::CookiesChanged);
                     }
@@ -2538,6 +2566,59 @@ impl Workspace {
         let bodies = self.engine.bodies();
         let mut old_body = None;
         let mut stored_body: Option<Vec<u8>> = None;
+        // Read now: the handle is released when the next request replaces it.
+        if let Event::Completed { body, .. } = &event {
+            stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
+        }
+        let sent_root = sent.as_ref().and_then(|s| s.root.clone());
+        let mut finished = sent.map(|sent| {
+            let r = &tab.read(cx).response;
+            let (terminal, total, dns, connect, size) = match &event {
+                Event::Completed {
+                    total,
+                    size,
+                    timings,
+                    ..
+                } => (
+                    Terminal::Completed {
+                        body_prefix: stored_body.as_deref(),
+                    },
+                    Some(*total),
+                    timings.dns,
+                    timings.connect,
+                    Some(*size),
+                ),
+                Event::Failed {
+                    error,
+                    nothing_sent,
+                    ..
+                } => (
+                    Terminal::Failed {
+                        error,
+                        nothing_sent: *nothing_sent,
+                    },
+                    r.total,
+                    r.dns,
+                    r.connect,
+                    r.size,
+                ),
+                _ => (Terminal::Cancelled, r.total, r.dns, r.connect, r.size),
+            };
+            let response = Response {
+                status: r.status,
+                headers: &r.headers,
+                timings: ResponseTimings {
+                    ttfb: r.ttfb,
+                    total,
+                    dns,
+                    connect,
+                },
+                size,
+                // Only a `Headers` event sets the status, and a send clears it.
+                headers_seen: r.status.is_some(),
+            };
+            finish(sent, &response, &terminal, &[])
+        });
         let autosend_line = tab.update(cx, |t, cx| {
             let mut line = None;
             let is_auto = self.autosend == Some(id);
@@ -2572,15 +2653,10 @@ impl Workspace {
                     ..
                 } => {
                     old_body = t.response.body.take();
-                    // Read now: the handle is released when the next request replaces it.
-                    stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
-                    let checks = sent.as_ref().map_or(&[][..], |s| &s.draft.assertions[..]);
-                    t.response.assertions = check_outcomes(
-                        checks,
-                        t.response.status.unwrap_or(0),
-                        &t.response.headers,
-                        stored_body.as_deref(),
-                    );
+                    t.response.assertions = finished
+                        .as_mut()
+                        .map(|f| std::mem::take(&mut f.checks))
+                        .unwrap_or_default();
                     t.response.phase = Phase::Done;
                     t.response.total = Some(*total);
                     t.response.dns = timings.dns;
@@ -2616,25 +2692,22 @@ impl Workspace {
         if let Some(line) = autosend_line {
             println!("{line}");
         }
-        if terminal && let Some(sent) = sent {
-            self.append_history(&tab, sent, &event, stored_body, cx);
+        if let (Some(f), Some(root)) = (finished, sent_root) {
+            self.append_history(root, f.entry, stored_body, cx);
         }
     }
 
-    /// One entry per terminal event, only while a collection is open. The store I/O runs on
-    /// the background executor.
+    /// One entry per terminal event, only while a collection is open, into the collection
+    /// at `task_root` (the one the tab was sent from, not the active one). The id the
+    /// workspace holds is used; an unknown id is resolved first. The store I/O runs on the
+    /// background executor.
     fn append_history(
         &mut self,
-        tab: &Entity<RequestTab>,
-        sent: Sent,
-        event: &Event,
+        task_root: PathBuf,
+        new: NewEntry,
         body: Option<Vec<u8>>,
         cx: &mut Context<Self>,
     ) {
-        // The entry belongs to the collection the tab was sent from, not the active one.
-        let Some(task_root) = sent.root.clone() else {
-            return;
-        };
         let Some((cix, job)) =
             history_target(&self.collections, &task_root, self.data_dir.as_ref())
         else {
@@ -2649,35 +2722,163 @@ impl Workspace {
                 return;
             }
         };
+        let data = job.data;
+        let recovered = job.store;
+        let generation = self.collections[cix].history_gen;
         let body = history_ui::body_to_store(self.settings.history_bodies, body);
-        let r = &tab.read(cx).response;
-        let outcome = match event {
-            Event::Completed { .. } => Outcome::Completed,
-            Event::Failed { error, .. } => Outcome::Failed { kind: error.kind },
-            _ => Outcome::Cancelled,
+        match known_id(&self.collections[cix].coll_id) {
+            // One current store: once `history` holds it, every append goes there.
+            _ if recovered.is_some() => {
+                let store = recovered.expect("checked above");
+                self.spawn_record(
+                    task_root,
+                    data,
+                    RecordTo::Store(store),
+                    generation,
+                    new,
+                    body,
+                    cx,
+                )
+            }
+            Some(id) => {
+                self.spawn_record(task_root, data, RecordTo::Id(id), generation, new, body, cx)
+            }
+            None if matches!(self.collections[cix].coll_id, IdState::Failed { .. }) => {
+                // A cached read failure: re-read the id for this append only, so a repaired
+                // file recovers history. The shared `coll_id` (cookies, secrets, clash
+                // handling, notices) is left as it is.
+                cx.spawn(async move |this, cx| {
+                    let r = task_root.clone();
+                    let d = data.clone();
+                    let landed = cx
+                        .background_executor()
+                        .spawn(async move {
+                            match read_id_state(&r) {
+                                IdState::Known(id) => match CollectionId::parse(&id) {
+                                    Some(id) => Ok(HistoryStore::open(&d, &id)),
+                                    None => Err("invalid collection id".to_string()),
+                                },
+                                IdState::Failed { reason, .. } => Err(reason),
+                                _ => Err("the collection id is not available".to_string()),
+                            }
+                        })
+                        .await;
+                    this.update(cx, |this, cx| {
+                        let apply = move |this: &mut Workspace, cx: &mut Context<Workspace>| {
+                            this.recovery_landed(task_root, data, generation, landed, new, body, cx)
+                        };
+                        #[cfg(test)]
+                        if let Some(held) = this.held_recoveries.as_mut() {
+                            held.push(Box::new(apply));
+                            return;
+                        }
+                        apply(this, cx)
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            None => {
+                let root = task_root.clone();
+                self.resolve_id_then(Some(root), cx, move |this, _, cx| {
+                    let Some(cix) = this.coll_ix(&task_root) else {
+                        return;
+                    };
+                    match &this.collections[cix].coll_id {
+                        IdState::Known(id) => match CollectionId::parse(id) {
+                            Some(id) => this.spawn_record(
+                                task_root,
+                                data,
+                                RecordTo::Id(id),
+                                generation,
+                                new,
+                                body,
+                                cx,
+                            ),
+                            None => {
+                                this.history_off(&task_root, "invalid collection id".into(), cx)
+                            }
+                        },
+                        IdState::Failed { reason, .. } => {
+                            let reason = reason.clone();
+                            this.history_off(&task_root, reason, cx);
+                        }
+                        _ => this.history_off(
+                            &task_root,
+                            "the collection id is not available".into(),
+                            cx,
+                        ),
+                    }
+                });
+            }
+        }
+    }
+
+    /// A `Failed`-id re-read finished. The first re-read to land sets the collection's
+    /// store; one that lands later writes to it and drops its own.
+    #[allow(clippy::too_many_arguments)]
+    fn recovery_landed(
+        &mut self,
+        task_root: PathBuf,
+        data: DataDir,
+        generation: u64,
+        landed: Result<HistoryStore, String>,
+        new: NewEntry,
+        body: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(cix) = self.coll_ix(&task_root) else {
+            return;
         };
-        let new = NewEntry {
-            at: SystemTime::now(),
-            request_path: sent.request,
-            request: sent.draft,
-            outcome,
-            status: r.status,
-            ttfb: r.ttfb,
-            total: r.total,
-            dns: r.dns,
-            connect: r.connect,
-            size: r.size,
-            response_headers: r.headers.clone(),
-            environment: sent.environment,
-            assertions: assertion_records(&r.assertions),
+        let c = &mut self.collections[cix];
+        let store = match (&c.history, landed) {
+            (HistoryState::Ready(s), _) => s.clone(),
+            (HistoryState::Off(_), _) => return,
+            (HistoryState::Unresolved, Err(reason)) => {
+                if c.history_gen == generation {
+                    self.history_off(&task_root, reason, cx);
+                }
+                return;
+            }
+            (HistoryState::Unresolved, Ok(new_store)) => {
+                if c.history_gen == generation {
+                    c.history = HistoryState::Ready(new_store.clone());
+                }
+                new_store
+            }
         };
+        self.spawn_record(
+            task_root,
+            data,
+            RecordTo::Store(store),
+            generation,
+            new,
+            body,
+            cx,
+        );
+    }
+
+    /// Append `new` under `id` on the background executor and apply the result.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_record(
+        &mut self,
+        task_root: PathBuf,
+        data: DataDir,
+        to: RecordTo,
+        generation: u64,
+        new: NewEntry,
+        body: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move {
-                let store = job.open().map_err(|e| (true, e))?;
-                store
-                    .append(new, body.as_deref())
-                    .map(|_| store)
-                    .map_err(|e| (false, e.to_string()))
+                match to {
+                    RecordTo::Id(id) => record_history(&data, &id, new, body, HistoryBodies::Store),
+                    RecordTo::Store(store) => store
+                        .append(new, body.as_deref())
+                        .map(|_| store)
+                        .map_err(|e| RecordError::Append(e.to_string())),
+                }
             });
             let result = work.await;
             this.update(cx, |this, cx| {
@@ -2687,13 +2888,16 @@ impl Workspace {
                 };
                 match result {
                     Ok(store) => {
-                        if matches!(this.collections[cix].history, HistoryState::Unresolved) {
-                            this.collections[cix].history = HistoryState::Ready(store);
+                        let c = &mut this.collections[cix];
+                        if matches!(c.history, HistoryState::Unresolved)
+                            && c.history_gen == generation
+                        {
+                            c.history = HistoryState::Ready(store);
                         }
                         cx.emit(WorkspaceEvent::HistoryChanged);
                     }
-                    Err((true, reason)) => this.history_off(&task_root, reason, cx),
-                    Err((false, reason)) => {
+                    Err(RecordError::Open(reason)) => this.history_off(&task_root, reason, cx),
+                    Err(RecordError::Append(reason)) => {
                         tracing::warn!(error = %reason, "history append failed");
                         this.history_notice(
                             &task_root,
@@ -2706,6 +2910,15 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// Move the collection's history to whatever its id now resolves to: the one place
+    /// the current store changes id. A resolution still in flight is dropped as stale.
+    fn reset_history(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let c = &mut self.collections[ix];
+        c.history = HistoryState::Unresolved;
+        c.history_gen = next_history_gen();
+        cx.emit(WorkspaceEvent::HistoryChanged);
     }
 
     fn history_off(&mut self, root: &Path, reason: String, cx: &mut Context<Self>) {
@@ -3493,9 +3706,8 @@ impl Workspace {
 mod tests {
     use super::*;
     use wisp_core::Method;
-    use wisp_core::assert::{Expected, Op, Verdict};
     use wisp_core::request::{KeyValue, TextBody, Var};
-    use wisp_storage::history::AssertionState;
+    use wisp_storage::history::Outcome;
 
     #[test]
     fn quit_save_only_when_saving_and_dirty() {
@@ -3645,6 +3857,22 @@ mod tests {
         assert!(st.loaded && st.enabled);
         st.debounce.observe(1, Instant::now());
         assert!(st.debounce.dirty());
+    }
+
+    #[test]
+    fn a_corrupt_cookie_file_reaches_the_notice_without_its_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir::at(dir.path());
+        let id = CollectionId::parse("abcdef0123456789").unwrap();
+        let file = CookieFile::new(&data, &id);
+        file.enable().unwrap();
+        std::fs::write(data.cookies_file(&id), "{\"version\": CANARY").unwrap();
+        let done = CookieJob::Load { id: id.to_string() }.run(&data);
+        let mut st = status();
+        let notice = st.apply(&done).expect("a load error is reported");
+        assert!(notice.contains("line"), "{notice}");
+        assert!(!notice.contains("CANARY"), "{notice}");
+        assert!(!format!("{:?}", st.error).contains("CANARY"));
     }
 
     #[test]
@@ -3913,83 +4141,6 @@ mod tests {
         assert_eq!(c.coll_id, IdState::Known(new));
     }
 
-    fn status_is(code: i64) -> Assertion {
-        Assertion::Status {
-            op: Op::Equals,
-            expected: Expected::Int(code),
-        }
-    }
-
-    #[test]
-    fn check_outcomes_records_pass_fail_skipped_in_order() {
-        let list = [
-            status_is(200),
-            status_is(500),
-            Assertion::Json {
-                path: "a".into(),
-                op: Op::Exists,
-                expected: Expected::Bool(true),
-            },
-        ];
-        let outcomes = check_outcomes(&list, 200, &[], None);
-        assert_eq!(outcomes.len(), 3);
-        assert_eq!(outcomes[1].assertion, list[1]);
-        assert!(matches!(outcomes[0].result.verdict, Verdict::Pass));
-        assert!(matches!(outcomes[1].result.verdict, Verdict::Fail { .. }));
-        assert!(matches!(
-            outcomes[2].result.verdict,
-            Verdict::Skipped { .. }
-        ));
-        let records = assertion_records(&outcomes);
-        let states: Vec<_> = records.iter().map(|r| r.state).collect();
-        assert_eq!(
-            states,
-            [
-                AssertionState::Pass,
-                AssertionState::Fail,
-                AssertionState::Skipped
-            ]
-        );
-        assert_eq!(records[1].hash, list[1].fingerprint());
-        assert!(check_outcomes(&[], 200, &[], None).is_empty());
-    }
-
-    #[test]
-    fn check_outcomes_over_cap_body_skips_with_over_limit_reason() {
-        let list = [Assertion::Json {
-            path: "$.a".into(),
-            op: Op::Exists,
-            expected: Expected::Bool(true),
-        }];
-        let big = vec![b'x'; BODY_CAP + 1];
-        let outcomes = check_outcomes(&list, 200, &[], Some(&big));
-        match &outcomes[0].result.verdict {
-            Verdict::Skipped { reason } => assert!(reason.contains("over 1 MiB"), "{reason}"),
-            v => panic!("expected skipped, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn history_records_hold_no_expected_or_header_values() {
-        let list = [
-            Assertion::Header {
-                name: "x-thing".into(),
-                op: Op::Equals,
-                expected: Expected::Str("CANARY-EXPECTED".into()),
-            },
-            status_is(200),
-        ];
-        let headers = [Header {
-            name: "x-thing".into(),
-            value: "CANARY-HEADER".into(),
-        }];
-        let records = assertion_records(&check_outcomes(&list, 200, &headers, None));
-        let text = format!("{records:?}");
-        assert!(!text.contains("CANARY"), "{text}");
-        let json = serde_json::to_string(&records).unwrap();
-        assert!(!json.contains("CANARY"), "{json}");
-    }
-
     #[test]
     fn collections_history_goes_to_the_sending_collection() {
         let dir = tempfile::tempdir().unwrap();
@@ -4217,6 +4368,7 @@ mod tests {
             redacted: redacted.iter().map(|s| s.to_string()).collect(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         }
     }
 
@@ -4380,6 +4532,7 @@ mod tests {
             response_headers: Vec::new(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         };
         let entry = store.append(new, Some(body)).unwrap();
         (d, data, id, entry)
@@ -4396,6 +4549,7 @@ mod tests {
         );
         let job = HistoryJob {
             store: None,
+            id: None,
             root,
             data: data.clone(),
         };
@@ -4421,6 +4575,7 @@ mod tests {
         write(&root, "collection.toml", text);
         let job = || HistoryJob {
             store: None,
+            id: None,
             root: root.clone(),
             data: DataDir::at(d.path().join("data")),
         };
@@ -4583,6 +4738,7 @@ mod env_wiring_tests {
     use gpui::TestAppContext;
     use wisp_core::auth::oauth2::{Grant, RefreshTokenStore, TokenKey};
     use wisp_core::request::ClientAuth;
+    use wisp_storage::history::Outcome;
     use wisp_storage::vault::{MemoryStore, SecretStore, SecretValue, bind, secret_account};
 
     const ID: &str = "abcdef0123456789";
@@ -4623,8 +4779,15 @@ mod env_wiring_tests {
             )
             .unwrap();
         let shared: vault::SharedStores = store.clone();
-        let ws = cx.new(|cx| Workspace::new(Settings::default(), None, None, shared, cx));
-        ws.update(cx, |w, _| w.data_dir = Some(data));
+        let injected = data.clone();
+        let ws = cx.new(|cx| {
+            Workspace::with_data_dir(Settings::default(), None, None, shared, Some(injected), cx)
+        });
+        assert_eq!(
+            ws.read_with(cx, |w, _| w.data_dir.clone()),
+            Some(data),
+            "the workspace uses the injected data dir"
+        );
         Fx {
             _dir: dir,
             root,
@@ -4741,6 +4904,322 @@ mod env_wiring_tests {
             assert_eq!(t.saved, saved);
             assert_eq!(t.path, path);
         });
+    }
+
+    fn test_entry() -> NewEntry {
+        NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        }
+    }
+
+    #[gpui::test]
+    fn history_append_uses_the_known_id_not_the_one_on_disk(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        fx.ws.read_with(cx, |w, _| {
+            assert_eq!(w.collections[0].coll_id, IdState::Known(ID.into()));
+        });
+        let other = "fedcba9876543210";
+        // An entry already in A's store: reads must find it after the disk edit.
+        let data = DataDir::at(fx._dir.path().join("data"));
+        HistoryStore::open(&data, &CollectionId::parse(ID).unwrap())
+            .append(test_entry(), None)
+            .unwrap();
+        std::fs::write(
+            fx.root.join("collection.toml"),
+            format!("format = 1\nid = \"{other}\"\n"),
+        )
+        .unwrap();
+        let listed = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap().list();
+        assert_eq!(listed.unwrap().len(), 1);
+        let new = NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        let root = fx.root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(root, new, None, cx));
+        cx.run_until_parked();
+        let data = DataDir::at(fx._dir.path().join("data"));
+        let original = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
+        assert_eq!(original.list().unwrap().len(), 2);
+        assert!(
+            !data
+                .history_dir(&CollectionId::parse(other).unwrap())
+                .exists()
+        );
+    }
+
+    #[gpui::test]
+    fn history_recovers_when_a_failed_collection_id_is_repaired(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let root = fx.root.clone();
+        let toml = std::fs::read(root.join("collection.toml")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"bad id\"\n",
+        )
+        .unwrap();
+        fx.ws.update(cx, |w, _| {
+            w.collections[0].coll_id = read_id_state(&root);
+            assert!(matches!(w.collections[0].coll_id, IdState::Failed { .. }));
+        });
+        std::fs::write(root.join("collection.toml"), toml).unwrap();
+        let new = NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        let r = root.clone();
+        let before = fx.ws.read_with(cx, |w, _| {
+            (w.cookie_files.len(), w.jars.jar(Some(ID)).generation())
+        });
+        fx.ws.update(cx, |w, cx| w.append_history(r, new, None, cx));
+        cx.run_until_parked();
+        let data = DataDir::at(fx._dir.path().join("data"));
+        let store = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
+        assert_eq!(store.list().unwrap().len(), 1);
+        fx.ws.read_with(cx, |w, _| {
+            assert!(matches!(w.collections[0].coll_id, IdState::Failed { .. }));
+            assert_eq!(
+                (w.cookie_files.len(), w.jars.jar(Some(ID)).generation()),
+                before
+            );
+        });
+    }
+
+    const OTHER_ID: &str = "fedcba9876543210";
+
+    /// What "Give this copy its own id" does once the id on disk has changed.
+    fn give_new_id(fx: &Fx, cx: &mut TestAppContext) {
+        let root = fx.root.clone();
+        fx.ws.update(cx, |w, cx| {
+            w.finish_env_action(
+                root,
+                "dev".into(),
+                EnvAction::NewId,
+                vault::Outcome::Done("done".into()),
+                None,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+    }
+
+    fn store_of(fx: &Fx, id: &str) -> HistoryStore {
+        let data = DataDir::at(fx._dir.path().join("data"));
+        HistoryStore::open(&data, &CollectionId::parse(id).unwrap())
+    }
+
+    #[gpui::test]
+    fn newid_moves_history_reads_and_writes_together(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let send = |cx: &mut TestAppContext| {
+            let r = fx.root.clone();
+            fx.ws
+                .update(cx, |w, cx| w.append_history(r, test_entry(), None, cx));
+            cx.run_until_parked();
+        };
+        send(cx);
+        fx.ws.read_with(cx, |w, _| {
+            assert!(matches!(w.collections[0].history, HistoryState::Ready(_)));
+        });
+        std::fs::write(
+            fx.root.join("collection.toml"),
+            format!("format = 1\nid = \"{OTHER_ID}\"\n"),
+        )
+        .unwrap();
+        give_new_id(&fx, cx);
+        send(cx);
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 1);
+        assert_eq!(store_of(&fx, OTHER_ID).list().unwrap().len(), 1);
+        assert_eq!(store_of(&fx, ID).list().unwrap().len(), 1);
+        let r = fx.root.clone();
+        fx.ws.update(cx, |w, cx| w.clear_history(r, cx));
+        cx.run_until_parked();
+        assert_eq!(store_of(&fx, OTHER_ID).list().unwrap().len(), 0);
+        assert_eq!(store_of(&fx, ID).list().unwrap().len(), 1);
+    }
+
+    #[gpui::test]
+    fn late_append_after_newid_does_not_pin_old_store(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        // A send with id A is in flight (parked) when NewId lands.
+        let r = fx.root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, test_entry(), None, cx));
+        std::fs::write(
+            fx.root.join("collection.toml"),
+            format!("format = 1\nid = \"{OTHER_ID}\"\n"),
+        )
+        .unwrap();
+        let root = fx.root.clone();
+        fx.ws.update(cx, |w, cx| {
+            w.finish_env_action(
+                root,
+                "dev".into(),
+                EnvAction::NewId,
+                vault::Outcome::Done("done".into()),
+                None,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let r = fx.root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, test_entry(), None, cx));
+        cx.run_until_parked();
+        fx.ws.read_with(cx, |w, _| {
+            let HistoryState::Ready(s) = &w.collections[0].history else {
+                panic!("history is not Ready");
+            };
+            assert_eq!(s.list().unwrap().len(), 1);
+        });
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 1);
+        assert_eq!(store_of(&fx, OTHER_ID).list().unwrap().len(), 1);
+    }
+
+    #[gpui::test]
+    fn concurrent_recovery_appends_share_one_store(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let root = fx.root.clone();
+        let toml = std::fs::read_to_string(root.join("collection.toml")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"bad id\"\n",
+        )
+        .unwrap();
+        fx.ws.update(cx, |w, _| {
+            w.collections[0].coll_id = read_id_state(&root);
+            w.held_recoveries = Some(Vec::new());
+        });
+        // Append 1 re-reads A; its result is held. The id changes to B; append 2 re-reads B.
+        std::fs::write(root.join("collection.toml"), &toml).unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, test_entry(), None, cx));
+        cx.run_until_parked();
+        std::fs::write(
+            root.join("collection.toml"),
+            format!("format = 1\nid = \"{OTHER_ID}\"\n"),
+        )
+        .unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, test_entry(), None, cx));
+        cx.run_until_parked();
+        // Release in order: the first to land (A) sets the store, the second uses it.
+        let held = fx.ws.update(cx, |w, _| w.held_recoveries.take().unwrap());
+        assert_eq!(held.len(), 2);
+        for apply in held {
+            fx.ws.update(cx, |w, cx| apply(w, cx));
+            cx.run_until_parked();
+        }
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 2);
+        assert_eq!(store_of(&fx, ID).list().unwrap().len(), 2);
+        let data = DataDir::at(fx._dir.path().join("data"));
+        assert!(
+            !data
+                .history_dir(&CollectionId::parse(OTHER_ID).unwrap())
+                .exists()
+        );
+    }
+
+    #[gpui::test]
+    fn recovered_history_reads_and_writes_use_one_store(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let root = fx.root.clone();
+        let toml = std::fs::read_to_string(root.join("collection.toml")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"bad id\"\n",
+        )
+        .unwrap();
+        fx.ws
+            .update(cx, |w, _| w.collections[0].coll_id = read_id_state(&root));
+        let new = || NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        // Repaired to A: the first send recovers A's store.
+        std::fs::write(root.join("collection.toml"), &toml).unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, new(), None, cx));
+        cx.run_until_parked();
+        // Changed to B: the second send must still go to A.
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"fedcba9876543210\"\n",
+        )
+        .unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, new(), None, cx));
+        cx.run_until_parked();
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 2);
+        let r = root.clone();
+        fx.ws.update(cx, |w, cx| w.clear_history(r, cx));
+        cx.run_until_parked();
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 0);
     }
 
     #[gpui::test]
@@ -5763,6 +6242,7 @@ mod env_wiring_tests {
             response_headers: Vec::new(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         };
         let entry = store.append(new, None).unwrap();
         fx.ws.update(cx, |w, cx| w.open_history_entry(entry, cx));
