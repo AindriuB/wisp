@@ -27,10 +27,13 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - NOTE: no test drives the `on_event` path that turns `nothing_sent` and `headers_seen` into the entry's `delivery` (AC7); the AC6 test calls `append_history` directly.
 - NOTE: AC8's test exercises `with_data_dir`, not `Workspace::new`; removing the `cfg(test)` arm in `new` fails no test.
 - NOTE: the AC1 golden's doc comment (`crates/service/src/outcome.rs:278`) says "What the app built", but `delivery: "responded"` is new in 0.4.0.
-- NOTE: `crates/app/src/workspace.rs:2697-2730` the history-only re-read skips `plan_clash`; if the repaired id equals another open collection's id, this collection's entries go into that collection's history store.
-- NOTE: after recovery `HistoryState::Ready` keeps the first store (`workspace.rs:2782-2784`); editing `collection.toml` again to another valid id sends later entries to the new id's store while the list shows the first.
-- NOTE: the AC14 test's jar check reads `jar(Some(ID))`, but a Failed id's session cookies live in the canonical-root jar; only the `coll_id`-still-Failed assertion rules out `apply_id`.
 - NOTE: the AC1 GOLDEN_JSON is the fb21541 pre-move capture with `outcome` changed to Completed and `delivery` added, not a fresh pre-move Completed capture.
+- NOTE: `crates/app/src/workspace.rs:2697-2730` the history-only re-read skips `plan_clash`; if the repaired id equals another open collection's id, this collection's entries go into that collection's history store.
+- NOTE: the AC14 test's jar check reads `jar(Some(ID))`, but a Failed id's session cookies live in the canonical-root jar; only the `coll_id`-still-Failed assertion rules out `apply_id`.
+- [NOTE] "Give this copy its own id" on a collection whose id is cached `Failed` and whose history was recovered leaves history on the recovered store (Amendment 4 step 5 acts only on a `Known` id); cookies and secrets do not follow it either (Amendment 2).
+- [NOTE] a `Failed` re-read that fails after a close-and-reopen of the same root (generation changed) drops its entry with no notice, by the generation design.
+- [P3] workspace.rs `append_history`: `recovered.expect("checked above")` relies on a match guard with no adjacent proof comment (docs/conventions.md "Errors"); `if let Some(store) = recovered` would avoid it.
+- [P3] test `late_append_after_newid_does_not_pin_old_store`: its `Ready(s)` count cannot tell A from B; compare `s` to B's store.
 
 ### Follow-ups from task 160 (wisp-service plan and send; not scheduled)
 - [P3] `scripts/check-boundaries.sh:52`: the `resolve(` check (and the task's no-resolve check) misses a path-qualified `wisp_core::resolve::resolve(` call or an aliased import.
