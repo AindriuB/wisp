@@ -38,7 +38,14 @@ Explain Request, Save and close with the environment guard, assertions with hist
   - [For 158's hand test] a tab switch while "Send to <env>?" is up, then Confirm, must abort (no test drives the root.rs callback).
   - [For 158's hand test] whether a Reprompt is refused by `has_active_prompt()` inside `done`.
   - [P3] the prompt detail is not re-checked against the draft at send time, so an edit or disk reload during the prompt can send a different URL.
-- **Wave 3 open (157, 158):** 157 docs for the CLI and guard, 158 measure and release dry run.
+- **157 recorded:** `docs/cli.md` is new, architecture.md drift is fixed and the README gains the CLI and guard text. Follow-ups (none fixed; detail in `docs/plan/tasks/retired/157-docs-cli-guard-release.md`):
+  - [P3] docs/cli.md `explain` JSON lacks the nested shapes (params, headers, auth.fields, settings, body, variables, problems; warnings are strings): `crates/cli/src/dto.rs:118-180`, `cmd/explain.rs:156-184`.
+  - [P3] docs/cli.md wrongly says a keychain environment is "not opened at all"; the env file loads and only the secret store is skipped (`cmd/explain.rs:68-88`).
+  - [P3] docs/cli.md exit code 2: usage text goes to stderr only for parse errors; unknown env prints only "wisp-cli: unknown environment"; non-UTF-8 env name or path also exits 2 (`main.rs:40-41`, `:60`).
+  - [P3] architecture.md "How they talk" overstates `scripts/check-boundaries.sh` (`:8-38`): it checks banned deps and patterns, not dependency direction.
+  - [Note] README says `Wisp-0.2.0-*` archives contain `wisp-cli`; true only after the 0.3.0 version bump. The docs/cli.md Usage block is a synopsis, not literal `--help`. The Windows soft line 15,900,000 B is enforced nowhere (`release.yml:177`). The `SIGNPATH_SIGNS_CLI` name looks blanked in PLAN.md:30, HISTORY.md:26 and `scripts/release/sign-windows/README.md:22,:33`.
+  - [Low] the `scope` Check in tasks 157 and 158 (`wc -l | grep -x 0`) fails on macOS because BSD wc pads the count.
+- **Wave 3 open (158 only):** 158 measure and release dry run.
 - **Next:** wave 3, then the macOS hand test.
 
 ### User setup (optional release channels)
