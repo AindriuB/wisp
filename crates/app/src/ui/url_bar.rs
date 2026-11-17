@@ -584,8 +584,10 @@ mod tests {
 
     #[test]
     fn metadata_preview_is_deterministic_and_uses_placeholder() {
-        let mut draft = Request::default();
-        draft.url = "https://x.test/{{$uuid}}/{{missing}}".into();
+        let draft = Request {
+            url: "https://x.test/{{$uuid}}/{{missing}}".into(),
+            ..Request::default()
+        };
         let defaults = wisp_core::request::CollectionDefaults::default();
         let scope = Scope {
             collection: &defaults,
@@ -597,8 +599,10 @@ mod tests {
         assert_eq!(a, b);
         assert!(!a.is_empty());
         assert!(a.iter().all(|l| !l.contains("uuid")));
-        let mut d2 = Request::default();
-        d2.url = "https://x.test/{{$uuid}}".into();
+        let d2 = Request {
+            url: "https://x.test/{{$uuid}}".into(),
+            ..Request::default()
+        };
         assert!(preview_problems(&d2, &scope).is_empty());
     }
 
