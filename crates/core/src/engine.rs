@@ -612,26 +612,42 @@ fn body_has_file(body: &PreparedBody) -> bool {
     }
 }
 
-/// Feeds a file's first `len` bytes into `hasher`, read in bounded chunks from a fresh open.
-/// Fails if the file is gone, no longer `len` long, or shrinks while read.
+/// Stops a blocking hash when the owning future is dropped (cancel or timeout).
+struct StopOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Feeds a file's first `len` bytes into `hasher`, read in bounded chunks from the already
+/// open handle, then rewinds it so the send reads the same bytes from the same handle.
+/// Fails if the file is no longer `len` long or shrinks while read; stops early on `stop`.
 async fn hash_file(
     mut hasher: sha2::Sha256,
+    file: &mut std::fs::File,
     path: &Path,
     len: u64,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<sha2::Sha256, EngineError> {
-    let owned = path.to_owned();
+    // A clone shares the open file description, so reads here move the one handle's offset.
+    let mut shared = file.try_clone().map_err(|e| body_file_error(path, &e))?;
     let hashed = tokio::task::spawn_blocking(move || {
         use sha2::Digest as _;
-        use std::io::Read;
-        let mut file = std::fs::File::open(&owned)?;
-        if file.metadata()?.len() != len {
+        use std::io::{Read, Seek, SeekFrom};
+        if shared.metadata()?.len() != len {
             return Err(std::io::Error::other("length changed before signing"));
         }
+        shared.seek(SeekFrom::Start(0))?;
         let mut buf = vec![0u8; STREAM_CHUNK];
         let mut left = len;
         while left > 0 {
+            if stop.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("hashing stopped"));
+            }
             let want = STREAM_CHUNK.min(usize::try_from(left).unwrap_or(STREAM_CHUNK));
-            match file.read(&mut buf[..want]) {
+            match shared.read(&mut buf[..want]) {
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Ok(0) => {
                     return Err(std::io::Error::new(
@@ -646,6 +662,7 @@ async fn hash_file(
                 Err(e) => return Err(e),
             }
         }
+        shared.seek(SeekFrom::Start(0))?;
         Ok(hasher)
     })
     .await;
@@ -661,7 +678,7 @@ async fn hash_file(
 
 /// Payload hash for SigV4. S3 signs `UNSIGNED-PAYLOAD` for files and bodies over the memory
 /// limit; other services need the real SHA-256, stream-hashed so a file is never held whole.
-async fn payload_hash(pending: &Pending, service: &str) -> Result<String, EngineError> {
+async fn payload_hash(pending: &mut Pending, service: &str) -> Result<String, EngineError> {
     match pending {
         Pending::None => Ok(sigv4::sha256_hex(&[])),
         Pending::Bytes(b) => Ok(sigv4::sha256_hex(b)),
@@ -672,12 +689,14 @@ async fn payload_hash(pending: &Pending, service: &str) -> Result<String, Engine
             if service == "s3" && (has_file || total > MEMORY_BODY_LIMIT) {
                 return Ok(sigv4::UNSIGNED_PAYLOAD.to_owned());
             }
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _guard = StopOnDrop(stop.clone());
             let mut hasher = sha2::Sha256::new();
             for seg in segs {
                 match seg {
                     Segment::Mem(b) => hasher.update(b),
-                    Segment::File { path, len, .. } => {
-                        hasher = hash_file(hasher, path, *len).await?;
+                    Segment::File { file, path, len } => {
+                        hasher = hash_file(hasher, file, path, *len, stop.clone()).await?;
                     }
                 }
             }
@@ -818,7 +837,15 @@ async fn perform(
         _ => Replay::None,
     };
     let mut signing_hash = match &req.auth {
-        Some(EngineAuth::AwsSigV4 { service, .. }) => Some(payload_hash(&pending, service).await?),
+        Some(EngineAuth::AwsSigV4 { service, .. }) => {
+            let hashing = payload_hash(&mut pending, service);
+            Some(match timeout {
+                Some(t) => tokio::time::timeout(t, hashing)
+                    .await
+                    .map_err(|_| err(ErrorKind::Timeout, "request timed out".to_owned()))??,
+                None => hashing.await?,
+            })
+        }
         _ => None,
     };
     // reqwest cannot clone a streamed body, so it returns a 307/308 instead of following it.

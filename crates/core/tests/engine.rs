@@ -1609,3 +1609,107 @@ async fn redirect_loop_fails_on_the_tenth_redirect_with_the_too_many_redirects_e
     }
     assert_eq!(server.received_requests().await.unwrap().len(), 10);
 }
+
+// ---- one handle for hash and send (task 167) ----
+
+fn sigv4_auth() -> EngineAuth {
+    EngineAuth::AwsSigV4 {
+        access_key: "AKIDEXAMPLE".into(),
+        secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(),
+        session_token: String::new(),
+        region: "us-east-1".into(),
+        service: "ec2".into(),
+    }
+}
+
+fn sparse_file(tag: &str, len: u64) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("wisp-{tag}-{}.bin", std::process::id()));
+    std::fs::File::create(&p).unwrap().set_len(len).unwrap();
+    p
+}
+
+fn signed_file_post(url: String, file: std::path::PathBuf) -> PreparedRequest {
+    let mut req = post_with(url, PreparedBody::File(file));
+    req.auth = Some(sigv4_auth());
+    req
+}
+
+#[tokio::test]
+async fn hash_file_swapped_mid_hash_never_sends_other_bytes_under_the_old_hash() {
+    use sha2::Digest as _;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let path = temp_file("hash-swap", &pattern(48 * 1024 * 1024));
+    let swap = path.clone();
+    let other = std::env::temp_dir().join(format!("wisp-hash-swap-new-{}.bin", std::process::id()));
+    let other2 = other.clone();
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5));
+        std::fs::write(&other2, vec![7u8; 48 * 1024 * 1024]).unwrap();
+        std::fs::rename(&other2, &swap).unwrap();
+    });
+    let evs = send_and_collect(signed_file_post(server.uri(), path.clone())).await;
+    t.join().unwrap();
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&other);
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => assert_eq!(error.kind, ErrorKind::BodyFile),
+        Event::Completed { .. } => {
+            let reqs = server.received_requests().await.unwrap();
+            let got = &reqs[0];
+            let signed = got
+                .headers
+                .get("x-amz-content-sha256")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let actual: String = sha2::Sha256::digest(&got.body)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(signed, actual);
+        }
+        other => panic!("unexpected terminal {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hash_file_cancel_during_hashing_ends_cancelled() {
+    let server = MockServer::start().await;
+    let path = sparse_file("hash-cancel", 4 << 30);
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    let id = engine.submit(Command::Send(signed_file_post(server.uri(), path.clone())));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    engine.submit(Command::Cancel(id));
+    let ev = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match rx.recv().await.unwrap() {
+                e @ (Event::Completed { .. } | Event::Failed { .. } | Event::Cancelled { .. }) => {
+                    return e;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("a terminal event");
+    let _ = std::fs::remove_file(&path);
+    assert!(matches!(ev, Event::Cancelled { .. }), "got {ev:?}");
+}
+
+#[tokio::test]
+async fn hash_file_timeout_shorter_than_hashing_ends_in_timeout() {
+    let server = MockServer::start().await;
+    let path = sparse_file("hash-timeout", 4 << 30);
+    let mut req = signed_file_post(server.uri(), path.clone());
+    req.timeout = Some(Duration::from_millis(100));
+    let kind = tokio::time::timeout(Duration::from_secs(20), failure(req))
+        .await
+        .expect("a terminal event");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(kind, ErrorKind::Timeout);
+}
