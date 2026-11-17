@@ -45,3 +45,15 @@ impl SecretStores for KeychainStores {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keychain_service_is_the_variable_when_set_and_non_empty() {
+        assert_eq!(service_name(None), "wisp");
+        assert_eq!(service_name(Some("")), "wisp");
+        assert_eq!(service_name(Some("wisp-test-1")), "wisp-test-1");
+    }
+}

@@ -24,9 +24,9 @@ use wisp_storage::vault::{
 };
 
 /// The app's one [`SecretStores`].
-pub use wisp_service::secrets::KeychainStores as AppStores;
+pub use wisp_service::vault::KeychainStores as AppStores;
 #[allow(unused_imports)] // re-exported under the old names
-pub use wisp_service::secrets::{KEYCHAIN_SERVICE_ENV, portable_marker, service_name};
+pub use wisp_service::vault::{KEYCHAIN_SERVICE_ENV, portable_marker, service_name};
 
 /// The size cap of one keychain value, as shown to the user.
 pub const KEYCHAIN_LIMIT_TEXT: &str = "2,560 B";
@@ -1255,13 +1255,6 @@ mod keychain_tests {
 
     fn files_under(dir: &Path) -> usize {
         std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
-    }
-
-    #[test]
-    fn keychain_service_is_the_variable_when_set_and_non_empty() {
-        assert_eq!(service_name(None), "wisp");
-        assert_eq!(service_name(Some("")), "wisp");
-        assert_eq!(service_name(Some("wisp-test-1")), "wisp-test-1");
     }
 
     #[test]

@@ -13,3 +13,4 @@ wisp-core.workspace = true
 wisp-storage.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true

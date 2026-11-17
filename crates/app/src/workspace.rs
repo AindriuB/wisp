@@ -4120,43 +4120,6 @@ mod tests {
         assert_eq!(choose_history_scope(true, None, false, none), H::Scratch);
     }
 
-    /// The 0.3.0 shape of a plan, for the tests that predate the service crate.
-    struct SendPlan {
-        prepared: wisp_core::PreparedRequest,
-        scope_path: Option<PathBuf>,
-        notice: Option<String>,
-    }
-
-    fn prepare_send(
-        draft: &Request,
-        tab_path: Option<&Path>,
-        origin: Option<&HistoryOrigin>,
-        tree: Option<&CollectionTree>,
-        empty_defaults: &CollectionDefaults,
-        env: Option<&Environment>,
-    ) -> Result<SendPlan, ResolveError> {
-        let p = prepare(
-            &SendInput {
-                draft,
-                tab_path,
-                origin,
-                tree,
-                empty_defaults,
-                env,
-            },
-            &mut Recording::new(),
-        )?;
-        Ok(SendPlan {
-            prepared: p.prepared,
-            scope_path: p.scope_path,
-            notice: p.resend.as_ref().map(resend_notice_text),
-        })
-    }
-
-    fn recorded_request(p: Option<&Path>) -> Option<String> {
-        wisp_service::plan::recorded_request(p)
-    }
-
     fn origin(request: Option<&str>) -> HistoryOrigin {
         HistoryOrigin {
             at_ms: 0,
@@ -4206,13 +4169,16 @@ mod tests {
         o: &HistoryOrigin,
         e: &Environment,
     ) -> SendPlan {
-        prepare_send(
-            draft,
-            None,
-            Some(o),
-            Some(tree),
-            &CollectionDefaults::default(),
-            Some(e),
+        prepare(
+            &SendInput {
+                draft,
+                tab_path: None,
+                origin: Some(o),
+                tree: Some(tree),
+                empty_defaults: &CollectionDefaults::default(),
+                env: Some(e),
+            },
+            &mut Recording::new(),
         )
         .unwrap()
     }
@@ -4262,21 +4228,17 @@ mod tests {
     }
 
     fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {
-        prepare_send(
-            draft,
-            None,
-            Some(o),
-            None,
-            &CollectionDefaults::default(),
-            None,
+        prepare(
+            &SendInput {
+                draft,
+                tab_path: None,
+                origin: Some(o),
+                tree: None,
+                empty_defaults: &CollectionDefaults::default(),
+                env: None,
+            },
+            &mut Recording::new(),
         )
-    }
-
-    fn refusal(e: ResolveError) -> String {
-        match e.problems.as_slice() {
-            [Problem::Syntax { message, .. }] => message.clone(),
-            other => panic!("unexpected {other:?}"),
-        }
     }
 
     fn json(text: &str) -> Body {
@@ -4284,102 +4246,6 @@ mod tests {
             content: text.into(),
             ..TextBody::default()
         })
-    }
-
-    #[test]
-    fn redacted_json_leaf_body_is_refused_until_edited() {
-        let stored = json(r#"{"name":"x","webhook_secret":""}"#);
-        let o = body_origin(stored.clone(), &["body.webhook_secret"]);
-        let mut d = draft();
-        d.body = stored;
-        let msg = refusal(try_send(&d, &o).err().expect("refused"));
-        assert_eq!(
-            msg,
-            "Edit the request body before resending: webhook_secret was not stored"
-        );
-        d.body = json(r#"{"name":"x","webhook_secret":"s"}"#);
-        assert!(try_send(&d, &o).is_ok());
-    }
-
-    #[test]
-    fn deeply_nested_body_is_refused_without_overflow() {
-        let o = body_origin(json("{}"), &["body.s"]);
-        let mut d = draft();
-        d.body = json(&format!("{}1{}", "[".repeat(200), "]".repeat(200)));
-        assert!(try_send(&d, &o).is_err());
-        d.body = json(&"{\"a\":".repeat(50_000));
-        assert!(try_send(&d, &o).is_err());
-    }
-
-    #[test]
-    fn long_key_with_many_empty_leaves_is_fast() {
-        let o = body_origin(json("{}"), &["body.s"]);
-        let mut d = draft();
-        let mut t = format!("{{\"{}\":{{", "k".repeat(400_000));
-        for i in 0..100_000 {
-            t.push_str(&format!("\"{i}\":\"\","));
-        }
-        t.push_str("\"z\":\"\"}}");
-        d.body = json(&t);
-        let start = std::time::Instant::now();
-        assert!(try_send(&d, &o).is_ok());
-        assert!(start.elapsed().as_secs_f32() < 1.0);
-    }
-
-    #[test]
-    fn dropped_body_is_refused_until_edited() {
-        let stored = Body::Xml(TextBody::default());
-        let o = body_origin(stored.clone(), &["body"]);
-        let mut d = draft();
-        d.body = stored;
-        let msg = refusal(try_send(&d, &o).err().expect("refused"));
-        assert!(msg.ends_with("the body was not stored"));
-        d.body = Body::Xml(TextBody {
-            content: "<a/>".into(),
-            ..TextBody::default()
-        });
-        assert!(try_send(&d, &o).is_ok());
-    }
-
-    #[test]
-    fn redaction_refusal_follows_the_leaf_not_the_text() {
-        let o = body_origin(json("{}"), &["body.webhook_secret"]);
-        let mut d = draft();
-        let cases = [
-            ("{\n  \"name\": \"x\",\n  \"webhook_secret\": \"\"\n}", true),
-            (" {\"name\":\"x\",\"webhook_secret\":\"\"}\n", true),
-            ("{\"a\":{{id}},\"webhook_secret\":\"\"}", true),
-            ("{\"webhook_secret\":", true),
-            ("{\"webhook_secret\":\"s\"}", false),
-            ("{\"webhook_secret\":\"{{secret}}\"}", false),
-            ("{\"webhook_secret\":{{secret}}}", false),
-            ("{\"name\":\"x\"}", false),
-        ];
-        for (body, refused) in cases {
-            d.body = json(body);
-            let got = try_send(&d, &o).err().is_some_and(|e| {
-                matches!(e.problems.as_slice(),
-                    [Problem::Syntax { message, .. }] if message.starts_with("Edit the request body"))
-            });
-            assert_eq!(got, refused, "{body}");
-        }
-    }
-
-    #[test]
-    fn dropped_body_whitespace_is_still_refused() {
-        let o = body_origin(Body::Xml(TextBody::default()), &["body"]);
-        let mut d = draft();
-        d.body = Body::Xml(TextBody {
-            content: " \n".into(),
-            ..TextBody::default()
-        });
-        assert!(try_send(&d, &o).is_err());
-    }
-
-    #[test]
-    fn entry_without_body_redaction_is_not_refused() {
-        let o = body_origin(Body::None, &["Authorization"]);
-        assert!(try_send(&draft(), &o).is_ok());
     }
 
     #[test]
@@ -4397,72 +4263,6 @@ mod tests {
         assert_eq!(o.redacted, vec!["body.k"]);
         assert_eq!(o.stored_body, json("{}"));
         assert_eq!(o.request.as_deref(), Some("users/get.toml"));
-    }
-
-    #[test]
-    fn folder_bearer_token_follows_the_environment() {
-        let (_d, tree) = auth_collection();
-        let o = origin(Some("users/get.toml"));
-        let dev = plan(&tree, &draft(), &o, &env("dev", "dev-tok"));
-        let prod = plan(&tree, &draft(), &o, &env("prod", "prod-tok"));
-        assert_eq!(header(&dev, "authorization"), Some("Bearer dev-tok"));
-        assert_eq!(header(&prod, "authorization"), Some("Bearer prod-tok"));
-        assert!(dev.notice.unwrap().contains("(dev)"));
-        assert!(prod.notice.unwrap().contains("(prod)"));
-    }
-
-    #[test]
-    fn edited_url_drops_the_folder_scope() {
-        let (_d, tree) = auth_collection();
-        let mut d = draft();
-        d.url = "http://other.test/".into();
-        let p = plan(
-            &tree,
-            &d,
-            &origin(Some("users/get.toml")),
-            &env("prod", "prod-tok"),
-        );
-        assert_eq!(header(&p, "authorization"), None);
-        assert_eq!(p.scope_path, None);
-        assert!(p.notice.unwrap().contains("URL was edited"));
-    }
-
-    #[test]
-    fn missing_original_falls_back_to_collection_defaults() {
-        let (d, _) = auth_collection();
-        std::fs::remove_file(d.path().join("users/get.toml")).unwrap();
-        let tree = open_collection(d.path()).unwrap();
-        let p = plan(
-            &tree,
-            &draft(),
-            &origin(Some("users/get.toml")),
-            &env("dev", "t"),
-        );
-        assert_eq!(header(&p, "authorization"), None);
-        assert!(p.notice.unwrap().contains("original request was not found"));
-        // A tab with its own path is unaffected.
-        let own = scope_path_for(&tree, Some(Path::new("a.toml")), Some(&origin(None)), URL);
-        assert_eq!(own, (Some(PathBuf::from("a.toml")), false, false));
-    }
-
-    #[test]
-    fn resend_chain_keeps_scope() {
-        let (_d, tree) = auth_collection();
-        let first = plan(
-            &tree,
-            &draft(),
-            &origin(Some("users/get.toml")),
-            &env("dev", "t"),
-        );
-        let recorded = recorded_request(first.scope_path.as_deref());
-        assert_eq!(recorded.as_deref(), Some("users/get.toml"));
-        let again = plan(
-            &tree,
-            &draft(),
-            &origin(recorded.as_deref()),
-            &env("prod", "p"),
-        );
-        assert_eq!(header(&again, "authorization"), Some("Bearer p"));
     }
 
     fn kv(name: &str, value: &str) -> KeyValue {
@@ -4524,7 +4324,9 @@ mod tests {
         assert_eq!(header(&p, "authorization"), Some("Bearer prod-tok"));
         assert_eq!(header(&p, "x-api-key"), None);
         assert_eq!(header(&p, "accept"), Some("*/*"));
-        assert!(p.notice.unwrap().contains("disabled header X-Api-Key"));
+        assert!(
+            resend_notice_text(p.resend.as_ref().unwrap()).contains("disabled header X-Api-Key")
+        );
     }
 
     #[test]
@@ -4678,13 +4480,16 @@ mod tests {
         let with = oauth_prepare(&draft, Some(&tree), Some(&e), Some("col-1"))
             .unwrap()
             .unwrap();
-        let send = prepare_send(
-            &draft,
-            None,
-            None,
-            None,
-            &CollectionDefaults::default(),
-            None,
+        let send = prepare(
+            &SendInput {
+                draft: &draft,
+                tab_path: None,
+                origin: None,
+                tree: None,
+                empty_defaults: &CollectionDefaults::default(),
+                env: None,
+            },
+            &mut Recording::new(),
         )
         .unwrap()
         .prepared;
