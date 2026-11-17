@@ -162,9 +162,11 @@ pub fn lookup_var(request: &Request, scope: &Scope, name: &str) -> VarLookup {
     let Some((raw, source)) = lookup(request, scope, name) else {
         return VarLookup::Unresolved;
     };
+    let mut fresh = Fresh;
     let mut r = Resolver {
         req: request,
         scope,
+        dynamics: &mut fresh,
         problems: Vec::new(),
         warnings: Vec::new(),
         expansions: 0,
@@ -187,11 +189,101 @@ pub fn lookup_var(request: &Request, scope: &Scope, name: &str) -> VarLookup {
     }
 }
 
+/// Generates the values of `{{$uuid}}` and `{{$timestamp}}`.
+pub trait DynamicSource {
+    /// The value for `name` (`uuid` or `timestamp`, without the `$`), or `None` for any other name.
+    fn generate(&mut self, name: &str) -> Option<String>;
+}
+
+/// One generated value, as used in a resolved request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicValue {
+    /// The variable name including the `$`, e.g. `$uuid`.
+    pub name: String,
+    pub value: String,
+}
+
+/// Generates a fresh value on every call.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Fresh;
+
+impl DynamicSource for Fresh {
+    fn generate(&mut self, name: &str) -> Option<String> {
+        match name {
+            "uuid" => Some(uuid::Uuid::new_v4().to_string()),
+            "timestamp" => {
+                let secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                Some(secs.to_string())
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Generates like `Fresh` and records each value it hands out, in order of use.
+#[derive(Debug, Default)]
+pub struct Recording {
+    fresh: Fresh,
+    values: Vec<DynamicValue>,
+}
+
+impl Recording {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The values generated so far, one per occurrence.
+    pub fn values(&self) -> &[DynamicValue] {
+        &self.values
+    }
+
+    pub fn into_values(self) -> Vec<DynamicValue> {
+        self.values
+    }
+}
+
+impl DynamicSource for Recording {
+    fn generate(&mut self, name: &str) -> Option<String> {
+        let value = self.fresh.generate(name)?;
+        self.values.push(DynamicValue {
+            name: format!("${name}"),
+            value: value.clone(),
+        });
+        Some(value)
+    }
+}
+
+/// Generates fixed values, so a preview is deterministic and generates nothing.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Placeholder;
+
+impl DynamicSource for Placeholder {
+    fn generate(&mut self, name: &str) -> Option<String> {
+        match name {
+            "uuid" => Some("00000000-0000-4000-8000-000000000000".to_string()),
+            "timestamp" => Some("0".to_string()),
+            _ => None,
+        }
+    }
+}
+
 /// Resolve an authored request against its scope. Pure: no I/O.
 pub fn resolve(req: &Request, scope: &Scope) -> Result<PreparedRequest, ResolveError> {
+    resolve_with(req, scope, &mut Fresh)
+}
+
+/// `resolve` with the dynamic values supplied by `dynamics`.
+pub fn resolve_with(
+    req: &Request,
+    scope: &Scope,
+    dynamics: &mut dyn DynamicSource,
+) -> Result<PreparedRequest, ResolveError> {
     let mut r = Resolver {
         req,
         scope,
+        dynamics,
         problems: Vec::new(),
         warnings: Vec::new(),
         expansions: 0,
@@ -212,6 +304,7 @@ pub fn resolve(req: &Request, scope: &Scope) -> Result<PreparedRequest, ResolveE
 struct Resolver<'a> {
     req: &'a Request,
     scope: &'a Scope<'a>,
+    dynamics: &'a mut dyn DynamicSource,
     problems: Vec<Problem>,
     warnings: Vec<ResolveWarning>,
     /// Variable expansions performed so far in this call.
@@ -281,15 +374,9 @@ impl Resolver<'_> {
             }
             let before = out.len();
             if let Some(dynamic) = name.strip_prefix('$') {
-                match dynamic {
-                    "uuid" => out.push_str(&uuid::Uuid::new_v4().to_string()),
-                    "timestamp" => {
-                        let secs = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map_or(0, |d| d.as_secs());
-                        out.push_str(&secs.to_string());
-                    }
-                    _ => self.problem(Problem::UnresolvedVar {
+                match self.dynamics.generate(dynamic) {
+                    Some(v) => out.push_str(&v),
+                    None => self.problem(Problem::UnresolvedVar {
                         name: name.to_string(),
                         location: loc.clone(),
                     }),
@@ -671,4 +758,66 @@ fn append_query(url: String, pairs: &[(String, String)]) -> String {
         "&"
     };
     format!("{base}{sep}{joined}{fragment}")
+}
+
+#[cfg(test)]
+mod dynamic_tests {
+    use super::*;
+    use crate::request::{CollectionDefaults, KeyValue};
+
+    fn request() -> Request {
+        let mut r = Request {
+            url: "http://h/{{$uuid}}/{{$timestamp}}".into(),
+            ..Request::default()
+        };
+        r.headers.push(KeyValue {
+            name: "X-Id".into(),
+            value: "{{$uuid}}".into(),
+            enabled: true,
+        });
+        r.body = Body::Text(TextBody {
+            content: "{{$uuid}} {{$uuid}}".into(),
+            ..TextBody::default()
+        });
+        r
+    }
+
+    fn scope(c: &CollectionDefaults) -> Scope<'_> {
+        Scope {
+            collection: c,
+            folders: vec![],
+            environment: None,
+        }
+    }
+
+    #[test]
+    fn placeholder_is_byte_identical() {
+        let c = CollectionDefaults::default();
+        let r = request();
+        let a = resolve_with(&r, &scope(&c), &mut Placeholder).unwrap();
+        let b = resolve_with(&r, &scope(&c), &mut Placeholder).unwrap();
+        assert!(a == b);
+        assert!(a.url.contains("00000000-0000-4000-8000-000000000000/0"));
+    }
+
+    #[test]
+    fn recording_lists_each_occurrence_in_order() {
+        let c = CollectionDefaults::default();
+        let mut rec = Recording::new();
+        let p = resolve_with(&request(), &scope(&c), &mut rec).unwrap();
+        let v = rec.values();
+        assert_eq!(v.len(), 5);
+        let names: Vec<_> = v.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["$uuid", "$timestamp", "$uuid", "$uuid", "$uuid"]);
+        assert!(p.url.ends_with(&format!("/{}/{}", v[0].value, v[1].value)));
+        assert_ne!(v[3].value, v[4].value);
+        assert!(matches!(p.body, PreparedBody::Bytes { .. }));
+    }
+
+    #[test]
+    fn sources_reject_unknown_names() {
+        assert_eq!(Fresh.generate("nope"), None);
+        assert_eq!(Placeholder.generate("nope"), None);
+        assert_eq!(Recording::new().generate("nope"), None);
+    }
 }
