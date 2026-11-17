@@ -98,5 +98,23 @@ Reviewed HEAD: 8f0eabb95e050a6009942033b1d6b2b1d13e99e5 (round-4 P2 fixed by IGN
 
 ## Wave verified — e20896a6faaa6a03f885ba7035fa4091404e34d3
 
+## External review — findings
+
+Key: pasted · reviewed head 3e910663a957f5dddec346f337886e6e6db4e802 (PR #130) · round 6 (past the cap; not routed)
+
+- P2 — curl import can still select the wrong destination: `crates/storage/src/import/curl.rs:490–496`: valid no-argument options missing from `IGNORED_LONG_NO_ARG`, including `--http2-prior-knowledge`, trigger the unknown-option heuristic. `curl --http2-prior-knowledge api.example.com https://other.example.com -H 'Authorization: Bearer SECRET'` imports `https://other.example.com` while keeping the authorization header. Complete the no-argument option handling or reject ambiguous inputs instead of silently switching destinations.
+
+## Wave stopped — step 7 — external P2 at round 6 (past cap); needs the user's OK for another run
+
+## Wave resumed — user: one more run (round 6): after an unknown option, reject a command with both a schemeless positional and a `://` positional as ambiguous (Parse error naming the option, never a value) instead of picking a URL
+
+## Review round 7 — findings
+Reviewed HEAD e20896a6faaa6a03f885ba7035fa4091404e34d3 (full branch). This is the user-approved run past the cap (the "round 6" decision above).
+- [P2] crates/storage/src/import/curl.rs:486-502 (`pick_url`) — after an unknown option, a command with one schemeless positional and one `://` positional silently imports the `://` one and keeps the headers and body, which switches the destination. This is the external P2 at 3e91066. The user decided to reject this case as ambiguous; the code still picks a URL.
+  route: implementer — the user's recorded decision (last "## Wave resumed" above) is the spec: in the unknown-option branch, if the positionals include both a schemeless one and a `://` one, return `ImportError::Parse` naming the option, never a value. Add an `h4_` test with this exact input that asserts a Parse error and that `SECRET` appears in no message.
+  input: `curl --http2-prior-knowledge api.example.com https://other.example.com -H 'Authorization: Bearer SECRET'`. `http2-prior-knowledge` is in neither `IGNORED_LONG_NO_ARG` (:18-76) nor the with-arg list, so `f.unknown` is set and `urls = [api.example.com, https://other.example.com]`; the code returns `https://other.example.com` with the Authorization header attached. It should return a Parse error.
+
+## Wave verified — 25d8836af320c7cda16514e480905d8dac91d7cc
+
 ## Outcome
-Merged at e20896a (PASS + APPROVE: workspace 1422 passed, fmt and clippy clean; AC1-AC10 met), after two external reviews and review rounds 1-5. Importer warnings, file names and committed URLs no longer carry credentials, an import validates folder and environment names before it writes, and Postman and OpenAPI descriptions land in `Request.description` whole (the 16 KiB cap is removed, spec :323). The undefined-variable scan is linear and reads the template fields directly: auth values are included, descriptions and names are excluded. Known curl options that take no argument no longer consume the next argument (round 4). `--url` stays in-order, as curl does: round 5 reverted an orchestrator-requested `--url` priority that leaked an unknown option's value into a warning and changed the imported URL. Follow-ups are in PLAN.md.
+Merged at 25d8836 (PASS + APPROVE; AC1-AC10 met; the last verified run was workspace 1422 passed at e20896a), after three external reviews and review rounds 1-7. Importer warnings, file names and committed URLs no longer carry credentials, an import validates folder and environment names before it writes, and Postman and OpenAPI descriptions land in `Request.description` whole (the 16 KiB cap is removed, spec :323). The undefined-variable scan is linear and reads the template fields directly: auth values are included, descriptions and names are excluded. Known curl options that take no argument no longer consume the next argument (round 4). `--url` stays in-order, as curl does: round 5 reverted an orchestrator-requested `--url` priority that leaked an unknown option's value into a warning and changed the imported URL. Follow-ups are in PLAN.md. Round 7 (user-approved, past the cap): after an unknown curl option, more than one positional is rejected as ambiguous with a Parse error naming the option and never a value, instead of picking a URL.
