@@ -298,6 +298,18 @@ pub enum Outcome {
     Cancelled,
 }
 
+/// Whether the server could have received the request. Absent on entries written before 0.4.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// No byte of the request could have been written to any connection.
+    NotSent,
+    /// The request may or may not have been delivered.
+    Unknown,
+    /// A response head arrived.
+    Responded,
+}
+
 /// One index line. Unknown fields are ignored and optional ones default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -336,6 +348,9 @@ pub struct HistoryEntry {
     /// Assertion label, fingerprint and state; never a value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assertions: Vec<AssertionRecord>,
+    /// Whether the request was delivered; absent on older entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
 }
 
 /// What the caller hands to [`HistoryStore::append`].
@@ -355,6 +370,7 @@ pub struct NewEntry {
     pub response_headers: Vec<Header>,
     pub environment: Option<String>,
     pub assertions: Vec<AssertionRecord>,
+    pub delivery: Option<Delivery>,
 }
 
 /// A loaded entry's request, response headers and stored body.
@@ -1078,6 +1094,7 @@ impl HistoryStore {
             redacted,
             environment: new.environment,
             assertions: new.assertions,
+            delivery: new.delivery,
         };
         let mut line = serde_json::to_string(&entry).map_err(|e| StorageError::History {
             message: e.to_string(),
