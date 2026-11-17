@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-17 | 158 | wave-3 size (Windows GUI 15,533,568 B, CLI unchanged) and release dry run green; wisp-cli in all three archives | ## 2026-11-17 — Wave 3 measured and release dry-run green (task 158) |
 | 2026-11-17 | 155 | environment guard: confirm before send, suggest_confirm hint, toggle command, badge | ## 2026-11-17 — Confirm before sending to a guarded environment (task 155) |
 | 2026-11-17 | 156 | wisp-cli in every release archive, Windows GUI gate 16,000,000 B, CLI size step, SIGNPATH_SIGNS_CLI-gated CLI signing | ## 2026-11-17 — wisp-cli packaged in every archive and Windows gate raised (task 156) |
 | 2026-11-17 | 154 | Sidebar "New collection…" button and "New environment…" select entry cut by two reverts; palette commands kept | ## 2026-11-17 — Sidebar create buttons cut (task 154) |

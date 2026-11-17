@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Wave 3 measured and release dry-run green (task 158)
+Measure run 44045146818 and a draft release dry run (44046922250) on d314c5f both pass. The Windows GUI is 15,533,568 B, 466,432 B under the 16,000,000 B gate and 366,432 B under the soft line; the CLI is unchanged at 1,415,600 / 1,631,232 / 1,966,744 B. Every archive holds `wisp-cli`, macOS is notarized, and the Windows `wisp-cli.exe` is unsigned with the notes saying so.
+**Cost:** The macOS archive's `wisp-cli` is 1,425,616 B against measure's 1,415,600 B (+10,016 B), probably signature bytes; not investigated. Archives are named `Wisp-0.2.0-*` because the 0.3.0 bump is not done. The task's `only-result` Check fails on macOS because BSD wc pads the count; use `test "$(... | wc -l)" -eq 0`. The dry-run draft stays for the user to delete.
+
 ## 2026-11-17 — Confirm before sending to a guarded environment (task 155)
 A per-user guard on each environment now asks "Send to {env}?" before a request goes out, from the Send button, the keyboard and the palette; a new palette command toggles the guard and a badge beside the context strip shows it. An environment marked `suggest_confirm` offers once per run to turn the guard on, using the spec's text "This environment suggests confirming sends. Enable?". The decisions are pure functions in `crates/app/src/guard.rs`.
 

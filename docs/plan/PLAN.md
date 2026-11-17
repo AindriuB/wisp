@@ -38,8 +38,12 @@ Explain Request, Save and close with the environment guard, assertions with hist
   - [For 158's hand test] a tab switch while "Send to <env>?" is up, then Confirm, must abort (no test drives the root.rs callback).
   - [For 158's hand test] whether a Reprompt is refused by `has_active_prompt()` inside `done`.
   - [P3] the prompt detail is not re-checked against the draft at send time, so an edit or disk reload during the prompt can send a different URL.
-- **Wave 3 open (157, 158):** 157 docs for the CLI and guard, 158 measure and release dry run.
-- **Next:** wave 3, then the macOS hand test.
+- **158 recorded:** wave-3 measure (run 44045146818) and release dry run (run 44046922250) are green on d314c5f. Windows GUI 15,533,568 B, under the gate and soft line; the CLI is unchanged. Follow-ups (none fixed; detail in `docs/plan/tasks/retired/158-measure-and-release-dry-run.md`):
+  - [Note] the macOS archive's `wisp-cli` is 1,425,616 B against measure's 1,415,600 B (+10,016 B), probably signature bytes; ties to the 156 follow-up (a).
+  - [Low] the `only-result` Check (`wc -l | grep -x 0`) fails on macOS because BSD wc pads the count, as for 157's `scope` Check.
+  - [P3, 116-1] README.md:81 macOS `ln -s ... /usr/local/bin/wisp-cli` fails on a fresh Apple silicon Mac (directory missing or root-owned): add sudo and `mkdir -p`, or use a user-owned directory.
+  - [User] delete draft release `dryrun-44046922250` when done with it.
+- **Wave 3:** 157 is recorded in PR #116; 158 is done. **Next:** the user's macOS hand test (checklist in the 158 PR body), then the 0.3.0 version bump and tag.
 
 ### User setup (optional release channels)
 **User setup (optional channels):** none of these block 0.2.0.
