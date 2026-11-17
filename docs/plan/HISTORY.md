@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Importer hardening and imported descriptions (task 170)
+Importer warnings, file names and committed URLs no longer carry a credential: curl warnings name the construct and not its value, an unknown curl option no longer lets a userinfo URL through, the extra-URL and userinfo warnings echo only the host, and OpenAPI environment file names come from the server host unless the description passes the secret-name check. An import validates `folder_rel` and environment names before the first write, warns once per undefined `{{var}}`, and copies Postman and OpenAPI descriptions into `Request.description`. Verified at 9804513: workspace 1415 passed, `import-h4` 10 passed, scope, fmt and clippy clean (AC1-AC10).
+**Cost:** The warning scan for undefined variables works on the request's Debug text, so `{{x}}` inside a description warns falsely. Descriptions are cut at 16 KiB with no warning, against the spec's "any length on disk", and the truncation helper is copied into two importers. Eight follow-ups, mostly P3, are in PLAN.
+
 ## 2026-11-17 — 0.4.0 wave-1 size measurement (task 165)
 A `measure.yml` dispatch on the wave-1 head (run 44181832340, built commit 40975f4) is recorded in `scripts/measure/results/v0.4.0-wave-1-size.json`. The build is over the wave-1 target: Windows GUI 15,560,192 B, +26,624 B against +10,240 B allowed, 16,384 B over the 15,543,808 B target; 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut. The CLI grew on Windows (+2,560 B) and Linux (+3,312 B), macOS +0.
 **Cost:** The spec expected "CLI unchanged" for wave 1 (:461), which was wrong by a few KB on two targets. The overage needs an orchestrator and user decision before wave 2; the task cut nothing by design.

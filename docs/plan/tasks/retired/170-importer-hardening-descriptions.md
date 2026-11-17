@@ -45,3 +45,8 @@ and OpenAPI descriptions land in the new `description` field.
 ## Out of scope
 - `redact.rs` heuristics (168); the curl importer's supported option set beyond AC42.
 - GUI display of descriptions (175).
+
+## Wave verified — 98045131587db0649d9c7697f42cc9cbb69a7805
+
+## Outcome
+Merged at 9804513 (PASS + APPROVE: workspace 1415 passed, import-h4 10 passed, scope, fmt and clippy clean; AC1-AC10 met). Importer warnings, file names and committed URLs no longer carry credentials, an import validates folder and environment names before it writes, and Postman and OpenAPI descriptions land in `Request.description`. Follow-ups are in PLAN.md.

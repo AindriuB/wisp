@@ -20,9 +20,19 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded; next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 task 170 (importer hardening, descriptions) is recorded; 166-169 and 174 are in flight; next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 170 (importer hardening and descriptions; not scheduled)
+- [P3] `crates/storage/src/import/mod.rs:308` `warn_undefined_vars` scans `format!("{request:?}")`, so `{{x}}` in `description` or `name` warns falsely (spec :338: descriptions are never expanded).
+- [P3] `mod.rs:298` `url_host` returns `user:digits` for the host:digits userinfo shape `may_hold_credentials` flags (`https://bob:1234?rest@h2/y` gives host `bob:1234`).
+- [P3, decision] `postman.rs:30` and `openapi.rs:111` cut descriptions at 16 KiB with no warning; spec :323 says "any length on disk".
+- [P3] `postman.rs:30-41` and `openapi.rs:111-124` re-implement `truncate_bytes` (`mod.rs:81`); postman uses a bare `16 * 1024`.
+- [P3] `postman.rs:186-189` the unsupported-method warning still echoes the raw method text.
+- [P3] `write.rs:134` `check_folder_rel` reports a missing folder as `ImportError::Parse` ("cannot parse input").
+- NOTE: `curl.rs:417` after an unknown option, a single positional without `://` is still taken as the URL (`curl --frobnicate SECRETVAL` writes it as the URL).
+- NOTE: `openapi.rs:222` `desc_is_safe` cannot spot a short opaque token used as an environment name.
 
 ### Follow-ups from task 165 (wave-1 size measurement; not scheduled)
 - NOTE: spec `docs/plan/specs/2026-11-17-wisp-0-4-0.md:461` expects "CLI unchanged" for wave 1, but `wisp-cli` grew +2,560 B on Windows (1,633,792 B) and +3,312 B on Linux (1,970,056 B); macOS +0. All are far under the 4 MiB limit. Fix the spec wording or note the growth when 172 sets the CLI budgets.
