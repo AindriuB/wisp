@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Sidebar create buttons cut (task 154)
+`crates/app/src/ui/sidebar.rs` no longer has the "New collection…" button or the environment select's "New environment…" entry that task 148 added; it equals its content at 2ae2e2b^. The palette commands "New collection…" and "New environment…" are unchanged. This was the first cut in the size plan, taken on the user's decision.
+
+**Cost:** The change is two exact reverts, so no new code was written. The workspace tests passed (1,343 passed, 0 failed, no flakes). The orchestrator read the diff in place of code review. Wave 3 has not been measured yet (task 158), so the byte saving is unknown.
+
 ## 2026-11-17 — PLAN.md pruned and the wave-3 size decisions recorded (task 153)
 PLAN.md went from 99,898 B to 94,230 B by moving closed sections to `docs/plan/archive/2026-11-17-closed-sections.md`. The spec gained Amendment 2 and the roadmap and task 99 gate figures were updated for the user's 2026-11-17 decisions: cut task 148's sidebar buttons, and raise the Windows GUI gate to 16,000,000 B with a 15,900,000 B soft line.
 

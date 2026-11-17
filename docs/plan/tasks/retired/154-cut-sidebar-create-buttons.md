@@ -39,3 +39,8 @@ commands that do the same.
 - Any change to the palette commands, `ui/create.rs` or the PLAN follow-ups from 148 (`root.rs:481-487`, `create.rs:51`).
 - Further cuts (`suggest_confirm`, Checks detail, Explain shadow list): not cut; the gate is raised (task 156).
 - Docs: task 157 (README) and task 153 (spec amendment).
+
+## Wave verified — e19bf566fc43964e793ba5497f25e2f4c106d1cb
+
+## Outcome
+Merged via record/154 at e19bf56 (two reverts; sidebar.rs equals its content at 2ae2e2b^). Tester: 1,343 passed, 0 failed, no flakes. Orchestrator read stood in for code review.

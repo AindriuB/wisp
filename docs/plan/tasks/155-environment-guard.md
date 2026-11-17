@@ -64,3 +64,16 @@ It is an accident guard, per user, keyed by name (spec Feature 2b).
 - Persisting "hint already shown" across runs; guarding OAuth Authorize; any policy beyond the per-user accident guard (roadmap C5b).
 - `ui/sidebar.rs` (task 154) and the PLAN follow-up `history_scope` Pending-for-Failed (139).
 - Hand test on macOS: task 158's checklist.
+
+## Wave stopped — step 2 — orchestrator finding: hint prompt wording
+
+Reviewed HEAD a6a118da1605052e67dc6ac59852eb46f3ac1029. [SPEC] root.rs:637-639 hint text "Confirm before sending to {env}?" / "This environment asks to be guarded. …" vs spec :131 "This environment suggests confirming sends. Enable?". Pending in-spec finding, held: [STYLE] workspace.rs:3511 `resolve_id_for_guard` splits `resolve_id_then` from its doc comment; give the wrapper its own one-line doc.
+
+## Wave resumed — user decision 2026-11-17: the hint prompt uses the spec's text (spec :131, "This environment suggests confirming sends. Enable?"), buttons stay ["Enable", "Not now"]
+
+## Review round 1 — findings
+
+Reviewed HEAD a6a118da1605052e67dc6ac59852eb46f3ac1029.
+
+- [SPEC, decided] crates/app/src/ui/root.rs:637-639 — the suggest_confirm hint prompt reads "Confirm before sending to {env}?" / "This environment asks to be guarded. …". Change it to the spec's text, "This environment suggests confirming sends. Enable?" (docs/plan/specs/2026-11-14-wisp-0-3-0.md:131), naming the environment where the prompt form needs it. Keep the buttons ["Enable", "Not now"].
+- [STYLE] crates/app/src/workspace.rs:3511 — the new `pub fn resolve_id_for_guard` sits between `resolve_id_then`'s doc comment and the function, so the comment now documents the wrapper (and misdescribes it: the wrapper drops the partition argument) and `resolve_id_then` has none. Move the wrapper so the comment stays on `resolve_id_then`, and give the wrapper its own one-line doc. Stays inside edit (d).
