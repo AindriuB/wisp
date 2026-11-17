@@ -57,6 +57,10 @@ pub enum RunProblem {
     KeychainSecret {
         name: String,
     },
+    /// `--keychain` was given but the keychain holds no value for the declared secret.
+    MissingSecret {
+        name: String,
+    },
     /// The keychain could not supply the environment's secrets.
     KeychainUnavailable,
     /// The environment names a secret store this build does not know.
@@ -80,6 +84,8 @@ pub enum RunEnd {
 pub enum HistoryStatus {
     Off,
     Recorded,
+    /// `--history` was given but the run never sent (it was not prepared).
+    SkippedNotSent,
     /// `--history` was given but the collection has no id.
     SkippedNoId,
     /// The id, the data directory or the append failed.
@@ -99,6 +105,8 @@ pub struct RunReport {
     pub delivery: Delivery,
     pub retry_safe: bool,
     pub status: Option<u16>,
+    /// The reason phrase of the response, when the server sent one.
+    pub reason: Option<String>,
     pub expected_status: Vec<u16>,
     pub status_ok: Option<bool>,
     pub ttfb: Option<Duration>,
@@ -190,6 +198,8 @@ struct Loaded {
     env: Environment,
     /// Secret names that live in the keychain and were not loaded.
     unloaded: Vec<String>,
+    /// Secret names declared in the keychain with no stored value (`--keychain`).
+    missing: Vec<String>,
 }
 
 enum EnvFailure {
@@ -215,6 +225,7 @@ fn load_env(
             Ok(Loaded {
                 env,
                 unloaded: Vec::new(),
+                missing: Vec::new(),
             })
         }
         SecretsMode::Unknown(_) => Err(EnvFailure::Problem(RunProblem::UnknownStore)),
@@ -231,6 +242,7 @@ fn load_env(
             Ok(Loaded {
                 env,
                 unloaded: info.secret_names,
+                missing: Vec::new(),
             })
         }
         SecretsMode::Store(_) => {
@@ -257,9 +269,18 @@ fn load_env(
             if matches!(loaded.status, LoadStatus::Failed { .. }) {
                 return Err(EnvFailure::Problem(RunProblem::KeychainUnavailable));
             }
+            let mut env = loaded.env;
+            // A declared secret with no value shadows lower scopes and stays unresolved.
+            for n in &loaded.unresolved {
+                env.secrets.push(Var {
+                    name: n.clone(),
+                    value: String::new(),
+                });
+            }
             Ok(Loaded {
-                env: loaded.env,
+                env,
                 unloaded: Vec::new(),
+                missing: loaded.unresolved,
             })
         }
     }
@@ -288,6 +309,7 @@ struct Ended {
     terminal: Event,
     headers: Vec<Header>,
     status: Option<u16>,
+    reason: Option<String>,
     ttfb: Option<Duration>,
     headers_seen: bool,
 }
@@ -297,6 +319,7 @@ fn await_end(events: &wisp_core::EventReceiver, id: RequestId) -> Ended {
         terminal: Event::Cancelled { id },
         headers: Vec::new(),
         status: None,
+        reason: None,
         ttfb: None,
         headers_seen: false,
     };
@@ -317,10 +340,12 @@ fn await_end(events: &wisp_core::EventReceiver, id: RequestId) -> Ended {
             Event::Headers {
                 id: i,
                 status,
+                reason,
                 headers,
                 ttfb,
                 ..
             } if i == id => {
+                ended.reason = reason;
                 ended.headers = headers;
                 ended.status = Some(status);
                 ended.ttfb = Some(ttfb);
@@ -358,6 +383,7 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
         delivery: Delivery::NotSent,
         retry_safe: true,
         status: None,
+        reason: None,
         expected_status: draft.expected_status.clone(),
         status_ok: None,
         ttfb: None,
@@ -365,10 +391,13 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
         size: None,
         checks: Vec::new(),
         dynamics: Vec::new(),
-        history: if input.history {
-            HistoryStatus::Failed
-        } else {
+        // Replaced once the run has sent; a run that never sent keeps this.
+        history: if !input.history {
             HistoryStatus::Off
+        } else if matches!(read_collection_id(&tree.root), Ok(None)) {
+            HistoryStatus::SkippedNoId
+        } else {
+            HistoryStatus::SkippedNotSent
         },
     };
 
@@ -385,14 +414,25 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
         None => None,
     };
     let env = loaded.as_ref().map(|l| &l.env);
-    let unloaded: &[String] = loaded.as_ref().map_or(&[], |l| &l.unloaded);
-    let (url, keychain_used) = display_for(&tree, &rel, &draft, env, unloaded);
+    let missing: &[String] = loaded.as_ref().map_or(&[], |l| &l.missing);
+    let unloaded: Vec<String> = loaded
+        .as_ref()
+        .map_or(&[][..], |l| &l.unloaded[..])
+        .iter()
+        .chain(missing)
+        .cloned()
+        .collect();
+    let secret_problem = |name: String| {
+        if missing.contains(&name) {
+            RunProblem::MissingSecret { name }
+        } else {
+            RunProblem::KeychainSecret { name }
+        }
+    };
+    let (url, keychain_used) = display_for(&tree, &rel, &draft, env, &unloaded);
     report.url = url;
     if !keychain_used.is_empty() {
-        let problems = keychain_used
-            .into_iter()
-            .map(|name| RunProblem::KeychainSecret { name })
-            .collect();
+        let problems = keychain_used.into_iter().map(secret_problem).collect();
         blank(&mut report, problems);
         return Ok(report);
     }
@@ -418,7 +458,7 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
                 .into_iter()
                 .map(|p| match &p {
                     Problem::UnresolvedVar { name, .. } if unloaded.contains(name) => {
-                        RunProblem::KeychainSecret { name: name.clone() }
+                        secret_problem(name.clone())
                     }
                     _ => RunProblem::Resolve(p),
                 })
@@ -481,8 +521,9 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
         ),
     };
     // At most the check cap plus one byte, then the handle (and any spill file) goes.
-    let prefix = handle.map(|h| {
-        let bytes = bodies.read(&h, 0, BODY_CAP + 1).unwrap_or_default();
+    // A read error gives `None`, as the GUI does, so checks skip rather than fail.
+    let prefix = handle.and_then(|h| {
+        let bytes = bodies.read(&h, 0, BODY_CAP + 1).ok();
         bodies.release(&h);
         bytes
     });
@@ -528,6 +569,7 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
     report.delivery = finished.delivery;
     report.retry_safe = retry_safe(finished.delivery, report.method);
     report.status = ended.status;
+    report.reason = ended.reason.clone();
     report.status_ok = finished.status_ok;
     report.ttfb = timings.ttfb;
     report.total = timings.total;
@@ -819,6 +861,136 @@ mod tests {
                 .unwrap()
                 .contains("id =")
         );
+    }
+
+    fn silent_server() -> std::net::SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for s in l.incoming().flatten() {
+                held.push(s);
+            }
+        });
+        addr
+    }
+
+    fn write_request(f: &Fx, addr: std::net::SocketAddr, method: &str, extra: &str) {
+        std::fs::write(
+            f.coll.path().join("a.toml"),
+            format!(
+                "name = \"a\"\nmethod = \"{method}\"\nurl = \"http://{addr}/{{{{kc}}}}\"\n{extra}\n[[headers]]\nname = \"X-K\"\nvalue = \"{{{{kc}}}}\"\nenabled = true\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7() {
+        let closed = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let slow = "[settings]\ntimeout_ms = 300\n";
+        let cases: [(&str, std::net::SocketAddr, &str, &str, RunEnd); 6] = [
+            ("exit 0", server(), "GET", "", RunEnd::Completed),
+            (
+                "exit 1",
+                server(),
+                "GET",
+                "[[assert]]\nkind = \"status\"\nop = \"equals\"\nvalue = 201\n",
+                RunEnd::Completed,
+            ),
+            (
+                "exit 4",
+                server(),
+                "GET",
+                "[[headers]]\nname = \"X-M\"\nvalue = \"{{missing}}\"\nenabled = true\n",
+                RunEnd::NotPrepared,
+            ),
+            (
+                "exit 5",
+                closed,
+                "POST",
+                "",
+                RunEnd::Failed(ErrorKind::Connect),
+            ),
+            (
+                "exit 6",
+                silent_server(),
+                "POST",
+                slow,
+                RunEnd::Failed(ErrorKind::Timeout),
+            ),
+            (
+                "exit 7",
+                server(),
+                "GET",
+                "expected_status = [201]\n",
+                RunEnd::Completed,
+            ),
+        ];
+        for (what, addr, method, extra, end) in cases {
+            let f = fx(addr, true);
+            write_request(&f, addr, method, extra);
+            let store = bound_store(&f);
+            let report = run_once(input(&f, true, true, Some(Box::new(Shared(store))))).unwrap();
+            assert_eq!(report.end, end, "{what}");
+            let shown = format!("{report:?}");
+            assert!(!shown.contains("CANARY_KC"), "{what}: {shown}");
+            let h = history_text(&f);
+            assert!(!h.contains("CANARY_KC"), "{what}: {h}");
+        }
+    }
+
+    #[test]
+    fn run_missing_keychain_secret_is_not_prepared_and_sends_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let h2 = hits.clone();
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                h2.fetch_add(1, Ordering::SeqCst);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        let f = fx(addr, true);
+        let w = |rel: &str, t: &str| std::fs::write(f.coll.path().join(rel), t).unwrap();
+        w(
+            "collection.toml",
+            &format!("format = 1\nid = \"{ID}\"\n\n[vars]\nkc = \"dev-default\"\n"),
+        );
+        // Bound, but nothing stored for `kc`.
+        let id = CollectionId::parse(ID).unwrap();
+        let root = std::fs::canonicalize(f.coll.path()).unwrap();
+        bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
+        let store = Arc::new(MemoryStore::new());
+        let report = run_once(input(&f, true, true, Some(Box::new(Shared(store))))).unwrap();
+        assert_eq!(report.end, RunEnd::NotPrepared);
+        assert_eq!(
+            report.problems,
+            vec![RunProblem::MissingSecret { name: "kc".into() }]
+        );
+        assert_eq!(report.history, HistoryStatus::SkippedNotSent);
+        assert!(!report.url.contains("dev-default"), "{}", report.url);
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn run_history_for_a_not_prepared_run_is_skipped_not_sent_or_no_id() {
+        for (id, want) in [
+            (true, HistoryStatus::SkippedNotSent),
+            (false, HistoryStatus::SkippedNoId),
+        ] {
+            let f = fx(server(), id);
+            let store = bound_store(&f);
+            let report = run_once(input(&f, false, true, Some(Box::new(Shared(store))))).unwrap();
+            assert_eq!(report.end, RunEnd::NotPrepared);
+            assert_eq!(report.history, want);
+        }
     }
 
     #[test]

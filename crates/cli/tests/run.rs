@@ -415,6 +415,40 @@ fn run_keychain_env_without_flag_exits_4_with_the_message() {
 }
 
 #[test]
+fn run_history_text_says_skipped_for_not_sent_and_for_no_id() {
+    let missing = "\n[[headers]]\nname = \"X\"\nvalue = \"{{missing}}\"\nenabled = true\n";
+    for (id, want) in [
+        (true, "history: skipped (not sent)"),
+        (false, "history: skipped (collection has no id)"),
+    ] {
+        let s = Sandbox::new(id);
+        s.w("a.toml", &plain_request(closed(), "GET", missing));
+        let o = s.go("a.toml", &["--history"]);
+        assert_eq!(o.status.code(), Some(4));
+        assert!(text(&o).contains(want), "id={id}: {}", text(&o));
+        assert!(!text(&o).contains("history: failed"));
+    }
+}
+
+#[test]
+fn run_text_status_line_has_reason_size_and_no_delivery_line() {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &plain_request(serve(200), "GET", "expected_status = [200]\n"),
+    );
+    let o = s.go("a.toml", &[]);
+    let t = text(&o);
+    let line = t.lines().find(|l| l.starts_with("status ")).unwrap();
+    assert!(
+        line.starts_with("status 200 OK (expected 200)   "),
+        "{line}"
+    );
+    assert!(line.contains(" ms   ") && line.ends_with(" B"), "{line}");
+    assert!(!t.contains("delivery:"), "{t}");
+}
+
+#[test]
 fn run_oauth2_authorization_code_exits_4() {
     let s = Sandbox::new(true);
     s.w(
@@ -453,7 +487,7 @@ fn run_text_output_has_one_line_per_item() {
     let lines: Vec<&str> = t.lines().collect();
     assert!(lines[0].starts_with("GET http://127.0.0.1:"), "{t}");
     assert!(lines[0].ends_with("   env: dev"), "{t}");
-    assert!(lines[1].starts_with("status 200 (expected 200)"), "{t}");
+    assert!(lines[1].starts_with("status 200 OK (expected 200)"), "{t}");
     assert!(lines.contains(&"checks 0/1: fail \"status equals\""), "{t}");
     assert!(
         lines.iter().any(|l| l.starts_with("dynamic $uuid = ")),

@@ -300,6 +300,9 @@ pub fn run_text(w: &mut dyn Write, d: &RunDoc) -> io::Result<()> {
     writeln!(w)?;
     if let Some(s) = d.status {
         write!(w, "status {s}")?;
+        if let Some(r) = d.reason.as_deref().filter(|r| !r.is_empty()) {
+            write!(w, " {}", display(r))?;
+        }
         if !d.expected_status.is_empty() {
             let list: Vec<String> = d.expected_status.iter().map(u16::to_string).collect();
             write!(w, " (expected {})", list.join(","))?;
@@ -308,7 +311,7 @@ pub fn run_text(w: &mut dyn Write, d: &RunDoc) -> io::Result<()> {
             write!(w, "   {t} ms")?;
         }
         if let Some(n) = d.size {
-            write!(w, "   {n} B")?;
+            write!(w, "   {}", size_text(n))?;
         }
         writeln!(w)?;
     }
@@ -332,9 +335,22 @@ pub fn run_text(w: &mut dyn Write, d: &RunDoc) -> io::Result<()> {
     for x in &d.dynamic {
         writeln!(w, "dynamic {} = {}", display(&x.name), display(&x.value))?;
     }
-    writeln!(w, "delivery: {}", d.delivery)?;
     writeln!(w, "history: {}", d.history)?;
     writeln!(w, "result: {} (exit {})", d.result, d.exit)
+}
+
+/// B, KB or MB, as the response pane shows it.
+fn size_text(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < MB && (b / KB * 10.0).round() < 10240.0 {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{:.1} MB", b / MB)
+    }
 }
 
 fn problem_line(p: &ProblemDoc) -> String {

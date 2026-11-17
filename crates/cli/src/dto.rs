@@ -192,6 +192,9 @@ pub struct RunDoc {
     pub delivery: &'static str,
     pub retry_safe: bool,
     pub status: Option<u16>,
+    /// Text output only: the JSON field set is fixed by the spec.
+    #[serde(skip)]
+    pub reason: Option<String>,
     pub expected_status: Vec<u16>,
     pub status_ok: Option<bool>,
     pub timing_ms: TimingDoc,

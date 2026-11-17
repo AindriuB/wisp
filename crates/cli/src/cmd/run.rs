@@ -83,6 +83,7 @@ fn history_name(h: HistoryStatus) -> &'static str {
         HistoryStatus::Off => "off",
         HistoryStatus::Recorded => "recorded",
         HistoryStatus::SkippedNoId => "skipped (collection has no id)",
+        HistoryStatus::SkippedNotSent => "skipped (not sent)",
         HistoryStatus::Failed => "failed",
     }
 }
@@ -100,6 +101,11 @@ fn problem_doc(p: &RunProblem) -> ProblemDoc {
             "keychain-secret",
             Some(cap(name)),
             format!("secret {} is in the keychain; pass --keychain", cap(name)),
+        ),
+        RunProblem::MissingSecret { name } => fixed(
+            "missing-secret",
+            Some(cap(name)),
+            format!("secret `{}` has no value in the keychain", cap(name)),
         ),
         RunProblem::KeychainUnavailable => fixed(
             "keychain-unavailable",
@@ -161,6 +167,7 @@ fn map(r: &RunReport) -> RunDoc {
         delivery: delivery_name(r.delivery),
         retry_safe: r.retry_safe,
         status: r.status,
+        reason: r.reason.clone(),
         expected_status: r.expected_status.clone(),
         status_ok: r.status_ok,
         timing_ms: TimingDoc {
