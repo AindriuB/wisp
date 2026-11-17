@@ -47,3 +47,18 @@ file's error never carries file content.
 ## Out of scope
 - A cross-process id lock (spec :426); the Windows ACL and `same_file_entry` (171, which also edits `data_dir.rs` after this task).
 - The workspace's cookie log and notice (161).
+
+## Review round 1 — findings
+
+Reviewed HEAD: 9a80f6b2be960da99517fc589380676e2a809c6c
+
+- [P2] crates/storage/tests/cookies.rs:409 — `parse_error_carries_no_file_content` does not prove AC5 ("never serde's message or any file byte"). The canary sits where serde never quotes it, so a regression that appended serde's text would still pass.
+  - Fix: put the canary inside a value that serde quotes in its message, for example `"expires": "CANARY_COOKIE"` where a number is expected, or an unknown enum variant.
+  - Then assert that `Display` and `Debug` contain neither the canary nor any quote or backtick text taken from the file.
+  - Failing input: changing `cookies.rs:213-218` to append `format!(": {e}")` still passes the current test (verified by mutation).
+
+## Wave verified — e752edc7ccc2c6827e287fe12e28b9adf77b8536
+
+## Outcome
+
+Merged via record/163-storage-hardening-a at e752edc7ccc2c6827e287fe12e28b9adf77b8536. Tester PASS (1364 passed, 0 failed, 4 ignored) and reviewer APPROVE. Review round 1 found one P2 (the cookie parse-error test did not prove AC5), fixed in e752edc. The P3s are in PLAN.md under "Follow-ups from task 163". The task's `cargo fmt --check` has to run as `cargo fmt --all --check` (virtual manifest), and `.claude/scripts/check-counts.sh` does not exist in this repo.
