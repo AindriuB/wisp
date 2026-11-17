@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-17 | 156 | wisp-cli in every release archive, Windows GUI gate 16,000,000 B, CLI size step, SIGNPATH_SIGNS_CLI-gated CLI signing | ## 2026-11-17 — wisp-cli packaged in every archive and Windows gate raised (task 156) |
 | 2026-11-17 | 154 | Sidebar "New collection…" button and "New environment…" select entry cut by two reverts; palette commands kept | ## 2026-11-17 — Sidebar create buttons cut (task 154) |
 | 2026-11-17 | 153 | PLAN.md pruned 99,898 to 94,230 B; spec Amendment 2 records the cut of 148 sidebar buttons and the 16,000,000 B gate | ## 2026-11-17 — PLAN.md pruned and the wave-3 size decisions recorded (task 153) |
 | 2026-11-16 | 149 | wave-2 size: Windows GUI 15,494,656 B, over the soft line, under the gate; cut order is the user's call | ## 2026-11-16 — Measure wave 2 (task 149) |

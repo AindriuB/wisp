@@ -1,6 +1,6 @@
 # Windows Authenticode signing (SignPath)
 
-The release `build` job signs `wisp.exe` through SignPath Foundation before
+The release `build` job signs `wisp.exe` (and `wisp-cli.exe`, see below) through SignPath Foundation before
 Package zips it, then runs `verify.ps1`. Signing turns on only when all five
 settings exist. With none, the run prints a `::notice::` and ships unsigned.
 With some, the run fails and names the missing ones.
@@ -15,11 +15,22 @@ With some, the run fails and names the missing ones.
 | `SIGNPATH_SIGNING_POLICY_SLUG` | variable | e.g. `release-signing` |
 | `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` | variable | artifact configuration slug |
 
+## Signing wisp-cli.exe
+
+The artifact configuration below lists both `wisp.exe` and `wisp-cli.exe`. The
+owner must apply it in SignPath, then set the repository variable
+`SIGNPATH_SIGNS_CLI=true`. Until then the workflow uploads only `wisp.exe`
+(the `wisp-cli.exe` entry has `min-matches="0"`, SignPath's optional-match
+attribute, so a zip without it still passes), ships `wisp-cli.exe` unsigned,
+and adds "wisp-cli.exe in this release is not code-signed." to the draft release
+notes. The release never fails because the CLI is unsigned. Once the variable is
+`true`, both exes are signed, copied back and checked with `verify.ps1`.
+
 ## Artifact configuration
 
 `artifact-configuration.xml` beside this file is the reference. Create it in
 SignPath under the slug above. The signed artifact is a zip with `wisp.exe` at
-its root.
+its root (plus `wisp-cli.exe` when `SIGNPATH_SIGNS_CLI` is `true`).
 
 ## Manual approval
 

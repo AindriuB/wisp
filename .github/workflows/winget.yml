@@ -54,6 +54,17 @@ jobs:
       - name: Use committed manifests
         if: github.event_name == 'pull_request'
         run: echo "MANIFEST_ROOT=$GITHUB_WORKSPACE/packaging/winget/manifests" >> "$GITHUB_ENV"
+      # Committed manifests are old releases, so also render the current templates.
+      - name: Render templates from a fixture SHA256SUMS
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixture"
+          printf '%064d  Wisp-9.9.9-windows-x64.zip\n' 0 > "$RUNNER_TEMP/fixture/SHA256SUMS"
+          scripts/release/winget-manifest.sh 9.9.9 "$RUNNER_TEMP/fixture/SHA256SUMS" "$RUNNER_TEMP/fixture/out"
+          mkdir -p "$RUNNER_TEMP/pr"
+          cp -r packaging/winget/manifests "$RUNNER_TEMP/pr/committed"
+          cp -r "$RUNNER_TEMP/fixture/out/manifests" "$RUNNER_TEMP/pr/rendered"
+          echo "MANIFEST_ROOT=$RUNNER_TEMP/pr" >> "$GITHUB_ENV"
       - name: Validate
         run: |
           dirs="$(find "$MANIFEST_ROOT" -name '*.installer.yaml' -exec dirname {} \; | sort -u)"
