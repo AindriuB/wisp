@@ -2696,6 +2696,10 @@ impl Workspace {
             Some(id) => self.spawn_record(task_root, data, id, new, body, cx),
             None => {
                 let root = task_root.clone();
+                // A cached read failure is retried: the file may have been repaired since.
+                if matches!(self.collections[cix].coll_id, IdState::Failed { .. }) {
+                    self.collections[cix].coll_id = IdState::Absent;
+                }
                 self.resolve_id_then(Some(root), cx, move |this, _, cx| {
                     let Some(cix) = this.coll_ix(&task_root) else {
                         return;
@@ -4789,6 +4793,42 @@ mod env_wiring_tests {
                 .history_dir(&CollectionId::parse(other).unwrap())
                 .exists()
         );
+    }
+
+    #[gpui::test]
+    fn history_recovers_when_a_failed_collection_id_is_repaired(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let root = fx.root.clone();
+        let toml = std::fs::read(root.join("collection.toml")).unwrap();
+        std::fs::write(root.join("collection.toml"), "format = 1\nid = \"bad id\"\n").unwrap();
+        fx.ws.update(cx, |w, _| {
+            w.collections[0].coll_id = read_id_state(&root);
+            assert!(matches!(w.collections[0].coll_id, IdState::Failed { .. }));
+        });
+        std::fs::write(root.join("collection.toml"), toml).unwrap();
+        let new = NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        let r = root.clone();
+        fx.ws.update(cx, |w, cx| w.append_history(r, new, None, cx));
+        cx.run_until_parked();
+        let data = DataDir::at(fx._dir.path().join("data"));
+        let store = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 
     #[gpui::test]
