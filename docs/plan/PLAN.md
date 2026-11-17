@@ -20,7 +20,14 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 162, 163, 164 and 160 are recorded; next is 161 (service outcome and history), then 166 (`wisp-cli run`).
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 162, 163, 164, 160 and 161 are recorded; next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
+
+### Follow-ups from task 161 (service outcome and history; not scheduled)
+- NOTE (for 166, which is planned from this API): `crates/service/src/history.rs:23-48` `record` never builds `RecordError::Open`, because `HistoryStore::open` cannot fail, so the GUI's `Open` arm at `crates/app/src/workspace.rs:2752` is unreachable.
+- NOTE, possible regression: `crates/app/src/workspace.rs:2710` with `IdState::Failed`, append turns history off for the session; the old path re-resolved the id on every append, so a transient failure could recover.
+- NOTE: no test drives the `on_event` path that turns `nothing_sent` and `headers_seen` into the entry's `delivery` (AC7); the AC6 test calls `append_history` directly.
+- NOTE: AC8's test exercises `with_data_dir`, not `Workspace::new`; removing the `cfg(test)` arm in `new` fails no test.
+- NOTE: the AC1 golden's doc comment (`crates/service/src/outcome.rs:278`) says "What the app built", but `delivery: "responded"` is new in 0.4.0.
 
 ### Follow-ups from task 160 (wisp-service plan and send; not scheduled)
 - [P3] `scripts/check-boundaries.sh:52`: the `resolve(` check (and the task's no-resolve check) misses a path-qualified `wisp_core::resolve::resolve(` call or an aliased import.
@@ -38,38 +45,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - NOTE: `lookup_var` (`crates/core/src/resolve/engine.rs:165`) still uses `Fresh`, so GUI hover and highlight (`crates/app/src/highlight.rs:60`, `:122`) generate a new UUID for a variable whose value contains `{{$uuid}}`. The spec names only the URL bar for Placeholder.
 
 ### v0.3.0 (released 2026-11-17)
-Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendments 1 and 2; roadmap: `docs/plan/roadmap.md`.
-- **Waves 0 to 2 and tasks 147 and 148 are recorded (PRs #78-#110):** detail in `docs/plan/archive/2026-11-16-closed-sections.md`, `docs/plan/archive/2026-11-17-closed-sections.md` and HISTORY. Open follow-ups are under the "Follow-ups from ..." sections below.
-- **149 measured wave 2 (PR #110):** Windows GUI 15,494,656 B, 94,656 B over the old 15.4 MB soft line and 5,344 B under the old 15,500,000 B gate. Detail: `scripts/measure/results/wave-2-size.json`.
-- **Decision 1 (user, 2026-11-17):** cut task 148's sidebar empty-state buttons and keep the palette "New collection…" and "New environment…" commands (task 154, done).
-- **Decision 2 (user, 2026-11-17):** the Windows GUI hard gate is 16,000,000 B and the soft line 15,900,000 B, replacing 15,500,000 B and 15,400,000 B (task 156 changes `release.yml`; `budgets.json` keeps 16 MiB); see spec Amendment 2.
-- **Follow-up (149):** the CLI roughly tripled since wave 1 (macOS 552,528 → 1,415,600 B); cause not investigated.
-- **153 recorded** (PLAN.md pruned from 99,898 B to 94,230 B; decisions written into the spec and roadmap).
-- **154 recorded:** the sidebar buttons are cut (two reverts); the palette commands remain.
-- **156 recorded:** `wisp-cli` ships in all three archives, the Windows GUI gate is 16,000,000 B, and Windows CLI signing waits on the owner's `SIGNPATH_SIGNS_CLI` variable. Follow-ups (both P3, not fixed): (a) `release.yml:68-81` checks the CLI size before Authenticode signing, so a signed `wisp-cli.exe` is a few KB larger than the size checked; (b) `release.yml:72` accepts a limit stored as a JSON string (`"4194304"`). (c) 114-2 (P3): `release.yml` does not check that the CLI signing state is "signed" or "unsigned", so an empty state file yields the "not code-signed" note. The CLI growth (about 3x since wave 1, about 1.4 MB on macOS) is still not investigated.
-- **155 recorded:** sending to an environment with the guard on asks for confirmation, and a `suggest_confirm` environment offers to turn the guard on. Follow-ups (none fixed):
-  - [P3] `crates/app/src/ui/root.rs:594-604`: when saving settings fails, the toggle's own notice replaces "Could not save settings", so the guard looks saved but is lost on restart. `ToggleHistoryBodies` at `root.rs:1155-1165` has the same pattern.
-  - [Note] The confirm prompt detail shows the host as typed, before variables resolve (it shows `{{base}}`), which is weaker than spec :121.
-  - [Note] `guard.rs:72-79` `host_of` cuts at `/ ? #` before stripping userinfo, so a typed password containing those characters is partly shown.
-  - [Note] `ui/url_bar.rs:499-517`: the badge may be clipped on a narrow window with a long context strip.
-  - [Note, for 158's hand test] keyboard Send on a guarded tab that is already Sending now prompts before re-sending.
-  - [Known residual, 115-1, accepted by the user 2026-11-17] the guard fails open while the collection id is Reading or Failed; this matches spec :136. Tasks 157 (docs) and 158 (hand test) must state it.
-  - [For 158's hand test] a tab switch while "Send to <env>?" is up, then Confirm, must abort (no test drives the root.rs callback).
-  - [For 158's hand test] whether a Reprompt is refused by `has_active_prompt()` inside `done`.
-  - [P3] the prompt detail is not re-checked against the draft at send time, so an edit or disk reload during the prompt can send a different URL.
-- **157 recorded:** `docs/cli.md` is new, architecture.md drift is fixed and the README gains the CLI and guard text. Follow-ups (none fixed; detail in `docs/plan/tasks/retired/157-docs-cli-guard-release.md`):
-  - [P3] docs/cli.md `explain` JSON lacks the nested shapes (params, headers, auth.fields, settings, body, variables, problems; warnings are strings): `crates/cli/src/dto.rs:118-180`, `cmd/explain.rs:156-184`.
-  - [P3] docs/cli.md wrongly says a keychain environment is "not opened at all"; the env file loads and only the secret store is skipped (`cmd/explain.rs:68-88`).
-  - [P3] docs/cli.md exit code 2: usage text goes to stderr only for parse errors; unknown env prints only "wisp-cli: unknown environment"; non-UTF-8 env name or path also exits 2 (`main.rs:40-41`, `:60`).
-  - [P3] architecture.md "How they talk" overstates `scripts/check-boundaries.sh` (`:8-38`): it checks banned deps and patterns, not dependency direction.
-  - [Note] The docs/cli.md Usage block is a synopsis, not literal `--help`. The Windows soft line 15,900,000 B is enforced nowhere (`release.yml:177`). The `SIGNPATH_SIGNS_CLI` name looks blanked in PLAN.md:30, HISTORY.md:26 and `scripts/release/sign-windows/README.md:22,:33`.
-  - [Low] the `scope` Check in tasks 157 and 158 (`wc -l | grep -x 0`) fails on macOS because BSD wc pads the count.
-- **158 recorded:** wave-3 measure (run 44045146818) and release dry run (run 44046922250) are green on d314c5f. Windows GUI 15,533,568 B, under the gate and soft line; the CLI is unchanged. Follow-ups (none fixed; detail in `docs/plan/tasks/retired/158-measure-and-release-dry-run.md`):
-  - [Note] the macOS archive's `wisp-cli` is 1,425,616 B against measure's 1,415,600 B (+10,016 B), probably signature bytes; ties to the 156 follow-up (a).
-  - [Low] the `only-result` Check (`wc -l | grep -x 0`) fails on macOS because BSD wc pads the count, as for 157's `scope` Check.
-  - [P3, 116-1] README.md:81 macOS `ln -s ... /usr/local/bin/wisp-cli` fails on a fresh Apple silicon Mac (directory missing or root-owned): add sudo and `mkdir -p`, or use a user-owned directory.
-  - [User] delete draft release `dryrun-44046922250` when done with it.
-- **0.3.0 released 2026-11-17:** release PR #118, tag v0.3.0 at ffdccc1, release run 44080607742, winget run 44083496633 (manifest built; the winget-pkgs PR is the user's). macOS hand test passed; Windows and Ubuntu hand tests later (mac-first). Release runbook: `docs/release.md`.
+Section moved verbatim to `docs/plan/archive/2026-11-17-v0-3-0-section.md` (PLAN.md was over 100 KB). It holds the decisions, and the still-open follow-ups from tasks 149, 155, 157 and 158 (all P3 or notes, none fixed). Release runbook: `docs/release.md`. User to-do: delete draft release `dryrun-44046922250`; Windows and Ubuntu hand tests of 0.3.0 come later.
 
 ### User setup (optional release channels)
 **User setup (optional channels):** none of these block 0.2.0.
