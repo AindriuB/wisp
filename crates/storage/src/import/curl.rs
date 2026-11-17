@@ -480,12 +480,10 @@ fn set_url(f: &mut Flags, url: String) {
 /// positional is ambiguous and an error naming the option, never a value.
 fn pick_url(f: &mut Flags) -> Result<String, ImportError> {
     let mut urls = std::mem::take(&mut f.urls);
-    if let Some(opt) = f.unknown.clone() {
-        if urls.len() > 1 {
-            return Err(ImportError::Parse(format!(
-                "cannot tell which argument is the URL after the unknown option `{opt}`"
-            )));
-        }
+    if let (Some(opt), true) = (f.unknown.as_ref(), urls.len() > 1) {
+        return Err(ImportError::Parse(format!(
+            "cannot tell which argument is the URL after the unknown option `{opt}`"
+        )));
     }
     if urls.is_empty() {
         return Err(ImportError::Parse("no URL in the curl command".into()));
