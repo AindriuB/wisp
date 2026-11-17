@@ -54,10 +54,6 @@ pub struct TabGroup {
     pub active: Option<usize>,
 }
 
-/// A recovery result held by the test hook until the test releases it.
-#[cfg(test)]
-type HeldRecovery = Box<dyn FnOnce(&mut Workspace, &mut Context<Workspace>)>;
-
 /// A fresh history generation, unique across the workspace.
 fn next_history_gen() -> u64 {
     static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -989,7 +985,8 @@ pub struct Workspace {
     data_dir: Option<DataDir>,
     /// Test hook: while `Some`, a recovery re-read's result waits here to be released.
     #[cfg(test)]
-    held_recoveries: Option<Vec<HeldRecovery>>,
+    #[allow(clippy::type_complexity)]
+    held_recoveries: Option<Vec<Box<dyn FnOnce(&mut Workspace, &mut Context<Workspace>)>>>,
     jars: CookieJars,
     /// Persistence state per collection id, once its file was checked in this run.
     cookie_files: HashMap<String, CookieStatus>,
