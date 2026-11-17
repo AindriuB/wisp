@@ -27,7 +27,8 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - **Follow-up (149):** the CLI roughly tripled since wave 1 (macOS 552,528 → 1,415,600 B); cause not investigated.
 - **153 recorded** (PLAN.md pruned from 99,898 B to 94,230 B; decisions written into the spec and roadmap).
 - **154 recorded:** the sidebar buttons are cut (two reverts); the palette commands remain.
-- **Wave 3 open (155-158):** 155 environment guard, 156 package the CLI and raise the gate, 157 docs for the CLI and guard, 158 measure and release dry run.
+- **156 recorded:** `wisp-cli` ships in all three archives, the Windows GUI gate is 16,000,000 B, and Windows CLI signing waits on the owner's `SIGNPATH_SIGNS_CLI` variable. Follow-ups (both P3, not fixed): (a) `release.yml:68-81` checks the CLI size before Authenticode signing, so a signed `wisp-cli.exe` is a few KB larger than the size checked; (b) `release.yml:72` accepts a limit stored as a JSON string (`"4194304"`). The CLI growth (about 3x since wave 1, about 1.4 MB on macOS) is still not investigated.
+- **Wave 3 open (155, 157, 158):** 155 environment guard, 157 docs for the CLI and guard, 158 measure and release dry run.
 - **Next:** wave 3, then the macOS hand test.
 
 ### User setup (optional release channels)

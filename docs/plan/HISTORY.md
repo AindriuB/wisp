@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — wisp-cli packaged in every archive and Windows gate raised (task 156)
+The release workflow builds `wisp-app` and `wisp-cli` together, checks glibc on both Linux binaries, and puts `wisp-cli` beside the GUI in the Windows zip, the Linux tarball and the macOS bundle (signed inside out before the app). The Windows GUI gate is 16,000,000 B and a CLI size step reads `cli-budgets.json`. Windows CLI signing runs only when the repository variable `SIGNPATH_SIGNS_CLI` is `true`; otherwise the draft-release notes say `wisp-cli.exe` is not code-signed. The winget template gained a `wisp-cli` portable entry and the MSIX package stays GUI-only.
+
+**Cost:** Review round 1 found that the Verify Windows signature step let a failed `wisp.exe` check pass because the second `verify.ps1` call reset `$LASTEXITCODE`; fixed by exiting after the first call. Two P3s remain (size checked before Authenticode signing; a JSON-string limit accepted). The CLI's roughly threefold growth since wave 1 was left uninvestigated by design. The winget template check only runs on the PR's CI, and `release.yml` was not dispatched; task 158 does the dry run.
+
 ## 2026-11-17 — Sidebar create buttons cut (task 154)
 `crates/app/src/ui/sidebar.rs` no longer has the "New collection…" button or the environment select's "New environment…" entry that task 148 added; it equals its content at 2ae2e2b^. The palette commands "New collection…" and "New environment…" are unchanged. This was the first cut in the size plan, taken on the user's decision.
 
