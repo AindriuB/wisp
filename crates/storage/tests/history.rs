@@ -294,7 +294,13 @@ fn redacts_set_cookie_values_in_response_headers() {
     let h = store.load(&e.id).unwrap().response_headers;
     assert_eq!(h[0].value, "sid=; Path=/; HttpOnly");
     assert_eq!(h[1].value, "theme=");
-    assert!(e.redacted.contains(&"Set-Cookie".to_string()));
+    assert!(
+        store
+            .load(&e.id)
+            .unwrap()
+            .response_redacted
+            .contains(&"Set-Cookie".to_string())
+    );
 }
 
 #[test]
@@ -738,7 +744,13 @@ fn credential_named_response_headers_are_emptied() {
     ];
     let e = store.append(n, None).unwrap();
     assert!(!raw_files(&data).contains("SECRETVAL"));
-    assert!(e.redacted.contains(&"X-Auth-Token".to_string()));
+    assert!(
+        store
+            .load(&e.id)
+            .unwrap()
+            .response_redacted
+            .contains(&"X-Auth-Token".to_string())
+    );
     let h = store.load(&e.id).unwrap().response_headers;
     assert_eq!(h[0].value, "");
     assert_eq!(h[2].value, "text/plain");
@@ -1339,7 +1351,14 @@ fn refresh_query_credentials_are_redacted_on_append() {
         let mut text = String::new();
         all_text(&hist_dir(&data), &mut text);
         assert!(!text.contains("secret"), "{value}");
-        assert!(e.redacted.contains(&"Refresh".to_string()), "{value}");
+        assert!(
+            store
+                .load(&e.id)
+                .unwrap()
+                .response_redacted
+                .contains(&"Refresh".to_string()),
+            "{value}"
+        );
     }
 }
 
@@ -1474,7 +1493,8 @@ fn leading_whitespace_does_not_hide_userinfo_on_append() {
         all_text(&hist_dir(&data), &mut text);
         assert!(!text.contains("secret"), "{name}: {value:?}");
         assert!(!text.contains("alice"), "{name}: {value:?}");
-        assert!(entry.redacted.iter().any(|n| n == name));
+        let names = store.load(&entry.id).unwrap().response_redacted;
+        assert!(names.iter().any(|n| n == name));
     }
 }
 
@@ -1553,7 +1573,8 @@ fn encoded_query_names_are_matched_on_append() {
             loaded.response_headers[0].value,
             value.replace("=secret", "=")
         );
-        assert!(e.redacted.iter().any(|n| n == name));
+        let names = store.load(&e.id).unwrap().response_redacted;
+        assert!(names.iter().any(|n| n == name));
         let mut text = String::new();
         all_text(&hist_dir(&data), &mut text);
         assert!(!text.contains("secret"), "{name}: {value}");
@@ -1644,7 +1665,8 @@ fn custom_scheme_backslashes_do_not_hide_userinfo_on_append() {
             value: value.clone(),
         }];
         let e = store.append(ne, None).unwrap();
-        assert!(e.redacted.iter().any(|n| n == name));
+        let names = store.load(&e.id).unwrap().response_redacted;
+        assert!(names.iter().any(|n| n == name));
         assert!(
             store.load(&e.id).unwrap().response_headers[0]
                 .value
@@ -1794,4 +1816,174 @@ fn history_delivery_is_written_only_when_present() {
     );
     let listed = store.list().unwrap();
     assert!(listed.iter().any(|e| e.delivery == Some(Delivery::NotSent)));
+}
+
+fn json_request(content: String) -> Request {
+    Request {
+        url: "https://x.test/".into(),
+        body: Body::Json(TextBody {
+            content,
+            sidecar: None,
+        }),
+        ..Request::default()
+    }
+}
+
+fn stored_json(store: &HistoryStore, id: &str) -> String {
+    match store.load_without_body(id).unwrap().request.body {
+        Body::Json(b) => b.content,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn h2_unterminated_refs_body_is_stored() {
+    let (_d, _data, store) = setup();
+    let e = store
+        .append(new_entry(json_request("{{".repeat(512 * 1024))), None)
+        .unwrap();
+    // Not valid JSON, so the redactor drops it and names it; the point is that it finishes.
+    assert!(stored_json(&store, &e.id).is_empty());
+    assert!(e.redacted.contains(&"body".to_string()));
+}
+
+#[test]
+fn h2_ten_thousand_refs_round_trip() {
+    let (_d, _data, store) = setup();
+    let mut body = String::from("{\"token\":\"x\",\"a\":[");
+    for i in 0..10_000 {
+        if i > 0 {
+            body.push(',');
+        }
+        body.push_str(&format!("{{{{v{i}}}}}"));
+        body.push_str(&" ".repeat(94));
+    }
+    body.push_str("]}");
+    assert!(body.len() > 1_000_000 && body.len() < 1024 * 1024 + 4096);
+    let e = store
+        .append(new_entry(json_request(body.clone())), None)
+        .unwrap();
+    let got = stored_json(&store, &e.id);
+    for i in 0..10_000 {
+        assert!(got.contains(&format!("{{{{v{i}}}}}")), "ref {i}");
+    }
+    assert!(!got.contains("wispref"));
+    assert!(got.contains("\"token\":\"\""));
+}
+
+#[test]
+fn h2_request_body_is_capped_and_flagged() {
+    let (_d, data, store) = setup();
+    let cap = wisp_storage::history::BODY_CAP;
+    let req = Request {
+        url: "https://x.test/".into(),
+        body: Body::Text(TextBody {
+            content: "a".repeat(cap * 2),
+            sidecar: None,
+        }),
+        ..Request::default()
+    };
+    let e = store.append(new_entry(req), None).unwrap();
+    let stored = store.load_without_body(&e.id).unwrap();
+    assert!(stored.request_truncated);
+    match stored.request.body {
+        Body::Text(b) => assert_eq!(b.content.len(), cap),
+        other => panic!("{other:?}"),
+    }
+    let raw = fs::read_to_string(bodies_dir(&data).join(format!("{}.req.json", e.id))).unwrap();
+    assert!(raw.contains("\"truncated\":true"));
+}
+
+#[test]
+fn h2_old_req_file_without_flag_loads() {
+    let (_d, data, store) = setup();
+    let e = store.append(plain("https://x.test/"), None).unwrap();
+    let path = bodies_dir(&data).join(format!("{}.req.json", e.id));
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    v.as_object_mut().unwrap().remove("truncated");
+    v.as_object_mut().unwrap().remove("response_redacted");
+    fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    let stored = store.load_without_body(&e.id).unwrap();
+    assert!(!stored.request_truncated);
+    assert!(stored.response_redacted.is_empty());
+}
+
+#[test]
+fn h2_response_header_names_stay_out_of_request_redacted() {
+    let (_d, _data, store) = setup();
+    let mut req = Request {
+        url: "https://x.test/".into(),
+        ..Request::default()
+    };
+    req.headers.push(kv("X-Foo", ""));
+    let mut new = new_entry(req);
+    new.response_headers = vec![Header {
+        name: "X-Foo".into(),
+        value: "x".into(),
+    }];
+    new.response_headers.push(Header {
+        name: "X-Foo-Token".into(),
+        value: "secret".into(),
+    });
+    let e = store.append(new, None).unwrap();
+    assert!(!e.redacted.iter().any(|n| n == "X-Foo-Token"));
+    assert!(!e.redacted.iter().any(|n| n == "X-Foo"));
+    let stored = store.load_without_body(&e.id).unwrap();
+    assert_eq!(stored.response_redacted, vec!["X-Foo-Token".to_string()]);
+    // A 0.3.0 index line (no new fields) still loads.
+    let listed = store.list().unwrap();
+    assert_eq!(listed.len(), 1);
+}
+
+fn snapshot_dir(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64, SystemTime)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for f in fs::read_dir(&d).unwrap().flatten() {
+            let m = f.metadata().unwrap();
+            if m.is_dir() {
+                stack.push(f.path());
+            }
+            out.push((f.path(), m.len(), m.modified().unwrap()));
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn h2_read_only_unmigrated_gives_note_and_changes_nothing() {
+    let (d, data, store) = setup();
+    store.append(plain("https://x.test/a"), None).unwrap();
+    let hd = hist_dir(&data);
+    let _ = fs::remove_file(hd.join(".scrubbed-1"));
+    let before = snapshot_dir(d.path());
+    let ro = HistoryStore::open_read_only(&hd).unwrap();
+    let got = ro.list(5).unwrap();
+    assert!(got.entries.is_empty());
+    assert_eq!(
+        got.note.as_deref(),
+        Some("history not yet migrated; open Wisp once")
+    );
+    assert_eq!(snapshot_dir(d.path()), before);
+    assert!(HistoryStore::open_read_only(&d.path().join("missing")).is_none());
+}
+
+#[test]
+fn h2_read_only_migrated_lists_newest_up_to_limit() {
+    let (d, data, store) = setup();
+    for i in 0..4 {
+        store
+            .append(plain(&format!("https://x.test/{i}")), None)
+            .unwrap();
+    }
+    // Reopening migrates the dir and writes the marker.
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    let before = snapshot_dir(d.path());
+    let ro = HistoryStore::open_read_only(&hist_dir(&data)).unwrap();
+    let got = ro.list(2).unwrap();
+    assert!(got.note.is_none());
+    let urls: Vec<&str> = got.entries.iter().map(|e| e.url.as_str()).collect();
+    assert_eq!(urls, ["https://x.test/3", "https://x.test/2"]);
+    assert_eq!(snapshot_dir(d.path()), before);
 }
