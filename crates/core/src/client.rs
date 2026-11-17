@@ -61,9 +61,12 @@ impl ClientCache {
         if !settings.verify_tls {
             builder = builder.tls_danger_accept_invalid_certs(true);
         }
-        if !settings.follow_redirects {
-            builder = builder.redirect(reqwest::redirect::Policy::none());
-        }
+        // The engine follows redirects itself (when `follow_redirects` is on) and reqwest never
+        // resends, so one `send()` is at most one request on the wire (see `nothing_sent`).
+        // reqwest 0.13.5 `src/retry.rs:88` `never()`; its default retries protocol NACKs.
+        builder = builder
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never());
         if let Some(proxy) = &settings.proxy {
             let proxy = reqwest::Proxy::all(proxy.as_str())
                 .map_err(|e| err(ErrorKind::InvalidUrl, format!("invalid proxy: {e}")))?;

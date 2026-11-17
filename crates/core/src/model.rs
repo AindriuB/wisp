@@ -245,6 +245,10 @@ pub enum Event {
     Failed {
         id: RequestId,
         error: EngineError,
+        /// True only when the engine can prove no byte of the request reached any
+        /// connection. A missing value reads as false (unknown), so it fails closed.
+        #[serde(default)]
+        nothing_sent: bool,
     },
     Cancelled {
         id: RequestId,
