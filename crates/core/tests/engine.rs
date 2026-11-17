@@ -1250,6 +1250,29 @@ async fn engine_followed_redirects_use_reqwest_method_rules() {
 }
 
 #[tokio::test]
+async fn a_head_with_a_body_redirected_with_303_stays_head_and_drops_the_body() {
+    for via_auth in [false, true] {
+        let got = method_redirect(
+            Method::Head,
+            303,
+            PreparedBody::Bytes(b"payload".to_vec()),
+            via_auth,
+        )
+        .await;
+        assert_eq!(got[1].method.as_str(), "HEAD", "auth={via_auth}");
+        assert!(got[1].body.is_empty(), "auth={via_auth}");
+        assert!(
+            !got[1].headers.contains_key("content-type"),
+            "auth={via_auth}"
+        );
+        assert!(
+            !got[1].headers.contains_key("content-length"),
+            "auth={via_auth}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_cross_origin_redirect_sends_no_referer() {
     for own in [false, true] {
         let second = MockServer::start().await;

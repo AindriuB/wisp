@@ -978,13 +978,13 @@ async fn perform(
         }
         let code = resp.status().as_u16();
         // 307/308 keep method and body. With own_redirects the rules match reqwest's: 303 turns
-        // any non-HEAD method into GET, 301/302 turn only POST into GET, all
+        // any non-HEAD method into GET and keeps HEAD, 301/302 turn only POST into GET, all
         // without a body.
         let keeps_body = match code {
             307 | 308 => true,
             301..=303 if own_redirects => {
                 if code == 303 {
-                    method == reqwest::Method::HEAD
+                    false
                 } else {
                     method != reqwest::Method::POST
                 }
@@ -1011,7 +1011,9 @@ async fn perform(
                 None => replay_pending(&replay).await?,
             };
         } else {
-            method = reqwest::Method::GET;
+            if method != reqwest::Method::HEAD || code != 303 {
+                method = reqwest::Method::GET;
+            }
             pending = Pending::None;
             replay = Replay::None;
             plan = None;
