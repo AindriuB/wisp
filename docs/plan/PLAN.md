@@ -65,6 +65,12 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - Confirm the winget PackageIdentifier and open the winget-pkgs PR after 0.2.0 is published (`packaging/winget/README.md`).
 - Partner Center account, the `MSIX_*` repository variables and Store submission (`packaging/msix/STORE-SUBMISSION.md`).
 
+### Follow-ups from task 163 (storage hardening A; not 0.4.0 unless scheduled)
+- [P3] collection.rs:296 `assign_new_collection_id` does not take `with_root_lock`, so it can race `save_collection_defaults` and write the old id back.
+- [P3] data_dir.rs:136 `strip_trailing_separators` also strips `\` on unix.
+- [P3] data_dir.rs:121 a dir narrower than 0700 is widened to exactly 0700, and setgid/sticky bits are dropped.
+- NOTE data_dir.rs:94: a trailing `/.` still gets past the symlink check (not reachable today).
+
 ### Storage-safety follow-ups (from task 85, not v0.1.1)
 - The Windows test `sidecar_rejects_8dot3_short_name_of_sibling_toml` fails rather than skips on a volume with 8.3 names off; it should return early when `B~1.TOM` does not exist.
 - No test fails if the symlink-to-`.toml` check in `sidecar_path` is disabled; Unix is covered by the dev/ino check.

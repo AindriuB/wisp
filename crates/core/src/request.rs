@@ -320,6 +320,10 @@ pub struct Request {
     pub settings: RequestSettings,
     #[serde(default)]
     pub assertions: Vec<Assertion>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub expected_status: Vec<u16>,
 }
 
 impl Default for Request {
@@ -336,6 +340,8 @@ impl Default for Request {
             vars: Vec::new(),
             settings: RequestSettings::default(),
             assertions: Vec::new(),
+            description: String::new(),
+            expected_status: Vec::new(),
         }
     }
 }
