@@ -13,6 +13,68 @@ use super::{
 /// Short options that take an argument and are not imported.
 /// Checked against the short options of `curl --help all` (7.84.0).
 const IGNORED_SHORT_WITH_ARG: &str = "oAemxwETKycDrUzCtQPY";
+/// Long options that take no argument and are not imported. They must not
+/// count as unknown: an unknown option may swallow the next argument.
+const IGNORED_LONG_NO_ARG: &[&str] = &[
+    "silent",
+    "show-error",
+    "compressed",
+    "verbose",
+    "fail",
+    "include",
+    "globoff",
+    "progress-bar",
+    "fail-early",
+    "fail-with-body",
+    "no-buffer",
+    "no-keepalive",
+    "http1.0",
+    "http1.1",
+    "http2",
+    "http3",
+    "ipv4",
+    "ipv6",
+    "junk-session-cookies",
+    "path-as-is",
+    "raw",
+    "tcp-nodelay",
+    "tr-encoding",
+    "anyauth",
+    "basic",
+    "styled-output",
+    "no-progress-meter",
+    "disable",
+    "remote-name",
+    "remote-name-all",
+    "remote-header-name",
+    "netrc",
+    "netrc-optional",
+    "proxy-insecure",
+    "ssl",
+    "ssl-reqd",
+    "tlsv1",
+    "tlsv1.0",
+    "tlsv1.1",
+    "tlsv1.2",
+    "tlsv1.3",
+    "sslv2",
+    "sslv3",
+    "suppress-connect-headers",
+    "post301",
+    "post302",
+    "post303",
+    "retry-all-errors",
+    "retry-connrefused",
+    "parallel",
+    "parallel-immediate",
+    "create-dirs",
+    "clobber",
+    "no-clobber",
+    "xattr",
+    "ssl-no-revoke",
+    "ssl-allow-beast",
+];
+
 /// Long options that take an argument and are not imported.
 ///
 /// Built from `curl --help all` of curl 7.84.0 (every option shown with an
@@ -356,6 +418,9 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                 "location" | "location-trusted" => f.location = true,
                 "get" => f.get = true,
                 "head" => f.head = true,
+                l if IGNORED_LONG_NO_ARG.contains(&l) => {
+                    f.warn(format!("option `{arg}` is not imported"));
+                }
                 l if IGNORED_LONG_WITH_ARG.contains(&l) => {
                     need(&mut args, &arg)?;
                     f.warn(format!("option `{arg}` and its argument are not imported"));
@@ -699,6 +764,51 @@ mod tests {
             .iter()
             .find(|h| h.name.eq_ignore_ascii_case(n))
             .map(|h| h.value.as_str())
+    }
+
+    #[test]
+    fn h4_no_arg_long_options_do_not_consume_the_url() {
+        for opt in [
+            "silent",
+            "compressed",
+            "verbose",
+            "fail",
+            "location",
+            "insecure",
+            "show-error",
+            "include",
+            "globoff",
+        ] {
+            let (r, _) = req(&format!(
+                "curl --{opt} api.example.com https://other.example.com"
+            ));
+            assert!(r.url.contains("api.example.com"), "{opt}: {}", r.url);
+        }
+        let (r, _) = req("curl -s -S -v -f -g -i api.example.com https://other.example.com");
+        assert!(r.url.contains("api.example.com"), "{}", r.url);
+    }
+
+    #[test]
+    fn h4_urls_are_taken_in_order_with_url_option() {
+        let (r, _) = req("curl api.example.com --url https://other.example.com");
+        assert!(r.url.contains("api.example.com"), "{}", r.url);
+    }
+
+    #[test]
+    fn h4_unknown_option_value_never_reaches_warnings() {
+        let res = parse("curl --frobnicate SECRETVAL --url https://real/x");
+        let text = match &res {
+            Ok(r) => format!("{:?}", r.warnings),
+            Err(e) => format!("{e:?} {e}"),
+        };
+        assert!(!text.contains("SECRETVAL"), "{text}");
+    }
+
+    #[test]
+    fn h4_unknown_option_still_never_takes_secret_as_url() {
+        if let Ok(r) = parse("curl --frobnicate https://u:SECRETVAL@h https://real/x") {
+            assert!(!format!("{:?}", r.items).contains("SECRETVAL"));
+        }
     }
 
     #[test]
