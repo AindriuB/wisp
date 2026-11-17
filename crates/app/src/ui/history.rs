@@ -16,7 +16,7 @@ use gpui_component::button::Button;
 use gpui_component::{ActiveTheme as _, v_flex};
 use wisp_core::body::BodyHandle;
 use wisp_core::{EngineError, Method};
-use wisp_storage::history::{AssertionRecord, AssertionState, HistoryEntry, Outcome};
+use wisp_storage::history::{AssertionRecord, AssertionState, Delivery, HistoryEntry, Outcome};
 
 use crate::actions::CancelRequest;
 use crate::tab::{HistoryOrigin, Phase, ResponseState};
@@ -106,6 +106,11 @@ pub fn checks_chip(records: &[AssertionRecord]) -> Option<String> {
         .filter(|r| r.state == AssertionState::Pass)
         .count();
     Some(format!("{passed}/{} checks", records.len()))
+}
+
+/// The chip text for an entry whose delivery is not known to have succeeded or failed.
+pub fn delivery_chip(delivery: Option<Delivery>) -> Option<&'static str> {
+    (delivery == Some(Delivery::Unknown)).then_some("outcome unknown")
 }
 
 /// Whether any record failed.
@@ -289,6 +294,10 @@ impl Render for HistoryView {
                                 .text_color(muted)
                                 .child(SharedString::from(name))
                         }))
+                        .children(
+                            delivery_chip(e.delivery)
+                                .map(|chip| div().flex_none().text_color(muted).child(chip)),
+                        )
                         .children(checks_chip(&e.assertions).map(|chip| {
                             div()
                                 .flex_none()
@@ -372,6 +381,7 @@ mod tests {
             redacted: Vec::new(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         }
     }
 
@@ -432,6 +442,17 @@ mod tests {
             resend_notice(Some("dev"), &[], &[], false, false, true),
             "Resent with the current environment (dev); assertions are not resent"
         );
+    }
+
+    #[test]
+    fn delivery_chip_shows_only_for_unknown() {
+        assert_eq!(
+            delivery_chip(Some(Delivery::Unknown)),
+            Some("outcome unknown")
+        );
+        assert_eq!(delivery_chip(Some(Delivery::Responded)), None);
+        assert_eq!(delivery_chip(Some(Delivery::NotSent)), None);
+        assert_eq!(delivery_chip(None), None);
     }
 
     #[test]
@@ -560,6 +581,7 @@ mod tests {
             response_headers: Vec::new(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         };
         let stored = store
             .append(new, body_to_store(false, Some(b"hi".to_vec())).as_deref())

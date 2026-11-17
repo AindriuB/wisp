@@ -8,7 +8,6 @@ use std::time::{Duration, Instant, SystemTime};
 use gpui::{
     AppContext as _, Context, Entity, EntityId, EventEmitter, SharedString, Task, WeakEntity,
 };
-use wisp_core::assert::{Assertion, Facts, evaluate};
 use wisp_core::auth::EngineAuth;
 use wisp_core::body::{BodyHandle, BodyStore};
 use wisp_core::cookies::{CookieJar, CookieJars};
@@ -16,9 +15,9 @@ use wisp_core::request::{
     Auth, Body, CollectionDefaults, Environment, PartValue, Request, TextBody,
 };
 use wisp_core::resolve::{Location, Problem, Recording, ResolveError, Scope};
-use wisp_core::{
-    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, Header, RequestId,
-};
+use wisp_core::{Command, Engine, EngineConfig, EngineError, Event, EventReceiver, RequestId};
+use wisp_service::history::{HistoryBodies, RecordError, record as record_history};
+use wisp_service::outcome::{Response, ResponseTimings, Terminal, finish};
 pub(crate) use wisp_service::plan::scope_path_for;
 use wisp_service::plan::{ResendFacts, SendInput, SendPlan, prepare, prepare_authorize};
 use wisp_service::send::{SentRecord as Sent, submit};
@@ -29,17 +28,14 @@ use wisp_storage::collection::{CollectionTree, open_collection};
 use wisp_storage::cookies::{CookieFile, StoredCookie};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::list_environments;
-use wisp_storage::history::{
-    AssertionRecord, BODY_CAP, HistoryEntry, HistoryStore, NewEntry, Outcome, StoredEntry,
-};
+use wisp_storage::history::{BODY_CAP, HistoryEntry, HistoryStore, NewEntry, StoredEntry};
 use wisp_storage::request::{load_request, save_request};
 use wisp_storage::watcher::Watcher;
 
 use crate::draft::{self, ReloadAction};
 use crate::settings::{self, Settings};
 use crate::tab::{
-    AuthorizeState, CheckOutcome, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState,
-    TabEvent,
+    AuthorizeState, DiskState, HistoryOrigin, Phase, RequestTab, ResponseState, TabEvent,
 };
 use crate::ui::cookie_jar::{self as cookie_ui, Debounce};
 use crate::ui::history as history_ui;
@@ -561,6 +557,19 @@ impl HistoryJob {
         }
     }
 
+    /// Resolve the collection id when needed and open the store. Blocking. The append no
+    /// longer goes through this: it holds the id (see `append_history`).
+    #[cfg(test)]
+    pub fn open(self) -> Result<HistoryStore, String> {
+        match self.store {
+            Some(s) => Ok(s),
+            None => {
+                let id = resolve_collection_id(&self.root)?;
+                Ok(HistoryStore::open(&self.data, &id))
+            }
+        }
+    }
+
     /// All entries, newest first; empty when the collection has no id. Blocking.
     pub fn list(self) -> Result<Vec<HistoryEntry>, String> {
         match self.open_existing()? {
@@ -599,17 +608,6 @@ impl HistoryJob {
         };
         Ok((stored, handle))
     }
-
-    /// Resolve the collection id when needed and open the store. Blocking.
-    pub fn open(self) -> Result<HistoryStore, String> {
-        match self.store {
-            Some(s) => Ok(s),
-            None => {
-                let id = resolve_collection_id(&self.root)?;
-                Ok(HistoryStore::open(&self.data, &id))
-            }
-        }
-    }
 }
 
 /// A handle to `c`'s history, or the reason there is none.
@@ -638,6 +636,14 @@ fn history_target(
 ) -> Option<(usize, Result<HistoryJob, String>)> {
     let ix = cols.iter().position(|c| c.tree.root == root)?;
     Some((ix, history_job_of(&cols[ix], data)))
+}
+
+/// The collection id the workspace holds, when it is known and well formed.
+fn known_id(state: &IdState) -> Option<CollectionId> {
+    match state {
+        IdState::Known(id) => CollectionId::parse(id),
+        _ => None,
+    }
 }
 
 /// Ids of the collections whose cookie file is on and healthy.
@@ -826,58 +832,6 @@ fn strip_userinfo(url: &str) -> Option<String> {
         .map_or(url.len(), |i| start + i);
     let at = url[start..end].rfind('@')?;
     Some(format!("{}{}", &url[..start], &url[start + at + 1..]))
-}
-
-/// Evaluate `assertions` over a response; each outcome keeps its definition.
-fn check_outcomes(
-    assertions: &[Assertion],
-    status: u16,
-    headers: &[Header],
-    body: Option<&[u8]>,
-) -> Vec<CheckOutcome> {
-    let facts = Facts {
-        status,
-        headers,
-        body,
-    };
-    assertions
-        .iter()
-        .cloned()
-        .zip(evaluate(assertions, &facts))
-        .map(|(assertion, result)| CheckOutcome { assertion, result })
-        .collect()
-}
-
-/// The history records of `outcomes`, in order: label, fingerprint and state only.
-fn assertion_records(outcomes: &[CheckOutcome]) -> Vec<AssertionRecord> {
-    outcomes
-        .iter()
-        .map(|o| AssertionRecord::from_result(&o.assertion, &o.result))
-        .collect()
-}
-
-/// The history entry for a sent request's terminal `event` and the tab's response so far.
-fn build_entry(sent: Sent, event: &Event, r: &ResponseState, at: SystemTime) -> NewEntry {
-    let outcome = match event {
-        Event::Completed { .. } => Outcome::Completed,
-        Event::Failed { error, .. } => Outcome::Failed { kind: error.kind },
-        _ => Outcome::Cancelled,
-    };
-    NewEntry {
-        at,
-        request_path: sent.request,
-        request: sent.draft,
-        outcome,
-        status: r.status,
-        ttfb: r.ttfb,
-        total: r.total,
-        dns: r.dns,
-        connect: r.connect,
-        size: r.size,
-        response_headers: r.headers.clone(),
-        environment: sent.environment,
-        assertions: assertion_records(&r.assertions),
-    }
 }
 
 /// Sanitise a stored request in place and describe where it came from.
@@ -1244,6 +1198,24 @@ impl Workspace {
         stores: vault::SharedStores,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Under test the real data directory is never resolved: tests inject theirs.
+        #[cfg(not(test))]
+        let data_dir = DataDir::resolve();
+        #[cfg(test)]
+        let data_dir = None;
+        Self::with_data_dir(settings, settings_path, open, stores, data_dir, cx)
+    }
+
+    /// [`Workspace::new`] with the data directory given, set before any collection is
+    /// restored or anything else reads it.
+    pub(crate) fn with_data_dir(
+        settings: Settings,
+        settings_path: Option<PathBuf>,
+        open: Option<PathBuf>,
+        stores: vault::SharedStores,
+        data_dir: Option<DataDir>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let jars = CookieJars::default();
         let refresh_store = Arc::new(vault::KeychainRefreshStore::new(stores.clone()));
         let (engine, events) = Engine::start(EngineConfig {
@@ -1263,7 +1235,7 @@ impl Workspace {
             routes: HashMap::new(),
             auth_routes: HashMap::new(),
             sent: HashMap::new(),
-            data_dir: DataDir::resolve(),
+            data_dir,
             jars,
             cookie_files: HashMap::new(),
             cookie_queue: VecDeque::new(),
@@ -2562,6 +2534,59 @@ impl Workspace {
         let bodies = self.engine.bodies();
         let mut old_body = None;
         let mut stored_body: Option<Vec<u8>> = None;
+        // Read now: the handle is released when the next request replaces it.
+        if let Event::Completed { body, .. } = &event {
+            stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
+        }
+        let sent_root = sent.as_ref().and_then(|s| s.root.clone());
+        let mut finished = sent.map(|sent| {
+            let r = &tab.read(cx).response;
+            let (terminal, total, dns, connect, size) = match &event {
+                Event::Completed {
+                    total,
+                    size,
+                    timings,
+                    ..
+                } => (
+                    Terminal::Completed {
+                        body_prefix: stored_body.as_deref(),
+                    },
+                    Some(*total),
+                    timings.dns,
+                    timings.connect,
+                    Some(*size),
+                ),
+                Event::Failed {
+                    error,
+                    nothing_sent,
+                    ..
+                } => (
+                    Terminal::Failed {
+                        error,
+                        nothing_sent: *nothing_sent,
+                    },
+                    r.total,
+                    r.dns,
+                    r.connect,
+                    r.size,
+                ),
+                _ => (Terminal::Cancelled, r.total, r.dns, r.connect, r.size),
+            };
+            let response = Response {
+                status: r.status,
+                headers: &r.headers,
+                timings: ResponseTimings {
+                    ttfb: r.ttfb,
+                    total,
+                    dns,
+                    connect,
+                },
+                size,
+                // Only a `Headers` event sets the status, and a send clears it.
+                headers_seen: r.status.is_some(),
+            };
+            finish(sent, &response, &terminal, &[])
+        });
         let autosend_line = tab.update(cx, |t, cx| {
             let mut line = None;
             let is_auto = self.autosend == Some(id);
@@ -2596,15 +2621,10 @@ impl Workspace {
                     ..
                 } => {
                     old_body = t.response.body.take();
-                    // Read now: the handle is released when the next request replaces it.
-                    stored_body = bodies.read(body, 0, BODY_CAP + 1).ok();
-                    let checks = sent.as_ref().map_or(&[][..], |s| &s.draft.assertions[..]);
-                    t.response.assertions = check_outcomes(
-                        checks,
-                        t.response.status.unwrap_or(0),
-                        &t.response.headers,
-                        stored_body.as_deref(),
-                    );
+                    t.response.assertions = finished
+                        .as_mut()
+                        .map(|f| std::mem::take(&mut f.checks))
+                        .unwrap_or_default();
                     t.response.phase = Phase::Done;
                     t.response.total = Some(*total);
                     t.response.dns = timings.dns;
@@ -2640,25 +2660,22 @@ impl Workspace {
         if let Some(line) = autosend_line {
             println!("{line}");
         }
-        if terminal && let Some(sent) = sent {
-            self.append_history(&tab, sent, &event, stored_body, cx);
+        if let (Some(f), Some(root)) = (finished, sent_root) {
+            self.append_history(root, f.entry, stored_body, cx);
         }
     }
 
-    /// One entry per terminal event, only while a collection is open. The store I/O runs on
-    /// the background executor.
+    /// One entry per terminal event, only while a collection is open, into the collection
+    /// at `task_root` (the one the tab was sent from, not the active one). The id the
+    /// workspace holds is used; an unknown id is resolved first. The store I/O runs on the
+    /// background executor.
     fn append_history(
         &mut self,
-        tab: &Entity<RequestTab>,
-        sent: Sent,
-        event: &Event,
+        task_root: PathBuf,
+        new: NewEntry,
         body: Option<Vec<u8>>,
         cx: &mut Context<Self>,
     ) {
-        // The entry belongs to the collection the tab was sent from, not the active one.
-        let Some(task_root) = sent.root.clone() else {
-            return;
-        };
         let Some((cix, job)) =
             history_target(&self.collections, &task_root, self.data_dir.as_ref())
         else {
@@ -2673,16 +2690,52 @@ impl Workspace {
                 return;
             }
         };
+        let data = job.data;
         let body = history_ui::body_to_store(self.settings.history_bodies, body);
-        let new = build_entry(sent, event, &tab.read(cx).response, SystemTime::now());
+        match known_id(&self.collections[cix].coll_id) {
+            Some(id) => self.spawn_record(task_root, data, id, new, body, cx),
+            None => {
+                let root = task_root.clone();
+                self.resolve_id_then(Some(root), cx, move |this, _, cx| {
+                    let Some(cix) = this.coll_ix(&task_root) else {
+                        return;
+                    };
+                    match &this.collections[cix].coll_id {
+                        IdState::Known(id) => match CollectionId::parse(id) {
+                            Some(id) => this.spawn_record(task_root, data, id, new, body, cx),
+                            None => {
+                                this.history_off(&task_root, "invalid collection id".into(), cx)
+                            }
+                        },
+                        IdState::Failed { reason, .. } => {
+                            let reason = reason.clone();
+                            this.history_off(&task_root, reason, cx);
+                        }
+                        _ => this.history_off(
+                            &task_root,
+                            "the collection id is not available".into(),
+                            cx,
+                        ),
+                    }
+                });
+            }
+        }
+    }
+
+    /// Append `new` under `id` on the background executor and apply the result.
+    fn spawn_record(
+        &mut self,
+        task_root: PathBuf,
+        data: DataDir,
+        id: CollectionId,
+        new: NewEntry,
+        body: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
-            let work = cx.background_executor().spawn(async move {
-                let store = job.open().map_err(|e| (true, e))?;
-                store
-                    .append(new, body.as_deref())
-                    .map(|_| store)
-                    .map_err(|e| (false, e.to_string()))
-            });
+            let work = cx
+                .background_executor()
+                .spawn(async move { record_history(&data, &id, new, body, HistoryBodies::Store) });
             let result = work.await;
             this.update(cx, |this, cx| {
                 // The collection was closed while this was in flight: its result is stale.
@@ -2696,8 +2749,8 @@ impl Workspace {
                         }
                         cx.emit(WorkspaceEvent::HistoryChanged);
                     }
-                    Err((true, reason)) => this.history_off(&task_root, reason, cx),
-                    Err((false, reason)) => {
+                    Err(RecordError::Open(reason)) => this.history_off(&task_root, reason, cx),
+                    Err(RecordError::Append(reason)) => {
                         tracing::warn!(error = %reason, "history append failed");
                         this.history_notice(
                             &task_root,
@@ -3497,9 +3550,8 @@ impl Workspace {
 mod tests {
     use super::*;
     use wisp_core::Method;
-    use wisp_core::assert::{Expected, Op, Verdict};
     use wisp_core::request::{KeyValue, TextBody, Var};
-    use wisp_storage::history::AssertionState;
+    use wisp_storage::history::Outcome;
 
     #[test]
     fn quit_save_only_when_saving_and_dirty() {
@@ -3649,6 +3701,22 @@ mod tests {
         assert!(st.loaded && st.enabled);
         st.debounce.observe(1, Instant::now());
         assert!(st.debounce.dirty());
+    }
+
+    #[test]
+    fn a_corrupt_cookie_file_reaches_the_notice_without_its_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir::at(dir.path());
+        let id = CollectionId::parse("abcdef0123456789").unwrap();
+        let file = CookieFile::new(&data, &id);
+        file.enable().unwrap();
+        std::fs::write(data.cookies_file(&id), "{\"version\": CANARY").unwrap();
+        let done = CookieJob::Load { id: id.to_string() }.run(&data);
+        let mut st = status();
+        let notice = st.apply(&done).expect("a load error is reported");
+        assert!(notice.contains("line"), "{notice}");
+        assert!(!notice.contains("CANARY"), "{notice}");
+        assert!(!format!("{:?}", st.error).contains("CANARY"));
     }
 
     #[test]
@@ -3917,145 +3985,6 @@ mod tests {
         assert_eq!(c.coll_id, IdState::Known(new));
     }
 
-    fn status_is(code: i64) -> Assertion {
-        Assertion::Status {
-            op: Op::Equals,
-            expected: Expected::Int(code),
-        }
-    }
-
-    /// `NewEntry` as JSON, for the golden shared with the service crate's test.
-    fn entry_json(e: &NewEntry) -> String {
-        let ms = |d: Option<Duration>| d.map(|d| d.as_millis() as u64);
-        serde_json::json!({
-            "at_ms": e.at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64,
-            "request_path": e.request_path,
-            "request": e.request,
-            "outcome": e.outcome,
-            "status": e.status,
-            "ttfb_ms": ms(e.ttfb),
-            "total_ms": ms(e.total),
-            "dns_ms": ms(e.dns),
-            "connect_ms": ms(e.connect),
-            "size": e.size,
-            "response_headers": e.response_headers,
-            "environment": e.environment,
-            "assertions": e.assertions,
-        })
-        .to_string()
-    }
-
-    const GOLDEN_ENTRY: &str = r#"{"at_ms":10000,"request_path":"a.toml","request":{"name":"Untitled","method":"Get","url":"http://example.test/x","path":[],"params":[],"headers":[],"auth":"Inherit","body":"None","vars":[],"settings":{"timeout":null,"follow_redirects":true,"verify_tls":true},"assertions":[{"Status":{"op":"Equals","expected":{"Int":200}}},{"Status":{"op":"Equals","expected":{"Int":500}}}],"description":"","expected_status":[]},"outcome":{"Failed":{"kind":"Timeout"}},"status":200,"ttfb_ms":5,"total_ms":9,"dns_ms":2,"connect_ms":3,"size":2,"response_headers":[{"name":"X","value":"y"}],"environment":"dev","assertions":[{"label":"status equals","hash":"123681db9b04d061","state":"pass"},{"label":"status equals","hash":"123681db9b04d061","state":"fail"}]}"#;
-
-    #[test]
-    fn golden_new_entry_for_a_fixed_send() {
-        let mut draft = crate::draft::blank_request();
-        draft.url = "http://example.test/x".into();
-        draft.assertions = vec![status_is(200), status_is(500)];
-        let sent = Sent {
-            draft: draft.clone(),
-            request: Some("a.toml".into()),
-            root: None,
-            environment: Some("dev".into()),
-        };
-        let headers = vec![Header {
-            name: "X".into(),
-            value: "y".into(),
-        }];
-        let r = ResponseState {
-            status: Some(200),
-            headers: headers.clone(),
-            ttfb: Some(Duration::from_millis(5)),
-            total: Some(Duration::from_millis(9)),
-            dns: Some(Duration::from_millis(2)),
-            connect: Some(Duration::from_millis(3)),
-            size: Some(2),
-            assertions: check_outcomes(&draft.assertions, 200, &headers, Some(b"{}")),
-            ..ResponseState::default()
-        };
-        let event = Event::Failed {
-            id: RequestId(1),
-            error: wisp_core::EngineError {
-                kind: wisp_core::ErrorKind::Timeout,
-                message: "timed out".into(),
-            },
-            nothing_sent: false,
-        };
-        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
-        let e = build_entry(sent, &event, &r, at);
-        assert_eq!(entry_json(&e), GOLDEN_ENTRY);
-    }
-
-    #[test]
-    fn check_outcomes_records_pass_fail_skipped_in_order() {
-        let list = [
-            status_is(200),
-            status_is(500),
-            Assertion::Json {
-                path: "a".into(),
-                op: Op::Exists,
-                expected: Expected::Bool(true),
-            },
-        ];
-        let outcomes = check_outcomes(&list, 200, &[], None);
-        assert_eq!(outcomes.len(), 3);
-        assert_eq!(outcomes[1].assertion, list[1]);
-        assert!(matches!(outcomes[0].result.verdict, Verdict::Pass));
-        assert!(matches!(outcomes[1].result.verdict, Verdict::Fail { .. }));
-        assert!(matches!(
-            outcomes[2].result.verdict,
-            Verdict::Skipped { .. }
-        ));
-        let records = assertion_records(&outcomes);
-        let states: Vec<_> = records.iter().map(|r| r.state).collect();
-        assert_eq!(
-            states,
-            [
-                AssertionState::Pass,
-                AssertionState::Fail,
-                AssertionState::Skipped
-            ]
-        );
-        assert_eq!(records[1].hash, list[1].fingerprint());
-        assert!(check_outcomes(&[], 200, &[], None).is_empty());
-    }
-
-    #[test]
-    fn check_outcomes_over_cap_body_skips_with_over_limit_reason() {
-        let list = [Assertion::Json {
-            path: "$.a".into(),
-            op: Op::Exists,
-            expected: Expected::Bool(true),
-        }];
-        let big = vec![b'x'; BODY_CAP + 1];
-        let outcomes = check_outcomes(&list, 200, &[], Some(&big));
-        match &outcomes[0].result.verdict {
-            Verdict::Skipped { reason } => assert!(reason.contains("over 1 MiB"), "{reason}"),
-            v => panic!("expected skipped, got {v:?}"),
-        }
-    }
-
-    #[test]
-    fn history_records_hold_no_expected_or_header_values() {
-        let list = [
-            Assertion::Header {
-                name: "x-thing".into(),
-                op: Op::Equals,
-                expected: Expected::Str("CANARY-EXPECTED".into()),
-            },
-            status_is(200),
-        ];
-        let headers = [Header {
-            name: "x-thing".into(),
-            value: "CANARY-HEADER".into(),
-        }];
-        let records = assertion_records(&check_outcomes(&list, 200, &headers, None));
-        let text = format!("{records:?}");
-        assert!(!text.contains("CANARY"), "{text}");
-        let json = serde_json::to_string(&records).unwrap();
-        assert!(!json.contains("CANARY"), "{json}");
-    }
-
     #[test]
     fn collections_history_goes_to_the_sending_collection() {
         let dir = tempfile::tempdir().unwrap();
@@ -4283,6 +4212,7 @@ mod tests {
             redacted: redacted.iter().map(|s| s.to_string()).collect(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         }
     }
 
@@ -4446,6 +4376,7 @@ mod tests {
             response_headers: Vec::new(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         };
         let entry = store.append(new, Some(body)).unwrap();
         (d, data, id, entry)
@@ -4649,6 +4580,7 @@ mod env_wiring_tests {
     use gpui::TestAppContext;
     use wisp_core::auth::oauth2::{Grant, RefreshTokenStore, TokenKey};
     use wisp_core::request::ClientAuth;
+    use wisp_storage::history::Outcome;
     use wisp_storage::vault::{MemoryStore, SecretStore, SecretValue, bind, secret_account};
 
     const ID: &str = "abcdef0123456789";
@@ -4689,8 +4621,15 @@ mod env_wiring_tests {
             )
             .unwrap();
         let shared: vault::SharedStores = store.clone();
-        let ws = cx.new(|cx| Workspace::new(Settings::default(), None, None, shared, cx));
-        ws.update(cx, |w, _| w.data_dir = Some(data));
+        let injected = data.clone();
+        let ws = cx.new(|cx| {
+            Workspace::with_data_dir(Settings::default(), None, None, shared, Some(injected), cx)
+        });
+        assert_eq!(
+            ws.read_with(cx, |w, _| w.data_dir.clone()),
+            Some(data),
+            "the workspace uses the injected data dir"
+        );
         Fx {
             _dir: dir,
             root,
@@ -4807,6 +4746,49 @@ mod env_wiring_tests {
             assert_eq!(t.saved, saved);
             assert_eq!(t.path, path);
         });
+    }
+
+    #[gpui::test]
+    fn history_append_uses_the_known_id_not_the_one_on_disk(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        fx.ws.read_with(cx, |w, _| {
+            assert_eq!(w.collections[0].coll_id, IdState::Known(ID.into()));
+        });
+        let other = "fedcba9876543210";
+        std::fs::write(
+            fx.root.join("collection.toml"),
+            format!("format = 1\nid = \"{other}\"\n"),
+        )
+        .unwrap();
+        let new = NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        let root = fx.root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(root, new, None, cx));
+        cx.run_until_parked();
+        let data = DataDir::at(fx._dir.path().join("data"));
+        let original = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
+        assert_eq!(original.list().unwrap().len(), 1);
+        assert!(
+            !data
+                .history_dir(&CollectionId::parse(other).unwrap())
+                .exists()
+        );
     }
 
     #[gpui::test]
@@ -5829,6 +5811,7 @@ mod env_wiring_tests {
             response_headers: Vec::new(),
             environment: None,
             assertions: Vec::new(),
+            delivery: None,
         };
         let entry = store.append(new, None).unwrap();
         fx.ws.update(cx, |w, cx| w.open_history_entry(entry, cx));

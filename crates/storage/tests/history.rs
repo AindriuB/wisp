@@ -1772,14 +1772,14 @@ fn file_scheme_without_userinfo_stays_unchanged() {
 }
 
 #[test]
-fn an_index_line_without_delivery_loads_as_none() {
+fn history_index_line_without_delivery_loads_as_none() {
     let line = r#"{"id":"e1","at":1,"method":"Get","url":"http://x/","outcome":"Completed"}"#;
     let e: wisp_storage::history::HistoryEntry = serde_json::from_str(line).unwrap();
     assert_eq!(e.delivery, None);
 }
 
 #[test]
-fn delivery_is_written_only_when_present() {
+fn history_delivery_is_written_only_when_present() {
     use wisp_storage::history::Delivery;
     let (_d, _data, store) = setup();
     let none = store.append(plain("http://x/"), None).unwrap();
