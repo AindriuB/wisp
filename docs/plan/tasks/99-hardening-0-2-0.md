@@ -130,7 +130,7 @@ Every item that adds a test names it in the PR description.
 - [x] AC38 (done, tasks 122/123) [93, P2] CI builds only on ubuntu and macos. `ci.yml` has a `windows-latest` job running `cargo test --workspace --locked` (or at least `cargo test -p wisp-core -p wisp-storage` plus `cargo check -p wisp-app`), and that job is green on the PR.
 - [ ] AC77 🔒 [123] Windows: `sidecar_rejects_8dot3_short_name_of_sibling_toml` passes silently when 8.3 names are off. Print a visible skip message and give CI a deterministic setup that enables 8.3 names, so the test runs for real.
 - [ ] AC78 🔒 [123] Windows: `same_file_entry` always returns false, so the hard-link check is a no-op there. Implement it with the file's volume serial number and file index.
-- [ ] AC39 Size gate: the Windows release binary from the measure run on the final merged head is at most 15,500,000 B.
+- [ ] AC39 Size gate: the Windows release binary from the measure run on the final merged head is at most 16,000,000 B (raised from 15,500,000 B by user decision 2026-11-17; see `docs/plan/specs/2026-11-14-wisp-0-3-0.md` Amendment 2).
 
 ## Checks
 Test counts: the scheduling planner sets `min-passing` per subtask against the base it measures then (`docs/conventions.md#task-file-baselines`). cargo writes no JUnit XML here, so the checks below are commands that count `passed`.
