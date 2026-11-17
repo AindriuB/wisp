@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Explain metadata and placeholder URL-bar check (task 175)
+The Explain pane now shows "Description" (read-only text) and "Expected status" (comma-separated list) when the report has them, and omits each section when empty. The URL bar's live problem check resolves with `resolve_with` and `Placeholder`, so typing a draft that uses `{{$uuid}}` no longer generates a fresh UUID per keystroke. Verified at 9ae930f: workspace suite, three `metadata` tests, no-fresh check, scope, fmt and clippy clean (AC1-AC3).
+**Cost:** The determinism test cannot prove the source is `Placeholder`, because `Problem` carries no generated value; the task's `rg` check that no `resolve(` call remains in `url_bar.rs` is the real proof. The 1,000-character cap is asserted only by its trailing "…". Both are P3 follow-ups in PLAN.
+
 ## 2026-11-17 — 0.4.0 wave-1 size measurement (task 165)
 A `measure.yml` dispatch on the wave-1 head (run 44181832340, built commit 40975f4) is recorded in `scripts/measure/results/v0.4.0-wave-1-size.json`. The build is over the wave-1 target: Windows GUI 15,560,192 B, +26,624 B against +10,240 B allowed, 16,384 B over the 15,543,808 B target; 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut. The CLI grew on Windows (+2,560 B) and Linux (+3,312 B), macOS +0.
 **Cost:** The spec expected "CLI unchanged" for wave 1 (:461), which was wrong by a few KB on two targets. The overage needs an orchestrator and user decision before wave 2; the task cut nothing by design.

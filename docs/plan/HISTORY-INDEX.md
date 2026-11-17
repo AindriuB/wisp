@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-17 | 175 | Explain pane shows description and expected status; URL bar live check uses the Placeholder source | ## 2026-11-17 — Explain metadata and placeholder URL-bar check (task 175) |
 | 2026-11-17 | 165 | 0.4.0 wave-1 size measurement; Windows GUI over the wave-1 target, under soft line and gate; nothing cut | ## 2026-11-17 — 0.4.0 wave-1 size measurement (task 165) |
 | 2026-11-17 | 161 | service outcome (finish, delivery table) and history record moved to wisp-service; entries gain `delivery`; chip shows "outcome unknown" | ## 2026-11-17 — Service outcome and history (task 161) |
 | 2026-11-17 | 160 | wisp-service crate holds plan and send; GUI rewired; keychain code moved to wisp_service::vault | ## 2026-11-17 — wisp-service crate with plan and send (task 160) |
