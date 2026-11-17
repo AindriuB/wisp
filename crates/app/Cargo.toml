@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 wisp-core.workspace = true
 wisp-storage.workspace = true
+wisp-service.workspace = true
 gpui.workspace = true
 gpui-platform.workspace = true
 gpui-component.workspace = true
