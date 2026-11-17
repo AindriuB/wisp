@@ -1718,11 +1718,12 @@ async fn hash_file_cancel_during_hashing_ends_cancelled() {
     engine.submit(Command::Cancel(id));
     let ev = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            match rx.recv().await.unwrap() {
-                e @ (Event::Completed { .. } | Event::Failed { .. } | Event::Cancelled { .. }) => {
-                    return e;
-                }
-                _ => {}
+            let e = rx.recv().await.unwrap();
+            if matches!(
+                e,
+                Event::Completed { .. } | Event::Failed { .. } | Event::Cancelled { .. }
+            ) {
+                return e;
             }
         }
     })
