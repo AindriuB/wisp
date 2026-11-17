@@ -7,12 +7,8 @@ use std::time::Duration;
 use wisp_core::assert::Verdict;
 use wisp_core::auth::EngineAuth;
 use wisp_core::request::{CollectionDefaults, Environment, Request, Var};
-use wisp_core::resolve::{
-    DynamicValue, HideReason, Problem, Recording, Scope, ShownPart, explain,
-};
-use wisp_core::{
-    Engine, EngineConfig, EngineError, ErrorKind, Event, Header, Method, RequestId,
-};
+use wisp_core::resolve::{DynamicValue, HideReason, Problem, Recording, Scope, ShownPart, explain};
+use wisp_core::{Engine, EngineConfig, EngineError, ErrorKind, Event, Header, Method, RequestId};
 use wisp_storage::collection::{CollectionTree, open_collection, read_collection_id};
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{
@@ -58,7 +54,9 @@ pub enum RunError {
 pub enum RunProblem {
     Resolve(Problem),
     /// The variable is a keychain secret and `--keychain` was not given.
-    KeychainSecret { name: String },
+    KeychainSecret {
+        name: String,
+    },
     /// The keychain could not supply the environment's secrets.
     KeychainUnavailable,
     /// The environment names a secret store this build does not know.
@@ -209,12 +207,11 @@ fn load_env(
     if !names.iter().any(|e| e == name) {
         return Err(EnvFailure::Unreadable(unreadable("unknown environment")));
     }
-    let info =
-        environment_info(root, name).map_err(|e| EnvFailure::Unreadable(unreadable(e)))?;
+    let info = environment_info(root, name).map_err(|e| EnvFailure::Unreadable(unreadable(e)))?;
     match info.store {
         SecretsMode::File => {
-            let env = load_environment(root, name)
-                .map_err(|e| EnvFailure::Unreadable(unreadable(e)))?;
+            let env =
+                load_environment(root, name).map_err(|e| EnvFailure::Unreadable(unreadable(e)))?;
             Ok(Loaded {
                 env,
                 unloaded: Vec::new(),
@@ -222,8 +219,8 @@ fn load_env(
         }
         SecretsMode::Unknown(_) => Err(EnvFailure::Problem(RunProblem::UnknownStore)),
         SecretsMode::Store(_) if !input.keychain => {
-            let mut env = load_environment(root, name)
-                .map_err(|e| EnvFailure::Unreadable(unreadable(e)))?;
+            let mut env =
+                load_environment(root, name).map_err(|e| EnvFailure::Unreadable(unreadable(e)))?;
             // Declared but not loaded: empty secrets shadow lower scopes and stay unresolved.
             for n in &info.secret_names {
                 env.secrets.push(Var {
@@ -329,7 +326,9 @@ fn await_end(events: &wisp_core::EventReceiver, id: RequestId) -> Ended {
                 ended.ttfb = Some(ttfb);
                 ended.headers_seen = true;
             }
-            Event::Completed { id: i, .. } | Event::Failed { id: i, .. } | Event::Cancelled { id: i }
+            Event::Completed { id: i, .. }
+            | Event::Failed { id: i, .. }
+            | Event::Cancelled { id: i }
                 if i == id =>
             {
                 ended.terminal = ev;
@@ -379,7 +378,7 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
             Err(EnvFailure::Unreadable(e)) => return Err(e),
             Err(EnvFailure::Problem(p)) => {
                 blank(&mut report, vec![p]);
-                report.url = display_for(&tree, &rel, &draft, None);
+                report.url = display_for(&tree, &rel, &draft, None, &[]).0;
                 return Ok(report);
             }
         },
@@ -387,7 +386,16 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
     };
     let env = loaded.as_ref().map(|l| &l.env);
     let unloaded: &[String] = loaded.as_ref().map_or(&[], |l| &l.unloaded);
-    report.url = display_for(&tree, &rel, &draft, env);
+    let (url, keychain_used) = display_for(&tree, &rel, &draft, env, unloaded);
+    report.url = url;
+    if !keychain_used.is_empty() {
+        let problems = keychain_used
+            .into_iter()
+            .map(|name| RunProblem::KeychainSecret { name })
+            .collect();
+        blank(&mut report, problems);
+        return Ok(report);
+    }
 
     let defaults = CollectionDefaults::default();
     let mut rec = Recording::new();
@@ -507,8 +515,10 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
         size,
         headers_seen: ended.headers_seen,
     };
-    let finished = finish(sent.record, &response, t, &report.expected_status);
+    let mut finished = finish(sent.record, &response, t, &report.expected_status);
     drop(engine);
+    // Response headers can echo anything the server likes: the CLI keeps none in history.
+    finished.entry.response_headers.clear();
 
     report.end = match t {
         Terminal::Completed { .. } => RunEnd::Completed,
@@ -539,16 +549,36 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
     Ok(report)
 }
 
-/// The URL as Explain would show it, without the query. Secret values are masked first.
+/// What Explain says about the request, with secret values masked first. Returns the display
+/// URL and the names of unloaded keychain secrets the request uses.
 fn display_for(
     tree: &CollectionTree,
     rel: &Path,
     draft: &Request,
     env: Option<&Environment>,
-) -> String {
+    unloaded: &[String],
+) -> (String, Vec<String>) {
     let masked_env = env.map(masked);
     let scope: Scope = tree.scope_for(rel, masked_env.as_ref());
-    display_url(&explain(draft, &scope).url.0)
+    let report = explain(draft, &scope);
+    let used = report
+        .variables
+        .iter()
+        .filter(|v| {
+            unloaded.contains(&v.name)
+                && v.value.0.iter().any(|p| {
+                    matches!(
+                        p,
+                        ShownPart::Secret {
+                            resolved: false,
+                            ..
+                        }
+                    )
+                })
+        })
+        .map(|v| v.name.clone())
+        .collect();
+    (display_url(&report.url.0), used)
 }
 
 /// A skip reason or `None`; used by callers that print assertions.
@@ -556,5 +586,246 @@ pub fn skip_reason(c: &CheckOutcome) -> Option<&str> {
     match &c.result.verdict {
         Verdict::Skipped { reason } => Some(reason),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+
+    use wisp_storage::collection::CollectionId;
+    use wisp_storage::vault::{MemoryStore, SecretStore, SecretValue, bind, secret_account};
+
+    use super::*;
+
+    /// Lets one `MemoryStore` be shared between the test and the run.
+    struct Shared(Arc<MemoryStore>);
+    impl SecretStores for Shared {
+        fn get(&self, kind: wisp_storage::vault::StoreKind) -> Option<&dyn SecretStore> {
+            SecretStores::get(&*self.0, kind)
+        }
+    }
+
+    fn server() -> std::net::SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let mut s = s;
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nX-Echo: CANARY_KC\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{head}",
+                        head.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        addr
+    }
+
+    struct Fx {
+        coll: tempfile::TempDir,
+        data: tempfile::TempDir,
+    }
+
+    const ID: &str = "abcdefgh12345678";
+
+    fn fx(addr: std::net::SocketAddr, id: bool) -> Fx {
+        let f = Fx {
+            coll: tempfile::tempdir().unwrap(),
+            data: tempfile::tempdir().unwrap(),
+        };
+        let idline = if id {
+            format!("id = \"{ID}\"\n")
+        } else {
+            String::new()
+        };
+        let w = |rel: &str, t: &str| {
+            let p = f.coll.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, t).unwrap();
+        };
+        w("collection.toml", &format!("format = 1\n{idline}"));
+        w(
+            "environments/prod.toml",
+            "secrets = \"keychain\"\nsecret_names = [\"kc\"]\n",
+        );
+        w(
+            "a.toml",
+            &format!(
+                "name = \"a\"\nmethod = \"POST\"\nurl = \"http://{addr}/{{{{kc}}}}\"\n\n[[headers]]\nname = \"X-K\"\nvalue = \"{{{{kc}}}}\"\nenabled = true\n"
+            ),
+        );
+        f
+    }
+
+    fn input(
+        f: &Fx,
+        keychain: bool,
+        history: bool,
+        stores: Option<Box<dyn SecretStores>>,
+    ) -> RunInput {
+        RunInput {
+            collection: f.coll.path().to_path_buf(),
+            request: "a.toml".into(),
+            env: Some("prod".into()),
+            keychain,
+            history,
+            data: Some(DataDir::at(f.data.path())),
+            stores,
+        }
+    }
+
+    fn bound_store(f: &Fx) -> Arc<MemoryStore> {
+        let id = CollectionId::parse(ID).unwrap();
+        let root = std::fs::canonicalize(f.coll.path()).unwrap();
+        bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
+        let store = Arc::new(MemoryStore::new());
+        store
+            .set(
+                &secret_account(&id, "prod", "kc"),
+                &SecretValue::new("CANARY_KC"),
+            )
+            .unwrap();
+        store
+    }
+
+    fn history_text(f: &Fx) -> String {
+        let mut out = String::new();
+        let mut stack = vec![f.data.path().join("history")];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Ok(t) = std::fs::read_to_string(&p) {
+                    out.push_str(&t);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn run_retry_safe_follows_delivery_and_the_method_sent() {
+        use Delivery::*;
+        for m in [Method::Post, Method::Patch] {
+            assert!(retry_safe(NotSent, m));
+            assert!(!retry_safe(Unknown, m));
+            assert!(!retry_safe(Responded, m));
+        }
+        for m in [
+            Method::Get,
+            Method::Head,
+            Method::Options,
+            Method::Put,
+            Method::Delete,
+        ] {
+            for d in [NotSent, Unknown, Responded] {
+                assert!(retry_safe(d, m));
+            }
+        }
+    }
+
+    #[test]
+    fn run_display_url_cuts_query_marks_secrets_and_drops_userinfo() {
+        let parts = [
+            ShownPart::Text("http://".into()),
+            ShownPart::Hidden(HideReason::Userinfo),
+            ShownPart::Text("@h/".into()),
+            ShownPart::Secret {
+                name: "k".into(),
+                resolved: true,
+            },
+            ShownPart::Text("/p?x=".into()),
+            ShownPart::Secret {
+                name: "z".into(),
+                resolved: true,
+            },
+        ];
+        assert_eq!(display_url(&parts), "http://h/{secret k}/p");
+    }
+
+    #[test]
+    fn run_keychain_secret_loads_through_the_store_and_never_leaks() {
+        let f = fx(server(), true);
+        let store = bound_store(&f);
+        let report = run_once(input(&f, true, true, Some(Box::new(Shared(store))))).unwrap();
+        assert_eq!(report.end, RunEnd::Completed);
+        assert_eq!(report.status, Some(200));
+        assert_eq!(report.history, HistoryStatus::Recorded);
+        assert!(!format!("{report:?}").contains("CANARY_KC"));
+        assert!(report.url.contains("{secret kc}"), "{}", report.url);
+        let h = history_text(&f);
+        assert!(!h.is_empty() && !h.contains("CANARY_KC"), "{h}");
+    }
+
+    #[test]
+    fn run_keychain_secret_without_the_flag_is_not_prepared() {
+        let f = fx(server(), true);
+        let store = bound_store(&f);
+        let report = run_once(input(&f, false, false, Some(Box::new(Shared(store))))).unwrap();
+        assert_eq!(report.end, RunEnd::NotPrepared);
+        assert_eq!(
+            report.problems,
+            vec![RunProblem::KeychainSecret { name: "kc".into() }]
+        );
+        assert_eq!(report.delivery, Delivery::NotSent);
+        assert!(report.retry_safe);
+    }
+
+    #[test]
+    fn run_keychain_failure_is_not_prepared_with_a_fixed_problem() {
+        let f = fx(server(), true);
+        // Not bound on this machine: the load fails closed.
+        let store = Arc::new(MemoryStore::new());
+        let report = run_once(input(&f, true, false, Some(Box::new(Shared(store))))).unwrap();
+        assert_eq!(report.end, RunEnd::NotPrepared);
+        assert_eq!(report.problems, vec![RunProblem::KeychainUnavailable]);
+        let f2 = fx(server(), true);
+        let store = bound_store(&f2);
+        store.fail_probe(Some(wisp_storage::vault::SecretStoreError::Unavailable {
+            reason: wisp_storage::vault::UnavailableReason::TimedOut,
+        }));
+        let report = run_once(input(&f2, true, false, Some(Box::new(Shared(store))))).unwrap();
+        assert_eq!(report.problems, vec![RunProblem::KeychainUnavailable]);
+    }
+
+    #[test]
+    fn run_history_is_skipped_when_the_collection_has_no_id() {
+        let f = fx(server(), false);
+        let mut i = input(&f, false, true, None);
+        i.env = None;
+        i.request = "a.toml".into();
+        std::fs::write(
+            f.coll.path().join("a.toml"),
+            "name = \"a\"\nmethod = \"GET\"\nurl = \"http://127.0.0.1:1/\"\n",
+        )
+        .unwrap();
+        let report = run_once(i).unwrap();
+        assert_eq!(report.history, HistoryStatus::SkippedNoId);
+        assert!(!f.data.path().join("history").exists());
+        assert!(
+            !std::fs::read_to_string(f.coll.path().join("collection.toml"))
+                .unwrap()
+                .contains("id =")
+        );
+    }
+
+    #[test]
+    fn run_unknown_environment_is_unreadable() {
+        let f = fx(server(), true);
+        let mut i = input(&f, false, false, None);
+        i.env = Some("nope".into());
+        assert!(matches!(run_once(i), Err(RunError::Unreadable(_))));
     }
 }

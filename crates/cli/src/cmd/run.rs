@@ -169,9 +169,7 @@ fn map(r: &RunReport) -> RunDoc {
         },
         size: r.size,
         error: match r.end {
-            RunEnd::Failed(k) => Some(ErrorDoc {
-                kind: kind_name(k),
-            }),
+            RunEnd::Failed(k) => Some(ErrorDoc { kind: kind_name(k) }),
             RunEnd::Cancelled => Some(ErrorDoc { kind: "other" }),
             _ => None,
         },

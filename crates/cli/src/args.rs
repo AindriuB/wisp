@@ -292,7 +292,16 @@ mod tests {
                 ok(run("c", "a.toml", None, false, false), false),
             ),
             (
-                vec!["run", "c", "a.toml", "--env", "x", "--keychain", "--history", "--json"],
+                vec![
+                    "run",
+                    "c",
+                    "a.toml",
+                    "--env",
+                    "x",
+                    "--keychain",
+                    "--history",
+                    "--json",
+                ],
                 ok(run("c", "a.toml", Some("x"), true, true), true),
             ),
             (

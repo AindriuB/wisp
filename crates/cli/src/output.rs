@@ -292,21 +292,6 @@ pub fn explain_text(w: &mut dyn Write, d: &ExplainDoc) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::display;
-
-    #[test]
-    fn controls_are_escaped() {
-        let s = display("a\nb\r\u{1b}]0;x\u{7}\u{85}\u{202e}c");
-        assert_eq!(
-            s,
-            "a\\u{000a}b\\u{000d}\\u{001b}]0;x\\u{0007}\\u{0085}\\u{202e}c"
-        );
-        assert_eq!(display("plain é/x"), "plain é/x");
-    }
-}
-
 pub fn run_text(w: &mut dyn Write, d: &RunDoc) -> io::Result<()> {
     write!(w, "{} {}", d.method, display(&d.url))?;
     if let Some(e) = &d.environment {
@@ -367,4 +352,19 @@ fn problem_line(p: &ProblemDoc) -> String {
         s.push_str(m);
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display;
+
+    #[test]
+    fn controls_are_escaped() {
+        let s = display("a\nb\r\u{1b}]0;x\u{7}\u{85}\u{202e}c");
+        assert_eq!(
+            s,
+            "a\\u{000a}b\\u{000d}\\u{001b}]0;x\\u{0007}\\u{0085}\\u{202e}c"
+        );
+        assert_eq!(display("plain é/x"), "plain é/x");
+    }
 }
