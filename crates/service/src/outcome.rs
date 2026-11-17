@@ -338,7 +338,7 @@ mod tests {
         finished.entry.at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
         // `NewEntry` has no `Serialize`: lay its fields out by hand, values included.
         let e = &finished.entry;
-        let json = serde_json::to_string(&serde_json::json!({
+        let json = serde_json::json!({
             "at": e.at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
             "request_path": e.request_path,
             "request": e.request,
@@ -353,8 +353,9 @@ mod tests {
             "environment": e.environment,
             "assertions": e.assertions,
             "delivery": e.delivery,
-        }))
-        .unwrap();
-        assert_eq!(json, GOLDEN_JSON);
+        });
+        // Parsed compare: key order depends on serde_json's `preserve_order`.
+        let golden: serde_json::Value = serde_json::from_str(GOLDEN_JSON).unwrap();
+        assert_eq!(json, golden);
     }
 }
