@@ -54,3 +54,6 @@ a placeholder and the log shows
 - A Store install runs in a package container. Its `%LOCALAPPDATA%` data is
   kept apart from a zip install's, so collections and settings from the zip
   version are not seen by the Store version, and the reverse.
+- `wisp-cli` is not in the MSIX. A packaged console exe needs an app execution
+  alias and goes through Store review; the CLI ships in the zip, tarball and
+  macOS bundle only. `pack.ps1` packages `wisp.exe` alone.

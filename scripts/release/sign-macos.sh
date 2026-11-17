@@ -10,9 +10,11 @@ app="${1:?usage: sign-macos.sh <Wisp.app>}"
 mode="${WISP_MACOS_SIGN:-adhoc}"
 here="$(cd "$(dirname "$0")" && pwd)"
 bin="$app/Contents/MacOS/wisp"
+cli="$app/Contents/MacOS/wisp-cli"
 
 case "$mode" in
   adhoc)
+    [ -f "$cli" ] && codesign --force --sign - "$cli"
     codesign --force --sign - "$app"
     codesign --verify --strict --deep --verbose=2 "$app"
     exit 0
@@ -32,8 +34,11 @@ p8="$work/AuthKey.p8"
 ent=()
 [ -f "$here/wisp.entitlements" ] && ent=(--entitlements "$here/wisp.entitlements")
 
-# Inside out, no --deep.
-for target in "$bin" "$app"; do
+# Inside out, no --deep: the CLI (when present), the main binary, then the app.
+targets=()
+[ -f "$cli" ] && targets+=("$cli")
+targets+=("$bin" "$app")
+for target in "${targets[@]}"; do
   codesign --force --options runtime --timestamp --keychain "$WISP_KEYCHAIN" \
     --sign "$WISP_SIGN_IDENTITY" ${ent[@]+"${ent[@]}"} "$target"
 done

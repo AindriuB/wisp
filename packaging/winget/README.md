@@ -28,5 +28,5 @@ winget-pkgs the identifier cannot change.
 
 ## What users get
 
-The zip holds `wisp.exe` inside `Wisp-<version>-windows-x64/`. winget installs it
-as a portable command, so `winget install AindriuB.Wisp` gives the command `wisp`.
+The zip holds `wisp.exe` and `wisp-cli.exe` inside `Wisp-<version>-windows-x64/`. winget installs it
+as a portable command, so `winget install AindriuB.Wisp` gives the commands `wisp` and `wisp-cli`.

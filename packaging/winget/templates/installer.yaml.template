@@ -6,6 +6,8 @@ NestedInstallerType: portable
 NestedInstallerFiles:
   - RelativeFilePath: Wisp-@VERSION@-windows-x64\wisp.exe
     PortableCommandAlias: wisp
+  - RelativeFilePath: Wisp-@VERSION@-windows-x64\wisp-cli.exe
+    PortableCommandAlias: wisp-cli
 Installers:
   - Architecture: x64
     InstallerUrl: @URL@
