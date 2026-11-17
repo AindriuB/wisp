@@ -293,6 +293,63 @@ fn authority_start(url: &str) -> usize {
     }
 }
 
+/// The host of `url` as an importer may show or name things after it: userinfo
+/// stripped, no path, query or fragment.
+pub(crate) fn url_host(url: &str) -> String {
+    let (url, _) = split_userinfo(url);
+    let rest = &url[authority_start(&url)..];
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let auth = &rest[..end];
+    auth.rsplit('@').next().unwrap_or(auth).to_string()
+}
+
+/// One warning per `{{var}}` that the imported requests use and the import
+/// does not define. Names only, never values.
+pub(crate) fn warn_undefined_vars(result: &mut ImportResult) {
+    let mut defined: std::collections::HashSet<&str> = result
+        .collection_vars
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect();
+    for env in &result.environments {
+        defined.extend(env.vars.iter().map(|v| v.name.as_str()));
+        defined.extend(env.secrets.iter().map(|v| v.name.as_str()));
+    }
+    let mut used: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    let mut stack: Vec<&ImportItem> = result.items.iter().collect();
+    while let Some(item) = stack.pop() {
+        match item {
+            ImportItem::Folder { items, .. } => stack.extend(items.iter()),
+            ImportItem::Request { request, .. } => {
+                let text = format!("{request:?}");
+                let mut rest = text.as_str();
+                while let Some(i) = rest.find("{{") {
+                    rest = &rest[i + 2..];
+                    let Some(j) = rest.find("}}") else { break };
+                    let name = rest[..j].trim();
+                    if !name.is_empty()
+                        && name.len() <= 100
+                        && !name.starts_with('$')
+                        && !name.contains(['{', '}', '"', '\\'])
+                        && !defined.contains(name)
+                        && seen.insert(name.to_string())
+                    {
+                        used.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    used.sort();
+    for name in used {
+        result.warn(
+            "",
+            format!("variable `{name}` is used but not defined by the import"),
+        );
+    }
+}
+
 /// A non-empty all-digit port. A templated port (`{{port}}`) is not one: a
 /// template is plain host:port and never takes part in the ambiguity checks.
 fn is_port_like(p: &str) -> bool {

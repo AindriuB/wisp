@@ -26,6 +26,20 @@ fn text(v: Option<&Value>) -> String {
     }
 }
 
+/// A Postman description is a string or `{"content": "..."}`.
+fn description_of(v: Option<&Value>) -> String {
+    let mut t = match v {
+        Some(Value::Object(o)) => text(o.get("content")),
+        other => text(other),
+    };
+    let mut end = t.len().min(16 * 1024);
+    while !t.is_char_boundary(end) {
+        end -= 1;
+    }
+    t.truncate(end);
+    t
+}
+
 fn array(v: Option<&Value>) -> &[Value] {
     v.and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }
@@ -79,6 +93,7 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
     if let Some(env) = cx.sink.into_env() {
         cx.result.environments.push(env);
     }
+    super::warn_undefined_vars(&mut cx.result);
     Ok(cx.result)
 }
 
@@ -175,6 +190,7 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
         );
     }
     req.name = name.clone();
+    req.description = description_of(obj.and_then(|r| r.get("description")));
     req.method = method;
     req.url = url;
     req.params = params;
