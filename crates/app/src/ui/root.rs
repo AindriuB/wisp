@@ -634,8 +634,8 @@ impl WorkspaceView {
         }
         let shown = self.ask(
             (
-                &format!("Confirm before sending to {env}?"),
-                "This environment asks to be guarded. The choice is yours and is stored per user.",
+                &format!("{env}: This environment suggests confirming sends. Enable?"),
+                "The choice is yours and is stored per user.",
             ),
             &["Enable", "Not now"],
             false,

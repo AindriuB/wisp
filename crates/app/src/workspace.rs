@@ -3508,8 +3508,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Run `then` once the open collection's partition is known, creating the id on the
-    /// background executor when there is none. `None` when the collection changed meanwhile.
+    /// `resolve_id_then` for the environment guard, which has no use for the partition.
     pub fn resolve_id_for_guard(
         &mut self,
         root: PathBuf,
@@ -3519,6 +3518,8 @@ impl Workspace {
         self.resolve_id_then(Some(root), cx, move |w, _, cx| then(w, cx));
     }
 
+    /// Run `then` once the open collection's partition is known, creating the id on the
+    /// background executor when there is none. `None` when the collection changed meanwhile.
     fn resolve_id_then(
         &mut self,
         root: Option<PathBuf>,
