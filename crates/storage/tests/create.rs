@@ -116,3 +116,96 @@ fn environment_refuses_symlinked_dir() {
     assert!(create_environment(&root, "dev").is_err());
     assert!(names(&out).is_empty());
 }
+
+fn h5_barrier_ids(n: usize) {
+    use std::sync::{Arc, Barrier};
+    for _ in 0..n {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().to_path_buf();
+        let b = Arc::new(Barrier::new(2));
+        let hs: Vec<_> = (0..2)
+            .map(|_| {
+                let (b, r) = (b.clone(), root.clone());
+                std::thread::spawn(move || {
+                    b.wait();
+                    wisp_storage::collection::ensure_collection_id(&r).unwrap()
+                })
+            })
+            .collect();
+        let ids: Vec<_> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(ids[0], ids[1]);
+        let on_disk = wisp_storage::collection::read_collection_id(&root).unwrap();
+        assert_eq!(on_disk, Some(ids[0].clone()));
+    }
+}
+
+#[test]
+fn h5_concurrent_ensure_id_agrees() {
+    h5_barrier_ids(50);
+}
+
+#[test]
+fn h5_ensure_id_and_save_defaults_keep_both() {
+    use std::sync::{Arc, Barrier};
+    use wisp_core::request::CollectionDefaults;
+    for _ in 0..50 {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().to_path_buf();
+        let b = Arc::new(Barrier::new(2));
+        let (b1, r1) = (b.clone(), root.clone());
+        let h1 = std::thread::spawn(move || {
+            b1.wait();
+            wisp_storage::collection::ensure_collection_id(&r1).unwrap()
+        });
+        let h2 = std::thread::spawn(move || {
+            let mut d = CollectionDefaults::default();
+            d.vars.push(wisp_core::request::Var {
+                name: "k".into(),
+                value: "v".into(),
+            });
+            b.wait();
+            wisp_storage::collection::save_collection_defaults(&root, &d).unwrap();
+            root
+        });
+        let id = h1.join().unwrap();
+        let root = h2.join().unwrap();
+        assert_eq!(
+            wisp_storage::collection::read_collection_id(&root).unwrap(),
+            Some(id)
+        );
+        let d = wisp_storage::collection::load_collection_defaults(&root).unwrap();
+        assert_eq!(d.vars.len(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn h5_trailing_slash_symlink_refused() {
+    use wisp_storage::data_dir::ensure_private_dir;
+    let t = tempfile::tempdir().unwrap();
+    let real = t.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = t.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert!(ensure_private_dir(&link).is_err());
+    let mut with_slash = link.into_os_string();
+    with_slash.push("/");
+    assert!(ensure_private_dir(Path::new(&with_slash)).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn h5_wide_dir_tightened_and_file_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    use wisp_storage::data_dir::ensure_private_dir;
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("d");
+    std::fs::create_dir(&d).unwrap();
+    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ensure_private_dir(&d).unwrap();
+    let mode = std::fs::metadata(&d).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+    let f = t.path().join("f");
+    std::fs::write(&f, b"x").unwrap();
+    assert!(ensure_private_dir(&f).is_err());
+}

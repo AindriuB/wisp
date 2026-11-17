@@ -87,30 +87,57 @@ fn io(path: &Path, source: std::io::Error) -> StorageError {
     }
 }
 
-/// Create missing directories (mode 0700 on unix). Refuses a symlinked final component.
+/// Create missing directories (mode 0700 on unix). Refuses a symlinked final component, with or
+/// without a trailing separator. An existing directory wider than 0700 is tightened to 0700.
 pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
-    if let Ok(meta) = std::fs::symlink_metadata(path)
-        && meta.file_type().is_symlink()
-    {
-        return Err(StorageError::Invalid {
-            path: path.to_path_buf(),
-            key: "path".to_string(),
-            message: "is a symlink".to_string(),
-        });
+    let path = strip_trailing_separators(path);
+    let path = path.as_path();
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(StorageError::Invalid {
+                path: path.to_path_buf(),
+                key: "path".to_string(),
+                message: "is a symlink".to_string(),
+            });
+        }
+        Ok(meta) if !meta.is_dir() => {
+            return Err(StorageError::Invalid {
+                path: path.to_path_buf(),
+                key: "path".to_string(),
+                message: "is not a directory".to_string(),
+            });
+        }
+        _ => {}
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(path)
-            .map_err(|e| io(path, e))
+            .map_err(|e| io(path, e))?;
+        let meta = std::fs::metadata(path).map_err(|e| io(path, e))?;
+        if meta.permissions().mode() & 0o777 != 0o700 {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| io(path, e))?;
+        }
+        Ok(())
     }
     #[cfg(not(unix))]
     {
         std::fs::create_dir_all(path).map_err(|e| io(path, e))
     }
+}
+
+/// `a/b/` -> `a/b`; a root such as `/` is returned unchanged.
+fn strip_trailing_separators(path: &Path) -> PathBuf {
+    let s = path.as_os_str().to_string_lossy();
+    let t = s.trim_end_matches(['/', '\\']);
+    if t.is_empty() || t.len() == s.len() || t.ends_with(':') {
+        return path.to_path_buf();
+    }
+    PathBuf::from(&*t)
 }
 
 #[cfg(test)]
