@@ -37,3 +37,8 @@ resolving with the placeholder dynamic source.
 
 ## Out of scope
 - Editing either field in the GUI (register verdict: display only); the send path's dynamics (160).
+
+## Wave verified — 9ae930f112adceeebf0a3ee1eb48478bd1f04ea7
+
+## Outcome
+Merged at 9ae930f (PASS + APPROVE: workspace suite, explain-meta 3 passed, no-fresh, scope, fmt and clippy clean; AC1-AC3 met). The Explain pane shows Description and Expected status when non-empty, and the URL bar's live check resolves with `Placeholder`. Follow-ups are in PLAN.md.

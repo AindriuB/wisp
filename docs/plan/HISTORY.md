@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Explain metadata and placeholder URL-bar check (task 175)
+The Explain pane now shows "Description" (read-only text) and "Expected status" (comma-separated list) when the report has them, and omits each section when empty. The URL bar's live problem check resolves with `resolve_with` and `Placeholder`, so typing a draft that uses `{{$uuid}}` no longer generates a fresh UUID per keystroke. Verified at 9ae930f: workspace suite, three `metadata` tests, no-fresh check, scope, fmt and clippy clean (AC1-AC3).
+**Cost:** The determinism test cannot prove the source is `Placeholder`, because `Problem` carries no generated value; the task's `rg` check that no `resolve(` call remains in `url_bar.rs` is the real proof. The 1,000-character cap is asserted only by its trailing "…". Both are P3 follow-ups in PLAN.
+
 ## 2026-11-17 — Importer hardening and imported descriptions (task 170)
 Importer warnings, file names and committed URLs no longer carry a credential: curl warnings name the construct and not its value, an unknown curl option no longer lets a userinfo URL through, the extra-URL and userinfo warnings echo only the host, and OpenAPI environment file names come from the server host unless the description passes the secret-name check. An import validates `folder_rel` and environment names before the first write, warns once per undefined `{{var}}`, and copies Postman and OpenAPI descriptions into `Request.description`. Verified at 9804513: workspace 1415 passed, `import-h4` 10 passed, scope, fmt and clippy clean (AC1-AC10).
 **Cost:** The warning scan for undefined variables works on the request's Debug text, so `{{x}}` inside a description warns falsely. Descriptions are cut at 16 KiB with no warning, against the spec's "any length on disk", and the truncation helper is copied into two importers. Eight follow-ups, mostly P3, are in PLAN.
