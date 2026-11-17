@@ -445,3 +445,24 @@ fn too_long_is_too_large_only_for_the_secret() {
         );
     }
 }
+
+#[test]
+fn service_names_are_checked() {
+    use wisp_storage::keychain::{InvalidService, check_service};
+    assert_eq!(check_service(""), Err(InvalidService::Empty));
+    assert_eq!(check_service("."), Err(InvalidService::ContainsDot));
+    assert_eq!(check_service("a.b"), Err(InvalidService::ContainsDot));
+    assert_eq!(check_service("wisp"), Ok(()));
+}
+
+#[test]
+fn service_that_is_invalid_opens_an_inert_store_that_is_not_absent() {
+    for bad in ["", ".", "a.b"] {
+        let s = keychain::open(bad, false);
+        let e = s.probe().unwrap_err();
+        // Not an "absent" reason: a store-mode load must not fall back to a file.
+        assert_eq!(e, SecretStoreError::Other { code: None }, "{bad:?}");
+        assert!(s.get("a").is_err() && s.delete("a").is_err());
+        assert!(s.set("a", &SecretValue::new("v")).is_err());
+    }
+}
