@@ -15,7 +15,7 @@ use crate::actions::{
     CancelRequest, ClearHistory, CloseCollection, CloseTab, NewCollection, NewEnvironment,
     NewRequest, OpenCollection, OpenImport, OpenPalette, ReloadFromDisk, SaveRequest, SendRequest,
     ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory, SwitchCollection,
-    SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    SwitchEnvironment, ToggleConfirmSend, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
 };
 use crate::palette::{self, CommandId, Match, PaletteItem, PaletteKind, PaletteMode};
 use crate::workspace::{Workspace, WorkspaceEvent};
@@ -44,6 +44,7 @@ fn action_for(id: CommandId) -> Box<dyn Action> {
         CommandId::ShowCookieJar => Box::new(ShowCookieJar),
         CommandId::ClearHistory => Box::new(ClearHistory),
         CommandId::ToggleHistoryBodies => Box::new(ToggleHistoryBodies),
+        CommandId::ToggleConfirmSend => Box::new(ToggleConfirmSend),
         CommandId::EnvSecrets => Box::new(ShowEnvSecrets),
         CommandId::ShareSecrets => Box::new(ShareKeychainSecrets),
     }

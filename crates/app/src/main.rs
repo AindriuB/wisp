@@ -4,6 +4,7 @@
 mod assets;
 
 mod format;
+mod guard;
 
 mod actions;
 mod cookies;
