@@ -77,3 +77,12 @@ Reviewed HEAD a6a118da1605052e67dc6ac59852eb46f3ac1029.
 
 - [SPEC, decided] crates/app/src/ui/root.rs:637-639 — the suggest_confirm hint prompt reads "Confirm before sending to {env}?" / "This environment asks to be guarded. …". Change it to the spec's text, "This environment suggests confirming sends. Enable?" (docs/plan/specs/2026-11-14-wisp-0-3-0.md:131), naming the environment where the prompt form needs it. Keep the buttons ["Enable", "Not now"].
 - [STYLE] crates/app/src/workspace.rs:3511 — the new `pub fn resolve_id_for_guard` sits between `resolve_id_then`'s doc comment and the function, so the comment now documents the wrapper (and misdescribes it: the wrapper drops the partition argument) and `resolve_id_then` has none. Move the wrapper so the comment stays on `resolve_id_then`, and give the wrapper its own one-line doc. Stays inside edit (d).
+
+## Attempt 2 — failed
+
+Reviewer REQUEST CHANGES at b638dccc31c71fb722cc4b4816f147cb8af5bf74. The `guard-unit` check matches only 3 tests (`needs_confirm_table`, `after_prompt_table`, `host_drops_userinfo_and_path`), and its grep needs `ok. [7-9]+ passed`, so it exits 1 although the tables cover AC1 and AC2. Fix: split the table rows of `needs_confirm_table` and `after_prompt_table` (crates/app/src/guard.rs:94-173) into individually named tests whose names read as sentences (docs/conventions.md:106), at least 7 under `guard::`, and keep every existing case. No production code change.
+
+## Wave verified — 9d5837a548e8d81769c165ac9753d87b0ae242d4
+
+## Outcome
+Merged via record/155 at 9d5837a (stacked on record/156 and record/154). Sends to a guarded environment ask first, `suggest_confirm` offers to enable the guard with the spec's text, and a palette command and badge show and toggle it. Two rounds: review round 1 (hint wording, doc comment) and Attempt 2 (guard-unit gate, table tests split). Tester: app 375, guard-unit 15, fmt and clippy clean, no flakes. Follow-ups are in PLAN.
