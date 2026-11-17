@@ -1987,3 +1987,80 @@ fn h2_read_only_migrated_lists_newest_up_to_limit() {
     assert_eq!(urls, ["https://x.test/3", "https://x.test/2"]);
     assert_eq!(snapshot_dir(d.path()), before);
 }
+
+#[test]
+fn h2_encoded_and_run_together_query_names_are_redacted() {
+    for name in [
+        "%GG%74oken",
+        "ab%GG%74oken",
+        "%G%74oken",
+        "jsessionid",
+        "newpassword",
+    ] {
+        let (_d, data, store) = setup();
+        let e = store
+            .append(plain(&format!("https://example.com/?{name}=secret")), None)
+            .unwrap();
+        let loaded = store.load(&e.id).unwrap();
+        assert!(
+            !format!("{:?}", loaded.request).contains("secret"),
+            "{name}"
+        );
+        let mut text = String::new();
+        all_text(&hist_dir(&data), &mut text);
+        assert!(!text.contains("secret"), "{name}");
+    }
+}
+
+#[test]
+fn h2_form_and_multipart_bodies_are_capped_and_flagged() {
+    let cap = wisp_storage::history::BODY_CAP;
+    let (_d, _data, store) = setup();
+    let form = Request {
+        url: "https://x.test/".into(),
+        body: Body::Form(vec![
+            KeyValue {
+                name: "a".into(),
+                value: "x".repeat(cap),
+                enabled: true,
+            },
+            KeyValue {
+                name: "b".into(),
+                value: "y".repeat(cap),
+                enabled: true,
+            },
+        ]),
+        ..Request::default()
+    };
+    let e = store.append(new_entry(form), None).unwrap();
+    let stored = store.load_without_body(&e.id).unwrap();
+    assert!(stored.request_truncated);
+    match stored.request.body {
+        Body::Form(f) => assert!(
+            f.iter()
+                .map(|k| k.name.len() + k.value.len())
+                .sum::<usize>()
+                <= cap
+        ),
+        other => panic!("{other:?}"),
+    }
+    let multi = Request {
+        url: "https://x.test/".into(),
+        body: Body::Multipart(vec![Part {
+            name: "p".into(),
+            value: PartValue::Text("z".repeat(cap * 2)),
+            enabled: true,
+        }]),
+        ..Request::default()
+    };
+    let e = store.append(new_entry(multi), None).unwrap();
+    let stored = store.load_without_body(&e.id).unwrap();
+    assert!(stored.request_truncated);
+    match stored.request.body {
+        Body::Multipart(p) => match &p[0].value {
+            PartValue::Text(t) => assert!(t.len() + p[0].name.len() <= cap),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}

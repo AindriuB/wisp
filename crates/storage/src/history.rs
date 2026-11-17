@@ -409,20 +409,62 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Cut a text request body to [`BODY_CAP`] bytes at a character boundary; true when cut.
+/// Cut a request body to [`BODY_CAP`] bytes (text at a character boundary; form and
+/// multipart fields in order, until the total fits); true when cut.
 fn cap_request_body(body: &mut Body) -> bool {
-    let (Body::Json(b) | Body::Text(b) | Body::Xml(b)) = body else {
-        return false;
-    };
-    if b.content.len() <= BODY_CAP {
-        return false;
+    fn cut(s: &mut String, max: usize) {
+        let mut end = max.min(s.len());
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
     }
-    let mut end = BODY_CAP;
-    while !b.content.is_char_boundary(end) {
-        end -= 1;
+    match body {
+        Body::Json(b) | Body::Text(b) | Body::Xml(b) => {
+            if b.content.len() <= BODY_CAP {
+                return false;
+            }
+            cut(&mut b.content, BODY_CAP);
+            true
+        }
+        Body::Form(fields) => {
+            let total: usize = fields.iter().map(|f| f.name.len() + f.value.len()).sum();
+            if total <= BODY_CAP {
+                return false;
+            }
+            let mut left = BODY_CAP;
+            for f in fields.iter_mut() {
+                cut(&mut f.name, left);
+                left -= f.name.len();
+                cut(&mut f.value, left);
+                left -= f.value.len();
+            }
+            true
+        }
+        Body::Multipart(parts) => {
+            let total: usize = parts
+                .iter()
+                .map(|p| match &p.value {
+                    PartValue::Text(t) => p.name.len() + t.len(),
+                    PartValue::File(_) => p.name.len(),
+                })
+                .sum();
+            if total <= BODY_CAP {
+                return false;
+            }
+            let mut left = BODY_CAP;
+            for p in parts.iter_mut() {
+                cut(&mut p.name, left);
+                left -= p.name.len();
+                if let PartValue::Text(t) = &mut p.value {
+                    cut(t, left);
+                    left -= t.len();
+                }
+            }
+            true
+        }
+        _ => false,
     }
-    b.content.truncate(end);
-    true
 }
 
 fn io(path: &Path, source: std::io::Error) -> StorageError {
