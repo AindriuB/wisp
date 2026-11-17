@@ -210,7 +210,12 @@ impl CookieFile {
         }
         let doc: FileDoc = serde_json::from_slice(&bytes).map_err(|e| StorageError::Parse {
             path: self.path.clone(),
-            message: e.to_string(),
+            // Fixed text and position only: serde's message can quote file bytes.
+            message: format!(
+                "cookie file is not valid JSON (line {}, column {})",
+                e.line(),
+                e.column()
+            ),
         })?;
         if doc.version != VERSION {
             return Err(StorageError::UnsupportedFormat {
