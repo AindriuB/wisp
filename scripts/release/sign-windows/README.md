@@ -20,7 +20,8 @@ With some, the run fails and names the missing ones.
 The artifact configuration below lists both `wisp.exe` and `wisp-cli.exe`. The
 owner must apply it in SignPath, then set the repository variable
 `SIGNPATH_SIGNS_CLI=true`. Until then the workflow uploads only `wisp.exe`
-(a configuration listing one file keeps working), ships `wisp-cli.exe` unsigned,
+(the `wisp-cli.exe` entry has `min-matches="0"`, SignPath's optional-match
+attribute, so a zip without it still passes), ships `wisp-cli.exe` unsigned,
 and adds "wisp-cli.exe in this release is not code-signed." to the draft release
 notes. The release never fails because the CLI is unsigned. Once the variable is
 `true`, both exes are signed, copied back and checked with `verify.ps1`.
