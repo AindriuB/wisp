@@ -20,7 +20,12 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Next step is `/plan` from the spec's Waves section.
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 162, 163, 164 and 160 are recorded; next is 161 (service outcome and history), then 166 (`wisp-cli run`).
+
+### Follow-ups from task 160 (wisp-service plan and send; not scheduled)
+- [P3] `scripts/check-boundaries.sh:52`: the `resolve(` check (and the task's no-resolve check) misses a path-qualified `wisp_core::resolve::resolve(` call or an aliased import.
+- NOTE: `crates/service/src/plan.rs:340` `prepare` always returns empty `dynamics`; the caller must copy them from its `Recording` (`crates/app/src/workspace.rs:2281`). This is a trap for 166's CLI caller, and no test checks that `Workspace::send` stores them.
+- NOTE: the task's `suite-and-lint` check says `cargo fmt --check`; `cargo fmt --all --check` is needed when not run from the workspace root.
 
 ### Follow-ups from task 164 (engine delivery contract; not scheduled)
 - P3: `crates/core/src/resolve/engine.rs:824` has a stale comment ("reqwest returns a 307/308 instead of following it"). `plan` is redundant now that `own_redirects == follow_redirects`, and the `if own_redirects` guard on 301..=303 (~:983) and the comment at :980 describe a split that no longer exists.

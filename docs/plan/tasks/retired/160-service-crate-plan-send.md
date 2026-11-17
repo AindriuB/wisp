@@ -98,3 +98,11 @@ Reviewed HEAD: a62ab87cf0a7360ac6ea59eaa0cc04fecab67c16 (Amendment 1 not yet imp
   input: `use wisp_service::vault::KeychainStores;` → does not compile at HEAD (no module `vault`).
 
 Orchestrator (not for the implementer): spec docs/plan/specs/2026-11-17-wisp-0-4-0.md :70, :108, :149 still say `wisp_service::secrets`; the scribe updates them to `vault` when recording 160 (follows from Amendment 1).
+
+## Accepted residual (orchestrator, 2026-11-17)
+Fix commit 71d108c also commits this task file (outside Owns). Kept: the orchestrator told the round-2 implementer to commit it, its content is identical to the main-checkout copy, and the scribe retires the file at /record.
+
+## Wave verified — 71d108c38ee66de87a06fff5152341545762085b
+
+## Outcome
+Merged at 71d108c (PASS + APPROVE, AC1-AC9). `crates/service` (`wisp-service`) now holds send planning and the one `Command::Send` construction, and the GUI calls it. Per Amendment 1 the keychain and portable-marker code lives in `wisp_service::vault`, not `secrets`. Recorded on `record/160-service-crate-plan-send`; follow-ups are in PLAN.md.

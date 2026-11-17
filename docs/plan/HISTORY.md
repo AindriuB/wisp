@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — wisp-service crate with plan and send (task 160)
+A new GPUI-free crate `crates/service` (`wisp-service`) holds send planning and the single `Command::Send` construction, and the GUI now calls it; `HistoryOrigin`, `CheckOutcome` and the keychain and portable-marker code (`AppStores`, `service_name`, `portable_marker`) moved out of `crates/app` and are re-exported. The GUI sends exactly as in 0.3.0. Tester: suite 1391 passed, 0 failed, 4 skipped; service unit tests 13 passed; boundaries, no-resolve, fmt and clippy clean.
+**Cost:** Review round 1 and 2 changed three things: the keychain module was named `vault`, not `secrets` (Amendment 1, so the spec's `wisp_service::secrets` became `vault`), moved tests had to assert `ResendFacts`, and the service crate needed a `tempfile` dev-dependency. A permissions block stopped the wave once at the round-1 fix. `prepare` returns empty `dynamics` by design, so a caller must copy them from its `Recording`; the boundary script's `resolve(` check misses a path-qualified call (both in PLAN).
+
 ## 2026-11-17 — Engine delivery contract (task 164)
 The engine now reports `nothing_sent` on failures that happened before any bytes left, follows every redirect itself (reqwest's redirect policy is off, capped at `MAX_REDIRECTS = 10`), and the client disables reqwest's internal retries so one `perform` opens one request on the wire. Tester: suite 1372 passed, 0 failed, 4 skipped; exactly one `.send()` in `engine.rs`.
 **Cost:** Review round 1 rejected AC6: the no-auth redirect test still passed with reqwest following the redirects, so it did not show the engine was doing it; de28634 made it tell the two apart. Two source readings are only partly verified (hyper pooled-request retry; `is_connect()` for proxy CONNECT and DNS failures) and have no tests, so do not rely on `nothing_sent == true` for those paths; if the assumption is wrong they report false, the safe direction. An external review then found that a HEAD with a body kept its body and content headers after a 303; it was fixed at fb6135c.
