@@ -1556,6 +1556,21 @@ async fn redirect_without_auth_or_cookie_is_followed_by_the_engine_hop_by_hop() 
 }
 
 #[tokio::test]
+async fn redirect_without_auth_or_cookie_hop_to_a_closed_port_is_an_engine_failure_with_nothing_sent_false()
+ {
+    let server = MockServer::start().await;
+    Mock::given(path("/a"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("http://127.0.0.1:{}/", closed_port())),
+        )
+        .mount(&server)
+        .await;
+    let (_, nothing_sent, _) = failed_with(get(format!("{}/a", server.uri()))).await;
+    assert!(!nothing_sent);
+}
+
+#[tokio::test]
 async fn redirect_loop_fails_on_the_tenth_redirect_with_the_too_many_redirects_error() {
     let server = MockServer::start().await;
     Mock::given(path("/loop"))
