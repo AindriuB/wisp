@@ -1,6 +1,7 @@
 //! Root layout: sidebar | (tab bar, disk banner, request pane / response pane).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use gpui::{
     AppContext as _, Context, DismissEvent, Entity, EntityId, FocusHandle, InteractiveElement as _,
@@ -16,8 +17,10 @@ use crate::actions::{
     CancelRequest, ClearHistory, CloseCollection, CloseTab, KeepMine, NewCollection,
     NewEnvironment, NewRequest, NextTab, OpenCollection, OpenImport, OpenPalette, PrevTab,
     ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets,
-    ShowHistory, SwitchEnvironment, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    ShowHistory, SwitchEnvironment, ToggleConfirmSend, ToggleHistoryBodies, ToggleLayout,
+    ToggleTheme,
 };
+use crate::guard::{self, Answer, Next};
 use crate::palette::PaletteMode;
 use crate::save_close::{self, ClosePrompt};
 use crate::settings::{SplitAxis, ThemeMode};
@@ -33,7 +36,7 @@ use crate::ui::palette::PaletteView;
 use crate::ui::request::RequestPane;
 use crate::ui::response::ResponsePane;
 use crate::ui::sidebar::Sidebar;
-use crate::ui::url_bar::UrlBar;
+use crate::ui::url_bar::{UrlBar, guard_state};
 use crate::vault::{BannerAction, EnvAction, PromptSpec};
 use crate::workspace::{CloseStep, Workspace, WorkspaceEvent, close_step, confirmed_open};
 
@@ -106,6 +109,8 @@ pub struct WorkspaceView {
     cookies: Option<(Entity<CookieJarView>, Subscription)>,
     secrets: Option<(Entity<EnvSecretsView>, Subscription)>,
     notice: Option<SharedString>,
+    /// Collection roots and environments already offered the `suggest_confirm` hint this run.
+    hint_shown: HashSet<(PathBuf, String)>,
     focus: FocusHandle,
     _workspace_sub: Subscription,
     _sidebar_sub: Subscription,
@@ -152,6 +157,9 @@ impl WorkspaceView {
             match event {
                 WorkspaceEvent::Notice(text) => this.notice = Some(text.clone()),
                 WorkspaceEvent::Prompt(spec) => this.show_prompt(spec.clone(), window, cx),
+                WorkspaceEvent::SuggestConfirm { root, env } => {
+                    this.offer_guard(root.clone(), env.clone(), window, cx)
+                }
                 _ => {}
             }
             cx.notify();
@@ -186,6 +194,7 @@ impl WorkspaceView {
             cookies: None,
             secrets: None,
             notice: None,
+            hint_shown: HashSet::new(),
             focus,
             _workspace_sub,
             _sidebar_sub,
@@ -418,8 +427,21 @@ impl WorkspaceView {
         });
     }
 
-    fn on_send(&mut self, _: &SendRequest, _: &mut Window, cx: &mut Context<Self>) {
-        self.with_active(cx, |w, tab, cx| {
+    /// The one interactive send entry point: asks first when the target is guarded.
+    fn on_send(&mut self, _: &SendRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.workspace.read(cx).active_tab() else {
+            return;
+        };
+        let (target, guarded) = guard_state(self.workspace.read(cx), &tab);
+        if guarded {
+            self.confirm_send(tab, target, window, cx);
+        } else {
+            self.send_now(&tab, cx);
+        }
+    }
+
+    fn send_now(&mut self, tab: &Entity<RequestTab>, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |w, cx| {
             if let Err(e) = w.send(tab, cx)
                 && crate::workspace::refused_body_message(&e).is_none()
             {
@@ -427,6 +449,213 @@ impl WorkspaceView {
                 cx.emit(WorkspaceEvent::Notice(text.into()));
             }
         });
+    }
+
+    /// Show a prompt through `prompt_up`; `done` gets the pressed button (`None`: dismissed).
+    /// False, with a notice, when another prompt is up.
+    fn ask(
+        &mut self,
+        (title, detail): (&str, &str),
+        buttons: &[&str],
+        notify: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Option<usize>, &mut Window, &mut Context<Self>) + 'static,
+    ) -> bool {
+        if window.has_active_prompt() || self.workspace.read(cx).prompt_up {
+            if notify {
+                self.workspace.update(cx, |_, cx| {
+                    cx.emit(WorkspaceEvent::Notice(
+                        "Answer the open prompt first, then try again".into(),
+                    ))
+                });
+            }
+            return false;
+        }
+        self.workspace.update(cx, |w, _| w.prompt_up = true);
+        let answer = window.prompt(PromptLevel::Warning, title, Some(detail), buttons, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let pressed = answer.await.ok();
+            this.update_in(cx, |this, window, cx| {
+                this.workspace.update(cx, |w, _| w.prompt_up = false);
+                done(this, pressed, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+        true
+    }
+
+    fn confirm_send(
+        &mut self,
+        tab: Entity<RequestTab>,
+        target: guard::Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let env = target.env.clone().unwrap_or_default();
+        let detail = {
+            let d = &tab.read(cx).draft;
+            format!(
+                "{} {}",
+                format!("{:?}", d.method).to_uppercase(),
+                guard::host_of(&d.url)
+            )
+        };
+        self.ask(
+            (&format!("Send to {env}?"), &detail),
+            &["Send", "Cancel"],
+            true,
+            window,
+            cx,
+            move |this, pressed, window, cx| {
+                let answer = if pressed == Some(0) {
+                    Answer::Confirm
+                } else {
+                    Answer::Cancel
+                };
+                let (current, guarded) = {
+                    let ws = this.workspace.read(cx);
+                    let open = ws.collections.iter().any(|c| c.group.tabs.contains(&tab));
+                    if open {
+                        let (t, g) = guard_state(ws, &tab);
+                        (Some(t), g)
+                    } else {
+                        (None, false)
+                    }
+                };
+                match guard::after_prompt(&target, current.as_ref(), answer, guarded) {
+                    Next::Send => this.send_now(&tab, cx),
+                    Next::Abort => {}
+                    Next::Reprompt => {
+                        if let Some(current) = current {
+                            this.confirm_send(tab, current, window, cx);
+                        }
+                    }
+                    Next::AbortChanged => this.workspace.update(cx, |_, cx| {
+                        cx.emit(WorkspaceEvent::Notice(
+                            "Environment changed; not sent".into(),
+                        ))
+                    }),
+                }
+            },
+        );
+    }
+
+    /// Flip the guard of the active collection's active environment.
+    fn toggle_guard(&mut self, cx: &mut Context<Self>) {
+        self.set_guard(None, cx);
+    }
+
+    /// Set (`Some`) or flip (`None`) the guard of the active collection's active environment.
+    fn set_guard(&mut self, force: Option<bool>, cx: &mut Context<Self>) {
+        const SUFFIX: &str = "set per user; a renamed environment loses it";
+        self.workspace.update(cx, |w, cx| {
+            let ix = w.active_collection_ix();
+            let env = ix
+                .and_then(|i| w.collections.get(i))
+                .and_then(|c| c.active_env.as_ref().map(|e| e.name.clone()));
+            let (Some(ix), Some(env)) = (ix, env) else {
+                cx.emit(WorkspaceEvent::Notice("Select an environment first".into()));
+                return;
+            };
+            let Some(root) = w.collection_root(ix) else {
+                return;
+            };
+            let apply = move |w: &mut Workspace, cx: &mut Context<Workspace>| {
+                let Some(id) = w.coll_ix(&root).and_then(|i| w.known_collection_id(i)) else {
+                    cx.emit(WorkspaceEvent::Notice(
+                        "Could not create the collection id; guard not changed".into(),
+                    ));
+                    return;
+                };
+                let key = crate::settings::GuardKey {
+                    collection_id: id,
+                    environment: env.clone(),
+                };
+                let on = force.unwrap_or_else(|| !w.settings.confirm_send.contains(&key));
+                w.update_settings(
+                    |s| {
+                        if on {
+                            s.confirm_send.insert(key);
+                        } else {
+                            s.confirm_send.remove(&key);
+                        }
+                    },
+                    cx,
+                );
+                let state = if on { "on" } else { "off" };
+                cx.emit(WorkspaceEvent::Notice(
+                    format!("Confirm before send is {state} for {env}; {SUFFIX}").into(),
+                ));
+            };
+            if w.known_collection_id(ix).is_some() {
+                apply(w, cx);
+            } else {
+                let root = w.collection_root(ix);
+                if let Some(root) = root {
+                    w.resolve_id_for_guard(root, cx, apply);
+                }
+            }
+        });
+    }
+
+    /// The environment commits `suggest_confirm = true`: offer once per run to turn the guard on.
+    fn offer_guard(
+        &mut self,
+        root: PathBuf,
+        env: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (root.clone(), env.clone());
+        if self.hint_shown.contains(&key) {
+            return;
+        }
+        let guarded = {
+            let ws = self.workspace.read(cx);
+            ws.coll_ix(&root).is_some_and(|ix| {
+                guard::needs_confirm(
+                    &ws.settings,
+                    ws.known_collection_id(ix).as_deref(),
+                    Some(&env),
+                )
+            })
+        };
+        if guarded {
+            return;
+        }
+        let active = {
+            let ws = self.workspace.read(cx);
+            ws.coll_ix(&root) == ws.active_collection_ix()
+        };
+        if !active {
+            return;
+        }
+        let shown = self.ask(
+            (
+                &format!("Confirm before sending to {env}?"),
+                "This environment asks to be guarded. The choice is yours and is stored per user.",
+            ),
+            &["Enable", "Not now"],
+            false,
+            window,
+            cx,
+            move |this, pressed, _, cx| {
+                let still_active = {
+                    let ws = this.workspace.read(cx);
+                    ws.active_collection().is_some_and(|c| {
+                        c.tree.root == root && c.active_env.as_ref().is_some_and(|e| e.name == env)
+                    })
+                };
+                if pressed == Some(0) && still_active {
+                    this.set_guard(Some(true), cx);
+                }
+            },
+        );
+        if shown {
+            self.hint_shown.insert(key);
+        }
     }
 
     fn on_save(&mut self, _: &SaveRequest, _: &mut Window, cx: &mut Context<Self>) {
@@ -919,6 +1148,9 @@ impl Render for WorkspaceView {
             }))
             .on_action(cx.listener(|this, _: &ClearHistory, window, cx| {
                 this.on_clear_history(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleConfirmSend, _, cx| {
+                this.toggle_guard(cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleHistoryBodies, _, cx| {
                 this.workspace.update(cx, |w, cx| {
