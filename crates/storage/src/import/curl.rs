@@ -476,30 +476,15 @@ fn set_url(f: &mut Flags, url: String) {
 }
 
 /// Pick the request URL from the positionals. After an unknown option the
-/// first positional may be that option's argument, so only the one `://`
-/// argument counts; none or several is an error naming the option.
+/// first positional may be that option's argument, so more than one
+/// positional is ambiguous and an error naming the option, never a value.
 fn pick_url(f: &mut Flags) -> Result<String, ImportError> {
     let mut urls = std::mem::take(&mut f.urls);
     if let Some(opt) = f.unknown.clone() {
-        let with_scheme: Vec<usize> = urls
-            .iter()
-            .enumerate()
-            .filter(|(_, u)| u.contains("://"))
-            .map(|(i, _)| i)
-            .collect();
         if urls.len() > 1 {
-            let [i] = with_scheme[..] else {
-                return Err(ImportError::Parse(format!(
-                    "cannot tell which argument is the URL after the unknown option `{opt}`"
-                )));
-            };
-            let url = urls.remove(i);
-            for _ in &urls {
-                f.warn(format!(
-                    "an argument after the unknown option `{opt}` is not imported"
-                ));
-            }
-            return Ok(url);
+            return Err(ImportError::Parse(format!(
+                "cannot tell which argument is the URL after the unknown option `{opt}`"
+            )));
         }
     }
     if urls.is_empty() {
@@ -802,6 +787,20 @@ mod tests {
             Err(e) => format!("{e:?} {e}"),
         };
         assert!(!text.contains("SECRETVAL"), "{text}");
+    }
+
+    #[test]
+    fn h4_unknown_option_with_schemeless_and_scheme_positional_is_rejected() {
+        let res = parse(
+            "curl --http2-prior-knowledge api.example.com https://other.example.com -H 'Authorization: Bearer SECRET'",
+        );
+        let Err(e) = res else {
+            panic!("expected a Parse error")
+        };
+        assert!(matches!(e, ImportError::Parse(_)), "{e:?}");
+        let text = format!("{e:?} {e}");
+        assert!(text.contains("--http2-prior-knowledge"), "{text}");
+        assert!(!text.contains("SECRET"), "{text}");
     }
 
     #[test]
