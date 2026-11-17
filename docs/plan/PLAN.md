@@ -20,9 +20,14 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 task 175 (Explain metadata, placeholder URL-bar check) is recorded; 166-170 and 174 are in flight; next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) and 168 (history hardening, read-only history reader) are recorded; 166, 167, 169, 170 and 174 are in flight (170 is in PR #130); next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 168 (history hardening; not scheduled)
+- [P3] Spec: AC4 contradicts itself. Its acronym rule splits `OAuth` into O+Auth, so `X-OAuth-Scopes` is now redacted (fail-safe over-redaction), while its example says `OAuth2Token` gives oauth, 2, token. Decide which is intended and fix the wording or the rule.
+- NOTE: the strong-fragment suffix rule also redacts ordinary words that end in one (possession, obsession), in history and in the importers.
+- [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
 
 ### Follow-ups from task 175 (Explain metadata and preview; not scheduled)
 - [P3] `crates/app/src/ui/url_bar.rs:586` `metadata_preview_is_deterministic_and_uses_placeholder` would pass with a Fresh source too (`Problem` has no field for a generated value); the task's no-fresh `rg` check is the real proof.
