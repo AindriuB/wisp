@@ -233,6 +233,13 @@ enum HistoryState {
     Off(String),
 }
 
+/// Where a history append goes: the collection id, or a store already recovered from a
+/// cached `Failed` id (kept so reads and writes use the same one).
+enum RecordTo {
+    Id(CollectionId),
+    Store(HistoryStore),
+}
+
 /// Serialises every collection-id resolve so concurrent first uses agree on one id.
 static RESOLVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -2691,9 +2698,18 @@ impl Workspace {
             }
         };
         let data = job.data;
+        let recovered = job.store;
         let body = history_ui::body_to_store(self.settings.history_bodies, body);
         match known_id(&self.collections[cix].coll_id) {
-            Some(id) => self.spawn_record(task_root, data, id, new, body, cx),
+            Some(id) => self.spawn_record(task_root, data, RecordTo::Id(id), new, body, cx),
+            // Already recovered once: keep using that store, so reads and writes agree
+            // until the collection is reopened.
+            None if recovered.is_some()
+                && matches!(self.collections[cix].coll_id, IdState::Failed { .. }) =>
+            {
+                let store = recovered.expect("checked above");
+                self.spawn_record(task_root, data, RecordTo::Store(store), new, body, cx)
+            }
             None if matches!(self.collections[cix].coll_id, IdState::Failed { .. }) => {
                 // A cached read failure: re-read the id for this append only, so a repaired
                 // file recovers history. The shared `coll_id` (cookies, secrets, clash
@@ -2710,7 +2726,14 @@ impl Workspace {
                         }
                         match state {
                             IdState::Known(id) => match CollectionId::parse(&id) {
-                                Some(id) => this.spawn_record(task_root, data, id, new, body, cx),
+                                Some(id) => this.spawn_record(
+                                    task_root,
+                                    data,
+                                    RecordTo::Id(id),
+                                    new,
+                                    body,
+                                    cx,
+                                ),
                                 None => {
                                     this.history_off(&task_root, "invalid collection id".into(), cx)
                                 }
@@ -2737,7 +2760,9 @@ impl Workspace {
                     };
                     match &this.collections[cix].coll_id {
                         IdState::Known(id) => match CollectionId::parse(id) {
-                            Some(id) => this.spawn_record(task_root, data, id, new, body, cx),
+                            Some(id) => {
+                                this.spawn_record(task_root, data, RecordTo::Id(id), new, body, cx)
+                            }
                             None => {
                                 this.history_off(&task_root, "invalid collection id".into(), cx)
                             }
@@ -2762,15 +2787,21 @@ impl Workspace {
         &mut self,
         task_root: PathBuf,
         data: DataDir,
-        id: CollectionId,
+        to: RecordTo,
         new: NewEntry,
         body: Option<Vec<u8>>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |this, cx| {
-            let work = cx
-                .background_executor()
-                .spawn(async move { record_history(&data, &id, new, body, HistoryBodies::Store) });
+            let work = cx.background_executor().spawn(async move {
+                match to {
+                    RecordTo::Id(id) => record_history(&data, &id, new, body, HistoryBodies::Store),
+                    RecordTo::Store(store) => store
+                        .append(new, body.as_deref())
+                        .map(|_| store)
+                        .map_err(|e| RecordError::Append(e.to_string())),
+                }
+            });
             let result = work.await;
             this.update(cx, |this, cx| {
                 // The collection was closed while this was in flight: its result is stale.
@@ -4874,6 +4905,60 @@ mod env_wiring_tests {
                 before
             );
         });
+    }
+
+    #[gpui::test]
+    fn recovered_history_reads_and_writes_use_one_store(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let root = fx.root.clone();
+        let toml = std::fs::read_to_string(root.join("collection.toml")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"bad id\"\n",
+        )
+        .unwrap();
+        fx.ws
+            .update(cx, |w, _| w.collections[0].coll_id = read_id_state(&root));
+        let new = || NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        // Repaired to A: the first send recovers A's store.
+        std::fs::write(root.join("collection.toml"), &toml).unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, new(), None, cx));
+        cx.run_until_parked();
+        // Changed to B: the second send must still go to A.
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"fedcba9876543210\"\n",
+        )
+        .unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, new(), None, cx));
+        cx.run_until_parked();
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 2);
+        let r = root.clone();
+        fx.ws.update(cx, |w, cx| w.clear_history(r, cx));
+        cx.run_until_parked();
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 0);
     }
 
     #[gpui::test]
