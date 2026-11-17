@@ -22,11 +22,12 @@ than no plan.
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendments 1 and 2; roadmap: `docs/plan/roadmap.md`.
 - **Waves 0 to 2 and tasks 147 and 148 are recorded (PRs #78-#110):** detail in `docs/plan/archive/2026-11-16-closed-sections.md`, `docs/plan/archive/2026-11-17-closed-sections.md` and HISTORY. Open follow-ups are under the "Follow-ups from ..." sections below.
 - **149 measured wave 2 (PR #110):** Windows GUI 15,494,656 B, 94,656 B over the old 15.4 MB soft line and 5,344 B under the old 15,500,000 B gate. Detail: `scripts/measure/results/wave-2-size.json`.
-- **Decision 1 (user, 2026-11-17):** cut task 148's sidebar empty-state buttons and keep the palette "New collection…" and "New environment…" commands (task 154).
+- **Decision 1 (user, 2026-11-17):** cut task 148's sidebar empty-state buttons and keep the palette "New collection…" and "New environment…" commands (task 154, done).
 - **Decision 2 (user, 2026-11-17):** the Windows GUI hard gate is 16,000,000 B and the soft line 15,900,000 B, replacing 15,500,000 B and 15,400,000 B (task 156 changes `release.yml`; `budgets.json` keeps 16 MiB); see spec Amendment 2.
 - **Follow-up (149):** the CLI roughly tripled since wave 1 (macOS 552,528 → 1,415,600 B); cause not investigated.
 - **153 recorded** (PLAN.md pruned from 99,898 B to 94,230 B; decisions written into the spec and roadmap).
-- **Wave 3 open (154-158):** 154 cut the sidebar buttons, 155 environment guard, 156 package the CLI and raise the gate, 157 docs for the CLI and guard, 158 measure and release dry run.
+- **154 recorded:** the sidebar buttons are cut (two reverts); the palette commands remain.
+- **Wave 3 open (155-158):** 155 environment guard, 156 package the CLI and raise the gate, 157 docs for the CLI and guard, 158 measure and release dry run.
 - **Next:** wave 3, then the macOS hand test.
 
 ### User setup (optional release channels)
