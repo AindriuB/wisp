@@ -1040,6 +1040,11 @@ async fn perform(
                 }
                 classify(&e, false)
             })?;
+        // The transport timer can fire late (a stalled worker, a coalesced wakeup) and let a
+        // response that arrived after the deadline through; the one budget is still the budget.
+        if timeout.is_some_and(|t| began.elapsed() >= t) {
+            return Err(err(ErrorKind::Timeout, "request timed out".to_owned()));
+        }
         let hop = clients.timings().claim(token, &resp);
         if timings == Timings::default() {
             timings = hop;
