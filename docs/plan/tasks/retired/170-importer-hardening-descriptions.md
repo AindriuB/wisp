@@ -48,5 +48,29 @@ and OpenAPI descriptions land in the new `description` field.
 
 ## Wave verified — 98045131587db0649d9c7697f42cc9cbb69a7805
 
+## External review — findings
+
+Key: pasted · reviewed head 86612c09acba8b2dbf7894f3cfc9e0d7889a6903 (PR #130; code unchanged at eaca40a) · round 1
+
+- P2 — Quadratic variable scanning: `crates/storage/src/import/mod.rs:327–329` repeatedly searches overlapping suffixes for `}}`. A roughly 1 MB brace-heavy request body can trigger about 250 billion bytes of searches, causing excessive CPU use during import. Consume scanned tokens or use a linear parser.
+- P2 — Missing authentication warnings: `crates/storage/src/import/mod.rs:325` scans the request's debug representation, which redacts authentication values. Undefined variables in bearer tokens, passwords and API keys therefore receive no warning. Scan the template fields directly.
+
+## Review round 2 — findings
+
+Reviewed HEAD: ae15c75edaad38a936fda5543f644c23cdbb48a6 (both external P2s fixed)
+
+- [P2] crates/storage/src/import/mod.rs:702-715 — `brace_heavy_body_is_scanned_linearly` would also pass with the old quadratic scan: neither input (`"{{".repeat(..)`, `"{{a}".repeat(..)`) contains `}}`, so the old loop breaks after one linear search. Even with a `}}`, the test has no work limit, so a regression would only be slow.
+  route: implementer — use an input like `"{{".repeat(n) + "}}"` and bound the work (e.g. count scanner steps or call a scanner with an operation counter) so that reverting to the old loop fails the test.
+
+## External review — findings
+
+Key: pasted · reviewed head eaca40a67b7c97d8b5b99c7efa53b164189f24e7 (PR #130) · round 3
+
+- P2 — Authentication references escape validation: `crates/storage/src/import/mod.rs:325` scans the request's debug representation, which redacts authentication values. (Already fixed on the task branch at ae15c75, round 1; not yet on the PR.)
+- P2 — Long descriptions are silently truncated: `crates/storage/src/import/postman.rs:36` and `crates/storage/src/import/openapi.rs:118` cap descriptions at 16 KiB, discarding valid content without warning. The spec (:323) permits descriptions of any length on disk.
+  route: implementer — remove the 16 KiB description cap in both importers (and the duplicate truncate helpers), import descriptions whole; add a test with a 20 KiB description that round-trips intact.
+
+## Wave verified — 0839ac216f838ee16cd05c7d44c7022c4b79c93a
+
 ## Outcome
-Merged at 9804513 (PASS + APPROVE: workspace 1415 passed, import-h4 10 passed, scope, fmt and clippy clean; AC1-AC10 met). Importer warnings, file names and committed URLs no longer carry credentials, an import validates folder and environment names before it writes, and Postman and OpenAPI descriptions land in `Request.description`. Follow-ups are in PLAN.md.
+Merged at 0839ac2 (PASS + APPROVE: workspace 1418 passed, import-h4 11 passed, fmt and clippy clean; AC1-AC10 met), after two external reviews and review rounds 1-3. Importer warnings, file names and committed URLs no longer carry credentials, an import validates folder and environment names before it writes, and Postman and OpenAPI descriptions land in `Request.description` whole (the 16 KiB cap is removed, spec :323). The undefined-variable scan is linear and reads the template fields directly: auth values are included, descriptions and names are excluded. Follow-ups are in PLAN.md.
