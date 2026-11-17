@@ -701,16 +701,32 @@ mod tests {
     #[test]
     fn brace_heavy_body_is_scanned_linearly() {
         use wisp_core::request::{Body, TextBody};
-        for unit in ["{{", "{{a}"] {
-            let mut r = result_with(Request {
-                body: Body::Text(TextBody {
-                    content: unit.repeat(1024 * 1024 / unit.len()),
-                    sidecar: None,
-                }),
-                ..Default::default()
+        // `{{` repeated and closed once: a scan that restarts at each `{{`
+        // and searches on for `}}` re-reads the whole tail every time (about
+        // 5e11 byte reads here). A linear scan takes milliseconds, so the
+        // generous bound only trips on the quadratic one.
+        for content in [
+            format!("{}}}}}", "{{".repeat(1024 * 1024)),
+            "{{a}".repeat(1024 * 1024 / 4),
+        ] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            // The scan runs on its own thread so a quadratic one fails the
+            // test at the deadline instead of hanging it.
+            std::thread::spawn(move || {
+                let mut r = result_with(Request {
+                    body: Body::Text(TextBody {
+                        content,
+                        sidecar: None,
+                    }),
+                    ..Default::default()
+                });
+                warn_undefined_vars(&mut r);
+                let _ = tx.send(r.warnings);
             });
-            warn_undefined_vars(&mut r);
-            assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+            let warnings = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("scan did not finish in 10s: not linear");
+            assert!(warnings.is_empty(), "{warnings:?}");
         }
     }
 
