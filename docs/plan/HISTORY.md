@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — PLAN.md pruned and the wave-3 size decisions recorded (task 153)
+PLAN.md went from 99,898 B to 94,230 B by moving closed sections to `docs/plan/archive/2026-11-17-closed-sections.md`. The spec gained Amendment 2 and the roadmap and task 99 gate figures were updated for the user's 2026-11-17 decisions: cut task 148's sidebar buttons, and raise the Windows GUI gate to 16,000,000 B with a 15,900,000 B soft line.
+
+**Cost:** The roadmap edit at :23 marks D-1 ("raise only at 0.4.0") as superseded; that line is outside the task's listed lines and was accepted as in scope. PLAN.md is still near the size limit, so the next record may need another archive cut. Docs-only, so the orchestrator read the diff in place of review and tests.
+
 ## 2026-11-16 — Measure wave 2 (task 149)
 Recorded `scripts/measure/results/wave-2-size.json` from a `measure.yml` dispatch on main at 4769107 (run 43976706350, all targets green). The Windows GUI is 15,494,656 B: +315,392 B on the wave-1 baseline of 15,179,264 B, 94,656 B over the 15.4 MB soft line and 5,344 B under the 15,500,000 B gate. Nothing was cut.
 

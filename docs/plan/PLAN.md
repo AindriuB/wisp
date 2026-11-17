@@ -25,7 +25,8 @@ Explain Request, Save and close with the environment guard, assertions with hist
 - **Decision 1 (user, 2026-11-17):** cut task 148's sidebar empty-state buttons and keep the palette "New collection…" and "New environment…" commands (task 154).
 - **Decision 2 (user, 2026-11-17):** the Windows GUI hard gate is 16,000,000 B and the soft line 15,900,000 B, replacing 15,500,000 B and 15,400,000 B (task 156 changes `release.yml`; `budgets.json` keeps 16 MiB); see spec Amendment 2.
 - **Follow-up (149):** the CLI roughly tripled since wave 1 (macOS 552,528 → 1,415,600 B); cause not investigated.
-- **In flight, wave 3 (153-158):** 153 prune PLAN.md and record the decisions, 154 cut the sidebar buttons, 155 environment guard, 156 package the CLI and raise the gate, 157 docs for the CLI and guard, 158 measure and release dry run.
+- **153 recorded** (PLAN.md pruned from 99,898 B to 94,230 B; decisions written into the spec and roadmap).
+- **Wave 3 open (154-158):** 154 cut the sidebar buttons, 155 environment guard, 156 package the CLI and raise the gate, 157 docs for the CLI and guard, 158 measure and release dry run.
 - **Next:** wave 3, then the macOS hand test.
 
 ### User setup (optional release channels)
