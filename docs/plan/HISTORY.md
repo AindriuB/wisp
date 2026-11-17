@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Request metadata (task 162)
+Requests now carry an optional `description` and an `expected_status` list. The storage loader and writer round-trip both, an empty `expected_status` array is rejected on load, and the resolution report includes them. Tester: suite 1369 passed, 0 failed, 4 ignored.
+**Cost:** Review round 1 caught that saving an empty `expected_status` draft over a file that had the key wrote `expected_status = []`, which the loader rejects; the writer now removes the key, with a reload test. The importer literal sites needed no edit (they use `..Request::default()`), so `codec.rs` and `import/*` are unchanged. `cargo fmt` has to run as `cargo fmt --all --check`.
+
 ## 2026-11-17 — Storage hardening A (task 163)
 Collection id assignment and defaults saves now serialise on the root lock, `ensure_private_dir` rejects a path that reaches a symlink through a trailing separator and tightens a too-wide dir to 0700, and a corrupt cookie file's error no longer carries serde's message or any file byte. Tester: suite 1364 passed, 0 failed, 4 ignored.
 **Cost:** Review round 1 caught that `parse_error_carries_no_file_content` put its canary where serde never quotes it, so appending serde's text to the error still passed (verified by mutation); the canary now sits inside a value serde quotes. P3s left open: `assign_new_collection_id` does not take the root lock, `strip_trailing_separators` strips `\` on unix, and a narrow dir is widened to exactly 0700, dropping setgid/sticky. The task's `cargo fmt --check` has to run as `cargo fmt --all --check` (virtual manifest), and `.claude/scripts/check-counts.sh` does not exist in this repo.
