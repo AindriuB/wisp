@@ -774,10 +774,10 @@ fn h4_curl_unknown_option_does_not_make_a_secret_the_url() {
             );
         }
     }
-    // One URL-looking argument is the URL.
-    let r = curl::parse("curl --frobnicate value https://real/x").unwrap();
-    assert!(format!("{:?}", r.items).contains("https://real/x"));
-    assert!(!warnings_text(&r).contains("value"));
+    // A schemeless and a `://` positional after an unknown option is ambiguous.
+    let e = curl::parse("curl --frobnicate value https://real/x").unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("--frobnicate") && !m.contains("value"), "{m}");
 }
 
 #[test]
