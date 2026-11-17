@@ -64,3 +64,7 @@ Reviewed HEAD 8e48ba8d37a2c50fa037fe6b3e862b387a62889d.
 
 ## Outcome
 Merged via record/157 at df2ce7b. Added docs/cli.md, fixed the architecture drift items, updated the README (CLI section, guard paragraph, Install subsections, Save-first prompts). Review round 1 fixed two P2s (the guard badge only turns the guard off; display-text parts carry a `kind` tag). Follow-ups above are open.
+
+## External review — findings
+Round 2. Source: review pasted by the user in chat, 2026-11-17; reviewed PR #116 head 09d6ac10eaa2d13a27a15afb3dfcf60606f101b6 (base d314c5f).
+- [P2] Installation instructions require a newer release — `README.md:59`. The README names `Wisp-0.2.0-*` archives but now instructs users to install `wisp-cli`, which ships from 0.3.0. The Linux command fails with `cannot stat 'wisp-cli'`; macOS instructions create a dangling symlink. State the 0.3.0 requirement or update the referenced release.
