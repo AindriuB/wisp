@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Request metadata (task 162)
+Requests now carry an optional `description` and an `expected_status` list. The storage loader and writer round-trip both, an empty `expected_status` array is rejected on load, and the resolution report includes them. Tester: suite 1369 passed, 0 failed, 4 ignored.
+**Cost:** Review round 1 caught that saving an empty `expected_status` draft over a file that had the key wrote `expected_status = []`, which the loader rejects; the writer now removes the key, with a reload test. The importer literal sites needed no edit (they use `..Request::default()`), so `codec.rs` and `import/*` are unchanged. `cargo fmt` has to run as `cargo fmt --all --check`.
+
 ## 2026-11-17 — Release 0.3.0
 PR #118 bumped the version to 0.3.0 and added the `docs/release.md` runbook, the README asset names and `docs/plan/release-notes-0.3.0.md`; tag v0.3.0 at ffdccc1 published at 2026-11-17T12:28Z with `Wisp-0.3.0-macos-arm64.zip`, `Wisp-0.3.0-windows-x64.zip`, `Wisp-0.3.0-linux-x64.tar.gz` and `SHA256SUMS`. The macOS zip checksum matches and `spctl` reports "Notarized Developer ID"; the winget manifest has PackageVersion 0.3.0 (the winget-pkgs PR is the user's), and the dry-run draft dryrun-44046922250 was deleted.
 **Cost:** Only the macOS hand test was done before publishing; Windows and Ubuntu are tested later. The 0.2.0 asset names in the README and the dry-run archives were stale until this bump, so the dry run could not show final names.

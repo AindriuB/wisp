@@ -53,3 +53,18 @@ history's request copy, and appear in the resolution report that Explain and
 - Importers filling `description` (170); CLI `explain`/`inspect`/`snapshot` fields (173); GUI display (175).
 - GUI editing of either field (register verdict: display only).
 - Using `expected_status` to decide anything (`status_ok`, 161; exit 7, 166).
+
+## Review round 1 — findings
+
+Reviewed HEAD: b18415b80c62a4aa99364bd9082f00da23073873
+
+- [P2] crates/storage/src/request.rs:152-166 (`write_expected_status`) — when the draft's `expected_status` is empty but the file on disk has the key, the save writes `expected_status = []`. The loader rejects an empty array (AC2), so the file the save just wrote cannot be loaded.
+  - Fix: when the draft list is empty and the key is present, remove the key instead of writing an empty array. That keeps AC2 and AC3: the draft wins, and there is no valid empty value.
+  - Add a storage test that saves an empty draft over a file that has the key, then reloads it.
+  - Failing input: a request file gains `expected_status = 200` on disk (for example from a git pull), and the user picks "Keep mine". `save_request_if_unchanged` → `write_request` writes `expected_status = []`, and `load_request` then returns `Invalid { key: "expected_status", ... }`.
+
+## Wave verified — aa27725b1af98829e35ae4bb5cb89af7200216a9
+
+## Outcome
+
+Merged via record/162-request-metadata at aa27725b1af98829e35ae4bb5cb89af7200216a9. Tester PASS (1369 passed, 0 failed, 4 ignored) and reviewer APPROVE. Review round 1 found one P2 (saving an empty `expected_status` draft over a file that had the key wrote `expected_status = []`, which the loader rejects), fixed in aa27725 by removing the key. No follow-ups from code review. The importer literal sites needed no edit because they use `..Request::default()`, so `codec.rs` and `import/*` are unchanged. `cargo fmt` runs as `cargo fmt --all --check`.
