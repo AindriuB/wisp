@@ -137,7 +137,7 @@ fn strip_trailing_separators(path: &Path) -> PathBuf {
     if t.is_empty() || t.len() == s.len() || t.ends_with(':') {
         return path.to_path_buf();
     }
-    PathBuf::from(&*t)
+    PathBuf::from(t)
 }
 
 #[cfg(test)]
