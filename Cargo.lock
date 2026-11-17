@@ -8678,6 +8678,7 @@ dependencies = [
 name = "wisp-service"
 version = "0.3.0"
 dependencies = [
+ "serde_json",
  "tempfile",
  "wisp-core",
  "wisp-storage",

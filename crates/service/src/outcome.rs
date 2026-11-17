@@ -242,6 +242,8 @@ mod tests {
         let records = assertion_records(&check_outcomes(&list, 200, &headers, None));
         let text = format!("{records:?}");
         assert!(!text.contains("CANARY"), "{text}");
+        let json = serde_json::to_string(&records).unwrap();
+        assert!(!json.contains("CANARY"), "{json}");
     }
 
     #[test]
@@ -273,9 +275,8 @@ mod tests {
         assert!(status_ok(201, &[201]));
     }
 
-    /// The `NewEntry` the app built before this logic moved (task 161 AC1), as `Debug` text:
-    /// this crate has no JSON dependency. The app's JSON golden was committed before the move.
-    const GOLDEN_ENTRY: &str = r#"NewEntry { at: SystemTime { tv_sec: 10, tv_nsec: 0 }, request_path: Some("a.toml"), request: Request { name: "Untitled", method: Get, url: "http://example.test/x", path: [], params: [], headers: [], auth: Inherit, body: None, vars: [], settings: RequestSettings { timeout: None, follow_redirects: true, verify_tls: true }, assertions: [Status { op: Equals, expected: Int(200) }, Status { op: Equals, expected: Int(500) }], description: "", expected_status: [] }, outcome: Failed { kind: Timeout }, status: Some(200), ttfb: Some(5ms), total: Some(9ms), dns: Some(2ms), connect: Some(3ms), size: Some(2), response_headers: [Header { name: "X", value: "<redacted>" }], environment: Some("dev"), assertions: [AssertionRecord { label: "status equals", hash: "123681db9b04d061", state: Pass }, AssertionRecord { label: "status equals", hash: "123681db9b04d061", state: Fail }], delivery: None }"#;
+    /// What the app built for a completed run with checks (task 161 AC1), as JSON.
+    const GOLDEN_JSON: &str = r#"{"assertions":[{"hash":"123681db9b04d061","label":"status equals","state":"pass"},{"hash":"123681db9b04d061","label":"status equals","state":"fail"}],"at":10,"connect_ms":3,"delivery":"responded","dns_ms":2,"environment":"dev","outcome":"Completed","request":{"assertions":[{"Status":{"expected":{"Int":200},"op":"Equals"}},{"Status":{"expected":{"Int":500},"op":"Equals"}}],"auth":"Inherit","body":"None","description":"","expected_status":[],"headers":[],"method":"Get","name":"Untitled","params":[],"path":[],"settings":{"follow_redirects":true,"timeout":null,"verify_tls":true},"url":"http://example.test/x","vars":[]},"request_path":"a.toml","response_headers":[{"name":"X","value":"y"}],"size":2,"status":200,"total_ms":9,"ttfb_ms":5}"#;
 
     #[test]
     fn prepare_then_finish_builds_the_entry_the_app_used_to() {
@@ -312,10 +313,6 @@ mod tests {
             name: "X".into(),
             value: "y".into(),
         }];
-        let err = EngineError {
-            kind: ErrorKind::Timeout,
-            message: "timed out".into(),
-        };
         let response = Response {
             status: Some(200),
             headers: &headers,
@@ -328,27 +325,36 @@ mod tests {
             size: Some(2),
             headers_seen: true,
         };
-        // The golden's checks came from a completed response; its terminal was a failure.
         let mut finished = finish(
             record,
             &response,
-            &Terminal::Failed {
-                error: &err,
-                nothing_sent: false,
+            &Terminal::Completed {
+                body_prefix: Some(b"{}"),
             },
             &[],
         );
         assert_eq!(finished.delivery, Delivery::Responded);
         assert_eq!(finished.status_ok, Some(true));
-        // The checks are skipped for a failure; take the completed run's records instead.
-        finished.entry.assertions = assertion_records(&check_outcomes(
-            &draft.assertions,
-            200,
-            &headers,
-            Some(b"{}"),
-        ));
-        finished.entry.delivery = None;
         finished.entry.at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
-        assert_eq!(format!("{:?}", finished.entry), GOLDEN_ENTRY);
+        // `NewEntry` has no `Serialize`: lay its fields out by hand, values included.
+        let e = &finished.entry;
+        let json = serde_json::to_string(&serde_json::json!({
+            "at": e.at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
+            "request_path": e.request_path,
+            "request": e.request,
+            "outcome": e.outcome,
+            "status": e.status,
+            "ttfb_ms": e.ttfb.map(|d| d.as_millis() as u64),
+            "total_ms": e.total.map(|d| d.as_millis() as u64),
+            "dns_ms": e.dns.map(|d| d.as_millis() as u64),
+            "connect_ms": e.connect.map(|d| d.as_millis() as u64),
+            "size": e.size,
+            "response_headers": e.response_headers,
+            "environment": e.environment,
+            "assertions": e.assertions,
+            "delivery": e.delivery,
+        }))
+        .unwrap();
+        assert_eq!(json, GOLDEN_JSON);
     }
 }
