@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-17 | 164 | engine reports nothing_sent, follows all redirects itself, reqwest retries disabled | ## 2026-11-17 — Engine delivery contract (task 164) |
 | 2026-11-17 | 159 | DynamicSource trait for dynamic values; recording source lists each occurrence in order | ## 2026-11-17 — Dynamic values through a DynamicSource (task 159) |
 | 2026-11-17 | 162 | description and expected_status on requests, stored and shown in the resolution report | ## 2026-11-17 — Request metadata (task 162) |
 | 2026-11-17 | 163 | Collection id/defaults serialised, private dir hardened, cookie parse error redacted | ## 2026-11-17 — Storage hardening A (task 163) |
