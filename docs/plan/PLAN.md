@@ -20,9 +20,17 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) and 168 (history hardening, read-only history reader) are recorded; 166, 167, 169, 170 and 174 are in flight (170 is in PR #130); next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) and 166 (`wisp-cli run`) are recorded; 167, 169, 170 and 174 are in flight (170 is in PR #130); next are 172 (CLI budgets measurement) and 173 (CLI snapshot and metadata) once their dependencies land.
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 166 (wisp-cli run; not scheduled)
+- [P3] `crates/cli/tests/run.rs:150-154` `closed()` binds and drops a port; another process could take it, a possible exit-5 flake.
+- [P3] The service keychain-canary test asserts only `Completed` for exits 0/1/7; pin the failed check or bad status.
+- [P3] No CLI-level test of `missing-secret` rendering (text and JSON).
+- [Low] `crates/service/src/run.rs:978` uses a 200 ms sleep against the "no sleeps" rule.
+- [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
+- [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
 - [P3] Spec: AC4 contradicts itself. Its acronym rule splits `OAuth` into O+Auth, so `X-OAuth-Scopes` is now redacted (fail-safe over-redaction), while its example says `OAuth2Token` gives oauth, 2, token. Decide which is intended and fix the wording or the rule.
