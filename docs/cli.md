@@ -91,9 +91,11 @@ environment layer is applied.
 JSON fields: `schema`, `command`, `request`, `environment` (`name`, `keychain`,
 `secrets` as `{ name, present }`; null without `--env`), `method`, `url`,
 `params`, `headers`, `auth`, `settings`, `body`, `variables`, `problems` and
-`warnings`. Display text is a list of parts, each one of `text`, `secret`
-(`name`, `resolved`), `dynamic` (`name`) or `hidden` (`reason` of `credential`,
-`userinfo` or `too-long`). `params`, `headers` and `variables` carry an
+`warnings`. Display text is a list of parts. Each part is an object tagged by a
+`kind` key, one of `text` (`text`), `secret` (`name`, `resolved`), `dynamic`
+(`name`) or `hidden` (`reason` of `credential`, `userinfo` or `too-long`), for
+example `{"kind":"text","text":"..."}` and
+`{"kind":"secret","name":"token","resolved":true}`. `params`, `headers` and `variables` carry an
 `origin` (`request`, `folder <path>`, `collection`, `environment`, `secret`,
 `dynamic`, `body type`, `auth`); a header also lists the origins it
 `overridden` and any `synthetic` reason. `auth` has `kind`, `origin`,

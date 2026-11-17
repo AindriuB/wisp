@@ -85,7 +85,7 @@ The Windows package for winget also installs the `wisp-cli` command; the Microso
 
 ## Confirm before send
 
-You can ask Wisp to confirm before it sends to a chosen environment, to guard against sending to production by accident. Turn it on from the command palette ("Toggle confirm before send (this environment)") or by clicking the "Confirm before send" badge. The setting is per user, kept in your `settings.toml`, and keyed by collection and environment name, so it is not shared through git and a renamed environment loses it. An environment file can commit `suggest_confirm = true`, and Wisp then offers once per run to turn the guard on. The guard covers sending a request; it does not cover OAuth2 Authorize. It is an accident guard, not a security control: while Wisp is still reading a collection's id, or failed to read it, the guard fails open and the send goes through without asking.
+You can ask Wisp to confirm before it sends to a chosen environment, to guard against sending to production by accident. Turn it on from the command palette ("Toggle confirm before send (this environment)"). While it is on, a "Confirm before send" badge shows in the URL bar, and clicking the badge turns the guard off. The setting is per user, kept in your `settings.toml`, and keyed by collection and environment name, so it is not shared through git and a renamed environment loses it. An environment file can commit `suggest_confirm = true`, and Wisp then offers once per run to turn the guard on. The guard covers sending a request; it does not cover OAuth2 Authorize. It is an accident guard, not a security control: while Wisp is still reading a collection's id, or failed to read it, the guard fails open and the send goes through without asking.
 
 ## Platform testing
 
