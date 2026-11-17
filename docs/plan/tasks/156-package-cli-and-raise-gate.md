@@ -73,3 +73,5 @@ Windows CLI signing is gated by a repository variable `SIGNPATH_SIGNS_CLI`. When
 Reviewed HEAD 141362c66710a60e2113b8e8ce785770bbda8200.
 
 - [P2] .github/workflows/release.yml:165-169 (Verify Windows signature) — a failed `wisp.exe` verification is hidden when the CLI verification that runs after it passes. `verify.ps1` exits with `exit 1`, which only leaves the script and sets `$LASTEXITCODE=1`; the step's pwsh script then runs the second call, whose `signtool verify` resets `$LASTEXITCODE` to 0, and GitHub's pwsh wrapper ends the step with `exit $LASTEXITCODE`, so the step passes with an unverified `wisp.exe`. Input: `SIGNPATH_SIGNS_CLI=true`, SignPath returns a `wisp.exe` that fails verification (no RFC 3161 timestamp, or a status other than Valid) next to a good `wisp-cli.exe`. Fix shape: after the first call add `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`, or split the check into two steps. (AC7 requires both exes checked with `verify.ps1`.)
+
+## Wave verified — f562f44f5e5fa1bfa66088bd35f68909483dcd97
