@@ -148,7 +148,9 @@ fn read_expected_status(doc: &Table, path: &Path) -> Result<Vec<u16>, StorageErr
 }
 
 fn write_expected_status(doc: &mut Table, statuses: &[u16]) {
-    if statuses.is_empty() && doc.get("expected_status").is_none() {
+    if statuses.is_empty() {
+        // No valid empty value exists: drop the key rather than write `[]`.
+        doc.remove("expected_status");
         return;
     }
     let new: Value = match statuses {

@@ -106,3 +106,14 @@ fn requests_equal_sees_outside_edits_to_either_field() {
     c.expected_status = vec![200];
     assert!(!requests_equal(&a, &c));
 }
+
+#[test]
+fn empty_draft_over_file_with_key_removes_it_and_reloads() {
+    let (_d, p) = write_tmp(BASE);
+    let r = load_request(&p).unwrap();
+    fs::write(&p, format!("expected_status = 200\n{BASE}")).unwrap();
+    save_request(&p, &r).unwrap();
+    let t = fs::read_to_string(&p).unwrap();
+    assert!(!t.contains("expected_status"), "{t}");
+    assert!(load_request(&p).unwrap().expected_status.is_empty());
+}
