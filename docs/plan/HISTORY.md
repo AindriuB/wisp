@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Dynamic values through a DynamicSource (task 159)
+Resolution now draws `{{$uuid}}`-style dynamic values from a `DynamicSource`, and a recording source lists each occurrence in order (URL, header, then body). `resolve()` keeps its signature and behaviour. Tester: workspace suite exit 0, clippy and `cargo fmt --all --check` clean.
+**Cost:** Review round 1 rejected AC5: the recording test compared only the URL values and never checked the header or the two body values, so a source that recorded the right names with different values would pass; 9b555a7 adds those assertions. Commit c27526f ("assert header and body values in recording test") does not compile and 9b555a7 fixes it; the branch was merged as is, so do not bisect through c27526f. `lookup_var` still uses `Fresh`, so GUI hover and highlight generate a new UUID (see PLAN follow-up).
+
 ## 2026-11-17 — Release 0.3.0
 PR #118 bumped the version to 0.3.0 and added the `docs/release.md` runbook, the README asset names and `docs/plan/release-notes-0.3.0.md`; tag v0.3.0 at ffdccc1 published at 2026-11-17T12:28Z with `Wisp-0.3.0-macos-arm64.zip`, `Wisp-0.3.0-windows-x64.zip`, `Wisp-0.3.0-linux-x64.tar.gz` and `SHA256SUMS`. The macOS zip checksum matches and `spctl` reports "Notarized Developer ID"; the winget manifest has PackageVersion 0.3.0 (the winget-pkgs PR is the user's), and the dry-run draft dryrun-44046922250 was deleted.
 **Cost:** Only the macOS hand test was done before publishing; Windows and Ubuntu are tested later. The 0.2.0 asset names in the README and the dry-run archives were stale until this bump, so the dry run could not show final names.
