@@ -1081,7 +1081,11 @@ mod tests {
         }
         let ok = |a: &[&str]| matches!(git(root, a), Ok(s) if s.success());
         assert!(ok(&["add", "dev.secrets.toml"]));
-        assert!(ok(&["config", "core.fsmonitor", &hook.display().to_string()]));
+        assert!(ok(&[
+            "config",
+            "core.fsmonitor",
+            &hook.display().to_string()
+        ]));
         // Tracked is still reported; the configured command is not run.
         assert!(is_git_tracked(root, &secrets));
         assert!(!marker.exists(), "repo-configured fsmonitor ran");

@@ -115,8 +115,11 @@ pub fn list_environments(root: &Path) -> Result<Vec<String>, StorageError> {
 }
 
 #[cfg(test)]
+type TestHook = Box<dyn Fn(&str)>;
+
+#[cfg(test)]
 thread_local! {
-    static TEST_HOOK: std::cell::RefCell<Option<Box<dyn Fn(&str)>>> =
+    static TEST_HOOK: std::cell::RefCell<Option<TestHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -137,7 +140,7 @@ pub(crate) fn test_point(_stage: &str) {}
 
 /// Install (or with `None` clear) the [`test_point`] closure on this thread.
 #[cfg(test)]
-pub(crate) fn set_test_hook(f: Option<Box<dyn Fn(&str)>>) {
+pub(crate) fn set_test_hook(f: Option<TestHook>) {
     TEST_HOOK.with(|h| *h.borrow_mut() = f);
 }
 

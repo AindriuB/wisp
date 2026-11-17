@@ -62,9 +62,34 @@ struct OsBackend {
     service: String,
 }
 
+/// Windows Credential Manager persistence for every item: `Local` (this
+/// machine only), never the store's `Enterprise` default, which roams.
+const WINDOWS_PERSISTENCE: (&str, &str) = ("persistence", "local");
+
+/// An entry created with the [`WINDOWS_PERSISTENCE`] modifier. Only used on
+/// Windows; the other stores do not take it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn local_entry(service: &str, account: &str) -> Result<keyring_core::Entry, KeyringError> {
+    let (k, v) = WINDOWS_PERSISTENCE;
+    keyring_core::Entry::new_with_modifiers(
+        service,
+        account,
+        &std::collections::HashMap::from([(k, v)]),
+    )
+}
+
 impl OsBackend {
+    #[cfg(not(windows))]
     fn entry(&self, account: &str) -> Result<keyring::Entry, KeyringError> {
         keyring::Entry::new(&self.service, account)
+    }
+
+    /// `keyring::Entry::new` sets up the default store (once) and reports a
+    /// failure to do so; the item itself is then made with `Local` persistence.
+    #[cfg(windows)]
+    fn entry(&self, account: &str) -> Result<keyring_core::Entry, KeyringError> {
+        keyring::Entry::new(&self.service, account)?;
+        local_entry(&self.service, account)
     }
 }
 
