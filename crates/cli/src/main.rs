@@ -16,6 +16,8 @@ use cmd::inspect::Failure;
 const EXIT_USAGE: u8 = 2;
 const EXIT_UNREADABLE: u8 = 3;
 const EXIT_IO: u8 = 1;
+/// `run` only: writing the result failed. 1 stays "an assertion failed".
+const EXIT_OUTPUT: u8 = 8;
 
 fn main() -> ExitCode {
     let stdout = io::stdout();
@@ -85,6 +87,30 @@ fn run<I: IntoIterator<Item = std::ffi::OsString>>(
             } else {
                 output::explain_text(out, &doc)
             }),
+            Err(f) => failure(err, f),
+        },
+        Action::Run {
+            collection,
+            request,
+            env,
+            keychain,
+            history,
+        } => match cmd::run::run(cmd::run::Args {
+            collection,
+            request,
+            env,
+            keychain,
+            history,
+        }) {
+            Ok(doc) => match if parsed.json {
+                output::json(out, &doc)
+            } else {
+                output::run_text(out, &doc)
+            } {
+                Ok(()) => doc.exit,
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => doc.exit,
+                Err(_) => EXIT_OUTPUT,
+            },
             Err(f) => failure(err, f),
         },
         Action::Inspect { collection, env } => {

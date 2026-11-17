@@ -2,7 +2,8 @@
 
 use std::io::{self, Write};
 
-use crate::dto::{Dto, ExplainDoc, InspectDoc, PartDoc, ValidateDoc};
+use crate::cmd;
+use crate::dto::{Dto, ExplainDoc, InspectDoc, PartDoc, ProblemDoc, RunDoc, ValidateDoc};
 
 pub fn json<T: Dto>(w: &mut dyn Write, doc: &T) -> io::Result<()> {
     let text = serde_json::to_string_pretty(doc).map_err(io::Error::other)?;
@@ -304,4 +305,66 @@ mod tests {
         );
         assert_eq!(display("plain é/x"), "plain é/x");
     }
+}
+
+pub fn run_text(w: &mut dyn Write, d: &RunDoc) -> io::Result<()> {
+    write!(w, "{} {}", d.method, display(&d.url))?;
+    if let Some(e) = &d.environment {
+        write!(w, "   env: {}", display(e))?;
+    }
+    writeln!(w)?;
+    if let Some(s) = d.status {
+        write!(w, "status {s}")?;
+        if !d.expected_status.is_empty() {
+            let list: Vec<String> = d.expected_status.iter().map(u16::to_string).collect();
+            write!(w, " (expected {})", list.join(","))?;
+        }
+        if let Some(t) = d.timing_ms.total {
+            write!(w, "   {t} ms")?;
+        }
+        if let Some(n) = d.size {
+            write!(w, "   {n} B")?;
+        }
+        writeln!(w)?;
+    }
+    if let Some(e) = &d.error {
+        writeln!(w, "error: {} ({})", e.kind, cmd::run::error_text(e.kind))?;
+    }
+    for p in &d.problems {
+        writeln!(w, "problem: {}", display(&problem_line(p)))?;
+    }
+    if !d.assertions.is_empty() {
+        let pass = d.assertions.iter().filter(|c| c.state == "pass").count();
+        write!(w, "checks {pass}/{}", d.assertions.len())?;
+        for c in d.assertions.iter().filter(|c| c.state != "pass") {
+            write!(w, ": {} \"{}\"", c.state, display(&c.label))?;
+            if let Some(r) = &c.reason {
+                write!(w, " ({})", display(r))?;
+            }
+        }
+        writeln!(w)?;
+    }
+    for x in &d.dynamic {
+        writeln!(w, "dynamic {} = {}", display(&x.name), display(&x.value))?;
+    }
+    writeln!(w, "delivery: {}", d.delivery)?;
+    writeln!(w, "history: {}", d.history)?;
+    writeln!(w, "result: {} (exit {})", d.result, d.exit)
+}
+
+fn problem_line(p: &ProblemDoc) -> String {
+    let mut s = p.kind.to_owned();
+    if let Some(n) = &p.name {
+        s.push(' ');
+        s.push_str(n);
+    }
+    if let Some(l) = &p.location {
+        s.push_str(" in ");
+        s.push_str(l);
+    }
+    if let Some(m) = &p.message {
+        s.push_str(": ");
+        s.push_str(m);
+    }
+    s
 }

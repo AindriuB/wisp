@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 wisp-core.workspace = true
 wisp-storage.workspace = true
+wisp-service.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
