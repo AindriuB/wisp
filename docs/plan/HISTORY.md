@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — CLI and guard documented (task 157)
+`docs/cli.md` now documents `wisp-cli` (`inspect`, `validate`, `explain`, exit codes, `--json` and the read-only contract). architecture.md lists the CLI as a fourth component, the enforced boundary check, the CLI and Windows size limits and the release contents; the README gains a CLI section, a guard paragraph, the per-archive Install notes and the Save-first prompts.
+**Cost:** Review round 1 caught two P2s: the README said the "Confirm before send" badge turns the guard on, but the badge shows only when the guard is on and clicking it turns it off (the palette command is the only way on); and the `explain` JSON parts are tagged by a `kind` key the doc omitted. Verified against code, not the spec, which is where both slips came from. Several P3s remain, mostly docs/cli.md describing the explain JSON and keychain behaviour less precisely than `crates/cli/src` does; read the code, not the doc, for the JSON shapes. The task's `scope` Check fails on macOS because BSD `wc` pads its count; use `test "$(... | wc -l)" -eq 0`.
+
 ## 2026-11-17 — Confirm before sending to a guarded environment (task 155)
 A per-user guard on each environment now asks "Send to {env}?" before a request goes out, from the Send button, the keyboard and the palette; a new palette command toggles the guard and a badge beside the context strip shows it. An environment marked `suggest_confirm` offers once per run to turn the guard on, using the spec's text "This environment suggests confirming sends. Enable?". The decisions are pure functions in `crates/app/src/guard.rs`.
 
