@@ -983,6 +983,9 @@ pub struct Workspace {
     auth_routes: HashMap<RequestId, WeakEntity<RequestTab>>,
     sent: HashMap<RequestId, Sent>,
     data_dir: Option<DataDir>,
+    /// Test hook: while `Some`, a recovery re-read's result waits here to be released.
+    #[cfg(test)]
+    held_recoveries: Option<Vec<Box<dyn FnOnce(&mut Workspace, &mut Context<Workspace>)>>>,
     jars: CookieJars,
     /// Persistence state per collection id, once its file was checked in this run.
     cookie_files: HashMap<String, CookieStatus>,
@@ -1261,6 +1264,8 @@ impl Workspace {
             auth_routes: HashMap::new(),
             sent: HashMap::new(),
             data_dir,
+            #[cfg(test)]
+            held_recoveries: None,
             jars,
             cookie_files: HashMap::new(),
             cookie_queue: VecDeque::new(),
@@ -2743,38 +2748,30 @@ impl Workspace {
                 // handling, notices) is left as it is.
                 cx.spawn(async move |this, cx| {
                     let r = task_root.clone();
-                    let state = cx
+                    let d = data.clone();
+                    let landed = cx
                         .background_executor()
-                        .spawn(async move { read_id_state(&r) })
+                        .spawn(async move {
+                            match read_id_state(&r) {
+                                IdState::Known(id) => match CollectionId::parse(&id) {
+                                    Some(id) => Ok(HistoryStore::open(&d, &id)),
+                                    None => Err("invalid collection id".to_string()),
+                                },
+                                IdState::Failed { reason, .. } => Err(reason),
+                                _ => Err("the collection id is not available".to_string()),
+                            }
+                        })
                         .await;
                     this.update(cx, |this, cx| {
-                        if this.coll_ix(&task_root).is_none() {
+                        let apply = move |this: &mut Workspace, cx: &mut Context<Workspace>| {
+                            this.recovery_landed(task_root, data, generation, landed, new, body, cx)
+                        };
+                        #[cfg(test)]
+                        if let Some(held) = this.held_recoveries.as_mut() {
+                            held.push(Box::new(apply));
                             return;
                         }
-                        match state {
-                            IdState::Known(id) => match CollectionId::parse(&id) {
-                                Some(id) => this.spawn_record(
-                                    task_root,
-                                    data,
-                                    RecordTo::Id(id),
-                                    generation,
-                                    new,
-                                    body,
-                                    cx,
-                                ),
-                                None => {
-                                    this.history_off(&task_root, "invalid collection id".into(), cx)
-                                }
-                            },
-                            IdState::Failed { reason, .. } => {
-                                this.history_off(&task_root, reason, cx)
-                            }
-                            _ => this.history_off(
-                                &task_root,
-                                "the collection id is not available".into(),
-                                cx,
-                            ),
-                        }
+                        apply(this, cx)
                     })
                     .ok();
                 })
@@ -2814,6 +2811,50 @@ impl Workspace {
                 });
             }
         }
+    }
+
+    /// A `Failed`-id re-read finished. The first re-read to land sets the collection's
+    /// store; one that lands later writes to it and drops its own.
+    #[allow(clippy::too_many_arguments)]
+    fn recovery_landed(
+        &mut self,
+        task_root: PathBuf,
+        data: DataDir,
+        generation: u64,
+        landed: Result<HistoryStore, String>,
+        new: NewEntry,
+        body: Option<Vec<u8>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(cix) = self.coll_ix(&task_root) else {
+            return;
+        };
+        let c = &mut self.collections[cix];
+        let store = match (&c.history, landed) {
+            (HistoryState::Ready(s), _) => s.clone(),
+            (HistoryState::Off(_), _) => return,
+            (HistoryState::Unresolved, Err(reason)) => {
+                if c.history_gen == generation {
+                    self.history_off(&task_root, reason, cx);
+                }
+                return;
+            }
+            (HistoryState::Unresolved, Ok(new_store)) => {
+                if c.history_gen == generation {
+                    c.history = HistoryState::Ready(new_store.clone());
+                }
+                new_store
+            }
+        };
+        self.spawn_record(
+            task_root,
+            data,
+            RecordTo::Store(store),
+            generation,
+            new,
+            body,
+            cx,
+        );
     }
 
     /// Append `new` under `id` on the background executor and apply the result.
@@ -5075,6 +5116,54 @@ mod env_wiring_tests {
         let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
         assert_eq!(job.list().unwrap().len(), 1);
         assert_eq!(store_of(&fx, OTHER_ID).list().unwrap().len(), 1);
+    }
+
+    #[gpui::test]
+    fn concurrent_recovery_appends_share_one_store(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let root = fx.root.clone();
+        let toml = std::fs::read_to_string(root.join("collection.toml")).unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"bad id\"\n",
+        )
+        .unwrap();
+        fx.ws.update(cx, |w, _| {
+            w.collections[0].coll_id = read_id_state(&root);
+            w.held_recoveries = Some(Vec::new());
+        });
+        // Append 1 re-reads A; its result is held. The id changes to B; append 2 re-reads B.
+        std::fs::write(root.join("collection.toml"), &toml).unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, test_entry(), None, cx));
+        cx.run_until_parked();
+        std::fs::write(
+            root.join("collection.toml"),
+            format!("format = 1\nid = \"{OTHER_ID}\"\n"),
+        )
+        .unwrap();
+        let r = root.clone();
+        fx.ws
+            .update(cx, |w, cx| w.append_history(r, test_entry(), None, cx));
+        cx.run_until_parked();
+        // Release in order: the first to land (A) sets the store, the second uses it.
+        let held = fx.ws.update(cx, |w, _| w.held_recoveries.take().unwrap());
+        assert_eq!(held.len(), 2);
+        for apply in held {
+            fx.ws.update(cx, |w, cx| apply(w, cx));
+            cx.run_until_parked();
+        }
+        let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
+        assert_eq!(job.list().unwrap().len(), 2);
+        assert_eq!(store_of(&fx, ID).list().unwrap().len(), 2);
+        let data = DataDir::at(fx._dir.path().join("data"));
+        assert!(
+            !data
+                .history_dir(&CollectionId::parse(OTHER_ID).unwrap())
+                .exists()
+        );
     }
 
     #[gpui::test]
