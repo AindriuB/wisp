@@ -41,3 +41,6 @@ the user.
 - Windows and Ubuntu hand tests (mac-first, Amendment 1).
 - Any size reduction or cut; investigating the CLI's growth since wave 1.
 - `docs/architecture.md#budgets` (task 157).
+
+## Outcome
+Verified PASS + APPROVE at 90a0669. Measure run 44045146818 and release dry run 44046922250 (draft `dryrun-44046922250`) both built d314c5f. Windows GUI is 15,533,568 B, under the 16,000,000 B gate and the 15,900,000 B soft line; CLI sizes are unchanged from wave 2. All three archives hold `wisp-cli`; Windows `wisp-cli.exe` is unsigned and the notes say so. Sizes, listings, signing state and the macOS checklist are in the PR body. Follow-ups: the macOS archive's `wisp-cli` is 1,425,616 B against measure's 1,415,600 B (+10,016 B, probably signature bytes; ties to 156 follow-up (a)); the `only-result` Check fails on macOS because BSD wc pads the count. The user deletes the dry-run draft.

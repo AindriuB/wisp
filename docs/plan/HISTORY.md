@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-17 — Wave 3 measured and release dry-run green (task 158)
+Measure run 44045146818 and a draft release dry run (44046922250) on d314c5f both pass. The Windows GUI is 15,533,568 B, 466,432 B under the 16,000,000 B gate and 366,432 B under the soft line; the CLI is unchanged at 1,415,600 / 1,631,232 / 1,966,744 B. Every archive holds `wisp-cli`, macOS is notarized, and the Windows `wisp-cli.exe` is unsigned with the notes saying so.
+**Cost:** The macOS archive's `wisp-cli` is 1,425,616 B against measure's 1,415,600 B (+10,016 B), probably signature bytes; not investigated. Archives are named `Wisp-0.2.0-*` because the 0.3.0 bump is not done. The task's `only-result` Check fails on macOS because BSD wc pads the count; use `test "$(... | wc -l)" -eq 0`. The dry-run draft stays for the user to delete.
+
 ## 2026-11-17 — CLI and guard documented (task 157)
 `docs/cli.md` now documents `wisp-cli` (`inspect`, `validate`, `explain`, exit codes, `--json` and the read-only contract). architecture.md lists the CLI as a fourth component, the enforced boundary check, the CLI and Windows size limits and the release contents; the README gains a CLI section, a guard paragraph, the per-archive Install notes and the Save-first prompts.
 **Cost:** Review round 1 caught two P2s: the README said the "Confirm before send" badge turns the guard on, but the badge shows only when the guard is on and clicking it turns it off (the palette command is the only way on); and the `explain` JSON parts are tagged by a `kind` key the doc omitted. Verified against code, not the spec, which is where both slips came from. Several P3s remain, mostly docs/cli.md describing the explain JSON and keychain behaviour less precisely than `crates/cli/src` does; read the code, not the doc, for the JSON shapes. The task's `scope` Check fails on macOS because BSD `wc` pads its count; use `test "$(... | wc -l)" -eq 0`.
