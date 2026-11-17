@@ -41,3 +41,16 @@ nothing. `resolve()` keeps its signature and behaviour (spec Feature 3).
 ## Out of scope
 - Using the sources in the service (160) or the URL bar (175); Explain (`report.rs`, task 162).
 - One value per send instead of per occurrence (user decision: per occurrence stays).
+
+## Attempt 1 — failed
+
+Verified HEAD: e9e4ae2b5c4150588fb6e0d82d268d84c9d03581. Tester: PASS. Reviewer: REQUEST CHANGES on AC5.
+- AC5 is unproven: `recording_lists_each_occurrence_in_order` (crates/core/src/resolve/engine.rs:809-814) compares only v[0] and v[1] with the URL. Nothing checks that v[2] equals the X-Id header value, or that v[3] and v[4] equal the two body uuids in order. The body is only matched as `PreparedBody::Bytes { .. }`.
+- A source that recorded the right names but handed the resolver different values, or recorded the body values before the header value, would pass.
+- Fix: assert that the X-Id header equals v[2].value and that the body bytes equal `format!("{} {}", v[3].value, v[4].value)`, or the fixture's exact body layout.
+
+## Wave verified — 9b555a738a06df3de2d95621342b64f1a908e896
+
+## Outcome
+
+Merged via record/159-dynamic-source at 9b555a738a06df3de2d95621342b64f1a908e896 after one failed attempt (Attempt 1: AC5 unproven, fixed in 9b555a7). Tester PASS (workspace suite exit 0, clippy and `cargo fmt --all --check` clean) and reviewer APPROVE. Commit c27526f does not compile; 9b555a7 fixes it. Follow-up: `lookup_var` still uses `Fresh` (PLAN.md).
