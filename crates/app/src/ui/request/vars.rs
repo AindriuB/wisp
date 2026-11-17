@@ -1,8 +1,8 @@
 //! Vars sub-tab: add, rename, edit and remove `Request.vars`.
 
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
-    Window, div,
+    AppContext as _, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
+    Subscription, Window, div,
 };
 use wisp_core::redact::is_credential_name;
 use wisp_core::request::{KeyValue, Var};
@@ -31,6 +31,24 @@ pub fn rows_to_vars(rows: &[KeyValue]) -> Vec<Var> {
         .collect()
 }
 
+/// Indexes of rows whose non-empty name repeats an earlier row's.
+pub fn duplicate_var_rows(vars: &[Var]) -> Vec<usize> {
+    let mut seen = std::collections::HashSet::new();
+    vars.iter()
+        .enumerate()
+        .filter(|(_, v)| !v.name.is_empty() && !seen.insert(v.name.as_str()))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn duplicate_notes(vars: &[Var]) -> Vec<Option<SharedString>> {
+    let mut notes = vec![None; vars.len()];
+    for i in duplicate_var_rows(vars) {
+        notes[i] = Some(SharedString::from("Duplicate name: cannot be saved"));
+    }
+    notes
+}
+
 pub struct VarsEditor {
     tab: Entity<RequestTab>,
     table: Entity<KvTable>,
@@ -39,7 +57,8 @@ pub struct VarsEditor {
 
 impl VarsEditor {
     pub fn new(tab: Entity<RequestTab>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let rows = vars_to_rows(&tab.read(cx).draft.vars);
+        let vars = tab.read(cx).draft.vars.clone();
+        let rows = vars_to_rows(&vars);
         let table = cx.new(|cx| {
             let mut t = KvTable::new(
                 rows,
@@ -53,6 +72,7 @@ impl VarsEditor {
                 cx,
             );
             t.set_row_mask(is_credential_name, window, cx);
+            t.set_annotations(duplicate_notes(&vars), cx);
             t
         });
         let subs = vec![
@@ -70,8 +90,11 @@ impl VarsEditor {
         let KvEvent::Changed(rows) = event;
         let vars = rows_to_vars(rows);
         if self.tab.read(cx).draft.vars != vars {
-            self.tab.update(cx, |t, cx| t.edit(|d| d.vars = vars, cx));
+            self.tab
+                .update(cx, |t, cx| t.edit(|d| d.vars = vars.clone(), cx));
         }
+        let notes = duplicate_notes(&vars);
+        self.table.update(cx, |t, cx| t.set_annotations(notes, cx));
     }
 
     fn on_tab(
@@ -87,6 +110,8 @@ impl VarsEditor {
                 let rows = vars_to_rows(&vars);
                 self.table.update(cx, |t, cx| t.set_rows(rows, window, cx));
             }
+            let notes = duplicate_notes(&vars);
+            self.table.update(cx, |t, cx| t.set_annotations(notes, cx));
         }
     }
 }
@@ -120,6 +145,21 @@ mod tests {
         let rows = vars_to_rows(&vars);
         assert!(rows.iter().all(|r| r.enabled));
         assert_eq!(rows_to_vars(&rows), vars);
+    }
+
+    #[test]
+    fn vars_duplicate_rows_flag_the_later_one() {
+        let v = |n: &str| Var {
+            name: n.into(),
+            value: String::new(),
+        };
+        assert_eq!(
+            duplicate_var_rows(&[v("k"), v("a"), v("k"), v("k")]),
+            [2, 3]
+        );
+        assert!(duplicate_var_rows(&[v(""), v("")]).is_empty());
+        assert_eq!(duplicate_notes(&[v("k"), v("k")])[0], None);
+        assert!(duplicate_notes(&[v("k"), v("k")])[1].is_some());
     }
 
     #[test]
