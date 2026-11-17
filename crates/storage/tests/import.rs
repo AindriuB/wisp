@@ -946,3 +946,34 @@ fn h4_openapi_operation_descriptions_are_imported() {
             .any(|l| l.starts_with("description") && l.contains("SUMMARYONLY"))
     );
 }
+
+fn first_request_description(r: &ImportResult) -> &str {
+    match &r.items[0] {
+        wisp_storage::import::ImportItem::Request { request, .. } => &request.description,
+        other => panic!("expected a request, got {other:?}"),
+    }
+}
+
+#[test]
+fn h4_long_descriptions_import_whole() {
+    let long = "é".repeat(10 * 1024); // 20 KiB
+    assert_eq!(long.len(), 20 * 1024);
+    let pm = postman::parse(
+        format!(
+            r#"{{"info":{{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}},
+            "item":[{{"name":"A","request":{{"method":"GET","url":"https://e.test/","description":"{long}"}}}}]}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(first_request_description(&pm), long);
+    let oa = openapi::parse(
+        format!(
+            r#"{{"openapi":"3.0.0","info":{{"title":"t","version":"1"}},
+            "servers":[{{"url":"https://e.test"}}],"paths":{{"/p":{{"get":{{"description":"{long}","responses":{{"200":{{"description":"ok"}}}}}}}}}}}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(first_request_description(&oa), long);
+}
