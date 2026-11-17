@@ -18,6 +18,10 @@ than no plan.
 **In flight:** 01, 02
 -->
 
+### v0.4.0 (spec agreed)
+
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Next step is `/plan` from the spec's Waves section.
+
 ### v0.3.0 (released 2026-11-17)
 Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendments 1 and 2; roadmap: `docs/plan/roadmap.md`.
 - **Waves 0 to 2 and tasks 147 and 148 are recorded (PRs #78-#110):** detail in `docs/plan/archive/2026-11-16-closed-sections.md`, `docs/plan/archive/2026-11-17-closed-sections.md` and HISTORY. Open follow-ups are under the "Follow-ups from ..." sections below.
