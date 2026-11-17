@@ -1861,3 +1861,46 @@ fn a_userinfo_discovery_cutoff_hides_unclassified_listed_values() {
     );
     assert!(work <= 3 * max, "work {work}");
 }
+
+#[test]
+fn description_is_capped_at_1000_chars_with_ellipsis() {
+    let mut r = req("x");
+    r.description = "a".repeat(1_500);
+    r.expected_status = vec![200, 204];
+    let rep = Fx::new(r).report();
+    let t = text(&rep.description);
+    assert_eq!(t.chars().count(), 1_001);
+    assert!(t.ends_with('…'));
+    assert_eq!(rep.expected_status, vec![200, 204]);
+}
+
+#[test]
+fn description_is_never_expanded_and_leaks_no_secret() {
+    let mut r = req("x");
+    r.description = "use {{token}} here".into();
+    let mut fx = Fx::new(r);
+    fx.env = Some(Environment {
+        name: "e".into(),
+        secrets: vec![var("token", "s3cret")],
+        ..Environment::default()
+    });
+    let rep = fx.report();
+    assert_eq!(text(&rep.description), "use {{token}} here");
+    assert!(!format!("{rep:?}").contains("s3cret"));
+}
+
+#[test]
+fn description_and_expected_status_survive_a_request_serde_round_trip() {
+    let mut r = req("x");
+    r.description = "d".into();
+    r.expected_status = vec![201];
+    let back: Request = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+    assert_eq!(back.description, "d");
+    assert_eq!(back.expected_status, vec![201]);
+    let mut v = serde_json::to_value(&r).unwrap();
+    let o = v.as_object_mut().unwrap();
+    o.remove("description");
+    o.remove("expected_status");
+    let old: Request = serde_json::from_value(v).unwrap();
+    assert!(old.description.is_empty() && old.expected_status.is_empty());
+}
