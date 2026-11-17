@@ -16,8 +16,8 @@ use crate::body::{BodyHandle, BodyStore, DEFAULT_MEMORY_LIMIT};
 use crate::client::{ClientCache, HTTP1_MAX_RESPONSE_HEADERS};
 use crate::cookies::CookieJars;
 use crate::model::{
-    ClientSettings, Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method,
-    PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
+    Command, EngineError, ErrorKind, Event, Header, HttpVersion, Method, PreparedBody,
+    PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
 };
 use crate::timing::Timings;
 
@@ -247,6 +247,7 @@ impl Engine {
                 let timeout = req.timeout.or(self.inner.default_timeout);
                 let fut = async move {
                     let start = Instant::now();
+                    let state = SendState::default();
                     let _ = events
                         .send(Event::Started {
                             id,
@@ -254,7 +255,7 @@ impl Engine {
                         })
                         .await;
                     let terminal = tokio::select! {
-                        r = perform(id, &clients, &oauth, &bodies, &events, req, timeout, start) => {
+                        r = perform(id, &clients, &oauth, &bodies, &events, req, timeout, start, &state) => {
                             Some(match r {
                                 Ok((size, body, timings)) => Event::Completed {
                                     id,
@@ -263,7 +264,11 @@ impl Engine {
                                     body,
                                     timings,
                                 },
-                                Err(error) => Event::Failed { id, error },
+                                Err(error) => Event::Failed {
+                                    id,
+                                    error,
+                                    nothing_sent: state.nothing_sent(),
+                                },
                             })
                         }
                         _ = crx => None,
@@ -681,6 +686,36 @@ async fn payload_hash(pending: &Pending, service: &str) -> Result<String, Engine
     }
 }
 
+/// What the `Command::Send` task knows about the wire: set just before each request send and
+/// read after the `select!`, so it survives a cancel.
+#[derive(Default)]
+struct SendState {
+    started: std::sync::atomic::AtomicU32,
+    connect_failed: std::sync::atomic::AtomicBool,
+}
+
+impl SendState {
+    fn before_send(&self) {
+        self.started.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn send_failed(&self, e: &reqwest::Error) {
+        if e.is_connect() {
+            self.connect_failed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// No send started, or exactly one started and it failed to connect (no response head).
+    /// Error text plays no part.
+    fn nothing_sent(&self) -> bool {
+        match self.started.load(Ordering::SeqCst) {
+            0 => true,
+            1 => self.connect_failed.load(Ordering::SeqCst),
+            _ => false,
+        }
+    }
+}
+
 /// Runs one request, emitting `Headers` and `Progress`; returns the size and body.
 #[allow(clippy::too_many_arguments)]
 async fn perform(
@@ -692,6 +727,7 @@ async fn perform(
     req: PreparedRequest,
     timeout: Option<Duration>,
     start: Instant,
+    state: &SendState,
 ) -> Result<(u64, BodyHandle, Timings), EngineError> {
     let url =
         reqwest::Url::parse(&req.url).map_err(|e| err(ErrorKind::InvalidUrl, e.to_string()))?;
@@ -711,26 +747,10 @@ async fn perform(
             "Digest auth needs a replayable body; File bodies cannot be resent",
         ));
     }
-    // The engine follows redirects itself for engine-applied auth (reqwest would carry the
-    // x-amz-* headers across origins and could not sign again), so reqwest's following is off.
-    // A user Cookie header gets the same treatment: reqwest would keep the header merged for
-    // the first hop, so a cookie set by a redirect would not reach the next hop.
-    let has_user_cookie = req
-        .headers
-        .iter()
-        .any(|h| h.name.eq_ignore_ascii_case("cookie"));
-    // Likewise any user header outside CROSS_ORIGIN_HEADERS: reqwest would keep it across origins.
-    let has_unlisted_header = req.headers.iter().any(|h| !cross_origin_keeps(&h.name));
-    let own_redirects = req.client.follow_redirects
-        && (req.auth.is_some() || has_user_cookie || has_unlisted_header);
-    let client = if own_redirects {
-        clients.get(&ClientSettings {
-            follow_redirects: false,
-            ..req.client.clone()
-        })?
-    } else {
-        clients.get(&req.client)?
-    };
+    // The engine follows every redirect itself (reqwest's policy is always `none`), so each
+    // hop goes through the one request send below, the counting point for `nothing_sent`.
+    let own_redirects = req.client.follow_redirects;
+    let client = clients.get(&req.client)?;
     // The bearer token of OAuth2 auth, fetched or refreshed before the first byte is sent.
     let bearer: Option<(TokenKey, String)> = match &req.auth {
         Some(
@@ -906,11 +926,15 @@ async fn perform(
             rb = rb.timeout(left);
         }
         let token = clients.timings().new_token();
+        state.before_send();
         let resp = clients
             .timings()
             .scope(token, rb.send())
             .await
-            .map_err(|e| classify(&e, false))?;
+            .map_err(|e| {
+                state.send_failed(&e);
+                classify(&e, false)
+            })?;
         let hop = clients.timings().claim(token, &resp);
         if timings == Timings::default() {
             timings = hop;

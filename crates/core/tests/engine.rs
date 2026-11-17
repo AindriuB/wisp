@@ -512,6 +512,7 @@ fn commands_and_events_round_trip_through_serde_json() {
                 kind: ErrorKind::Tls,
                 message: "m".into(),
             },
+            nothing_sent: false,
         },
         Event::Cancelled { id },
     ];
@@ -1280,4 +1281,293 @@ async fn a_cross_origin_redirect_sends_no_referer() {
         assert_eq!(got.len(), 1, "own={own}");
         assert!(!got[0].headers.contains_key("referer"), "own={own}");
     }
+}
+
+// ---- delivery contract: `nothing_sent`, engine-followed redirects, no reqwest retries ----
+
+fn post(url: String) -> PreparedRequest {
+    let mut r = get(url);
+    r.method = Method::Post;
+    r.body = PreparedBody::Bytes(b"payload".to_vec());
+    r
+}
+
+/// A port nothing listens on.
+fn closed_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+async fn failed_with(req: PreparedRequest) -> (ErrorKind, bool, Vec<Event>) {
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(req));
+    let evs = collect_until_terminal(&rx).await;
+    match evs.last().unwrap() {
+        Event::Failed {
+            error,
+            nothing_sent,
+            ..
+        } => (error.kind, *nothing_sent, evs.clone()),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn nothing_sent_round_trips_and_defaults_to_false_when_missing() {
+    let id = RequestId(1);
+    round_trip(Event::Failed {
+        id,
+        error: EngineError {
+            kind: ErrorKind::Other,
+            message: "m".into(),
+        },
+        nothing_sent: true,
+    });
+    let json = serde_json::to_string(&Event::Failed {
+        id,
+        error: EngineError {
+            kind: ErrorKind::Other,
+            message: "m".into(),
+        },
+        nothing_sent: true,
+    })
+    .unwrap();
+    let old = json.replace(",\"nothing_sent\":true", "");
+    assert_ne!(old, json);
+    match serde_json::from_str::<Event>(&old).unwrap() {
+        Event::Failed { nothing_sent, .. } => assert!(!nothing_sent),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn nothing_sent_is_true_for_a_post_to_a_closed_port() {
+    let (_, nothing_sent, _) =
+        failed_with(post(format!("http://127.0.0.1:{}/", closed_port()))).await;
+    assert!(nothing_sent);
+}
+
+#[tokio::test]
+async fn nothing_sent_is_false_for_a_post_307_to_a_closed_port() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("location", format!("http://127.0.0.1:{}/", closed_port())),
+        )
+        .mount(&server)
+        .await;
+    let (_, nothing_sent, _) = failed_with(post(server.uri())).await;
+    assert!(!nothing_sent);
+}
+
+#[tokio::test]
+async fn nothing_sent_is_false_for_a_post_303_to_a_closed_port() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(303)
+                .insert_header("location", format!("http://127.0.0.1:{}/", closed_port())),
+        )
+        .mount(&server)
+        .await;
+    let (_, nothing_sent, _) = failed_with(post(server.uri())).await;
+    assert!(!nothing_sent);
+}
+
+/// Reads one request (head and `Content-Length` body) from a blocking stream.
+fn read_request(s: &mut std::net::TcpStream) {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let n = s.read(&mut chunk).unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let text = String::from_utf8_lossy(&buf).to_lowercase();
+        if let Some(end) = text.find("\r\n\r\n") {
+            let len = text
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buf.len() >= end + 4 + len {
+                return;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn nothing_sent_is_false_when_a_digest_retry_is_refused() {
+    use std::io::Write;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap();
+        read_request(&mut s);
+        s.write_all(
+            b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"r\", nonce=\"n\", qop=\"auth\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+        drop(s);
+        drop(l);
+    });
+    let mut req = post(format!("http://127.0.0.1:{port}/"));
+    req.auth = Some(wisp_core::auth::EngineAuth::Digest {
+        username: "u".into(),
+        password: "p".into(),
+    });
+    let (_, nothing_sent, _) = failed_with(req).await;
+    assert!(!nothing_sent);
+}
+
+#[tokio::test]
+async fn nothing_sent_is_false_when_the_server_resets_tls_after_reading_the_request() {
+    use std::io::Read;
+    use std::sync::Arc;
+    let ck =
+        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        ck.signing_key.serialize_der(),
+    ));
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![ck.cert.der().clone()], key)
+    .unwrap();
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (tcp, _) = l.accept().unwrap();
+        let conn = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        let mut s = rustls::StreamOwned::new(conn, tcp);
+        let mut buf = [0u8; 4096];
+        let _ = s.read(&mut buf);
+        // Dropped without a close_notify: the client sees the connection die mid-request.
+    });
+    let mut req = post(format!("https://127.0.0.1:{port}/"));
+    req.client.verify_tls = false;
+    let (_, nothing_sent, _) = failed_with(req).await;
+    assert!(!nothing_sent);
+}
+
+#[tokio::test]
+async fn nothing_sent_is_true_for_an_unreachable_oauth2_token_endpoint() {
+    let mut req = get(format!("http://127.0.0.1:{}/", closed_port()));
+    req.auth = Some(wisp_core::auth::EngineAuth::OAuth2ClientCredentials {
+        token_url: format!("http://127.0.0.1:{}/token", closed_port()),
+        client_id: "cid".into(),
+        client_secret: "s".into(),
+        scope: String::new(),
+        client_auth: wisp_core::request::ClientAuth::Basic,
+    });
+    let (kind, nothing_sent, _) = failed_with(req).await;
+    assert_eq!(kind, ErrorKind::Auth);
+    assert!(nothing_sent);
+}
+
+#[tokio::test]
+async fn nothing_sent_is_true_for_an_unreadable_body_file() {
+    let mut req = post(format!("http://127.0.0.1:{}/", closed_port()));
+    req.body = PreparedBody::File("/definitely/missing.bin".into());
+    let (kind, nothing_sent, _) = failed_with(req).await;
+    assert_eq!(kind, ErrorKind::BodyFile);
+    assert!(nothing_sent);
+}
+
+#[tokio::test]
+async fn nothing_sent_h2_refused_stream_is_one_stream_and_a_failure_not_a_retry() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let ck =
+        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        ck.signing_key.serialize_der(),
+    ));
+    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![ck.cert.der().clone()], key)
+    .unwrap();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let streams = Arc::new(AtomicU32::new(0));
+    let counter = streams.clone();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let Ok(mut conn) = h2::server::handshake(tls).await else {
+                    return;
+                };
+                while let Some(Ok((_req, mut respond))) = conn.accept().await {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    respond.send_reset(h2::Reason::REFUSED_STREAM);
+                }
+            });
+        }
+    });
+    let mut req = post(format!("https://127.0.0.1:{port}/"));
+    req.client.verify_tls = false;
+    let (_, nothing_sent, _) = failed_with(req).await;
+    assert_eq!(streams.load(Ordering::SeqCst), 1);
+    assert!(!nothing_sent);
+}
+
+#[tokio::test]
+async fn redirect_without_auth_or_cookie_is_followed_by_the_engine_hop_by_hop() {
+    let server = MockServer::start().await;
+    for (from, to) in [("/a", "/b"), ("/b", "/c")] {
+        Mock::given(path(from))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", to))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(path("/c"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let (engine, rx) = Engine::start(EngineConfig::default());
+    engine.submit(Command::Send(get(format!("{}/a", server.uri()))));
+    let evs = collect_until_terminal(&rx).await;
+    assert!(
+        matches!(evs.last(), Some(Event::Completed { .. })),
+        "{evs:?}"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn redirect_loop_fails_on_the_tenth_redirect_with_the_too_many_redirects_error() {
+    let server = MockServer::start().await;
+    Mock::given(path("/loop"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/loop"))
+        .mount(&server)
+        .await;
+    let (_, _, evs) = failed_with(get(format!("{}/loop", server.uri()))).await;
+    match evs.last().unwrap() {
+        Event::Failed { error, .. } => {
+            assert!(error.message.contains("too many redirects"), "{error:?}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), 10);
 }
