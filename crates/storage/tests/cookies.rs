@@ -404,3 +404,23 @@ fn disable_blocks_on_the_advisory_file_lock() {
     assert!(!p.exists());
     assert!(!f.is_enabled());
 }
+
+#[test]
+fn parse_error_carries_no_file_content() {
+    let (t, _d, f) = setup();
+    f.enable().unwrap();
+    std::fs::write(
+        path(&t),
+        "{\n  \"version\": 1,\n  \"cookies\": [{\"name\": \"n\", \"value\": \"v\", \"domain\": \"d\", \"expires\": \"CANARY_COOKIE\"}]\n}",
+    )
+    .unwrap();
+    let e = f.load(now()).unwrap_err();
+    let shown = format!("{e} | {e:?}");
+    assert!(!shown.contains("CANARY_COOKIE"), "{shown}");
+    assert!(!shown.contains("invalid type"), "{shown}");
+    assert!(!shown.contains('`') && !shown.contains("\\\""), "{shown}");
+    assert!(
+        shown.contains("cookie file is not valid JSON (line 3, column"),
+        "{shown}"
+    );
+}

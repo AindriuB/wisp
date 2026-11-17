@@ -21,6 +21,8 @@ no row is one `planner` cannot find, and will re-plan.
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
 | 2026-11-17 | 164 | engine reports nothing_sent, follows all redirects itself, reqwest retries disabled | ## 2026-11-17 — Engine delivery contract (task 164) |
+| 2026-11-17 | 162 | description and expected_status on requests, stored and shown in the resolution report | ## 2026-11-17 — Request metadata (task 162) |
+| 2026-11-17 | 163 | Collection id/defaults serialised, private dir hardened, cookie parse error redacted | ## 2026-11-17 — Storage hardening A (task 163) |
 | 2026-11-17 | 0.3.0 release | PR #118 bump, runbook, notes; tag v0.3.0 at ffdccc1 published; macOS notarized, winget manifest built | ## 2026-11-17 — Release 0.3.0 |
 | 2026-11-17 | 158 | wave-3 size (Windows GUI 15,533,568 B, CLI unchanged) and release dry run green; wisp-cli in all three archives | ## 2026-11-17 — Wave 3 measured and release dry-run green (task 158) |
 | 2026-11-17 | 157 | docs/cli.md added; architecture drift fixed; README CLI section, guard paragraph, Install notes | ## 2026-11-17 — CLI and guard documented (task 157) |

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 use wisp_core::Method;
 use wisp_core::assert::{Assertion, Expected};
 use wisp_core::request::{Auth, Body, Part, PartValue, Request, RequestSettings, TextBody};
@@ -115,7 +115,57 @@ fn request_from_doc(path: &Path, doc: &Table) -> Result<Request, StorageError> {
         vars: codec::read_vars(doc, "vars", path)?,
         settings: read_settings(doc, path)?,
         assertions: codec::read_assertions(doc),
+        description: codec::read_opt_str(doc, "description", path)?.unwrap_or_default(),
+        expected_status: read_expected_status(doc, path)?,
     })
+}
+
+fn read_expected_status(doc: &Table, path: &Path) -> Result<Vec<u16>, StorageError> {
+    let bad = || {
+        invalid(
+            path,
+            "expected_status",
+            "expected a status 100-599 or an array of 1 to 16 of them",
+        )
+    };
+    let status = |v: &Value| -> Result<u16, StorageError> {
+        v.as_integer()
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| (100..=599).contains(n))
+            .ok_or_else(bad)
+    };
+    let Some(item) = doc.get("expected_status") else {
+        return Ok(Vec::new());
+    };
+    let value = item.as_value().ok_or_else(bad)?;
+    if let Some(arr) = value.as_array() {
+        if arr.is_empty() || arr.len() > 16 {
+            return Err(bad());
+        }
+        return arr.iter().map(status).collect();
+    }
+    Ok(vec![status(value)?])
+}
+
+fn write_expected_status(doc: &mut Table, statuses: &[u16]) {
+    if statuses.is_empty() {
+        // No valid empty value exists: drop the key rather than write `[]`.
+        doc.remove("expected_status");
+        return;
+    }
+    let new: Value = match statuses {
+        [one] => Value::from(i64::from(*one)),
+        many => many.iter().map(|n| i64::from(*n)).collect::<Array>().into(),
+    };
+    // Unchanged content keeps the author's own spelling and layout.
+    if read_expected_status(doc, Path::new("")).ok().as_deref() == Some(statuses) {
+        return;
+    }
+    if doc.get("expected_status").is_some() {
+        replace_value(doc, "expected_status", new);
+    } else {
+        doc.insert("expected_status", Item::Value(new));
+    }
 }
 
 fn read_settings(doc: &Table, path: &Path) -> Result<RequestSettings, StorageError> {
@@ -363,6 +413,8 @@ pub fn requests_equal(left: &Request, right: &Request) -> bool {
         vars,
         settings,
         assertions,
+        description,
+        expected_status,
     } = left;
     name == &right.name
         && method == &right.method
@@ -375,6 +427,8 @@ pub fn requests_equal(left: &Request, right: &Request) -> bool {
         && vars == &right.vars
         && settings == &right.settings
         && assertions_equal(assertions, &right.assertions)
+        && description == &right.description
+        && expected_status == &right.expected_status
 }
 
 /// Assertion equality for authoring state: two NaNs represent the same TOML literal.
@@ -594,6 +648,10 @@ fn write_request(path: &Path, request: &Request, mut doc: DocumentMut) -> Result
     }
     write_body(&mut doc, &request.body, dir, path)?;
     write_settings(&mut doc, &request.settings);
+    if !request.description.is_empty() || doc.get("description").is_some() {
+        codec::write_str(&mut doc, "description", &request.description);
+    }
+    write_expected_status(&mut doc, &request.expected_status);
     codec::write_assertions(&mut doc, &request.assertions, path)?;
 
     fs::atomic_write(path, doc.to_string().as_bytes())

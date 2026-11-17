@@ -173,8 +173,32 @@ pub fn load_collection_defaults(root: &Path) -> Result<CollectionDefaults, Stora
     })
 }
 
+/// Hold the in-process lock for `root` (keyed by its canonical path) while a
+/// read-modify-write of `collection.toml` runs. Not a cross-process lock.
+fn with_root_lock<T>(root: &Path, f: impl FnOnce() -> T) -> T {
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let key = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let lock = {
+        let mut map = LOCKS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Arc::clone(map.entry(key).or_default())
+    };
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
 /// Save `collection.toml`, editing in place. A new file gets `format = 1`.
 pub fn save_collection_defaults(
+    root: &Path,
+    defaults: &CollectionDefaults,
+) -> Result<(), StorageError> {
+    with_root_lock(root, || save_collection_defaults_locked(root, defaults))
+}
+
+fn save_collection_defaults_locked(
     root: &Path,
     defaults: &CollectionDefaults,
 ) -> Result<(), StorageError> {
@@ -246,6 +270,10 @@ pub fn read_collection_id(root: &Path) -> Result<Option<CollectionId>, StorageEr
 
 /// Return the collection's ID, writing a new one into `collection.toml` if it has none.
 pub fn ensure_collection_id(root: &Path) -> Result<CollectionId, StorageError> {
+    with_root_lock(root, || ensure_collection_id_locked(root))
+}
+
+fn ensure_collection_id_locked(root: &Path) -> Result<CollectionId, StorageError> {
     let path = root.join(COLLECTION_FILE);
     fs::confined_regular_file(root, &path, "collection.toml")?;
     let mut doc = read_doc(&path)?.unwrap_or_else(|| {

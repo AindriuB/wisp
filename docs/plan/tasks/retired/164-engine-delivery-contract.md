@@ -1,7 +1,7 @@
 # 164 — Engine delivery contract: nothing_sent, engine-followed redirects, no reqwest retries (1E, E4 core)
 
 **Repo:** .
-**Round:** 0
+**Round:** 2
 **Depends on:** none
 **Owns:**
 - crates/core/src/engine.rs
@@ -68,4 +68,13 @@ AC7 (the PR body answers the spec GUESSes) is met by the record PR body. The rev
 
 ## Outcome
 
-Merged via record/164-engine-delivery-contract at de286340228f51055c77fb8ce4802f2e24cf8532 after one review round (the P2 above, fixed in de28634). Tester PASS: suite 1371 passed, 0 failed, 4 skipped; delivery-core 10 passed; exactly one `.send()` in `engine.rs`. Reviewer passed AC1-AC6 and AC8; AC7 is answered in the record PR body. Follow-ups are in PLAN.md.
+Merged via record/164-engine-delivery-contract at fb6135c749bd3fe1311b1cca5c21450bd95d7ce6 after two review rounds (the P2 above, fixed in de28634; the external-review P2 below, fixed at fb6135c). Tester PASS: suite 1371 passed, 0 failed, 4 skipped; delivery-core 10 passed; exactly one `.send()` in `engine.rs`. Reviewer passed AC1-AC6 and AC8; AC7 is answered in the record PR body. Follow-ups are in PLAN.md.
+
+## External review — round 2 (PR #125, head 182c0d2)
+
+- [P2] crates/core/src/engine.rs:752 — now that every redirect goes through the engine, a HEAD request with a body keeps that body and its payload headers after a 303. reqwest used to clear them.
+  - Fix: on every 303, clear the body and the content-* headers, and keep HEAD as HEAD. This matches reqwest's rules, which the spec (E4) says the engine applies.
+  - Failing input: a HEAD request with a Bytes body and `Content-Type: text/plain` gets a 303, and the engine resends both the body and Content-Type to the redirect target.
+  - Add a test: a HEAD with a body gets a 303; the second request is HEAD, has no body, and has no Content-Type or Content-Length.
+
+Fixed at fb6135c; re-verified PASS/APPROVE (suite 1372 passed, 0 failed, 4 skipped).

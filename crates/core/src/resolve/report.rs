@@ -301,6 +301,8 @@ pub enum ReportWarning {
 /// The explanation of one request. Not serializable on purpose.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolutionReport {
+    pub description: Shown,
+    pub expected_status: Vec<u16>,
     pub environment: Option<EnvReport>,
     pub method: Method,
     pub url: Shown,
@@ -401,6 +403,8 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         (w.problems, w.warnings)
     };
     let report = ResolutionReport {
+        description: description_shown(&req.description),
+        expected_status: req.expected_status.clone(),
         environment: scope.environment.map(|e| EnvReport {
             name: e.name.clone(),
             secrets: e
@@ -424,6 +428,21 @@ pub(super) fn explain_counted(req: &Request, scope: &Scope) -> (ResolutionReport
         warnings,
     };
     (report, work)
+}
+
+/// Longest description the report carries, in characters.
+const DESCRIPTION_CAP: usize = 1_000;
+
+/// The description as literal text: never expanded, so a `{{var}}` stays as typed.
+fn description_shown(text: &str) -> Shown {
+    if text.is_empty() {
+        return Shown::default();
+    }
+    let mut out: String = text.chars().take(DESCRIPTION_CAP).collect();
+    if text.chars().nth(DESCRIPTION_CAP).is_some() {
+        out.push('…');
+    }
+    Shown(vec![ShownPart::Text(out)])
 }
 
 /// Stands in for problem text that may have come from a hidden variable's value.
