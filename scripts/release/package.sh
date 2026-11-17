@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# package.sh <platform> <binary> <outdir>
+# package.sh <platform> <binary> <outdir> [<cli-binary>]
 #   platform: macos-arm64 | windows-x64 | linux-x64
+# The optional cli-binary (wisp-cli) is shipped beside the GUI binary.
 # Writes the release archive for one platform into <outdir> and prints its name.
 # Run from the repository root (LICENSE, NOTICE, THIRD-PARTY-NOTICES live there).
 # The version is the wisp-app version from `cargo metadata`.
 set -euo pipefail
 unset CDPATH
 
-platform="${1:-}"; bin="${2:-}"; out="${3:-}"
+platform="${1:-}"; bin="${2:-}"; out="${3:-}"; cli="${4:-}"
 [ -n "$platform" ] && [ -n "$bin" ] && [ -n "$out" ] || {
-  echo "usage: package.sh <macos-arm64|windows-x64|linux-x64> <binary> <outdir>" >&2; exit 2; }
+  echo "usage: package.sh <macos-arm64|windows-x64|linux-x64> <binary> <outdir> [<cli-binary>]" >&2; exit 2; }
 [ -f "$bin" ] || { echo "no such binary: $bin" >&2; exit 2; }
+[ -z "$cli" ] || [ -f "$cli" ] || { echo "no such binary: $cli" >&2; exit 2; }
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 bin="$(cd "$(dirname "$bin")" && pwd)/$(basename "$bin")"
+[ -z "$cli" ] || cli="$(cd "$(dirname "$cli")" && pwd)/$(basename "$cli")"
 mkdir -p "$out"; out="$(cd "$out" && pwd)"
 
 version="$(cd "$root" && cargo metadata --format-version 1 --no-deps --locked \
@@ -33,6 +36,7 @@ case "$platform" in
     app="$dir/Wisp.app/Contents"
     mkdir -p "$app/MacOS"
     cp "$bin" "$app/MacOS/wisp"; chmod 0755 "$app/MacOS/wisp"
+    if [ -n "$cli" ]; then cp "$cli" "$app/MacOS/wisp-cli"; chmod 0755 "$app/MacOS/wisp-cli"; fi
     # The binary's own minimum OS, from its load commands.
     minos="$(otool -l "$bin" | awk '
       $1=="cmd" && $2=="LC_BUILD_VERSION" {b=1; next}
@@ -69,11 +73,13 @@ case "$platform" in
     ;;
   windows-x64)
     cp "$bin" "$dir/wisp.exe"
+    if [ -n "$cli" ]; then cp "$cli" "$dir/wisp-cli.exe"; fi
     asset="$name.zip"; rm -f "$out/$asset"
     (cd "$stage" && 7z a -tzip -bd "$out/$asset" "$name" >/dev/null)
     ;;
   linux-x64)
     cp "$bin" "$dir/wisp"; chmod 0755 "$dir/wisp"
+    if [ -n "$cli" ]; then cp "$cli" "$dir/wisp-cli"; chmod 0755 "$dir/wisp-cli"; fi
     mkdir -p "$dir/icons"
     for z in 48 64 128 256 512; do cp "$root/assets/icon/png/wisp-$z.png" "$dir/icons/wisp-$z.png"; done
     # Copying share/ into ~/.local/share installs the launcher and its icons.
