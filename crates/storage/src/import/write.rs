@@ -40,6 +40,7 @@ pub fn write(
     secrets_env: &str,
 ) -> Result<WriteReport, ImportError> {
     let tree = open_collection(root)?;
+    check_folder_rel(root, folder_rel)?;
     let mut report = WriteReport::default();
 
     let mut existing: &[Node] = &tree.nodes;
@@ -93,6 +94,10 @@ pub fn write(
         if base.is_empty() {
             base = "imported".into();
         }
+        // A reserved device name (`con`, `nul`, ...) cannot be a file stem.
+        if crate::fs::is_reserved_device_name(&base) {
+            base = format!("{base}-env");
+        }
         let mut name = base.clone();
         if env_taken.contains(&name.to_ascii_lowercase()) {
             let n = env_next.entry(base.to_ascii_lowercase()).or_insert(2);
@@ -121,6 +126,26 @@ pub fn write(
 
     write_items(root, folder_rel, &result.items, &mut taken, &mut report)?;
     Ok(report)
+}
+
+/// `folder_rel` must be plain components naming an existing folder inside the
+/// collection; checked before the first file is written.
+fn check_folder_rel(root: &Path, folder_rel: &Path) -> Result<(), ImportError> {
+    let bad =
+        |why: &str| ImportError::Parse(format!("import folder `{}` {why}", folder_rel.display()));
+    if !folder_rel
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(bad("is not a relative path inside the collection"));
+    }
+    let rootc = root.canonicalize().map_err(|_| bad("cannot be resolved"))?;
+    let abs = rootc.join(folder_rel);
+    let c = abs.canonicalize().map_err(|_| bad("does not exist"))?;
+    if !c.starts_with(&rootc) || !c.is_dir() {
+        return Err(bad("is not a folder inside the collection"));
+    }
+    Ok(())
 }
 
 fn node_name(n: &Node) -> String {
