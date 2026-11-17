@@ -24,10 +24,13 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 
 ### Follow-ups from task 161 (service outcome and history; not scheduled)
 - NOTE (for 166, which is planned from this API): `crates/service/src/history.rs:23-48` `record` never builds `RecordError::Open`, because `HistoryStore::open` cannot fail, so the GUI's `Open` arm at `crates/app/src/workspace.rs:2752` is unreachable.
-- NOTE, possible regression: `crates/app/src/workspace.rs:2710` with `IdState::Failed`, append turns history off for the session; the old path re-resolved the id on every append, so a transient failure could recover.
 - NOTE: no test drives the `on_event` path that turns `nothing_sent` and `headers_seen` into the entry's `delivery` (AC7); the AC6 test calls `append_history` directly.
 - NOTE: AC8's test exercises `with_data_dir`, not `Workspace::new`; removing the `cfg(test)` arm in `new` fails no test.
 - NOTE: the AC1 golden's doc comment (`crates/service/src/outcome.rs:278`) says "What the app built", but `delivery: "responded"` is new in 0.4.0.
+- NOTE: `crates/app/src/workspace.rs:2697-2730` the history-only re-read skips `plan_clash`; if the repaired id equals another open collection's id, this collection's entries go into that collection's history store.
+- NOTE: after recovery `HistoryState::Ready` keeps the first store (`workspace.rs:2782-2784`); editing `collection.toml` again to another valid id sends later entries to the new id's store while the list shows the first.
+- NOTE: the AC14 test's jar check reads `jar(Some(ID))`, but a Failed id's session cookies live in the canonical-root jar; only the `coll_id`-still-Failed assertion rules out `apply_id`.
+- NOTE: the AC1 GOLDEN_JSON is the fb21541 pre-move capture with `outcome` changed to Completed and `delivery` added, not a fresh pre-move Completed capture.
 
 ### Follow-ups from task 160 (wisp-service plan and send; not scheduled)
 - [P3] `scripts/check-boundaries.sh:52`: the `resolve(` check (and the task's no-resolve check) misses a path-qualified `wisp_core::resolve::resolve(` call or an aliased import.
