@@ -2694,12 +2694,43 @@ impl Workspace {
         let body = history_ui::body_to_store(self.settings.history_bodies, body);
         match known_id(&self.collections[cix].coll_id) {
             Some(id) => self.spawn_record(task_root, data, id, new, body, cx),
+            None if matches!(self.collections[cix].coll_id, IdState::Failed { .. }) => {
+                // A cached read failure: re-read the id for this append only, so a repaired
+                // file recovers history. The shared `coll_id` (cookies, secrets, clash
+                // handling, notices) is left as it is.
+                cx.spawn(async move |this, cx| {
+                    let r = task_root.clone();
+                    let state = cx
+                        .background_executor()
+                        .spawn(async move { read_id_state(&r) })
+                        .await;
+                    this.update(cx, |this, cx| {
+                        if this.coll_ix(&task_root).is_none() {
+                            return;
+                        }
+                        match state {
+                            IdState::Known(id) => match CollectionId::parse(&id) {
+                                Some(id) => this.spawn_record(task_root, data, id, new, body, cx),
+                                None => {
+                                    this.history_off(&task_root, "invalid collection id".into(), cx)
+                                }
+                            },
+                            IdState::Failed { reason, .. } => {
+                                this.history_off(&task_root, reason, cx)
+                            }
+                            _ => this.history_off(
+                                &task_root,
+                                "the collection id is not available".into(),
+                                cx,
+                            ),
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             None => {
                 let root = task_root.clone();
-                // A cached read failure is retried: the file may have been repaired since.
-                if matches!(self.collections[cix].coll_id, IdState::Failed { .. }) {
-                    self.collections[cix].coll_id = IdState::Absent;
-                }
                 self.resolve_id_then(Some(root), cx, move |this, _, cx| {
                     let Some(cix) = this.coll_ix(&task_root) else {
                         return;
@@ -4801,7 +4832,11 @@ mod env_wiring_tests {
         open(&fx, cx);
         let root = fx.root.clone();
         let toml = std::fs::read(root.join("collection.toml")).unwrap();
-        std::fs::write(root.join("collection.toml"), "format = 1\nid = \"bad id\"\n").unwrap();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\nid = \"bad id\"\n",
+        )
+        .unwrap();
         fx.ws.update(cx, |w, _| {
             w.collections[0].coll_id = read_id_state(&root);
             assert!(matches!(w.collections[0].coll_id, IdState::Failed { .. }));
@@ -4824,11 +4859,21 @@ mod env_wiring_tests {
             delivery: None,
         };
         let r = root.clone();
+        let before = fx.ws.read_with(cx, |w, _| {
+            (w.cookie_files.len(), w.jars.jar(Some(ID)).generation())
+        });
         fx.ws.update(cx, |w, cx| w.append_history(r, new, None, cx));
         cx.run_until_parked();
         let data = DataDir::at(fx._dir.path().join("data"));
         let store = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
         assert_eq!(store.list().unwrap().len(), 1);
+        fx.ws.read_with(cx, |w, _| {
+            assert!(matches!(w.collections[0].coll_id, IdState::Failed { .. }));
+            assert_eq!(
+                (w.cookie_files.len(), w.jars.jar(Some(ID)).generation()),
+                before
+            );
+        });
     }
 
     #[gpui::test]
