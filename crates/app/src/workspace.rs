@@ -549,6 +549,8 @@ impl CookieJob {
 /// Everything needed to reach the open collection's history off the UI thread.
 pub struct HistoryJob {
     store: Option<HistoryStore>,
+    /// The id the workspace holds while the store is unresolved; read before the disk.
+    id: Option<CollectionId>,
     root: PathBuf,
     data: DataDir,
 }
@@ -558,6 +560,7 @@ impl HistoryJob {
     pub fn open_existing(self) -> Result<Option<HistoryStore>, String> {
         match self.store {
             Some(s) => Ok(Some(s)),
+            None if self.id.is_some() => Ok(self.id.map(|id| HistoryStore::open(&self.data, &id))),
             None => Ok(read_collection_id(&self.root)
                 .map_err(|e| e.to_string())?
                 .map(|id| HistoryStore::open(&self.data, &id))),
@@ -627,8 +630,13 @@ fn history_job_of(c: &OpenCollection, data: Option<&DataDir>) -> Result<HistoryJ
     let Some(data) = data.cloned() else {
         return Err("the data directory is unknown".into());
     };
+    let id = match (&store, &c.history) {
+        (None, HistoryState::Unresolved) => known_id(&c.coll_id),
+        _ => None,
+    };
     Ok(HistoryJob {
         store,
+        id,
         root: c.tree.root.clone(),
         data,
     })
@@ -2701,15 +2709,12 @@ impl Workspace {
         let recovered = job.store;
         let body = history_ui::body_to_store(self.settings.history_bodies, body);
         match known_id(&self.collections[cix].coll_id) {
-            Some(id) => self.spawn_record(task_root, data, RecordTo::Id(id), new, body, cx),
-            // Already recovered once: keep using that store, so reads and writes agree
-            // until the collection is reopened.
-            None if recovered.is_some()
-                && matches!(self.collections[cix].coll_id, IdState::Failed { .. }) =>
-            {
+            // One current store: once `history` holds it, every append goes there.
+            _ if recovered.is_some() => {
                 let store = recovered.expect("checked above");
                 self.spawn_record(task_root, data, RecordTo::Store(store), new, body, cx)
             }
+            Some(id) => self.spawn_record(task_root, data, RecordTo::Id(id), new, body, cx),
             None if matches!(self.collections[cix].coll_id, IdState::Failed { .. }) => {
                 // A cached read failure: re-read the id for this append only, so a repaired
                 // file recovers history. The shared `coll_id` (cookies, secrets, clash
@@ -4459,6 +4464,7 @@ mod tests {
         );
         let job = HistoryJob {
             store: None,
+            id: None,
             root,
             data: data.clone(),
         };
@@ -4484,6 +4490,7 @@ mod tests {
         write(&root, "collection.toml", text);
         let job = || HistoryJob {
             store: None,
+            id: None,
             root: root.clone(),
             data: DataDir::at(d.path().join("data")),
         };
@@ -4814,6 +4821,25 @@ mod env_wiring_tests {
         });
     }
 
+    fn test_entry() -> NewEntry {
+        NewEntry {
+            at: SystemTime::now(),
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        }
+    }
+
     #[gpui::test]
     fn history_append_uses_the_known_id_not_the_one_on_disk(cx: &mut TestAppContext) {
         let fx = fixture(cx);
@@ -4822,11 +4848,18 @@ mod env_wiring_tests {
             assert_eq!(w.collections[0].coll_id, IdState::Known(ID.into()));
         });
         let other = "fedcba9876543210";
+        // An entry already in A's store: reads must find it after the disk edit.
+        let data = DataDir::at(fx._dir.path().join("data"));
+        HistoryStore::open(&data, &CollectionId::parse(ID).unwrap())
+            .append(test_entry(), None)
+            .unwrap();
         std::fs::write(
             fx.root.join("collection.toml"),
             format!("format = 1\nid = \"{other}\"\n"),
         )
         .unwrap();
+        let listed = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap().list();
+        assert_eq!(listed.unwrap().len(), 1);
         let new = NewEntry {
             at: SystemTime::now(),
             request_path: None,
@@ -4849,7 +4882,7 @@ mod env_wiring_tests {
         cx.run_until_parked();
         let data = DataDir::at(fx._dir.path().join("data"));
         let original = HistoryStore::open(&data, &CollectionId::parse(ID).unwrap());
-        assert_eq!(original.list().unwrap().len(), 1);
+        assert_eq!(original.list().unwrap().len(), 2);
         assert!(
             !data
                 .history_dir(&CollectionId::parse(other).unwrap())
