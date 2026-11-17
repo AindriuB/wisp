@@ -4,7 +4,7 @@ Agreed 2026-11-15 on main 7b756b9, from the 2026-11-14 analysis and the user dec
 The 0.3.0 scope is amended in `docs/plan/specs/2026-11-14-wisp-0-3-0.md` (Amendment 1).
 Citations: audit sections are named by heading (the source audit, `PRODUCT-AX-AUDIT.md`, untracked and cited by name only);
 code is `path:line`. Scale: effort S (<= 1 task), M (2-3), L (4-6), XL (7+).
-Size risk is for the Windows GUI exe (gate 15,500,000 B; 0.3.0 spec estimates headroom ~318 KB from 15,181,824 B).
+Size risk is for the Windows GUI exe (gate 16,000,000 B and soft line 15,900,000 B since the user decision of 2026-11-17, spec Amendment 2; the 0.3.0 spec's headroom estimate of ~318 KB from 15,181,824 B was against the old 15,500,000 B gate).
 A separate binary (`wisp-cli`) does not count. The theme rework (branch task/theme-palette) is unmeasured: re-baseline before 0.3.0 wave 1M.
 
 ## Positioning
@@ -17,10 +17,10 @@ every agent-facing contract (report type, CLI JSON, snapshot) exists because a h
 
 0.3.0's agreed GUI features cost +145 to +230 KB (spec "Size gate"), leaving ~90 to ~170 KB. Candidates for later
 GUI work are the request-vars editor (+25-40 KB), response diff (+40-60 KB), GraphQL body mode (+20-35 KB), onboarding
-actions (+10-20 KB). That does not fit under 15.5 MB. 0.4.0 is therefore built as a mostly non-GUI release
+actions (+10-20 KB). That did not fit under 15.5 MB; the gate was raised to 16,000,000 B in 0.3.0 (user decision 2026-11-17). 0.4.0 is therefore built as a mostly non-GUI release
 (service layer, CLI run, hardening are size-neutral or outside the gate). 0.5.0's GUI items need either a
-gate decision (recommend raising to 16,000,000 B, still under the 16 MiB in `scripts/measure/budgets.json`) or a
-paired size-reduction task. This is decision D-1 below (decided: hold the gate through 0.3.0, decide at 0.4.0 planning); it does not touch 0.3.0.
+gate decision (made: raised to 16,000,000 B, still under the 16 MiB in `scripts/measure/budgets.json`) or a
+paired size-reduction task. This is decision D-1 below (superseded: raised to 16,000,000 B in 0.3.0, user decision 2026-11-17).
 
 ## Item register (every item: verdict, value, effort, size risk, deps, user decision)
 
@@ -139,9 +139,9 @@ Waves (from the spec, plus additions):
 - Wave 2: 2A UI seams, then 2B/2C/2D/2E parallel; 2E includes F2/F3/F4; 2F wiring; + A5 app task (sidebar empty state, palette actions) on `sidebar.rs`/`palette.rs`; + H1 history hardening after 1B; 2M measure and hand test.
 - Wave 3: 3A guard, 3B packaging, 3C docs (+ B2), 3M dry run.
 
-Size plan: spec's +145-230 KB, plus A5 +10-20 KB = +155-250 KB vs ~318 KB headroom. Soft line 15,400,000 B and the cut order (suggest_confirm hint, Checks detail, shadow list) stand; add A5's palette-only variant (no sidebar buttons) as the first cut. CLI 4 MiB limit, measured in 1M.
+Size plan: spec's +145-230 KB, plus A5 +10-20 KB = +155-250 KB vs ~318 KB headroom. Soft line is now 15,900,000 B (user decision 2026-11-17); the cut order (suggest_confirm hint, Checks detail, shadow list) stands; A5's palette-only variant (no sidebar buttons) was the first cut and was made. CLI 4 MiB limit, measured in 1M.
 
-Exit criteria: all items above work on macOS (hand-tested) and pass CI on Windows and Linux; GUI exe <= 15,500,000 B; CLI within budget; no secret value in any
+Exit criteria: all items above work on macOS (hand-tested) and pass CI on Windows and Linux; GUI exe <= 16,000,000 B; CLI within budget; no secret value in any
 report/CLI/history/log canary test; CI green including Windows; F1 gone from `known-flakes.md`; SignPath artifact configuration updated so both exes are signed (or, if the application is still pending, the unsigned notice accepted); macOS hand test incl. three-button prompts; macOS signed CLI verified; release notes state which platforms were hand-tested. No Windows or Ubuntu hand test is required before the tag.
 
 ### 0.4.0 "One engine, headless" 
@@ -156,7 +156,7 @@ Waves:
 2. In parallel: `run` + E4 + AC2 (crates/cli and core engine); hardening storage themes (H2-H5), Windows themes (H6); D3 field (additive) + snapshot command.
 3. A4 vars editor and D3 display (the only GUI work, `ui/` files, behind D-1); docs; measure; release dry run; hand test.
 
-Size plan: gate holds at 15,500,000 B through 0.3.0; at 0.4.0 planning raise to 16,000,000 B only if 0.3.0 closes with under 100 KB headroom, otherwise keep and cut. GUI budget target <= +70 KB (A4 +25-40, D3 +5-10, C1 0..+10, rest storage at opt-level z). If 0.3.0 closes with < 100 KB headroom, A4 is cut to the palette-only edit or moves to 0.5.0 behind the gate decision. CLI: `run` links the network; raise its limit once measured (user approves).
+Size plan: the gate was raised to 16,000,000 B in 0.3.0 (user decision 2026-11-17; the "only if under 100 KB headroom" condition is superseded). GUI budget target <= +70 KB (A4 +25-40, D3 +5-10, C1 0..+10, rest storage at opt-level z). If 0.3.0 closes with < 100 KB headroom, A4 is cut to the palette-only edit or moves to 0.5.0 behind the gate decision. CLI: `run` links the network; raise its limit once measured (user approves).
 
 Exit criteria: GUI and CLI send through the same service function (grep check: no second `Engine::send` caller outside it); `run` returns distinct exit codes for transport failure, assertion failure and HTTP status; `outcome_unknown` documented and tested; every 🔒 theme H1-H7 AC closed; CLI canary and read-only tests extended (run never logs a secret; `run` writes nothing outside history if enabled); macOS hand test (Windows and Ubuntu later, notes say which were tested); GUI size within gate or the 0.4.0-planning gate decision made.
 
@@ -200,7 +200,7 @@ Ids are kept so the register above still resolves.
 - D-F `run` secrets: no prompt by default, `--keychain` opt-in.
 - D-G Agent features (MCP, change sets, approvals) are deferred. `wisp-cli --json` is documented as the agent interface.
 - D-H 0.5.0 response diff is structural JSON plus status/header diff with a user ignore list. Text diff is deferred.
-- D-1 Size gate: hold 15,500,000 B through 0.3.0. At 0.4.0 planning raise it to 16,000,000 B only if 0.3.0 closes with under 100 KB headroom; otherwise keep it and cut.
+- D-1 Size gate: the gate is 16,000,000 B and the soft line 15,900,000 B, raised in 0.3.0 by user decision 2026-11-17 (spec Amendment 2). The earlier rule (hold 15,500,000 B through 0.3.0; at 0.4.0 planning raise only if under 100 KB headroom) is superseded.
 
 ### Drops and defers
 - D-J Store submission is deferred until SignPath and winget are live. The user opens the winget PR now.

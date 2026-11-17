@@ -19,18 +19,17 @@ than no plan.
 -->
 
 ### v0.3.0 (in progress)
-Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendment 1; roadmap: `docs/plan/roadmap.md`.
-- **Waves 0 and 1 complete (PRs #78-#90):** 129, theme-palette, 130-138; main CI green on all three platforms. Windows GUI 15,179,264 B against the 15,500,000 B gate (headroom 320,736 B), so the roadmap's "raise the gate to 16 MB at 0.4.0 if headroom is under 100 KB" does not trigger. Detail in `docs/plan/archive/2026-11-16-closed-sections.md`.
-- **Wave 2 merged and recorded (PRs #92-#102):** 139-146, 150-152. Detail in `docs/plan/archive/2026-11-16-closed-sections.md` and HISTORY.
-- **147 and 148 recorded (PRs #109 and #108):** assertion and history wiring, and the new collection and environment UI. Follow-ups are under "Follow-ups from task 147" and "Follow-ups from task 148".
-- **149 measured wave 2 (PR open):** Windows GUI 15,494,656 B, 94,656 B over the 15.4 MB soft line and 5,344 B under the 15,500,000 B gate (wave-2 delta +315,392 B on 15,179,264 B). Nothing is cut. **Decision with the user, not yet made:** the cut order (148's sidebar buttons then the rest of 148; the `suggest_confirm` hint; Checks expected/actual detail, 141; Explain's shadowed-layer list, 140). Detail: `scripts/measure/results/wave-2-size.json`.
+Explain Request, Save and close with the environment guard, assertions with history provenance, and a read-only `wisp-cli`. Spec: `docs/plan/specs/2026-11-14-wisp-0-3-0.md` as amended by its Amendments 1 and 2; roadmap: `docs/plan/roadmap.md`.
+- **Waves 0 to 2 and tasks 147 and 148 are recorded (PRs #78-#110):** detail in `docs/plan/archive/2026-11-16-closed-sections.md`, `docs/plan/archive/2026-11-17-closed-sections.md` and HISTORY. Open follow-ups are under the "Follow-ups from ..." sections below.
+- **149 measured wave 2 (PR #110):** Windows GUI 15,494,656 B, 94,656 B over the old 15.4 MB soft line and 5,344 B under the old 15,500,000 B gate. Detail: `scripts/measure/results/wave-2-size.json`.
+- **Decision 1 (user, 2026-11-17):** cut task 148's sidebar empty-state buttons and keep the palette "New collection…" and "New environment…" commands (task 154).
+- **Decision 2 (user, 2026-11-17):** the Windows GUI hard gate is 16,000,000 B and the soft line 15,900,000 B, replacing 15,500,000 B and 15,400,000 B (task 156 changes `release.yml`; `budgets.json` keeps 16 MiB); see spec Amendment 2.
 - **Follow-up (149):** the CLI roughly tripled since wave 1 (macOS 552,528 → 1,415,600 B); cause not investigated.
-- **Next:** the user's cut-order decision, then the macOS hand test.
+- **153 recorded** (PLAN.md pruned from 99,898 B to 94,230 B; decisions written into the spec and roadmap).
+- **Wave 3 open (154-158):** 154 cut the sidebar buttons, 155 environment guard, 156 package the CLI and raise the gate, 157 docs for the CLI and guard, 158 measure and release dry run.
+- **Next:** wave 3, then the macOS hand test.
 
-### v0.2.0 (published 2026-11-14)
-Closed. The wave summaries are in `docs/plan/archive/2026-11-15-closed-sections.md` and HISTORY.
-
-
+### User setup (optional release channels)
 **User setup (optional channels):** none of these block 0.2.0.
 - SignPath Foundation application, then the repository secret and variables (`scripts/release/sign-windows/README.md`).
 - Confirm the winget PackageIdentifier and open the winget-pkgs PR after 0.2.0 is published (`packaging/winget/README.md`).
@@ -312,7 +311,6 @@ PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real
 - 54-18 (nit, tests) the lexically plausible UNC test never matches the trusted dir, so it passes without the guard.
 - 54-N1 the 54-13 regression test passed before the fix (old code swallowed the read error); no test proves a bound worktree's gitdir/commondir is never opened.
 - 54-D1 document on `vault::bind_additional_checkout`: a new folder is one-click verifiable only as a worktree of a bound main checkout (bound worktrees do not anchor).
-- 54-CI (done, tasks 122/123): the Windows `cargo test` + clippy job exists.
 
 ### Follow-ups from task 113 (not 0.2.0 wave 3)
 - collections.rs:66-72 re-derives names and walks collection_root(i) instead of using OpenCollection::name() and Workspace::collections; drift risk.
@@ -387,7 +385,6 @@ PR #54 round 2 (54-13 fixed in the PR: only bound main checkouts, meaning a real
 - (a) A malformed `secrets` value makes `save_environment` write only plain vars and return Ok, silently dropping edited secret values; return an error.
 - (b) No test fails the first pre-set `get` (`fail_nth(0)`) or uses a malformed `<env>.secrets.toml` in `migrate_to_store`.
 - (c) Document `MemoryStore::accounts()` as test-only so 115 does not rely on enumeration.
-- (d) CLOSED by PR #52: plain `load_environment` now ignores the secrets file in store modes (115 AC2 still covers the app wiring).
 - (e) Clones fail closed until bound/rebound; a copy is offered a new id.
 - 52-9 TooLarge during migration names no var; contract doesn't forbid truncation; read-back mismatch reported as Other -> wrap errors with the var name, require TooLarge, never truncate.
 - 52-10 restore after a failed env.toml write ignores its own errors and can leave plaintext while mode is store -> log and return the leftover path; test the no-old-file branch.
@@ -475,15 +472,12 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [NOTE] Authorize resolves the whole request (same path as Send), so an unresolved variable in the URL or body also blocks it; the button appears only for the request's own auth-code auth, not inherited auth.
 
 ### Follow-ups from task 110 (not 0.2.0 wave 3)
-- [CLOSED by PR #49] [P3] `put` (manager.rs ~259) still holds a borrowed guard across save/forget; nothing cancels it today, but a future caller dropping a `put` future could reopen the overlap. Move an owned guard in, as `bearer` does.
 - [P3] The fail-closed test's RT_SENTINEL check only bites on the panic store; the `fail_load` path cannot fail that assertion.
-- [CLOSED by PR #49] [P3] `bearer`'s inline spawn_blocking duplicates the JoinError message from `Inner::blocking` (manager.rs ~208); route both through one helper.
 - [ACCEPTED residual, user] The overlap test uses a 500 ms window rather than a state-driven wait.
 - [ACCEPTED residual, user, 49-R1] A refresh that times out waiting for the per-key store lock (a previous save hung >30 s) drops the IdP-rotated refresh token, so memory keeps the revoked one and the user must re-authorize. Follow-up: cache a rotated refresh token even when the store lock times out (relaxes the rule that the generation check runs under the store lock).
 - [P3, 49-2] "Fails closed on panic" holds only in test builds; release uses panic = abort. Fix the wording or require stores to catch_unwind (document on the trait).
 - [P3, 49-3] The save-then-forget order test is sequential and passes without the lock (check whether round 1/2 tests supersede it); race a blocked save against a re-authorize, or rename the test.
 - [P3, 49-4] JoinError mapping for save and forget is untested in integration tests.
-- [Note, 49-P3] On refresh grants a failed refresh save keeps the token in memory by design (user decision); no further action.
 - [P3, 49-5] manager.rs:366 Authorize now fails when the store refuses the save; with a keychain that always denies, Authorize never succeeds and the message offers no way out. Point the error at turning persistence off (task 115's keychain/persist setting), or cache in memory and mark stale; record the behaviour change.
 - [P3, 49-6] (tests) manager.rs:841 no test for a forget that times out, or for recovery after a stuck call returns. Add a stuck-forget mode plus a release-then-authorize test.
 - [P3, 49-7] (nit) manager.rs:62 `bounded`'s select is unbiased, so a result ready together with the timeout can be reported as a timeout. Use `biased;` with the future polled first.
@@ -491,8 +485,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 
 ### Follow-ups from task 103 (not 0.2.0 wave 2)
 - [ACCEPTED residual, user 2026-11-10] After a re-authorize, a send that read the old refresh token just before it can still POST that RT to the IdP once; the result is discarded (generation check) and nothing old is used or persisted. Closing it means holding the store lock across the token POST.
-- [CLOSED by task 110] [P2 -> wave 3 keychain] Store calls run synchronously on engine workers (default 1 worker, max 2); a blocking keychain call (access prompt) stalls all engine I/O. Run store calls via spawn_blocking with the tokio store lock held across the await before a keychain store ships.
-- [CLOSED by PR #49 round 2] Failed save during re-authorize -> forget path has no test: a failed save now returns before any forget.
 - [P3] The stale marker is in-memory only: a failed forget/save leaves the old RT in the store after restart (wave 3).
 - [P3] engine.rs:972-975 a 401 for a send that started with AT_X, arriving after a re-authorize, invalidates the new AT_Y; invalidate only when the cached token equals the one sent.
 - [P3] No single-flight on refresh; concurrent refreshes may get a rotating RT family revoked.
@@ -667,7 +659,6 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] 35-27 (Nit) `import/mod.rs:370`: `is_credential_header` is a one-line passthrough; call the core fn directly.
 - [NOTE] `history.rs`: `lock()` blocks without timeout while `APPEND_LOCK` is held, so a stalled second Wisp process stalls appends for every collection in this one.
 - [NOTE] Name heuristic over-redacts (e.g. `monkey`, `auth_url`, `token_url`); accepted.
-- [P2] CI builds only ubuntu and macos; the Windows `File::lock` bug in PR #35 would have shipped. Add at least a Windows `cargo check`/test job (or a cross `cargo check --target x86_64-pc-windows-msvc`).
 - [P3] 35-16 `history.rs:159`: unquoted `{{ref}}` under a secret key is emptied instead of kept.
 - [P3] 35-17 `history.rs:511`: lock file opened with create and follows symlinks; use O_NOFOLLOW or a `symlink_metadata` check.
 - [P3] 35-19 (Nit) `tests/history.rs:355`: "1234" leak check can match the random hex entry id.
@@ -675,12 +666,8 @@ PR #52 round 5 (post-merge; 52-52 and 52-53 fixed on the task 114 branch: UNC/de
 - [P3] `tests/history.rs` `sweep_keeps_entries_with_unparseable_index_lines`: set a low entry cap so eviction runs and the verbatim-rewrite path is covered.
 - [NOTE] Text/XML bodies containing any credential fragment are not stored (fail closed); a bare `{{ref}}` with characters outside letters, digits, `_`, `-`, `.` makes a JSON body drop. Accepted, safe side.
 
-### Reqwest 0.13 follow-ups (task 50)
-Optional, none blocking. Closed by 51: the runtime TLS test (`crates/core/tests/tls.rs`) and the `webpki-root-certs` `default-features = false` consistency fix. The `engine.rs:87`, `install_crypto_provider` and `https://localhost` residuals were closed by task 56 (see HISTORY).
-Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after one request 102.3 MiB.
 
 ### Open budget and measurement questions (from M0)
-**Per-platform budgets (done, task 65):** set by the user on 2026-11-03 and enforced by `measure.yml` through `scripts/measure/budgets.json` (table in `docs/architecture.md#budgets`). Both Linux backends (x11 and wayland) are kept. Intel macOS was dropped from 0.1.0 on 2026-11-03 (task 71).
 **Residuals (71):** if the screenshot times out or `import` fails silently, the log line is a bare `screenshot: ` with no reason (`measure.sh:236`); `dpkg -S` diversion lines would become a bogus package entry in `packages.txt` (none today); the `unowned:` branch of the packages step has never executed in CI.
 **Residuals (65):** the Windows over-budget path (`within: false`, exit 3) has never executed; the logic reads correct and the first real over-budget run is its test.
 **Residuals (64):** Linux idle RssAnon is about 4.8 MB higher with the link flags (58,168 vs 53,332 KiB for panic/opt-level alone) while after-request is lower; likely noise, recheck when it next shows in a run. `.cargo/config.toml` target rustflags are replaced by any `RUSTFLAGS` env and need lld (GNU ld rejects `--icf=all`). The responsiveness hand check was done on macOS arm64 only (same speed); Windows and Linux builds were not hand-checked. `panic = "abort"` means any panic ends the process.
@@ -694,7 +681,6 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 **Residuals (78):** the saved keychain search list is not restored if it was empty (harmless on a fresh runner); the `notarytool` timeout JSON shape is unverified; Windows code signing (SmartScreen) is not done, candidate follow-up Azure Trusted Signing; a macOS portable-mode marker inside the bundle would break the notarised signature (see Residuals (73)).
 **Residuals (74):** the non-macOS platform modifier is labelled "Win" where Linux calls it Super (no current binding uses it); only enter, escape and tab get display names, other named keys are uppercased.
 **Residuals (63):** `measure.sh:131-133` vulkaninfo fallback may name a different device than GPUI picked, and the JSON does not say which source produced `renderer_device`. `measure.ps1` was not parse-checked locally (no pwsh); only CI covers it.
-**06 (resolved):** the method and environment selects now show chevrons (task 37, hand-checked 2026-11-02). UI automation needs the window frontmost.
 
 ### Carry-forward: crates/core
 **Debug redaction follow-ups (84):** multipart text values (`PreparedPartValue::Text`) still print in Debug; URL path and userinfo secrets are not redacted in `PreparedRequest` Debug (only the query is); `EngineError` messages include the URL; `ResponseCookie` derives Debug and holds cookie values; a proxy password with an unencoded `/`, `?` or `#` still prints in `ClientSettings` Debug (reqwest rejects such proxies anyway). None are in 0.1.1.
@@ -709,7 +695,6 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 **Hand check (69):** the macOS arm64 check of the `.id("…-editor")` removal passed on 2026-11-03 (long Path, Auth and Settings sub-tabs scroll, checked with task 66's build); only the Windows and Linux hand checks remain. Possible flake, unconfirmed: wisp-core `a_20_mib_file_body_streams_with_content_length` failed once in a heavily parallel full-workspace run and passed alone; watch for it.
 **Residuals (79):** the Touch Bar Dock-Quit crash root cause is upstream (`accesskit_macos` subclass restore versus KVO) and not reported upstream yet. Cmd-Q and window close now ask before discarding drafts (task 83); Dock Quit and system shutdown still do not (documented in `docs/architecture.md#app-lifecycle`). The `WISP_CLOSE_WINDOW_AFTER_MS` hook calls `quit_app` directly, so `quit-check.sh` does not exercise the close button (hand-tested). No About menu item (GPUI 0.3.10 `OsAction` lacks it). Hide, Hide Others and Show All were added by task 83 on macOS. shellcheck SC2010 (`ls | grep`) in `quit-check.sh`.
 **Escape (21):** Escape is bound with context None to `CancelRequest`. Hand-checked in task 41: Escape inside the focused URL input cancels a send (status "Cancelled").
-**measure.sh (21):** the `WISP_EVENT` line was not separately confirmed in the output; status "measured" implies it.
 **KvTable (29):** hand-checked in task 35 (typing in Params updates rows and the URL; Tab goes name, value, next name). Accepted residual: above the 50-row virtualisation threshold Tab cannot reach rows outside the viewport, because unpainted rows have no focus handle; scroll-to-focus is deferred. The table only virtualises if its container gives it a definite height (task 31). Optional: `locate` in `crates/app/src/ui/kv.rs` is O(n) per keystroke.
 **Folder order (39, optional):** a list naming a request in both forms (`["a","a.toml"]`) has only its first match edited by rename, move and delete. `a.toml` is ambiguous when both `a.toml` and `a.toml.toml` exist. Hand-checked in task 41: rename and delete in the running app update `folder.toml` and the tree follows its order.
 **Storage ops tests (23, optional):** `case_alias_sidecar_counts_as_shared` only exercises identity on delete and is vacuous on non-case-folding file systems.
@@ -718,37 +703,25 @@ Budgets after 50: binary 19,114,864 B of 20,971,520; idle RSS 97.2 MiB; after on
 **Settings (27):** ToggleTheme and ToggleLayout (task 28) surface `settings::save` errors to the user, because save now returns Err on an unparsable or unreadable file instead of overwriting it.
 **Draft and URL sync (24):** accepted residual: `Request.vars` has no `DirtySections` flag (vars change only through external edits in v1), so a draft can be dirty with no section highlighted. `merge_parsed_params` aligns old and parsed params with a 3-level order-preserving LCS (name+value, name, same slot); it is O(n*m) per keystroke, fine at real param counts (about 8 MB at 1000 params). Names containing `=` or `&`, and empty names, do not round-trip (documented on `display_url`). Optional cosmetic: group the test helpers `pairs` and `kv` at the top of the `url_sync` tests.
 **Workspace shell (28):**
-- *Measurement:* superseded by the task 35 figures under M2 (the shell measured about 96 MiB idle and binary 15.3 MB when it landed).
-- *Hand-checked in task 35:* ⌘O from A to B (with dirty tabs: Discard, Open panel) closes A's tabs and resets the environment; ToggleTheme and ToggleLayout from the palette write only `theme` and `split` to settings.toml; theme="system" follows macOS Light/Dark live. The dev build wrote `~/Library/Application Support/wisp/settings.toml` during the check.
-- *Mislabelled autosend error (fixed in task 54):* the failure line now reads `WISP_EVENT failed kind=Resolve problems=<names>`; see HISTORY.
 - *Gaps:* (tab close button landed in task 55.) Routing, history and watcher wiring have no end-to-end tests because gpui test support is not enabled; the open-collection test covers only the `open_needs_confirm` helper.
 - *Optional P3:* `bind_keys_indices_match_names` does not prove `key(i)` binds the right action.
 **Sidebar (30):**
-- *Hand-checked in task 35:* env switching, rename (file and tab renamed) and delete (prompt names the item; file and sidecar removed). Tree order was wrong and rename/delete left stale `order` names; fixed in task 39 at the storage layer, running-app check passed in task 41. Create and move were not separately reported.
 - *Optional:* a node created inside a collapsed folder is selected but hidden, because the parent is not expanded. An environment literally named "No environment" clashes with the `NO_ENV` entry. The delete-prune `collapsed.retain` has no unit test (correct by inspection).
 **URL bar and sub-tabs (31):**
-- *Hand-checked in task 35:* URL and Params live sync, highlight, hover tooltip ("baseUrl = … · collection"), status colouring. Params checkbox resync while the URL is focused fixed in task 40, hand-checked in task 41 (typing `?a=1&b=2` with no caret jump; untick and re-tick while focused resync). Not reported: secret `••••` hover, Cancel while sending.
 - *Decision on resync:* the "only on DraftReplaced" rule holds for Headers and Settings. Params, the URL input (when unfocused) and Path also resync on `DraftEdited`, behind equality guards so an edit never echoes back.
 - *Optional:* a non-numeric or zero timeout is silently ignored in Settings (`settings.rs:73-75`). The URL bar also refreshes on `CollectionChanged` (harmless). A URL that does not round-trip through `apply_url_text` (an enabled param with an empty name) can still produce one extra edit.
 **Auth and body editors (32):**
-- *Hand-checked in task 35:* JSON sidecar edit and ⌘S writes the sidecar only; Bearer, Inherit, Bearer restores the token (masked, reveal toggle); "Inherits Bearer from collection" line; Format. Multipart Text plus File part send hand-checked in task 41 (file part sha256 matched).
 - *Lesson for later UI work:* gpui-component 0.8.1 `InputState::set_value` emits no Change event, so any programmatic set must update the model or draft by hand (the cause of the round-1 P1/P2).
 - *Optional:* `path.exists()` stats the filesystem on every render of the File body; a hand-typed relative File path is checked against the process cwd rather than the collection dir, so "File not found" can be wrong; a Choose… pick into a row deleted while the dialog is open is silently dropped.
 **Palette and environment switcher (34):**
-- *Hand-checked in task 35:* all passed (`gu`, `theme`, `layout`, ⌘E with dev pre-selected, Escape, shortcuts afterwards). Focus loss after other unmounts fixed in task 38, hand-checked in task 41.
 - *Lesson:* in gpui-pre 0.3.10 key bindings dispatch before key-down listeners, and a context-less binding (such as escape to CancelRequest) beats component-context ones. Overlays must handle such actions with `on_action` on their own div, and an overlay that takes focus must restore it on dismiss.
 - *Optional:* with more than 50 environments the active one past the limit is not pre-selected. ⌘K or ⌘E while the palette is open reloads it in place and clears the query rather than toggling it closed.
 **Response viewer (33):**
-- *Hand-checked in task 35:* Pretty keeps key order; a 20.3 MB response shows Raw with Pretty disabled; two Set-Cookie rows; header cell click and ⌘C copy. Hand-checked in task 41: Raw prefetch while scrolling, over-limit Pretty tooltip, Save output sha256. The 4 MB Raw cap line was verified in task 42 (see below).
-- *Raw scrollbar and jump keys (42, hand-checked 2026-11-02):* Raw and Pretty show a draggable vertical scrollbar; End/⌘↓/Ctrl+↓ load to the 4 MB cap and jump to the bottom, Home/⌘↑/Ctrl+↑ jump to the top (any modifier works with End/Home; keys are handled on the BodyPane focus handle, and with the URL input focused End moves its text cursor). The 4 MB cap line ("Showing the first 4 MB — Save to read the rest") is verified on a 250,000-line body.
 - *Optional P3 (42):* the `jump_still_valid` asserts sit inside the key test and could be split; when the 4 MB boundary falls mid-line the cap line follows a partial final line. Budgets measured: binary 18,998,304 B (+33,088), idle RSS 100,064 KiB, after request 104,512 KiB.
-- *Scrollbars (43-45, hand-checked 2026-11-02):* sidebar, response Headers and Cookies and KvTable now have draggable scrollbars. Budgets: combined binary 19,014,912 B. See the pane-scrollbar defects below.
 - *Decision:* headers are per-cell selectable divs with ⌘C copy, not the gpui-component `Table`. There is no partial-text selection and no keyboard cell navigation.
 - *Optional:* header selection is cleared on every `ResponseChanged`, which sub-tab and Pretty/Raw switches also emit (consider a separate view-change notify). `failed_create_keeps_existing_target` silently skips its assertions when run as root. `File::create` truncates before writing, so a failed Replace leaves no original (not an atomic replace).
 **Icon assets (37):**
-- *Measurement:* binary 18,981,728 B (+16.5 KB over main), idle RSS about 97.3 MiB, after-request about 101.9 MiB.
 - *Facts:* 19 icons embedded from gpui-kit-assets 0.8.1 (Apache-2.0, NOTICE kept) in `crates/app/assets/icons/`. If dialogs or notifications are used, add CircleCheck, CircleX and Info. The walk test fails naming any `IconName` used in app sources that is not embedded.
-- *Hand-checked in task 35:* select chevrons, checkbox ticks, eye, × and search icons render. Tip: launching the bare binary may not expose a window to computer use until `WISP_AUTOSEND_URL` is set; wrap it in a scratch `.app` bundle with a bundle id.
 - *Optional:* `main.rs`'s run line was split into `let app = ...with_assets(...); app.run(...)` to avoid a rustfmt reflow.
 
 ### Carry-forward: crates/storage
