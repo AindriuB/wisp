@@ -8613,7 +8613,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gpui-component",
@@ -8631,7 +8631,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -8642,7 +8642,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
@@ -8675,7 +8675,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-channel",
  "keyring",
