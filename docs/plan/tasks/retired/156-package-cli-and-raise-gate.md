@@ -74,7 +74,21 @@ Reviewed HEAD 141362c66710a60e2113b8e8ce785770bbda8200.
 
 - [P2] .github/workflows/release.yml:165-169 (Verify Windows signature) — a failed `wisp.exe` verification is hidden when the CLI verification that runs after it passes. `verify.ps1` exits with `exit 1`, which only leaves the script and sets `$LASTEXITCODE=1`; the step's pwsh script then runs the second call, whose `signtool verify` resets `$LASTEXITCODE` to 0, and GitHub's pwsh wrapper ends the step with `exit $LASTEXITCODE`, so the step passes with an unverified `wisp.exe`. Input: `SIGNPATH_SIGNS_CLI=true`, SignPath returns a `wisp.exe` that fails verification (no RFC 3161 timestamp, or a status other than Valid) next to a good `wisp-cli.exe`. Fix shape: after the first call add `if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`, or split the check into two steps. (AC7 requires both exes checked with `verify.ps1`.)
 
-## Wave verified — f562f44f5e5fa1bfa66088bd35f68909483dcd97
+## External review — findings
+
+Key sha256:68751d8b14d4 · reviewed head 02d6f4d19ab4708650841d18255005aeeb67dc57 (PR #114, record/156; task code at f562f44) · round 2
+
+## AindriuB/wisp#114 · Changes suggested · head 02d6f4d19ab4
+0 P1 · 1 P2 · 1 P3
+| ID | Sev | Where | Issue | Failing input | Fix |
+|---|---|---|---|---|---|
+| 114-1 | P2 | `scripts/release/sign-windows/artifact-configuration.xml:12` | The reference configuration now requires a wisp-cli.exe entry, but the workflow uploads wisp.exe alone whenever SIGNPATH_SIGNS_CLI is not true. In SignPath, each listed pe-file must match exactly one file by default. The README says to apply this configuration first and set the variable afterwards, so between those two steps every signed release fails. | The owner applies the new artifact-configuration.xml in SignPath and has not yet set SIGNPATH_SIGNS_CLI=true. A tag push uploads a zip with only wisp.exe. The SignPath request then fails because wisp-cli.exe is missing, and the Windows build fails. This contradicts the README line "a configuration listing one file keeps working". | Add min-matches="0" to the wisp-cli.exe pe-file, or tell the owner to set the variable and the configuration together. Also fix the README wording. |
+| 114-2 | P3 | `.github/workflows/release.yml:165` | The CLI's signing state is uploaded from the Windows job only. The release job always downloads meta-windows-cli-signing and reads it to write notes.md. Nothing in the workflow checks that the file holds "signed" or "unsigned". | A Windows run that writes an empty or unexpected state file produces notes.md with the "not code-signed" line even when the CLI is signed, because every value other than "signed" falls through to that line. | Fail the notes step when the state is neither "signed" nor "unsigned". |
+Not assessed: SignPath's real matching behaviour and the winget-pr CI result were not checked against a live run. The release workflow was not dispatched, by rule.
+
+## Wave verified — c611780a4e2ecc3aa7d80c9190dc15215c35b352
 
 ## Outcome
 Merged via record/156 at f562f44 (stacked on record/154). Every archive now carries `wisp-cli`; the Windows GUI gate is 16,000,000 B; the CLI size step reads `cli-budgets.json`; Windows CLI signing is behind `SIGNPATH_SIGNS_CLI`. Review round 1 fixed a P2 at release.yml:167 (a failed `wisp.exe` verification was hidden by the passing CLI check). Tester: 1,343 passed, 0 failed, no flakes. The `winget-pr` check (AC10) runs only on the PR's CI. The release was not dispatched; task 158 does the dry run.
+
+Review round 2 (PR #114 external review, 114-1) made the `wisp-cli.exe` entry in the SignPath configuration optional (`min-matches="0"`).
