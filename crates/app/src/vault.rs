@@ -23,54 +23,16 @@ use wisp_storage::vault::{
     set_secret, share_with_folder,
 };
 
-/// Environment variable that overrides the keychain service name.
-pub const KEYCHAIN_SERVICE_ENV: &str = "WISP_KEYCHAIN_SERVICE";
+/// The app's one [`SecretStores`].
+pub use wisp_service::vault::KeychainStores as AppStores;
+#[allow(unused_imports)] // re-exported under the old names
+pub use wisp_service::vault::{KEYCHAIN_SERVICE_ENV, portable_marker, service_name};
 
 /// The size cap of one keychain value, as shown to the user.
 pub const KEYCHAIN_LIMIT_TEXT: &str = "2,560 B";
 
 /// The stores the app hands to storage and the refresh-token adapter.
 pub type SharedStores = Arc<dyn SecretStores + Send + Sync>;
-
-/// The keychain service: `WISP_KEYCHAIN_SERVICE` when set and non-empty, else `wisp`.
-pub fn service_name(var: Option<&str>) -> String {
-    match var {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => "wisp".to_string(),
-    }
-}
-
-/// True when a `portable` marker sits beside the executable (the rule `DataDir::resolve` uses).
-pub fn portable_marker() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|d| d.join("portable").exists()))
-        .unwrap_or(false)
-}
-
-/// The app's one [`SecretStores`]. A future store kind is added in `get` and nowhere else.
-pub struct AppStores {
-    keychain: Box<dyn SecretStore>,
-}
-
-impl AppStores {
-    /// Open the OS keychain store (inert when `portable`).
-    pub fn open(portable: bool) -> Self {
-        let service = service_name(std::env::var(KEYCHAIN_SERVICE_ENV).ok().as_deref());
-        Self {
-            keychain: keychain::open(&service, portable),
-        }
-    }
-}
-
-impl SecretStores for AppStores {
-    fn get(&self, kind: StoreKind) -> Option<&dyn SecretStore> {
-        match kind {
-            StoreKind::Keychain => Some(&*self.keychain),
-            _ => None,
-        }
-    }
-}
 
 // ---- refresh tokens ----
 
@@ -1293,13 +1255,6 @@ mod keychain_tests {
 
     fn files_under(dir: &Path) -> usize {
         std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
-    }
-
-    #[test]
-    fn keychain_service_is_the_variable_when_set_and_non_empty() {
-        assert_eq!(service_name(None), "wisp");
-        assert_eq!(service_name(Some("")), "wisp");
-        assert_eq!(service_name(Some("wisp-test-1")), "wisp-test-1");
     }
 
     #[test]

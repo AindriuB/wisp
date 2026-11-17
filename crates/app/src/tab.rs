@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{Context, EventEmitter, SharedString};
-use wisp_core::assert::{Assertion, AssertionResult};
 use wisp_core::body::BodyHandle;
-use wisp_core::request::{Body, Request};
+use wisp_core::request::Request;
 use wisp_core::{EngineError, Header, HttpVersion, RequestId};
 
+pub use wisp_service::outcome::CheckOutcome;
+pub use wisp_service::plan::HistoryOrigin;
 use wisp_storage::request::DiskBaseline;
 
 use crate::draft;
@@ -54,14 +55,6 @@ pub enum Phase {
     Done,
     Failed,
     Cancelled,
-}
-
-/// One evaluated assertion. The definition is kept beside the result so the
-/// Checks pane shows the expected value as sent, after the draft changes.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CheckOutcome {
-    pub assertion: Assertion,
-    pub result: AssertionResult,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -118,30 +111,6 @@ impl AuthorizeState {
             _ => None,
         }
     }
-}
-
-/// What a tab opened from history remembers about its entry.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HistoryOrigin {
-    /// Unix milliseconds the entry was recorded.
-    pub at_ms: u64,
-    pub body_stored: bool,
-    pub body_truncated: bool,
-    /// Names whose values were not stored; never shown with a value.
-    pub redacted: Vec<String>,
-    /// What opening the entry removed, disabled or reset so no emptied
-    /// credential is sent; shown in the Resend notice.
-    pub adjustments: Vec<String>,
-    /// The entry's original request path, used only to scope Resend's resolve.
-    pub request: Option<String>,
-    /// The URL template the tab opened with; the folder scope applies only
-    /// while the draft URL still equals it.
-    pub url: String,
-    /// The body the tab opened with (after sanitising). A redacted body must
-    /// differ from it before the tab can be sent.
-    pub stored_body: Body,
-    /// Whether the recorded run evaluated assertions.
-    pub had_assertions: bool,
 }
 
 pub struct RequestTab {

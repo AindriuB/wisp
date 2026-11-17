@@ -8626,6 +8626,7 @@ dependencies = [
  "tracing",
  "winresource",
  "wisp-core",
+ "wisp-service",
  "wisp-storage",
 ]
 
@@ -8671,6 +8672,15 @@ dependencies = [
  "uuid",
  "webpki-root-certs",
  "wiremock",
+]
+
+[[package]]
+name = "wisp-service"
+version = "0.3.0"
+dependencies = [
+ "tempfile",
+ "wisp-core",
+ "wisp-storage",
 ]
 
 [[package]]
