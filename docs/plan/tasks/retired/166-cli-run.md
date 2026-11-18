@@ -89,6 +89,23 @@ Follow-up (not this round): [P3] crates/cli/tests/run.rs:150-154 `closed()` bind
 
 ## Wave verified — ff9207aa4e8e4f4b82e8a05b9d4e70d7b13a98fa
 
+## Wave stopped — step 5 — CI red on PR #132 (head 886842c) from 168's Windows flake
+windows-latest fails `h2_read_only_unmigrated_gives_note_and_changes_nothing` (crates/storage/tests/history.rs:1968), task 168's test, which #132 carries because it is stacked on #131. No 166 code cause. #132 waits on 168's decision and on #131 merging first.
+
+## Wave resumed — user: no 166 change; #132 re-runs CI once 168's Windows test fix lands on #131 and #132 is updated from it
+
+## Attempt 2 — failed
+CI on PR #133 (record/169, head 2ff6df0, which carries 166 + 168 + 169): `check (ubuntu-24.04)` fails `run::tests::run_history_for_a_not_prepared_run_is_skipped_not_sent_or_no_id`:
+`panicked at crates/service/src/run.rs:730:55: called `Result::unwrap()` on an `Err` value: Storage(Invalid { path: "/tmp/.tmp…", key: "id", message: "the folder does not carry this collection id" })`
+Cause: the test helper `bound_store` (run.rs:~726-730) calls `bind(…, &id, &root)` for a collection folder whose collection.toml does not carry that id (the no-id case). Task 169 (AC2) now refuses that bind, correctly. 166's own PR #132 is green only because it lacks 169.
+Fix (test only, in Owns): the fixture must not bind a root that does not carry the id — skip the keychain binding in the no-id case, or write the id into collection.toml before binding where the case needs one — so the test passes both with and without 169's binding check. Verify against 169's rule by reading crates/storage/src/vault_binding.rs on branch task/169-secret-store-hardening.
+
+## Attempt 3 — failed
+/verify at 7d6953882c2cc4c5e4f880c71fc9a4bf973317c2: reviewer APPROVE; tester FAIL on suite-and-lint — `cargo fmt --check` exits 1 with formatting diffs in crates/service/src/run.rs:728 and :971 (the attempt-2 fixture lines). Everything else passed (1441 tests, clippy clean). Fix: `cargo fmt` on that file, nothing else.
+
+## Wave verified — 1b61da0fca96e9f4e0c1bc839327399e3edec880
+
 ## Outcome
 Merged 2026-11-17 as 0abafec (branch head ff9207a). `wisp-cli run <collection> <request-path> [--env] [--keychain] [--history] [--json]` sends one saved request through `wisp_service::run::run_once`, with the exit codes and `result` values of spec :155-165. Verified at ff9207a: workspace suite, clippy and fmt clean; reviewer APPROVE on AC1-AC11. Amendment 1 and review round 1 added the missing-keychain-secret problem (exit 4), the `skipped (not sent)` history vocabulary, no response headers in CLI history entries, `None` on a body read error, the spec status line, and the keychain canary on exits 0/1/4/5/6/7. The keychain AC7/AC8 tests live in `crates/service` because the CLI cannot set the `MemoryStore` seam (AC2).
 Follow-ups are in PLAN under "Follow-ups from task 166".
+After stacking on 169 the fixture bound a folder without the id (169 refuses that); fixed test-only, then `cargo fmt`. Re-verified at 1b61da0 (record PR #132 carries it).
