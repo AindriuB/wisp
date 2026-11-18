@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table, TableLike, Value};
+use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Key, Table, TableLike, Value};
 use wisp_core::assert::{Assertion, Expected, Op, ParseError};
 use wisp_core::request::{ApiKeyLocation, Auth, ClientAuth, KeyValue, Var};
 
@@ -141,15 +141,20 @@ pub fn write_vars(table: &mut Table, key: &str, vars: &[Var]) {
     let Some(t) = table.get_mut(key).and_then(Item::as_table_like_mut) else {
         return;
     };
-    let stale: Vec<String> = t
+    // Rebuild in the draft's order so a rename keeps its position; keys keep their decor.
+    let kept: Vec<(Key, Item)> = vars
         .iter()
-        .map(|(k, _)| k.to_string())
-        .filter(|k| !vars.iter().any(|v| &v.name == k))
+        .filter_map(|v| t.get_key_value(&v.name))
+        .map(|(k, item)| (k.clone(), item.clone()))
         .collect();
-    for k in stale {
+    let all: Vec<String> = t.iter().map(|(k, _)| k.to_string()).collect();
+    for k in all {
         t.remove(&k);
     }
     for v in vars {
+        if let Some((k, item)) = kept.iter().find(|(k, _)| k.get() == v.name) {
+            t.entry_format(k).or_insert(item.clone());
+        }
         set_str(t, &v.name, &v.value);
     }
 }
@@ -960,6 +965,24 @@ token = "abc"
         write_key_values(&mut doc, "headers", &hs);
         let out = doc.to_string();
         assert!(!out.contains("enabled"));
+    }
+
+    #[test]
+    fn vars_rename_keeps_position() {
+        let src = "[vars]\n# first\na = \"1\"\nb = \"2\"\nc = \"3\"\n";
+        let mut doc = parse(p(), src).unwrap();
+        let mut vars = read_vars(&doc, "vars", p()).unwrap();
+        vars[1].name = "x".into();
+        write_vars(&mut doc, "vars", &vars);
+        let out = doc.to_string();
+        let doc2 = parse(p(), &out).unwrap();
+        let names: Vec<_> = read_vars(&doc2, "vars", p())
+            .unwrap()
+            .into_iter()
+            .map(|v| v.name)
+            .collect();
+        assert_eq!(names, ["a", "x", "c"]);
+        assert!(out.contains("# first"));
     }
 
     #[test]
