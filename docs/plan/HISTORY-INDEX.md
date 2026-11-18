@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-17 | 167 | file body hashed, rewound and sent from one handle, re-hashed while streaming, one timeout budget with a post-send deadline check | ## 2026-11-17 — One-handle file hashing with a single timeout budget (task 167) |
 | 2026-11-17 | 169 | secret import/move conflicts typed and confirmed, binding fail-closed, no-follow file access, Local Windows keychain items, data-dir refusal | ## 2026-11-17 — Secret store and binding hardening (task 169) |
 | 2026-11-17 | 166 | `wisp-cli run` sends one saved request through the service; exit codes, delivery and retry_safe, optional `--history` | ## 2026-11-17 — wisp-cli run (task 166) |
 | 2026-11-17 | 168 | history masking linear, request bodies capped, token-boundary credential names, response header names split, read-only history reader | ## 2026-11-17 — History hardening and a read-only history reader (task 168) |
