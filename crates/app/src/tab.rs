@@ -18,6 +18,7 @@ use crate::draft;
 pub enum RequestSubTab {
     Params,
     Path,
+    Vars,
     Headers,
     Auth,
     Body,
