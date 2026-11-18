@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) and 168 (history hardening, read-only history reader) are recorded; 166, 167, 169, 170 and 174 are in flight (170 is in PR #130); next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) and 170 (importer hardening, descriptions) are recorded; 166, 167, 169 and 174 are in flight; next is 166 (`wisp-cli run`), planned from the spec's service API (`Response` now has `size`).
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
 
@@ -30,6 +30,16 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
 - NOTE: substring matching clears whole Text/XML bodies that contain a fragment inside any word, such as monkey, hockey or surpass (fail safe, accepted under Amendment 4). Over-redaction is also why `X-OAuth-Scopes` is redacted (`auth` substring).
 - [Low] AC5's test shows the request/response header separation with `X-Foo-Token` rather than a redacted response `X-Foo`.
+
+### Follow-ups from task 170 (importer hardening and descriptions; not scheduled)
+- [P3] `mod.rs:298` `url_host` returns `user:digits` for the host:digits userinfo shape `may_hold_credentials` flags (`https://bob:1234?rest@h2/y` gives host `bob:1234`).
+- [P3] `postman.rs:186-189` the unsupported-method warning still echoes the raw method text.
+- [P3] `write.rs:134` `check_folder_rel` reports a missing folder as `ImportError::Parse` ("cannot parse input").
+- NOTE: `curl.rs:417` after an unknown option, a single positional without `://` is still taken as the URL (`curl --frobnicate SECRETVAL` writes it as the URL).
+- NOTE: `openapi.rs:222` `desc_is_safe` cannot spot a short opaque token used as an environment name.
+- [NOTE] `h4_unknown_option_still_never_takes_secret_as_url` passes on any Err, so it adds nothing beyond the AC2 test.
+- NOTE: assertion text is no longer scanned for undefined variables (the engine does not expand it).
+- NOTE: OpenAPI description bytes still count against the import budget.
 
 ### Follow-ups from task 175 (Explain metadata and preview; not scheduled)
 - [P3] `crates/app/src/ui/url_bar.rs:586` `metadata_preview_is_deterministic_and_uses_placeholder` would pass with a Fresh source too (`Problem` has no field for a generated value); the task's no-fresh `rg` check is the real proof.
