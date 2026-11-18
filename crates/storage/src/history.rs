@@ -1124,8 +1124,14 @@ impl HistoryStore {
                     continue;
                 };
                 let mut names = Vec::new();
+                // A truncated body was redacted before the cut and is no longer valid JSON,
+                // so redacting it again would empty it: keep it as stored.
+                let kept = file.truncated.then(|| file.request.body.clone());
                 let (request, req_names) = redact_request(&file.request);
                 file.request = request;
+                if let Some(body) = kept {
+                    file.request.body = body;
+                }
                 names.extend(req_names);
                 let mut response_names = std::mem::take(&mut file.response_redacted);
                 redact_response_headers(&mut file.response_headers, &mut response_names);
@@ -1219,7 +1225,11 @@ impl HistoryStore {
     pub fn append(&self, new: NewEntry, body: Option<&[u8]>) -> Result<HistoryEntry, StorageError> {
         let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _file_lock = self.lock_file()?;
+        let created = !self.dir.exists();
         ensure_private_dir(&self.bodies())?;
+        if created {
+            atomic_write_private(&self.dir.join(SCRUB_MARKER), b"1")?;
+        }
         let id = uuid::Uuid::new_v4().simple().to_string();
         let (mut request, redacted) = redact_request(&new.request);
         let mut response_headers = new.response_headers;
