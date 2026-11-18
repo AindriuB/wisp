@@ -40,6 +40,9 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] Spec: AC4 contradicts itself. Its acronym rule splits `OAuth` into O+Auth, so `X-OAuth-Scopes` is now redacted (fail-safe over-redaction), while its example says `OAuth2Token` gives oauth, 2, token. Decide which is intended and fix the wording or the rule.
 - NOTE: the strong-fragment suffix rule also redacts ordinary words that end in one (possession, obsession), in history and in the importers.
 - [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
+- [P3] `crates/core/src/redact.rs:47-48` the `token_is_credential` doc comment omits the suffix rule and its `bypass`/`compass` exceptions.
+- [Low] No table row covers the optional plural `s` (`masterkeys`, `rootcookies`).
+- NOTE: the suffix rule clears whole Text/XML bodies that contain words like monkey, hockey or surpass (accepted under Amendment 3).
 
 ### Follow-ups from task 175 (Explain metadata and preview; not scheduled)
 - [P3] `crates/app/src/ui/url_bar.rs:586` `metadata_preview_is_deterministic_and_uses_placeholder` would pass with a Fresh source too (`Problem` has no field for a generated value); the task's no-fresh `rg` check is the real proof.
