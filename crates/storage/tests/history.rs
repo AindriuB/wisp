@@ -2022,8 +2022,8 @@ fn h2_run_together_credential_names_are_redacted_in_query_header_and_text_body()
         .append(
             new_entry(Request {
                 url: "https://example.com/?rootpass=hunter2".into(),
-                headers: vec![kv("X-Masterkey", "abc")],
-                body: Body::Text(text_body("masterkey=abc")),
+                headers: vec![kv("X-Masterkey", "zeroth-secret")],
+                body: Body::Text(text_body("masterkey=zeroth-secret")),
                 ..Request::default()
             }),
             None,
@@ -2032,7 +2032,10 @@ fn h2_run_together_credential_names_are_redacted_in_query_header_and_text_body()
     let mut text = String::new();
     all_text(&hist_dir(&data), &mut text);
     assert!(!text.contains("hunter2"), "query value stored");
-    assert!(!text.contains("abc"), "header or body value stored");
+    assert!(
+        !text.contains("zeroth-secret"),
+        "header or body value stored"
+    );
 }
 
 #[test]
