@@ -20,9 +20,14 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) 166 (`wisp-cli run`) 169 (secret store and binding hardening) and 167 (hash file body through one handle) are recorded; 170 and 174 are in flight (170 is in PR #130); next are 172 (CLI budgets measurement) and 173 (CLI snapshot and metadata) once their dependencies land.
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) 166 (`wisp-cli run`) 169 (secret store and binding hardening) 167 (hash file body through one handle) and 174 (per-request variables editor) are recorded; 170 is in flight (PR #130); next are 172 (CLI budgets measurement), 173 (CLI snapshot and metadata) and 178 (refuse to resend a truncated history body; depends on 168 and 174; task file not yet committed) once their dependencies land.
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 174 (per-request variables editor; not scheduled)
+- [P3] No test that `VarsEditor` wires `set_row_mask`; the pure decision test would pass without the call.
+- [Low] `vars_save_autosave_refuses_duplicate_names` duplicates the Ctrl+S test because no autosave caller exists; give autosave a real-entry-point test if one is added.
+- NOTE: `write_vars` (`crates/storage/src/codec.rs`) now rewrites `[vars]` in caller order for every caller (request path, environments, collection defaults); all pass file order today.
 
 ### Follow-ups from task 167 (hash file through one handle; not scheduled)
 - [P3] A same-origin 307/308 SigV4 resend reopens the file by path with `digest: None`, so it is not re-hash-checked (redirect area, task 164).

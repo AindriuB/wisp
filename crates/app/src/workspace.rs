@@ -3044,6 +3044,13 @@ impl Workspace {
         };
         use wisp_storage::request::{DiskBaseline, SaveOutcome, save_request_if_unchanged};
         let t = tab.read(cx);
+        // Storage keys `[vars]` by name, so a duplicate would silently lose a row.
+        if let Some(i) = crate::ui::request::vars::duplicate_var_rows(&t.draft.vars).first() {
+            anyhow::bail!(
+                "Not saved: variable `{}` is defined twice; rename or remove one",
+                t.draft.vars[*i].name
+            );
+        }
         let mut draft = t.draft.clone();
         let was_path = t.path.is_some();
         let rel = if let Some(rel) = t.path.clone() {
@@ -5841,6 +5848,90 @@ mod env_wiring_tests {
         });
         fx.ws.update(cx, |w, cx| w.save(&tab, cx)).unwrap();
         assert_eq!(load_request(&path).unwrap().url, "http://mine-again.test/");
+    }
+
+    /// A tab whose draft holds two vars named `k`, with the file's bytes before any save.
+    fn dup_vars_tab(fx: &Fx, cx: &mut TestAppContext) -> (Entity<RequestTab>, PathBuf, Vec<u8>) {
+        let (tab, rel) = open_tab(fx, cx);
+        let before = std::fs::read(fx.root.join(&rel)).unwrap();
+        tab.update(cx, |t, cx| {
+            t.edit(
+                |r| {
+                    r.vars = ["1", "2"]
+                        .map(|v| wisp_core::request::Var {
+                            name: "k".into(),
+                            value: v.into(),
+                        })
+                        .to_vec()
+                },
+                cx,
+            )
+        });
+        (tab, rel, before)
+    }
+
+    fn assert_dup_vars_kept(
+        fx: &Fx,
+        tab: &Entity<RequestTab>,
+        rel: &Path,
+        before: &[u8],
+        cx: &mut TestAppContext,
+    ) {
+        assert_eq!(std::fs::read(fx.root.join(rel)).unwrap(), before);
+        assert_eq!(tab.read_with(cx, |t, _| t.draft.vars.len()), 2);
+        assert!(tab.read_with(cx, |t, _| t.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn vars_save_ctrl_s_refuses_duplicate_names(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel, before) = dup_vars_tab(&fx, cx);
+        let err = save_err(&fx, &tab, cx);
+        assert!(err.contains("`k`"), "{err}");
+        assert_dup_vars_kept(&fx, &tab, &rel, &before, cx);
+    }
+
+    #[gpui::test]
+    fn vars_save_autosave_refuses_duplicate_names(cx: &mut TestAppContext) {
+        // Autosave calls `Workspace::save` like Ctrl+S; a second call must refuse too.
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel, before) = dup_vars_tab(&fx, cx);
+        for _ in 0..2 {
+            assert!(fx.ws.update(cx, |w, cx| w.save(&tab, cx)).is_err());
+        }
+        assert_dup_vars_kept(&fx, &tab, &rel, &before, cx);
+    }
+
+    #[gpui::test]
+    fn vars_save_all_refuses_duplicate_names(cx: &mut TestAppContext) {
+        use crate::save_close::{self, ClosePrompt};
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel, before) = dup_vars_tab(&fx, cx);
+        let tabs = vec![tab.clone()];
+        let close = fx.ws.update(cx, |w, cx| {
+            save_close::finish(ClosePrompt::Collection, Some(0), &tabs, w, cx)
+        });
+        assert!(!close);
+        assert_dup_vars_kept(&fx, &tab, &rel, &before, cx);
+    }
+
+    #[gpui::test]
+    fn vars_save_and_close_refuses_duplicate_names_and_keeps_the_tab(cx: &mut TestAppContext) {
+        use crate::save_close::{self, ClosePrompt};
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let (tab, rel, before) = dup_vars_tab(&fx, cx);
+        let tabs = vec![tab.clone()];
+        let close = fx.ws.update(cx, |w, cx| {
+            save_close::finish(ClosePrompt::Tab { can_save: true }, Some(0), &tabs, w, cx)
+        });
+        assert!(!close);
+        assert_dup_vars_kept(&fx, &tab, &rel, &before, cx);
+        fx.ws
+            .read_with(cx, |w, _| assert_eq!(w.collections[0].group.tabs, tabs));
     }
 
     #[gpui::test]
