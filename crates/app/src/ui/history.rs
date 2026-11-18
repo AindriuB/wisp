@@ -126,6 +126,9 @@ pub fn origin_line(origin: &HistoryOrigin, now_ms: u64) -> String {
     } else if !origin.body_stored {
         line.push_str(". Body not stored");
     }
+    if origin.request_truncated {
+        line.push_str(", request body truncated at 1 MiB");
+    }
     line
 }
 
@@ -505,6 +508,7 @@ mod tests {
             at_ms: 0,
             body_stored: true,
             body_truncated: false,
+            request_truncated: false,
             redacted: Vec::new(),
             adjustments: Vec::new(),
             request: None,
@@ -524,6 +528,27 @@ mod tests {
             origin_line(&o, 5 * 60_000),
             "From history, 5 min ago. Body not stored"
         );
+    }
+
+    #[test]
+    fn truncated_request_is_noted_separately_from_response_body() {
+        let mut o = HistoryOrigin {
+            at_ms: 0,
+            body_stored: true,
+            body_truncated: true,
+            request_truncated: true,
+            redacted: Vec::new(),
+            adjustments: Vec::new(),
+            request: None,
+            url: String::new(),
+            stored_body: Default::default(),
+            had_assertions: false,
+        };
+        let line = origin_line(&o, 5 * 60_000);
+        assert!(line.contains("Body truncated at 1 MiB"));
+        assert!(line.contains("request body truncated at 1 MiB"));
+        o.body_truncated = false;
+        assert!(!origin_line(&o, 0).contains("Body truncated at"));
     }
 
     #[test]
