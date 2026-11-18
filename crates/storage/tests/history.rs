@@ -2036,6 +2036,25 @@ fn h2_run_together_credential_names_are_redacted_in_query_header_and_text_body()
 }
 
 #[test]
+fn h2_authentication_and_run_together_names_are_redacted() {
+    let (_d, data, store) = setup();
+    store
+        .append(
+            new_entry(Request {
+                url: "https://example.com/?webhooksignature=zz-hunter&awscredentials=zz-hunter"
+                    .into(),
+                headers: vec![kv("Authentication", "zz-hunter")],
+                ..Request::default()
+            }),
+            None,
+        )
+        .unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(!text.contains("zz-hunter"), "value stored");
+}
+
+#[test]
 fn h2_form_and_multipart_bodies_are_capped_and_flagged() {
     let cap = wisp_storage::history::BODY_CAP;
     let (_d, _data, store) = setup();
