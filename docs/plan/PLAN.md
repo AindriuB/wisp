@@ -46,7 +46,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] In `run_missing_keychain_secret_is_not_prepared_and_sends_nothing` (crates/service/src/run.rs) the `if carries_id` guard can never be false; bind unconditionally there so a fixture change fails loudly.
 - [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
 - [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
-- [P3] 132-3: task 178 and 179 files are not committed yet, though the 168 follow-up below cites 178's path; commit them or drop the path.
+- [P3] 132-3: task 178 file is not committed yet, though the 168 follow-up below cites its path; commit it or drop the path.
 - [P3] The task 166 HISTORY entry misstates the exit codes: 1 is a failed assertion, 7 an unexpected status, 0 a pass.
 - [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
 
@@ -64,13 +64,14 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
 - [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it. Ship with 168's release.
-- Task 179 (`docs/plan/tasks/179-openapi-env-name-credentials.md`) is an open follow-up from the task 170 review (PR #130, 130-1); see the task file.
 - [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
 - NOTE: substring matching clears whole Text/XML bodies that contain a fragment inside any word, such as monkey, hockey or surpass (fail safe, accepted under Amendment 4). Over-redaction is also why `X-OAuth-Scopes` is redacted (`auth` substring).
 - [Low] AC5's test shows the request/response header separation with `X-Foo-Token` rather than a redacted response `X-Foo`.
 
 ### Follow-ups from task 170 (importer hardening and descriptions; not scheduled)
-- [P3] `mod.rs:298` `url_host` returns `user:digits` for the host:digits userinfo shape `may_hold_credentials` flags (`https://bob:1234?rest@h2/y` gives host `bob:1234`).
+- [P3] `mod.rs:298` `url_host` returns `user:digits` for the host:digits userinfo shape `may_hold_credentials` flags (`https://bob:1234?rest@h2/y` gives host `bob:1234`). Task 179 keeps it out of OpenAPI environment names; the shared function is unchanged.
+- [P3] Task 179: `openapi.rs:389` `suspect ||` is redundant when the URL had no userinfo.
+- [NOTE] Needs a user decision before it becomes a task: `openapi.rs:377-381` the "credentials in the URL were dropped" warning interpolates `url_host` of the stripped URL, so `https://u:p@bob:1234?rest@h2/y` prints `bob:1234` (a possible password) in the warning text, though no longer in the file name. Pre-existing; 179 AC3 froze the warning text. For that input no "may contain credentials" warning fires either, because `suspect` is computed before the strip.
 - [P3] `postman.rs:186-189` the unsupported-method warning still echoes the raw method text.
 - [P3] `write.rs:134` `check_folder_rel` reports a missing folder as `ImportError::Parse` ("cannot parse input").
 - NOTE: `curl.rs:417` after an unknown option, a single positional without `://` is still taken as the URL (`curl --frobnicate SECRETVAL` writes it as the URL).

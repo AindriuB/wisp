@@ -46,3 +46,22 @@ would widen the blast radius beyond this finding.
 - Changing `url_host`, `split_userinfo` or `may_hold_credentials` in `mod.rs`.
 - Stripping the possible credential from the stored `baseUrl` (the warning covers it; a separate decision).
 - curl and Postman importers.
+
+## Review round 1 — findings
+Reviewed head: 546adf6b0da654d80022c25a3cec5b38f4c16782
+
+- [P2] crates/storage/src/import/openapi.rs:364 — The branch sets `suspect` from the URL before `split_userinfo` strips real userinfo. If the URL has real userinfo in front of the suspect `user:digits?…@` shape, the check returns false (the authority segment contains `@`). Stripping then exposes `bob:1234?…@h2`, and the name falls back to `url_host`, which puts the possible password in the file name. This is the leak the task exists to close.
+  route: implementer — the fix stays inside the name choice that Owns allows. Recompute the check on the stripped URL for naming, e.g. `suspect || super::may_hold_credentials(&url)` in the `else if` at :389. That needs no change to `mod.rs`, the warning text or `baseUrl`.
+  input: OpenAPI server `{"url":"https://u:p@bob:1234?rest@h2/y"}` with no description  →  environment name `bob-1234`, so the file is `environments/bob-1234.toml`. The only warning is "server 1 (`bob:1234`): credentials in the URL were dropped", and there is no "may contain credentials" warning.
+
+## Review round 2 — findings
+Reviewed head: 7ad2c30c9e8fc83f086ccfb19267d67b686a5433
+Round 1's P2 is FIXED at openapi.rs:389. Orchestrator ruling on the DRIFT below: option (a), move the test; Owns is unchanged.
+
+- [DRIFT] crates/storage/src/import/openapi.rs:1174 — The regression test for the round-1 finding (`env_name_ignores_suspect_host_exposed_after_userinfo_strip`) was added to openapi.rs's `mod tests`. Owns allows openapi.rs changes only to the server loop's environment-name choice, and allows new tests only as `h4_server_name_*` in crates/storage/tests/import.rs. So the test is outside Owns, and it is also not run by the `server-name` check (`--test import h4_server_name_`).
+  fix: move it to crates/storage/tests/import.rs as an `h4_server_name_*` test, and remove it from openapi.rs.
+
+## Wave verified — dd241de3df8fe7a8562b386145b808e02c1ab1b3
+
+## Outcome
+Merged at dd241de (merge 4716999 on record/179-openapi-env-name). AC1-AC4 passed; tester PASS, reviewer APPROVE after two review rounds. The name choice re-checks the stripped URL, and the regression test lives in `crates/storage/tests/import.rs`. Follow-ups are in PLAN.md under the task 170 follow-ups.
