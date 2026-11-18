@@ -53,6 +53,8 @@ jobs:
           # (off everywhere) or 3 (system volume only), so set both.
           fsutil behavior set disable8dot3 0
           fsutil 8dot3name set $drive 0
+          # The per-volume set errors when the registry setting is global; ignore.
+          $global:LASTEXITCODE = 0
           fsutil behavior query disable8dot3
           fsutil 8dot3name query $drive
           # Probe the way the test does, so a failure here is explained.

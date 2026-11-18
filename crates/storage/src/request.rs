@@ -1713,6 +1713,23 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         });
     }
 
+    /// The 8.3 file name Windows gave `path`, or `None` when the call fails.
+    /// Names are hashed (`B9388~1.TOM`), so they cannot be guessed.
+    #[cfg(windows)]
+    fn short_name(path: &Path) -> Option<String> {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut buf = vec![0u16; 1024];
+        // SAFETY: `wide` is NUL-terminated; `buf` is writable for its length.
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        if n == 0 || n as usize > buf.len() {
+            return None;
+        }
+        let full = std::ffi::OsString::from_wide(&buf[..n as usize]);
+        Path::new(&full).file_name()?.to_str().map(str::to_owned)
+    }
+
     /// Best-effort: needs 8.3 short names enabled on the volume.
     #[cfg(windows)]
     #[test]
@@ -1720,16 +1737,17 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
         // Skip when the volume has 8.3 names off, unless CI demands the real run.
         let probe = tempfile::tempdir().unwrap();
         std::fs::write(probe.path().join("b.toml"), "x").unwrap();
-        if !probe.path().join("B~1.TOM").exists() {
+        let short = short_name(&probe.path().join("b.toml"));
+        let Some(short) = short.filter(|s| !s.eq_ignore_ascii_case("b.toml")) else {
             assert!(
                 std::env::var_os("WISP_REQUIRE_8DOT3").is_none(),
                 "8.3 short names are off on this volume but WISP_REQUIRE_8DOT3 is set"
             );
             eprintln!("SKIPPED: 8.3 short names are off on this volume");
             return;
-        }
-        eprintln!("RAN: 8.3 short names are on; checking B~1.TOM");
-        alias_rejected("B~1.TOM", |_| {});
+        };
+        eprintln!("RAN: 8.3 short names are on; checking {short}");
+        alias_rejected(&short, |_| {});
     }
 
     #[cfg(unix)]
