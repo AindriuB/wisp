@@ -117,3 +117,8 @@ Fix: gate these with the same `cfg` as their callers (or use them on Windows), s
 ## Outcome
 Merged to main at 597a89a (merge 76cf836), PASS + APPROVE; Windows clippy dead code then fixed with `cfg(unix)` gates, re-verified at c75ed42 (Attempt 2, PR #133): tester 1430 passed, all checks including `notices` ok, flake-watch tests passed; reviewer APPROVE on AC1-AC11 after Amendment 2. Not built locally: the `cfg(windows)` keychain path (Local persistence via `keyring_core::Entry::new_with_modifiers`); Windows CI is its proof.
 Follow-ups, not fixed (also in PLAN.md): collection.toml becomes 0600 when an id is written; Windows `open_nofollow` has no file-identity check; `open_nofollow` lacks O_NONBLOCK; `is_git_tracked` has no timeout and fails open; `gains_moved_name` follows symlinks; `keyring-core` not in `[workspace.dependencies]`; the no-data-dir refusal is only `Invalid{key:"secrets"}`.
+
+## External review round 3 (summary)
+The tracked-file guard passed git a root-prefixed path, so a relative collection root bypassed it. It now passes the path relative to the root.
+
+## Wave verified — 4f4c92bcc8e1bb35e4243a1e93627458116738a0

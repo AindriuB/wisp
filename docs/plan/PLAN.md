@@ -45,6 +45,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] `keyring-core = "1"` is not in `[workspace.dependencies]`.
 - [Low] The no-data-dir refusal is only `Invalid{key:"secrets"}`.
 - NOTE: the `cfg(windows)` keychain path is unbuilt locally; Windows CI is the proof.
+- [Low] On Windows `h3_tracked_check_works_with_a_relative_root` does not test a relative root (the leading `/` is never stripped).
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
 - [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it.
