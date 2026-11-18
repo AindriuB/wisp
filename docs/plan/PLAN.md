@@ -40,6 +40,8 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] In `run_missing_keychain_secret_is_not_prepared_and_sends_nothing` (crates/service/src/run.rs) the `if carries_id` guard can never be false; bind unconditionally there so a fixture change fails loudly.
 - [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
 - [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
+- [P3] 132-3: task 178 and 179 files are not committed yet, though the 168 follow-up below cites 178's path; commit them or drop the path.
+- [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
 
 ### Follow-ups from task 169 (secret store and binding hardening; not scheduled)
 - [P3] `collection.toml` becomes 0600 when an id is written (`write_nofollow` ignores the old mode).
