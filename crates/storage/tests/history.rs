@@ -1878,7 +1878,7 @@ fn h2_request_body_is_capped_and_flagged() {
     let req = Request {
         url: "https://x.test/".into(),
         body: Body::Text(TextBody {
-            content: "a".repeat(cap * 2),
+            content: "z".repeat(cap * 2),
             sidecar: None,
         }),
         ..Request::default()
@@ -1923,7 +1923,7 @@ fn h2_response_header_names_stay_out_of_request_redacted() {
     }];
     new.response_headers.push(Header {
         name: "X-Foo-Token".into(),
-        value: "secret".into(),
+        value: "zz-hunter".into(),
     });
     let e = store.append(new, None).unwrap();
     assert!(!e.redacted.iter().any(|n| n == "X-Foo-Token"));
