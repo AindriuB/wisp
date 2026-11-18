@@ -49,10 +49,9 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
 - [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it. Ship with 168's release.
-- Task 179 (`docs/plan/tasks/179-openapi-env-name-credentials.md`) is an open follow-up from the 168 and 170 reviews; see the task file.
+- Task 179 (`docs/plan/tasks/179-openapi-env-name-credentials.md`) is an open follow-up from the task 170 review (PR #130, 130-1); see the task file.
 - [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
 - NOTE: substring matching clears whole Text/XML bodies that contain a fragment inside any word, such as monkey, hockey or surpass (fail safe, accepted under Amendment 4). Over-redaction is also why `X-OAuth-Scopes` is redacted (`auth` substring).
-- [P3] `x-vercel-protection-bypass` (a real secret header) is stored in clear because `bypass` is allow-listed (accepted under AC4g).
 - [Low] AC5's test shows the request/response header separation with `X-Foo-Token` rather than a redacted response `X-Foo`.
 
 ### Follow-ups from task 175 (Explain metadata and preview; not scheduled)
