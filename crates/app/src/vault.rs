@@ -529,14 +529,23 @@ pub fn load_job(
     data: Option<&DataDir>,
     stores: &dyn SecretStores,
 ) -> LoadResult {
-    // Without a data dir nothing can be bound, so a store-mode environment loads as unbound.
-    let none;
-    let data = match data {
-        Some(d) => d,
-        None => {
-            none = DataDir::at(std::env::temp_dir().join("wisp-no-data-dir"));
-            &none
-        }
+    // Without a data dir nothing can be bound: a keychain-mode environment is refused,
+    // a file-mode one loads as usual.
+    let Some(data) = data else {
+        let (loaded, secrets_file) = (
+            wisp_storage::vault::load_environment_without_data_dir(root, name, stores),
+            root.join("environments")
+                .join(format!("{name}.secrets.toml"))
+                .exists(),
+        );
+        return match loaded {
+            Ok(l) => LoadResult {
+                loaded: Ok(l),
+                can_share: false,
+                secrets_file,
+            },
+            Err(e) => load_err(e),
+        };
     };
     let id = match read_collection_id(root) {
         Ok(id) => id,
@@ -1041,7 +1050,7 @@ pub fn run(action: &EnvAction, e: &OpEnv) -> Outcome {
             };
             // Read the file's names before the import deletes it. Names only, never values.
             let new = imported_names(e.root, e.env);
-            match import_secrets_file(e.root, e.env, &id, store, &ctx) {
+            match import_secrets_file(e.root, e.env, &id, store, false, &ctx) {
                 Ok(leftover) => {
                     let mut text = if new.is_empty() {
                         format!("Imported the secrets file for {}", e.env)

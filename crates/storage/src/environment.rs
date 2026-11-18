@@ -114,6 +114,151 @@ pub fn list_environments(root: &Path) -> Result<Vec<String>, StorageError> {
     Ok(names)
 }
 
+#[cfg(test)]
+type TestHook = Box<dyn Fn(&str)>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HOOK: std::cell::RefCell<Option<TestHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test hook: run the installed closure, if any, at the named point between a
+/// check and the use of its result. Lets a test swap a path in at exactly that
+/// moment.
+#[cfg(test)]
+pub(crate) fn test_point(stage: &str) {
+    TEST_HOOK.with(|h| {
+        if let Some(f) = h.borrow().as_ref() {
+            f(stage);
+        }
+    });
+}
+
+#[cfg(not(test))]
+pub(crate) fn test_point(_stage: &str) {}
+
+/// Install (or with `None` clear) the [`test_point`] closure on this thread.
+#[cfg(all(test, unix))]
+pub(crate) fn set_test_hook(f: Option<TestHook>) {
+    TEST_HOOK.with(|h| *h.borrow_mut() = f);
+}
+
+/// Open `path` for reading without following a final symlink. The path is
+/// lstat-ed, opened, then the handle is compared with a second lstat (same
+/// device and inode on unix), so a link swapped in at any point is refused.
+pub(crate) fn open_nofollow(path: &Path) -> Result<std::fs::File, StorageError> {
+    let refuse = || StorageError::Invalid {
+        path: path.to_path_buf(),
+        key: "path".into(),
+        message: "must be a regular file, not a symbolic link".into(),
+    };
+    let regular = |m: &std::fs::Metadata| m.is_file() && !m.file_type().is_symlink();
+    let before = std::fs::symlink_metadata(path).map_err(|e| io(path, e))?;
+    if !regular(&before) {
+        return Err(refuse());
+    }
+    test_point("open:after-lstat");
+    let f = std::fs::File::open(path).map_err(|e| io(path, e))?;
+    let held = f.metadata().map_err(|e| io(path, e))?;
+    test_point("open:after-open");
+    let after = std::fs::symlink_metadata(path).map_err(|e| io(path, e))?;
+    if !regular(&after) || !held.is_file() {
+        return Err(refuse());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if held.dev() != after.dev() || held.ino() != after.ino() {
+            return Err(refuse());
+        }
+    }
+    Ok(f)
+}
+
+/// Read a whole UTF-8 file through [`open_nofollow`].
+pub(crate) fn read_nofollow(path: &Path) -> Result<String, StorageError> {
+    use std::io::Read;
+    let mut text = String::new();
+    open_nofollow(path)?
+        .read_to_string(&mut text)
+        .map_err(|e| io(path, e))?;
+    Ok(text)
+}
+
+/// Write `bytes` (mode `0600` on unix) to a fresh temp file beside `path`, then
+/// rename it over `path`. A final symlink at `path` is refused, checked
+/// again just before the rename, and is never followed: the rename replaces
+/// the name, not what it points to.
+pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    use std::io::Write;
+    let refuse_link = || -> Result<(), StorageError> {
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_symlink() || !m.is_file() => Err(StorageError::Invalid {
+                path: path.to_path_buf(),
+                key: "path".into(),
+                message: "must be a regular file, not a symbolic link".into(),
+            }),
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io(path, e)),
+        }
+    };
+    refuse_link()?;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut made = None;
+    for n in 0..100u32 {
+        let tmp = dir.join(format!("{}{name}.nf{n}", crate::TEMP_PREFIX));
+        match opts.open(&tmp) {
+            Ok(f) => {
+                made = Some((tmp, f));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(&tmp, e)),
+        }
+    }
+    let Some((tmp, mut f)) = made else {
+        return Err(io(
+            path,
+            std::io::Error::other("no temp file name available"),
+        ));
+    };
+    let r = f
+        .write_all(bytes)
+        .map_err(|e| io(&tmp, e))
+        .and_then(|()| {
+            drop(f);
+            test_point("write:before-rename");
+            refuse_link()
+        })
+        .and_then(|()| std::fs::rename(&tmp, path).map_err(|e| io(path, e)));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+/// [`load_vars`] without following a final symlink.
+pub(crate) fn load_vars_nofollow(
+    path: &Path,
+) -> Result<Vec<wisp_core::request::Var>, StorageError> {
+    let text = read_nofollow(path)?;
+    let doc = codec::parse(path, &text)?;
+    codec::read_vars(doc.as_table(), "vars", path)
+}
+
 pub(crate) fn load_vars(path: &Path) -> Result<Vec<wisp_core::request::Var>, StorageError> {
     let text = fs::read_to_string(path)?;
     let doc = codec::parse(path, &text)?;
@@ -127,7 +272,7 @@ pub(crate) fn load_secrets_file(
     sp: &Path,
 ) -> Result<Vec<wisp_core::request::Var>, StorageError> {
     if fs::confined_regular_file(root, sp, "secrets file")? {
-        load_vars(sp)
+        load_vars_nofollow(sp)
     } else {
         Ok(Vec::new())
     }
@@ -402,15 +547,18 @@ fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), Stora
             message: "the environments directory must not be a symbolic link".into(),
         });
     }
-    // Only a save that writes (or rewrites) the secrets file needs it checked.
-    if !env.secrets.is_empty() || sp.exists() {
+    // Evaluated once and used for both decisions below.
+    let sp_present = sp.exists();
+    test_point("save:after-secrets-exists");
+    let touches_secrets = !env.secrets.is_empty() || sp_present;
+    if touches_secrets {
         fs::confined_regular_file(root, &sp, "secrets file")?;
     }
     let plain_text = match plain_doc {
         Some(doc) => render_doc(doc, &env.vars)?,
         None => render(&pp, &env.vars)?,
     };
-    let secrets_text = if !env.secrets.is_empty() || sp.exists() {
+    let secrets_text = if touches_secrets {
         Some(render(&sp, &env.secrets)?)
     } else {
         None
@@ -422,7 +570,7 @@ fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), Stora
     let write_secrets = || -> Result<(), StorageError> {
         if let Some(text) = &secrets_text {
             ensure_gitignore(dir)?;
-            fs::atomic_write_force_private(&sp, text.as_bytes())?;
+            write_nofollow(&sp, text.as_bytes())?;
         }
         Ok(())
     };
@@ -451,6 +599,175 @@ fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), Stora
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn h3_nofollow_read_refuses_a_link_swapped_in_after_the_check() {
+        let d = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let p = d.path().join("m");
+        std::fs::write(&p, "real").unwrap();
+        // The check passes on a regular file...
+        assert_eq!(read_nofollow(&p).unwrap(), "real");
+        // ...then the name is swapped for a link to a file outside.
+        let target = out.path().join("t");
+        std::fs::write(&target, "outside").unwrap();
+        std::fs::remove_file(&p).unwrap();
+        std::os::unix::fs::symlink(&target, &p).unwrap();
+        assert!(matches!(
+            read_nofollow(&p),
+            Err(StorageError::Invalid { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h3_nofollow_write_refuses_a_link_and_leaves_its_target() {
+        let d = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let p = d.path().join("m");
+        write_nofollow(&p, b"one").unwrap();
+        let target = out.path().join("t");
+        std::fs::write(&target, "outside").unwrap();
+        std::fs::remove_file(&p).unwrap();
+        std::os::unix::fs::symlink(&target, &p).unwrap();
+        assert!(matches!(
+            write_nofollow(&p, b"two"),
+            Err(StorageError::Invalid { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+    }
+
+    /// Clears the thread's test hook when dropped, so a failed assert cannot
+    /// leak it into the next test on this thread.
+    #[cfg(unix)]
+    struct HookGuard;
+    #[cfg(unix)]
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            set_test_hook(None);
+        }
+    }
+    #[cfg(unix)]
+    fn hook_at(stage: &'static str, f: impl Fn() + 'static) -> HookGuard {
+        set_test_hook(Some(Box::new(move |s| {
+            if s == stage {
+                f();
+            }
+        })));
+        HookGuard
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h3_nofollow_read_refuses_a_link_swapped_in_between_lstat_and_open() {
+        let d = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let p = d.path().join("m");
+        std::fs::write(&p, "real").unwrap();
+        let target = out.path().join("t");
+        std::fs::write(&target, "outside").unwrap();
+        let (pp, tt) = (p.clone(), target.clone());
+        let _g = hook_at("open:after-lstat", move || {
+            std::fs::remove_file(&pp).unwrap();
+            std::os::unix::fs::symlink(&tt, &pp).unwrap();
+        });
+        assert!(matches!(
+            read_nofollow(&p),
+            Err(StorageError::Invalid { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h3_nofollow_read_refuses_a_file_replaced_between_open_and_recheck() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m");
+        std::fs::write(&p, "real").unwrap();
+        let (pp, other) = (p.clone(), d.path().join("other"));
+        let _g = hook_at("open:after-open", move || {
+            std::fs::write(&other, "swapped").unwrap();
+            std::fs::rename(&other, &pp).unwrap();
+        });
+        // The handle is the old file; the name now is a different regular file.
+        assert!(matches!(
+            read_nofollow(&p),
+            Err(StorageError::Invalid { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h3_nofollow_write_refuses_a_link_swapped_in_before_the_rename() {
+        let d = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let p = d.path().join("m");
+        std::fs::write(&p, "one").unwrap();
+        let target = out.path().join("t");
+        std::fs::write(&target, "outside").unwrap();
+        let (pp, tt) = (p.clone(), target.clone());
+        let _g = hook_at("write:before-rename", move || {
+            std::fs::remove_file(&pp).unwrap();
+            std::os::unix::fs::symlink(&tt, &pp).unwrap();
+        });
+        assert!(matches!(
+            write_nofollow(&p, b"two"),
+            Err(StorageError::Invalid { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+        // The link is still a link (not replaced) and no temp file is left.
+        assert!(
+            std::fs::symlink_metadata(&p)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h3_save_evaluates_secrets_existence_once_for_both_decisions() {
+        let d = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let target = out.path().join("t");
+        std::fs::write(&target, "[vars]\nk = \"v\"\n").unwrap();
+        let sp = secrets_path(d.path(), "dev");
+        let tt = target.clone();
+        // The secrets file appears after the first look and before the second
+        // would have run: the single result ("absent") must govern both.
+        let _g = hook_at("save:after-secrets-exists", move || {
+            std::os::unix::fs::symlink(&tt, &sp).unwrap();
+        });
+        let env = Environment {
+            name: "dev".into(),
+            vars: vec![],
+            secrets: vec![],
+        };
+        save_environment(d.path(), &env).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "[vars]\nk = \"v\"\n"
+        );
+    }
+
+    #[test]
+    fn h3_nofollow_write_replaces_a_regular_file_privately() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m");
+        write_nofollow(&p, b"one").unwrap();
+        write_nofollow(&p, b"two").unwrap();
+        assert_eq!(read_nofollow(&p).unwrap(), "two");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
     use wisp_core::request::Var;
 
     fn var(n: &str, v: &str) -> Var {

@@ -20,9 +20,22 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) and 166 (`wisp-cli run`) are recorded; 167, 169, 170 and 174 are in flight (170 is in PR #130); next are 172 (CLI budgets measurement) and 173 (CLI snapshot and metadata) once their dependencies land.
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check) 168 (history hardening, read-only history reader) 166 (`wisp-cli run`) 169 (secret store and binding hardening) 167 (hash file body through one handle) and 174 (per-request variables editor) are recorded; 170 is in flight (PR #130); next are 172 (CLI budgets measurement), 173 (CLI snapshot and metadata) and 178 (refuse to resend a truncated history body; depends on 168 and 174; task file not yet committed) once their dependencies land.
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 174 (per-request variables editor; not scheduled)
+- [P3] No test that `VarsEditor` wires `set_row_mask`; the pure decision test would pass without the call.
+- [Low] `vars_save_autosave_refuses_duplicate_names` duplicates the Ctrl+S test because no autosave caller exists; give autosave a real-entry-point test if one is added.
+- NOTE: `write_vars` (`crates/storage/src/codec.rs`) now rewrites `[vars]` in caller order for every caller (request path, environments, collection defaults); all pass file order today.
+
+### Follow-ups from task 167 (hash file through one handle; not scheduled)
+- [P3] A same-origin 307/308 SigV4 resend reopens the file by path with `digest: None`, so it is not re-hash-checked (redirect area, task 164).
+- [P3] The post-send deadline check covers the response head, not the body read (`crates/core/src/engine.rs:1176-1194`); same late-timer class under engine-thread starvation.
+- [NOTE] A head that arrives past the deadline now reports Timeout with delivery `unknown` (exit 6) where `responded` would be accurate.
+- [NOTE] No test proves the post-send check is needed (it needs a stalled runtime). `StopOnDrop` has no test of its own.
+- [NOTE] The `sparse_file` 4 GiB tests may reserve real disk on NTFS (Windows CI).
+- Root cause of the Attempt 2 failure: the engine runs one worker thread, so under load its timer fires late.
 
 ### Follow-ups from task 166 (wisp-cli run; not scheduled)
 - [P3] `crates/cli/tests/run.rs:150-154` `closed()` binds and drops a port; another process could take it, a possible exit-5 flake.
@@ -35,6 +48,17 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] 132-3: task 178 and 179 files are not committed yet, though the 168 follow-up below cites 178's path; commit them or drop the path.
 - [P3] The task 166 HISTORY entry misstates the exit codes: 1 is a failed assertion, 7 an unexpected status, 0 a pass.
 - [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
+
+### Follow-ups from task 169 (secret store and binding hardening; not scheduled)
+- [P3] `collection.toml` becomes 0600 when an id is written (`write_nofollow` ignores the old mode).
+- [P3] Windows `open_nofollow` has no file-identity check after open (std has no file-index API).
+- [P3] `open_nofollow` lacks O_NONBLOCK; a FIFO swapped in can hang the read.
+- [P3] `is_git_tracked` (`crates/storage/src/vault.rs`) has no timeout and fails open on any git error.
+- [P3] `gains_moved_name` (`crates/storage/src/environment.rs`) reads via `load_vars`, which follows symlinks.
+- [Low] `keyring-core = "1"` is not in `[workspace.dependencies]`.
+- [Low] The no-data-dir refusal is only `Invalid{key:"secrets"}`.
+- NOTE: the `cfg(windows)` keychain path is unbuilt locally; Windows CI is the proof.
+- [Low] On Windows `h3_tracked_check_works_with_a_relative_root` does not test a relative root (the leading `/` is never stripped).
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
 - [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it. Ship with 168's release.

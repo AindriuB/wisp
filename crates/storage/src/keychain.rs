@@ -62,9 +62,34 @@ struct OsBackend {
     service: String,
 }
 
+/// Windows Credential Manager persistence for every item: `Local` (this
+/// machine only), never the store's `Enterprise` default, which roams.
+const WINDOWS_PERSISTENCE: (&str, &str) = ("persistence", "local");
+
+/// An entry created with the [`WINDOWS_PERSISTENCE`] modifier. Only used on
+/// Windows; the other stores do not take it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn local_entry(service: &str, account: &str) -> Result<keyring_core::Entry, KeyringError> {
+    let (k, v) = WINDOWS_PERSISTENCE;
+    keyring_core::Entry::new_with_modifiers(
+        service,
+        account,
+        &std::collections::HashMap::from([(k, v)]),
+    )
+}
+
 impl OsBackend {
+    #[cfg(not(windows))]
     fn entry(&self, account: &str) -> Result<keyring::Entry, KeyringError> {
         keyring::Entry::new(&self.service, account)
+    }
+
+    /// `keyring::Entry::new` sets up the default store (once) and reports a
+    /// failure to do so; the item itself is then made with `Local` persistence.
+    #[cfg(windows)]
+    fn entry(&self, account: &str) -> Result<keyring_core::Entry, KeyringError> {
+        keyring::Entry::new(&self.service, account)?;
+        local_entry(&self.service, account)
     }
 }
 
@@ -83,11 +108,42 @@ impl Backend for OsBackend {
     }
 }
 
+/// Why a keychain service name is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidService {
+    /// The name is empty.
+    Empty,
+    /// The name contains `.`. On Linux the Secret Service attributes are
+    /// matched by name, so `a.b` and a service `a` with an account that starts
+    /// `b` could address the same item (an `Ambiguous` outcome); the name is
+    /// refused everywhere so behaviour does not differ by OS.
+    ContainsDot,
+}
+
+/// Check a keychain service name. The default, `wisp`, is valid.
+pub fn check_service(service: &str) -> Result<(), InvalidService> {
+    if service.is_empty() {
+        Err(InvalidService::Empty)
+    } else if service.contains('.') {
+        Err(InvalidService::ContainsDot)
+    } else {
+        Ok(())
+    }
+}
+
 /// Open the OS keychain store for `service`. With `portable` the store does
-/// nothing: `probe` is `Unavailable { Portable }` and no OS call is made.
+/// nothing: `probe` is `Unavailable { Portable }` and no OS call is made. A
+/// service that fails [`check_service`] gives an inert store whose every call
+/// fails with `Other { code: None }` and which makes no OS call; it is not an
+/// "absent" reason, so a store-mode environment fails closed rather than
+/// falling back to its secrets file. The Linux `Ambiguous` outcome (two items
+/// matching one address) is reported as `Other`, never as a value.
 pub fn open(service: &str, portable: bool) -> Box<dyn SecretStore> {
     if portable {
         return Box::new(PortableStore);
+    }
+    if check_service(service).is_err() {
+        return Box::new(InvalidServiceStore);
     }
     open_with(
         Arc::new(OsBackend {
@@ -95,6 +151,23 @@ pub fn open(service: &str, portable: bool) -> Box<dyn SecretStore> {
         }),
         Timeouts::default(),
     )
+}
+
+struct InvalidServiceStore;
+
+impl SecretStore for InvalidServiceStore {
+    fn probe(&self) -> Result<(), SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
+    fn get(&self, _: &str) -> Result<Option<SecretValue>, SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
+    fn set(&self, _: &str, _: &SecretValue) -> Result<(), SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
+    fn delete(&self, _: &str) -> Result<(), SecretStoreError> {
+        Err(SecretStoreError::Other { code: None })
+    }
 }
 
 /// A store over any backend, with explicit timeouts.

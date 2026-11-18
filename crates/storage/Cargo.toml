@@ -21,6 +21,7 @@ saphyr.workspace = true
 saphyr-parser.workspace = true
 uuid.workspace = true
 keyring.workspace = true
+keyring-core = "1"
 
 [dev-dependencies]
 tempfile.workspace = true
