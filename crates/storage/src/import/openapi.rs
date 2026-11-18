@@ -1171,15 +1171,6 @@ mod tests {
     }
 
     #[test]
-    fn env_name_ignores_suspect_host_exposed_after_userinfo_strip() {
-        let doc = br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
-            "servers":[{"url":"https://u:p@bob:1234?rest@h2/y"}],
-            "paths":{}}"#;
-        let r = parse(doc).unwrap();
-        assert_eq!(r.environments[0].name, "server-1");
-    }
-
-    #[test]
     fn server_userinfo_is_dropped_with_a_safe_warning() {
         let doc = br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
             "servers":[{"url":"https://bob:SECRETPW@api.example.com/v1"}],

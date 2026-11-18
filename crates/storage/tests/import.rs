@@ -845,6 +845,12 @@ fn h4_server_name_avoids_possible_credentials() {
 }
 
 #[test]
+fn h4_server_name_ignores_suspect_host_exposed_after_userinfo_strip() {
+    let r = openapi_url("https://u:p@bob:1234?rest@h2/y");
+    assert_eq!(r.environments[0].name, "server-1");
+}
+
+#[test]
 fn h4_server_name_keeps_description_and_host() {
     let r = openapi_url("https://api.example.com:8443/v1");
     assert_eq!(r.environments[0].name, "api-example-com-8443");
