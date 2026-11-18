@@ -110,3 +110,8 @@ Merged at 6e0cb51 (PASS + APPROVE; AC1-AC7 met; workspace 1415 passed, 0 failed 
 Amendment 3 widened AC4 so run-together names stay redacted: a token ending in `key`, `pass`, `pwd`, `auth`, `sig`, `jwt` or `cookie`, with an optional plural `s`, is a credential; the whole tokens `bypass` and `compass` are exempt; `code` joins the joiner list. The live task file in the main checkout carries the full text. Round 5 found one P2: the AC4e test asserted the value `abc` was absent from every history file, but `abc` can appear in a random hex uuid in `index.jsonl`. Attempt 6 replaced it with `zeroth-secret`, which contains the fragment `secret` and so left the Text body leg unproven; the fix changed the value to a non-hex, non-fragment one (`zz-hunter`).
 
 ## Wave verified — 63c28f0cb68d380a202abe1684b48b2bb3e0b3d4
+
+## Amendment 4 and the last rounds (summary)
+Amendment 4 (user decision after a third external review) replaced the token-boundary rule with substring matching: credential names match when any of the 17 fragments occurs in an alphanumeric token, as before 168, plus a whole-token allow-list (`bypass`, `compass`, `design`, `signal`, `assignment`) for the known false positives. Amendment 3's suffix and joiner rules were removed. Round 8 found that `old_true_names_still_match` did not cover every true row of `credential_names`, and Attempt 9 fixed two h2 tests that still used fragment-bearing or hex values (`secret`, filler `a`) by switching to `zz-hunter` and `z`. `x-vercel-protection-bypass` is stored in clear because `bypass` is allow-listed (accepted under AC4g).
+
+## Wave verified — d577cdbfcc2556b1bb154f100a34092703d10a50
