@@ -106,6 +106,14 @@ On the step 3 AC9 finding: the typed `InvalidService` reason returned by `check_
 
 ## Wave verified — 597a89a9e602db35f0c3e2e6863c5633e230740d
 
+## Attempt 2 — failed
+CI on PR #133 (head 77d1084, task code 597a89a): `check (windows-latest)` fails clippy `-D warnings` — Windows-only dead code / unused items (macOS and Linux build them through `cfg(unix)` tests):
+- crates/storage/tests/vault.rs:2681 — `let c = bcx(a.path());` unused variable `c` on Windows.
+- crates/storage/src/environment.rs:143 — `set_test_hook` never used; :643 `struct HookGuard` never constructed; :649 `fn hook_at` never used (their only callers are unix-only tests).
+Fix: gate these with the same `cfg` as their callers (or use them on Windows), so `cargo clippy --workspace --all-targets --locked -- -D warnings` is clean on Windows. Check with `cargo clippy --target x86_64-pc-windows-msvc` if the target can be added, otherwise by reading every `cfg` gate.
+
+## Wave verified — c75ed4277b1d48680867a61fd198491f0c46901e
+
 ## Outcome
-Merged to main at 597a89a (merge 76cf836), PASS + APPROVE: tester 1430 passed, all checks including `notices` ok, flake-watch tests passed; reviewer APPROVE on AC1-AC11 after Amendment 2. Not built locally: the `cfg(windows)` keychain path (Local persistence via `keyring_core::Entry::new_with_modifiers`); Windows CI is its proof.
+Merged to main at 597a89a (merge 76cf836), PASS + APPROVE; Windows clippy dead code then fixed with `cfg(unix)` gates, re-verified at c75ed42 (Attempt 2, PR #133): tester 1430 passed, all checks including `notices` ok, flake-watch tests passed; reviewer APPROVE on AC1-AC11 after Amendment 2. Not built locally: the `cfg(windows)` keychain path (Local persistence via `keyring_core::Entry::new_with_modifiers`); Windows CI is its proof.
 Follow-ups, not fixed (also in PLAN.md): collection.toml becomes 0600 when an id is written; Windows `open_nofollow` has no file-identity check; `open_nofollow` lacks O_NONBLOCK; `is_git_tracked` has no timeout and fails open; `gains_moved_name` follows symlinks; `keyring-core` not in `[workspace.dependencies]`; the no-data-dir refusal is only `Invalid{key:"secrets"}`.
