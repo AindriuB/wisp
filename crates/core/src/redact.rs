@@ -68,60 +68,54 @@ mod tests {
         assert!(!contains_credential_fragment("hello"));
     }
 
+    const CREDENTIAL_NAME_ROWS: &[(&str, bool)] = &[
+        ("Authorization", true),
+        ("  X-Api-Key ", true),
+        ("access_TOKEN", true),
+        ("client_secret", true),
+        ("Set-Cookie", true),
+        ("PASSWD", true),
+        ("my_credentials", true),
+        ("x-signature", true),
+        ("session_id", true),
+        ("jsessionid", true),
+        ("JSESSIONID", true),
+        ("sessiontoken", true),
+        ("newpassword", true),
+        ("adminpassword", true),
+        ("OAuth2Token", true),
+        ("JWTToken", true),
+        ("githubtoken", true),
+        ("oauthtoken", true),
+        ("bottoken", true),
+        ("passcode", true),
+        ("privkey", true),
+        ("adminpass", true),
+        ("rootpwd", true),
+        ("masterkey", true),
+        ("authcode", true),
+        ("rootpass", true),
+        ("X-Masterkey", true),
+        ("Authentication", true),
+        ("webhooksignature", true),
+        ("awscredentials", true),
+        ("page", false),
+        ("Content-Type", false),
+        ("region", false),
+        ("", false),
+    ];
+
     #[test]
     fn credential_names() {
-        for (name, want) in [
-            ("Authorization", true),
-            ("  X-Api-Key ", true),
-            ("access_TOKEN", true),
-            ("client_secret", true),
-            ("Set-Cookie", true),
-            ("PASSWD", true),
-            ("my_credentials", true),
-            ("x-signature", true),
-            ("session_id", true),
-            ("jsessionid", true),
-            ("JSESSIONID", true),
-            ("sessiontoken", true),
-            ("newpassword", true),
-            ("adminpassword", true),
-            ("OAuth2Token", true),
-            ("JWTToken", true),
-            ("githubtoken", true),
-            ("oauthtoken", true),
-            ("bottoken", true),
-            ("passcode", true),
-            ("privkey", true),
-            ("adminpass", true),
-            ("rootpwd", true),
-            ("masterkey", true),
-            ("authcode", true),
-            ("rootpass", true),
-            ("X-Masterkey", true),
-            ("Authentication", true),
-            ("webhooksignature", true),
-            ("awscredentials", true),
-            ("page", false),
-            ("Content-Type", false),
-            ("region", false),
-            ("", false),
-        ] {
+        for &(name, want) in CREDENTIAL_NAME_ROWS {
             assert_eq!(is_credential_name(name), want, "{name}");
         }
     }
 
     #[test]
     fn old_true_names_still_match() {
-        for name in [
-            "Authorization",
-            "  X-Api-Key ",
-            "access_TOKEN",
-            "client_secret",
-            "Set-Cookie",
-            "PASSWD",
-            "my_credentials",
+        let extra = [
             "x-signature",
-            "session_id",
             "x-sig",
             "my_pass",
             "db_pwd",
@@ -129,19 +123,16 @@ mod tests {
             "bearer_x",
             "DPoP",
             "saml_assertion",
-            "Authentication",
-            "webhooksignature",
-            "awscredentials",
-            "privkey",
-            "rootpass",
-            "X-Masterkey",
-            "OAuth2Token",
-            "JWTToken",
             "bypassCache",
             "signals",
             "assignmentId",
             "monkey",
-        ] {
+        ];
+        let table = CREDENTIAL_NAME_ROWS
+            .iter()
+            .filter(|(_, want)| *want)
+            .map(|(name, _)| *name);
+        for name in table.chain(extra) {
             assert!(is_credential_name(name), "{name}");
             assert!(contains_credential_fragment(name), "{name}");
         }

@@ -2002,16 +2002,19 @@ fn h2_encoded_and_run_together_query_names_are_redacted() {
     ] {
         let (_d, data, store) = setup();
         let e = store
-            .append(plain(&format!("https://example.com/?{name}=secret")), None)
+            .append(
+                plain(&format!("https://example.com/?{name}=zz-hunter")),
+                None,
+            )
             .unwrap();
         let loaded = store.load(&e.id).unwrap();
         assert!(
-            !format!("{:?}", loaded.request).contains("secret"),
+            !format!("{:?}", loaded.request).contains("zz-hunter"),
             "{name}"
         );
         let mut text = String::new();
         all_text(&hist_dir(&data), &mut text);
-        assert!(!text.contains("secret"), "{name}");
+        assert!(!text.contains("zz-hunter"), "{name}");
     }
 }
 
