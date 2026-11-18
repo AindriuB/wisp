@@ -17,6 +17,9 @@ pub struct HistoryOrigin {
     pub at_ms: u64,
     pub body_stored: bool,
     pub body_truncated: bool,
+    /// The stored request body was cut at the history cap; it must be edited
+    /// before the tab can be sent.
+    pub request_truncated: bool,
     /// Names whose values were not stored; never shown with a value.
     pub redacted: Vec<String>,
     /// What opening the entry removed, disabled or reset so no emptied
@@ -261,6 +264,15 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
     Some(format!("Edit the request body before resending: {what}"))
 }
 
+/// Why a from-history tab may not be sent: its stored request body was cut at
+/// the history cap and the draft body is still that cut body. Any change to
+/// the body, including switching its type, counts as acknowledgement.
+pub fn body_truncation_refusal(draft: &Request, origin: &HistoryOrigin) -> Option<String> {
+    (origin.request_truncated && draft.body == origin.stored_body).then(|| {
+        "Edit the request body before resending: the stored body was cut at 1 MiB".to_string()
+    })
+}
+
 /// The `AuthorizeStart` for a resolved request, or `None` when its auth is not authorization
 /// code. `client` is what Send would use, with `collection` set to the same partition; the
 /// environment partitions the cached token.
@@ -316,7 +328,9 @@ pub fn prepare(
             environment: None,
         },
     };
-    if let Some(message) = origin.and_then(|o| body_redaction_refusal(draft, o)) {
+    if let Some(message) = origin.and_then(|o| {
+        body_redaction_refusal(draft, o).or_else(|| body_truncation_refusal(draft, o))
+    }) {
         return Err(ResolveError {
             problems: vec![Problem::Syntax {
                 location: Location::Body,
@@ -367,6 +381,7 @@ mod tests {
             at_ms: 0,
             body_stored: false,
             body_truncated: false,
+            request_truncated: false,
             redacted: Vec::new(),
             adjustments: Vec::new(),
             request: request.map(String::from),
@@ -562,6 +577,81 @@ mod tests {
             content: " \n".into(),
             ..TextBody::default()
         });
+        assert!(try_send(&d, &o).is_err());
+    }
+
+    fn form(v: &str) -> Body {
+        Body::Form(vec![wisp_core::request::KeyValue {
+            name: "k".into(),
+            value: v.into(),
+            enabled: true,
+        }])
+    }
+
+    fn cut(body: Body) -> HistoryOrigin {
+        let mut o = body_origin(body, &[]);
+        o.request_truncated = true;
+        o
+    }
+
+    #[test]
+    fn truncated_text_and_form_bodies_are_refused_until_edited() {
+        for stored in [
+            Body::Text(TextBody {
+                content: "abc".into(),
+                ..TextBody::default()
+            }),
+            form("abc"),
+        ] {
+            let o = cut(stored.clone());
+            let mut d = draft();
+            d.body = stored;
+            let msg = refusal(try_send(&d, &o).err().expect("refused"));
+            assert!(msg.starts_with("Edit the request body before resending:"));
+            assert!(msg.contains("cut at 1 MiB"));
+        }
+    }
+
+    #[test]
+    fn truncated_body_is_sendable_after_any_change() {
+        let stored = json("{}");
+        let o = cut(stored);
+        let mut d = draft();
+        d.body = json("{ }");
+        assert!(try_send(&d, &o).is_ok());
+        d.body = Body::None;
+        assert!(try_send(&d, &o).is_ok());
+        d.body = form("x");
+        assert!(try_send(&d, &o).is_ok());
+    }
+
+    #[test]
+    fn truncated_refusal_blocks_submission_for_a_json_body() {
+        let stored = json("{\"a\":1");
+        let o = cut(stored.clone());
+        let mut d = draft();
+        d.body = stored;
+        let e = try_send(&d, &o).err().expect("refused");
+        assert!(matches!(
+            e.problems.as_slice(),
+            [Problem::Syntax {
+                location: Location::Body,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn truncated_flag_false_does_not_refuse_and_combined_case_is_refused() {
+        let stored = json("{}");
+        let mut o = cut(stored.clone());
+        o.request_truncated = false;
+        let mut d = draft();
+        d.body = stored.clone();
+        assert!(try_send(&d, &o).is_ok());
+        let mut o = body_origin(Body::Xml(TextBody::default()), &["body"]);
+        o.request_truncated = true;
+        d.body = Body::Xml(TextBody::default());
         assert!(try_send(&d, &o).is_err());
     }
 
