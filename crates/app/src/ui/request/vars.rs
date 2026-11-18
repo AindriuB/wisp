@@ -31,12 +31,12 @@ pub fn rows_to_vars(rows: &[KeyValue]) -> Vec<Var> {
         .collect()
 }
 
-/// Indexes of rows whose non-empty name repeats an earlier row's.
+/// Indexes of rows whose name (blank included) repeats an earlier row's.
 pub fn duplicate_var_rows(vars: &[Var]) -> Vec<usize> {
     let mut seen = std::collections::HashSet::new();
     vars.iter()
         .enumerate()
-        .filter(|(_, v)| !v.name.is_empty() && !seen.insert(v.name.as_str()))
+        .filter(|(_, v)| !seen.insert(v.name.as_str()))
         .map(|(i, _)| i)
         .collect()
 }
@@ -157,7 +157,7 @@ mod tests {
             duplicate_var_rows(&[v("k"), v("a"), v("k"), v("k")]),
             [2, 3]
         );
-        assert!(duplicate_var_rows(&[v(""), v("")]).is_empty());
+        assert_eq!(duplicate_var_rows(&[v(""), v("")]), [1]);
         assert_eq!(duplicate_notes(&[v("k"), v("k")])[0], None);
         assert!(duplicate_notes(&[v("k"), v("k")])[1].is_some());
     }
