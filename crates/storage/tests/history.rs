@@ -1113,6 +1113,7 @@ fn open_scrubs_old_entries_once() {
     let (_d, data, store) = setup();
     let e = store.append(plain("http://a/"), Some(b"b")).unwrap();
     let dir = hist_dir(&data);
+    fs::remove_file(dir.join(".scrubbed-1")).unwrap();
     let req = bodies_dir(&data).join(format!("{}.req.json", e.id));
     let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&req).unwrap()).unwrap();
     v["request"]["headers"] = serde_json::json!([
