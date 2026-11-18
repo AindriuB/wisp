@@ -2112,3 +2112,59 @@ fn h2_form_and_multipart_bodies_are_capped_and_flagged() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn scrub_truncated_append_keeps_json_body_across_reopen() {
+    let (_d, data, store) = setup();
+    let cap = wisp_storage::history::BODY_CAP;
+    let content = format!("{{\"a\":\"{}\"}}", "x".repeat(cap * 3 / 2));
+    let req = Request {
+        url: "https://x.test/".into(),
+        body: Body::Text(TextBody {
+            content: content.clone(),
+            sidecar: None,
+        }),
+        ..Request::default()
+    };
+    let e = store.append(new_entry(req), None).unwrap();
+    let dir = data.history_dir(&cid("abcdef0123456789"));
+    let ro = HistoryStore::open_read_only(&dir).unwrap();
+    let listed = ro.list(10).unwrap();
+    assert!(listed.note.is_none());
+    assert_eq!(listed.entries.len(), 1);
+
+    let store = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    let stored = store.load_without_body(&e.id).unwrap();
+    assert!(stored.request_truncated);
+    match stored.request.body {
+        Body::Text(b) => {
+            assert!(!b.content.is_empty());
+            assert_eq!(b.content.as_bytes(), &content.as_bytes()[..cap]);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn scrub_truncated_file_in_unmarked_folder_keeps_body() {
+    let (_d, data, store) = setup();
+    let cap = wisp_storage::history::BODY_CAP;
+    let req = Request {
+        url: "https://x.test/".into(),
+        body: Body::Text(TextBody {
+            content: format!("{{\"a\":\"{}\"}}", "x".repeat(cap)),
+            sidecar: None,
+        }),
+        ..Request::default()
+    };
+    let e = store.append(new_entry(req), None).unwrap();
+    let dir = data.history_dir(&cid("abcdef0123456789"));
+    fs::remove_file(dir.join(".scrubbed-1")).unwrap();
+    let path = bodies_dir(&data).join(format!("{}.req.json", e.id));
+    let before = fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&before).contains("\"truncated\":true"));
+
+    let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(dir.join(".scrubbed-1").is_file());
+}
