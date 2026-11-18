@@ -109,3 +109,8 @@ Fix (test only, in Owns): the fixture must not bind a root that does not carry t
 Merged 2026-11-17 as 0abafec (branch head ff9207a). `wisp-cli run <collection> <request-path> [--env] [--keychain] [--history] [--json]` sends one saved request through `wisp_service::run::run_once`, with the exit codes and `result` values of spec :155-165. Verified at ff9207a: workspace suite, clippy and fmt clean; reviewer APPROVE on AC1-AC11. Amendment 1 and review round 1 added the missing-keychain-secret problem (exit 4), the `skipped (not sent)` history vocabulary, no response headers in CLI history entries, `None` on a body read error, the spec status line, and the keychain canary on exits 0/1/4/5/6/7. The keychain AC7/AC8 tests live in `crates/service` because the CLI cannot set the `MemoryStore` seam (AC2).
 Follow-ups are in PLAN under "Follow-ups from task 166".
 After stacking on 169 the fixture bound a folder without the id (169 refuses that); fixed test-only, then `cargo fmt`. Re-verified at 1b61da0 (record PR #132 carries it).
+
+## External review round 4 — 132-1 fixed
+Review of PR #132 at e2dd3c1 found one P2 (132-1): exit-4 problems came from the real resolver after it had expanded secret values, so part of a secret (`ab{cd}` gives problem name `cd`; `x{{yz}}` gives `unresolved-var yz`) could become a problem name. Fixed: exit-4 problems now come from Explain on the masked env, so no piece of a secret value becomes a problem name. 132-2 routes to task 168's open AC4 decision; 132-3 is a follow-up because task 178's file is not committed yet.
+
+## Wave verified — b1cfb4b03ac859dc53e4d6158788494cf975a3a1
