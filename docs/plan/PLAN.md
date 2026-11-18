@@ -27,6 +27,8 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 ### Follow-ups from task 174 (per-request variables editor; not scheduled)
 - [P3] No test that `VarsEditor` wires `set_row_mask`; the pure decision test would pass without the call.
 - [Low] `vars_save_autosave_refuses_duplicate_names` duplicates the Ctrl+S test because no autosave caller exists; give autosave a real-entry-point test if one is added.
+- [P3] AC3 and Amendment 2 of task 174 mention an autosave that Wisp does not have, and the test `vars_save_autosave_refuses_duplicate_names` is misnamed for the same reason; rename it and fix the wording.
+- [P3] The per-row masking gpui test (135-1) is an accepted residual and a follow-up: only the pure decision test exists.
 - NOTE: `write_vars` (`crates/storage/src/codec.rs`) now rewrites `[vars]` in caller order for every caller (request path, environments, collection defaults); all pass file order today.
 
 ### Follow-ups from task 167 (hash file through one handle; not scheduled)
