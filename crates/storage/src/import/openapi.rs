@@ -107,6 +107,15 @@ fn capped_text(v: Option<&Value>, budget: &mut usize) -> Result<String, ImportEr
     Ok(out)
 }
 
+/// An operation description, imported whole and charged to the budget.
+fn description(v: Option<&Value>, budget: &mut usize) -> Result<String, ImportError> {
+    let Some(Value::String(s)) = v else {
+        return Ok(String::new());
+    };
+    spend(budget, s.len())?;
+    Ok(s.clone())
+}
+
 fn text(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) => s.clone(),
@@ -196,7 +205,18 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
         .map(|(name, items)| ImportItem::Folder { name, items })
         .chain(untagged)
         .collect();
+    super::warn_undefined_vars(&mut result);
     Ok(result)
+}
+
+/// A server description may name the environment only when it is non-empty and
+/// shows no sign of holding a credential: no credential-like word, no `=`, and
+/// no long opaque token.
+fn desc_is_safe(desc: &str) -> bool {
+    !desc.trim().is_empty()
+        && !wisp_core::redact::is_credential_name(desc)
+        && !desc.contains('=')
+        && desc.split_whitespace().all(|w| w.len() < 16)
 }
 
 pub(super) fn env_name(s: &str) -> String {
@@ -353,12 +373,7 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
         let (stripped, userinfo) = super::split_userinfo(&url);
         if userinfo.is_some() {
             url = stripped;
-            let host = url
-                .split_once("://")
-                .map_or(url.trim_start_matches("//"), |(_, r)| r)
-                .split(['/', '?', '#'])
-                .next()
-                .unwrap_or("");
+            let host = super::url_host(&url);
             result.warn(
                 &root,
                 format!(
@@ -368,7 +383,11 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
             );
         }
         let desc = text(s.get("description"));
-        let mut name = env_name(if desc.is_empty() { &url } else { &desc });
+        let mut name = if desc_is_safe(&desc) {
+            env_name(&desc)
+        } else {
+            env_name(&super::url_host(&url))
+        };
         if name.is_empty() {
             name = format!("server-{}", i + 1);
         }
@@ -504,6 +523,7 @@ fn operation(
     let mut req = Request {
         name: name.clone(),
         method,
+        description: description(op.get("description"), budget)?,
         url: format!("{{{{baseUrl}}}}{path}"),
         ..Request::default()
     };

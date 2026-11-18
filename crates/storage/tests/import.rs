@@ -723,3 +723,257 @@ fn url_shapes_import_as_on_main() {
         assert_eq!(describe(&p), *postman_want, "postman {input}");
     }
 }
+
+// ---- 0.4.0 task 170: importer hardening (H4) and descriptions ----
+
+fn warnings_text(r: &ImportResult) -> String {
+    r.warnings
+        .iter()
+        .map(|w| format!("{} {}", w.at, w.message))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn h4_curl_warnings_never_carry_values() {
+    for cmd in [
+        "curl -X SECRETVAL http://h/x",
+        "curl -d @SECRETVAL http://h/x",
+        "curl --data-urlencode @SECRETVAL http://h/x",
+        "curl -b SECRETVAL http://h/x",
+        "curl -F SECRETVAL http://h/x",
+        "curl -F n=@SECRETVAL http://h/x",
+        "curl -F n=<SECRETVAL http://h/x",
+        "curl -H SECRETVAL http://h/x",
+        "curl --frob=SECRETVAL http://h/x",
+        "curl -c SECRETVAL http://h/x",
+        "curl --proxy SECRETVAL http://h/x",
+        "curl http://h/x http://u:SECRETVAL@h2/y?q=SECRETVAL",
+    ] {
+        let r = curl::parse(cmd).unwrap();
+        assert!(!warnings_text(&r).contains("SECRETVAL"), "{cmd}");
+    }
+}
+
+#[test]
+fn h4_curl_unknown_option_does_not_make_a_secret_the_url() {
+    match curl::parse("curl --frobnicate https://u:SECRETVAL@h https://real/x") {
+        Ok(r) => {
+            let d = collection();
+            write(d.path(), Path::new(""), &r, "imported").unwrap();
+            for (p, text) in all_files(d.path()) {
+                assert!(!text.contains("SECRETVAL"), "{}", p.display());
+            }
+            assert!(!format!("{r:?}").contains("SECRETVAL"));
+        }
+        Err(e) => {
+            let m = e.to_string();
+            assert!(
+                m.contains("--frobnicate") && !m.contains("SECRETVAL"),
+                "{m}"
+            );
+        }
+    }
+    // A schemeless and a `://` positional after an unknown option is ambiguous.
+    let e = curl::parse("curl --frobnicate value https://real/x").unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("--frobnicate") && !m.contains("value"), "{m}");
+}
+
+#[test]
+fn h4_curl_extra_url_warning_echoes_only_the_host() {
+    let r = curl::parse("curl http://h/x 'https://u:SEC?RET#VAL@h2/x'").unwrap();
+    let w = warnings_text(&r);
+    assert!(w.contains("h2"), "{w}");
+    for n in ["SEC", "RET", "VAL"] {
+        assert!(!w.contains(n), "{n} in {w}");
+    }
+}
+
+#[test]
+fn h4_openapi_env_file_name_never_comes_from_a_secret_description() {
+    let doc = |desc: &str, url: &str| {
+        openapi::parse(
+            format!(
+                r#"{{"openapi":"3.0.0","info":{{"title":"t","version":"1"}},
+                "servers":[{{"url":"{url}","description":"{desc}"}}],"paths":{{}}}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    for desc in [
+        "api_key=SECRETVAL",
+        "opaque_SECRETVAL0123456789abcdef",
+        "token SECRETVAL",
+    ] {
+        let r = doc(desc, "https://u:pw@api.example.com/v1");
+        assert!(!r.environments[0].name.contains("SECRETVAL"), "{desc}");
+        assert_eq!(r.environments[0].name, "api-example-com");
+        let d = collection();
+        write(d.path(), Path::new(""), &r, "imported").unwrap();
+        for (p, _) in all_files(d.path()) {
+            assert!(!p.to_string_lossy().contains("SECRETVAL"), "{desc}");
+        }
+    }
+    let r = doc("Production", "https://api.example.com");
+    assert_eq!(r.environments[0].name, "Production");
+}
+
+#[test]
+fn h4_openapi_userinfo_warning_names_the_real_host() {
+    let r = openapi_url("https://u:p@h1/x?y=@h2");
+    let w = warnings_text(&r);
+    assert!(w.contains("h1"), "{w}");
+    assert!(
+        !w.contains("u:") && !w.contains("p@") && !w.contains("h2"),
+        "{w}"
+    );
+}
+
+#[test]
+fn h4_bad_folder_rel_leaves_the_collection_untouched() {
+    let r = postman::parse(&fixture("postman.json")).unwrap();
+    for bad in ["missing", "../escape", "/abs"] {
+        let d = collection();
+        let before = all_files(d.path());
+        assert!(
+            write(d.path(), Path::new(bad), &r, "imported").is_err(),
+            "{bad}"
+        );
+        assert_eq!(all_files(d.path()), before, "{bad}");
+        let mut dirs: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        dirs.sort();
+        assert_eq!(
+            dirs,
+            vec![std::ffi::OsString::from("collection.toml")],
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn h4_reserved_environment_name_imports() {
+    let r = openapi::parse(
+        br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+        "servers":[{"url":"https://h/","description":"con"}],"paths":{}}"#,
+    )
+    .unwrap();
+    let d = collection();
+    let report = write(d.path(), Path::new(""), &r, "imported").unwrap();
+    assert_eq!(report.environments, 1);
+    assert_eq!(report.renamed.len(), 1);
+}
+
+#[test]
+fn h4_undefined_variables_get_one_warning_each() {
+    let r = postman::parse(
+        br#"{"info":{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+        "variable":[{"key":"known","value":"1"}],
+        "item":[{"name":"A","request":{"method":"GET","url":"{{known}}/{{missing}}/{{missing}}?a={{other}}"}},
+                {"name":"B","request":{"method":"GET","url":"http://h/{{missing}}"}}]}"#,
+    )
+    .unwrap();
+    let w: Vec<_> = r
+        .warnings
+        .iter()
+        .filter(|w| w.message.contains("not defined"))
+        .collect();
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(w.iter().any(|w| w.message.contains("`missing`")));
+    assert!(w.iter().any(|w| w.message.contains("`other`")));
+    assert!(!w.iter().any(|w| w.message.contains("known")));
+}
+
+fn request_toml(d: &Path) -> Vec<String> {
+    all_files(d)
+        .into_iter()
+        .filter(|(p, _)| {
+            p.extension().is_some_and(|e| e == "toml")
+                && !p.to_string_lossy().contains("collection.toml")
+                && !p.to_string_lossy().contains("environments")
+                && !p.file_name().is_some_and(|n| n == "folder.toml")
+        })
+        .map(|(_, t)| t)
+        .collect()
+}
+
+#[test]
+fn h4_postman_descriptions_are_imported() {
+    let r = postman::parse(
+        br#"{"info":{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+        "item":[{"name":"A","request":{"method":"GET","url":"http://h/a","description":"plain text"}},
+                {"name":"B","request":{"method":"GET","url":"http://h/b","description":{"content":"object form","type":"text/plain"}}},
+                {"name":"C","request":{"method":"GET","url":"http://h/c"}}]}"#,
+    )
+    .unwrap();
+    let d = collection();
+    write(d.path(), Path::new(""), &r, "imported").unwrap();
+    let files = request_toml(d.path());
+    assert_eq!(files.len(), 3);
+    assert_eq!(
+        files.iter().filter(|t| t.contains("description")).count(),
+        2
+    );
+    assert!(files.iter().any(|t| t.contains("plain text")));
+    assert!(files.iter().any(|t| t.contains("object form")));
+}
+
+#[test]
+fn h4_openapi_operation_descriptions_are_imported() {
+    let r = openapi::parse(
+        br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{
+        "/a":{"get":{"summary":"SUMMARYONLY","description":"the long text"}},
+        "/b":{"get":{"summary":"NOPE"}}}}"#,
+    )
+    .unwrap();
+    let d = collection();
+    write(d.path(), Path::new(""), &r, "imported").unwrap();
+    let files = request_toml(d.path());
+    assert_eq!(files.len(), 2);
+    assert_eq!(
+        files.iter().filter(|t| t.contains("description")).count(),
+        1
+    );
+    assert!(files.iter().any(|t| t.contains("the long text")));
+    assert!(
+        !files
+            .iter()
+            .flat_map(|t| t.lines())
+            .any(|l| l.starts_with("description") && l.contains("SUMMARYONLY"))
+    );
+}
+
+fn first_request_description(r: &ImportResult) -> &str {
+    match &r.items[0] {
+        wisp_storage::import::ImportItem::Request { request, .. } => &request.description,
+        other => panic!("expected a request, got {other:?}"),
+    }
+}
+
+#[test]
+fn h4_long_descriptions_import_whole() {
+    let long = "é".repeat(10 * 1024); // 20 KiB
+    assert_eq!(long.len(), 20 * 1024);
+    let pm = postman::parse(
+        format!(
+            r#"{{"info":{{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}},
+            "item":[{{"name":"A","request":{{"method":"GET","url":"https://e.test/","description":"{long}"}}}}]}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(first_request_description(&pm), long);
+    let oa = openapi::parse(
+        format!(
+            r#"{{"openapi":"3.0.0","info":{{"title":"t","version":"1"}},
+            "servers":[{{"url":"https://e.test"}}],"paths":{{"/p":{{"get":{{"description":"{long}","responses":{{"200":{{"description":"ok"}}}}}}}}}}}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(first_request_description(&oa), long);
+}

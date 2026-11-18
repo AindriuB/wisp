@@ -13,6 +13,68 @@ use super::{
 /// Short options that take an argument and are not imported.
 /// Checked against the short options of `curl --help all` (7.84.0).
 const IGNORED_SHORT_WITH_ARG: &str = "oAemxwETKycDrUzCtQPY";
+/// Long options that take no argument and are not imported. They must not
+/// count as unknown: an unknown option may swallow the next argument.
+const IGNORED_LONG_NO_ARG: &[&str] = &[
+    "silent",
+    "show-error",
+    "compressed",
+    "verbose",
+    "fail",
+    "include",
+    "globoff",
+    "progress-bar",
+    "fail-early",
+    "fail-with-body",
+    "no-buffer",
+    "no-keepalive",
+    "http1.0",
+    "http1.1",
+    "http2",
+    "http3",
+    "ipv4",
+    "ipv6",
+    "junk-session-cookies",
+    "path-as-is",
+    "raw",
+    "tcp-nodelay",
+    "tr-encoding",
+    "anyauth",
+    "basic",
+    "styled-output",
+    "no-progress-meter",
+    "disable",
+    "remote-name",
+    "remote-name-all",
+    "remote-header-name",
+    "netrc",
+    "netrc-optional",
+    "proxy-insecure",
+    "ssl",
+    "ssl-reqd",
+    "tlsv1",
+    "tlsv1.0",
+    "tlsv1.1",
+    "tlsv1.2",
+    "tlsv1.3",
+    "sslv2",
+    "sslv3",
+    "suppress-connect-headers",
+    "post301",
+    "post302",
+    "post303",
+    "retry-all-errors",
+    "retry-connrefused",
+    "parallel",
+    "parallel-immediate",
+    "create-dirs",
+    "clobber",
+    "no-clobber",
+    "xattr",
+    "ssl-no-revoke",
+    "ssl-allow-beast",
+];
+
 /// Long options that take an argument and are not imported.
 ///
 /// Built from `curl --help all` of curl 7.84.0 (every option shown with an
@@ -285,7 +347,10 @@ fn push_code(
 #[derive(Default)]
 struct Flags {
     method: Option<String>,
-    url: Option<String>,
+    /// Every URL-looking positional and `--url` value, in order.
+    urls: Vec<String>,
+    /// First option the importer does not know, by name.
+    unknown: Option<String>,
     headers: Vec<String>,
     data: Vec<String>,
     form: Vec<String>,
@@ -353,12 +418,16 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
                 "location" | "location-trusted" => f.location = true,
                 "get" => f.get = true,
                 "head" => f.head = true,
+                l if IGNORED_LONG_NO_ARG.contains(&l) => {
+                    f.warn(format!("option `{arg}` is not imported"));
+                }
                 l if IGNORED_LONG_WITH_ARG.contains(&l) => {
                     need(&mut args, &arg)?;
                     f.warn(format!("option `{arg}` and its argument are not imported"));
                 }
                 _ => {
                     let name = arg.split_once('=').map_or(arg.as_str(), |(n, _)| n);
+                    f.unknown.get_or_insert_with(|| name.to_string());
                     f.warn(format!("option `{name}` is not imported"));
                 }
             }
@@ -403,20 +472,35 @@ pub fn parse(input: &str) -> Result<ImportResult, ImportError> {
 }
 
 fn set_url(f: &mut Flags, url: String) {
-    if f.url.is_none() {
-        f.url = Some(url);
-    } else {
-        let (url, _) = super::split_userinfo(&url);
-        let url = url.split(['?', '#']).next().unwrap_or_default().to_string();
-        f.warn(format!("extra URL `{url}` is not imported"));
+    f.urls.push(url);
+}
+
+/// Pick the request URL from the positionals. After an unknown option the
+/// first positional may be that option's argument, so more than one
+/// positional is ambiguous and an error naming the option, never a value.
+fn pick_url(f: &mut Flags) -> Result<String, ImportError> {
+    let mut urls = std::mem::take(&mut f.urls);
+    if let (Some(opt), true) = (f.unknown.as_ref(), urls.len() > 1) {
+        return Err(ImportError::Parse(format!(
+            "cannot tell which argument is the URL after the unknown option `{opt}`"
+        )));
     }
+    if urls.is_empty() {
+        return Err(ImportError::Parse("no URL in the curl command".into()));
+    }
+    let url = urls.remove(0);
+    for extra in &urls {
+        f.warn(format!(
+            "extra URL (host `{}`) is not imported",
+            super::url_host(extra)
+        ));
+    }
+    Ok(url)
 }
 
 fn add_data(f: &mut Flags, kind: &str, v: String) {
     if kind != "data-raw" && v.starts_with('@') {
-        f.warn(format!(
-            "`{v}` reads the body from a file; body not imported"
-        ));
+        f.warn("a body argument reads from a file; body not imported".into());
     } else {
         f.data.push(v);
     }
@@ -430,17 +514,14 @@ fn add_urlencoded(f: &mut Flags, v: String) {
             f.data.push(format!("{name}={}", percent_encode(content)));
         }
     } else if v.contains('@') {
-        f.warn(format!("`{v}` reads the value from a file; not imported"));
+        f.warn("a --data-urlencode argument reads from a file; not imported".into());
     } else {
         f.data.push(percent_encode(&v));
     }
 }
 
 fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
-    let url_raw = f
-        .url
-        .take()
-        .ok_or_else(|| ImportError::Parse("no URL in the curl command".into()))?;
+    let url_raw = pick_url(&mut f)?;
     // Userinfo first: a password may hold `?` or `#`, which would otherwise
     // start the query.
     if super::may_hold_credentials(url_raw.trim()) {
@@ -461,7 +542,7 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
         match parse_method(m) {
             Some(parsed) => method = parsed,
             None => f.warn(format!(
-                "method `{m}` is not supported; using {}",
+                "the method is not supported; using {}",
                 method_name(method)
             )),
         }
@@ -492,7 +573,7 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
                     value: String::new(),
                     enabled: true,
                 }),
-                _ => f.warn(format!("header `{h}` is malformed and was skipped")),
+                _ => f.warn("a header is malformed and was skipped".into()),
             },
         }
     }
@@ -504,7 +585,7 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
                 enabled: true,
             });
         } else {
-            f.warn(format!("cookie file `{c}` is not imported"));
+            f.warn("a cookie file is not imported".into());
         }
     }
     let content_type = headers
@@ -521,7 +602,7 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
         let forms = std::mem::take(&mut f.form);
         for spec in &forms {
             let Some((n, v)) = spec.split_once('=') else {
-                f.warn(format!("form field `{spec}` has no `=`; skipped"));
+                f.warn("a form field has no `=`; skipped".into());
                 continue;
             };
             let v = v.split(";type=").next().unwrap_or("");
@@ -645,6 +726,7 @@ fn build(mut f: Flags) -> Result<ImportResult, ImportError> {
     for w in std::mem::take(&mut f.warnings) {
         result.warn(&name, w);
     }
+    super::warn_undefined_vars(&mut result);
     Ok(result)
 }
 
@@ -665,6 +747,65 @@ mod tests {
             .iter()
             .find(|h| h.name.eq_ignore_ascii_case(n))
             .map(|h| h.value.as_str())
+    }
+
+    #[test]
+    fn h4_no_arg_long_options_do_not_consume_the_url() {
+        for opt in [
+            "silent",
+            "compressed",
+            "verbose",
+            "fail",
+            "location",
+            "insecure",
+            "show-error",
+            "include",
+            "globoff",
+        ] {
+            let (r, _) = req(&format!(
+                "curl --{opt} api.example.com https://other.example.com"
+            ));
+            assert!(r.url.contains("api.example.com"), "{opt}: {}", r.url);
+        }
+        let (r, _) = req("curl -s -S -v -f -g -i api.example.com https://other.example.com");
+        assert!(r.url.contains("api.example.com"), "{}", r.url);
+    }
+
+    #[test]
+    fn h4_urls_are_taken_in_order_with_url_option() {
+        let (r, _) = req("curl api.example.com --url https://other.example.com");
+        assert!(r.url.contains("api.example.com"), "{}", r.url);
+    }
+
+    #[test]
+    fn h4_unknown_option_value_never_reaches_warnings() {
+        let res = parse("curl --frobnicate SECRETVAL --url https://real/x");
+        let text = match &res {
+            Ok(r) => format!("{:?}", r.warnings),
+            Err(e) => format!("{e:?} {e}"),
+        };
+        assert!(!text.contains("SECRETVAL"), "{text}");
+    }
+
+    #[test]
+    fn h4_unknown_option_with_schemeless_and_scheme_positional_is_rejected() {
+        let res = parse(
+            "curl --http2-prior-knowledge api.example.com https://other.example.com -H 'Authorization: Bearer SECRET'",
+        );
+        let Err(e) = res else {
+            panic!("expected a Parse error")
+        };
+        assert!(matches!(e, ImportError::Parse(_)), "{e:?}");
+        let text = format!("{e:?} {e}");
+        assert!(text.contains("--http2-prior-knowledge"), "{text}");
+        assert!(!text.contains("SECRET"), "{text}");
+    }
+
+    #[test]
+    fn h4_unknown_option_still_never_takes_secret_as_url() {
+        if let Ok(r) = parse("curl --frobnicate https://u:SECRETVAL@h https://real/x") {
+            assert!(!format!("{:?}", r.items).contains("SECRETVAL"));
+        }
     }
 
     #[test]
@@ -1221,7 +1362,7 @@ mod tests {
         let (_, res) = req("curl http://h/x 'http://bob:SECRETPW@h2/y?token=SECRETVAL#SECRETFR'");
         assert_eq!(res.warnings.len(), 1);
         let all = format!("{:?}", res.warnings);
-        assert!(all.contains("h2/y"), "{all}");
+        assert!(all.contains("h2") && !all.contains("/y"), "{all}");
         for s in ["SECRETVAL", "SECRETPW", "SECRETFR"] {
             assert!(!all.contains(s), "{all}");
         }
