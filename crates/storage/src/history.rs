@@ -136,8 +136,9 @@ fn authority_start(base: &str) -> (usize, bool) {
     )
 }
 
-/// Decode a form query name once for matching, leaving malformed escapes literal.
-fn decode_query_name(name: &str) -> String {
+/// Decode a form query name once for matching. Malformed escapes stay literal, or with
+/// `drop_malformed` are removed with the two bytes after the `%`.
+fn decode_query_name(name: &str, drop_malformed: bool) -> String {
     let bytes = name.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -153,6 +154,10 @@ fn decode_query_name(name: &str) -> String {
             i += 3;
             continue;
         }
+        if bytes[i] == b'%' && drop_malformed {
+            i += 3;
+            continue;
+        }
         decoded.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
         i += 1;
     }
@@ -164,7 +169,10 @@ fn redact_query(q: &str, names: &mut Vec<String>) -> String {
     let pairs: Vec<String> = q
         .split('&')
         .map(|pair| match pair.split_once('=') {
-            Some((n, v)) if is_secret_name(&decode_query_name(n)) => {
+            Some((n, v))
+                if is_secret_name(&decode_query_name(n, false))
+                    || is_secret_name(&decode_query_name(n, true)) =>
+            {
                 let mut v = v.to_string();
                 if scrub(&mut v) {
                     note(names, format!("query.{n}"));
@@ -378,6 +386,11 @@ pub struct NewEntry {
 pub struct StoredEntry {
     pub request: Request,
     pub response_headers: Vec<Header>,
+    /// Names of the response headers whose values were emptied. Kept apart from
+    /// [`HistoryEntry::redacted`], which names request parts.
+    pub response_redacted: Vec<String>,
+    /// True when the stored request body was cut to [`BODY_CAP`].
+    pub request_truncated: bool,
     pub body: Vec<u8>,
 }
 
@@ -386,6 +399,72 @@ struct ReqFile {
     request: Request,
     #[serde(default)]
     response_headers: Vec<Header>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    response_redacted: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    truncated: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Cut a request body to [`BODY_CAP`] bytes (text at a character boundary; form and
+/// multipart fields in order, until the total fits); true when cut.
+fn cap_request_body(body: &mut Body) -> bool {
+    fn cut(s: &mut String, max: usize) {
+        let mut end = max.min(s.len());
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    match body {
+        Body::Json(b) | Body::Text(b) | Body::Xml(b) => {
+            if b.content.len() <= BODY_CAP {
+                return false;
+            }
+            cut(&mut b.content, BODY_CAP);
+            true
+        }
+        Body::Form(fields) => {
+            let total: usize = fields.iter().map(|f| f.name.len() + f.value.len()).sum();
+            if total <= BODY_CAP {
+                return false;
+            }
+            let mut left = BODY_CAP;
+            for f in fields.iter_mut() {
+                cut(&mut f.name, left);
+                left -= f.name.len();
+                cut(&mut f.value, left);
+                left -= f.value.len();
+            }
+            true
+        }
+        Body::Multipart(parts) => {
+            let total: usize = parts
+                .iter()
+                .map(|p| match &p.value {
+                    PartValue::Text(t) => p.name.len() + t.len(),
+                    PartValue::File(_) => p.name.len(),
+                })
+                .sum();
+            if total <= BODY_CAP {
+                return false;
+            }
+            let mut left = BODY_CAP;
+            for p in parts.iter_mut() {
+                cut(&mut p.name, left);
+                left -= p.name.len();
+                if let PartValue::Text(t) = &mut p.value {
+                    cut(t, left);
+                    left -= t.len();
+                }
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 fn io(path: &Path, source: std::io::Error) -> StorageError {
@@ -531,11 +610,6 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
     (out, names)
 }
 
-/// Marker for a bare `{{...}}` reference: a JSON string token that serde writes back unchanged.
-fn ref_marker(n: usize) -> String {
-    format!("\u{1}wispref{n}\u{1}")
-}
-
 /// True when `inner` is a plain variable name, as `template::var_refs` would report it.
 fn is_var_grammar(inner: &str) -> bool {
     let name = inner.trim();
@@ -553,6 +627,9 @@ fn is_var_grammar(inner: &str) -> bool {
 
 /// Swap each `{{...}}` outside a JSON string for a marker string. Inside strings the text
 /// is already valid JSON and is left alone. Returns the new text and the originals.
+///
+/// One forward pass: at a `{{` the scan runs over variable-grammar characters only and
+/// then needs `}}`, so text that is not a reference is never scanned twice.
 fn mask_bare_refs(text: &str) -> (String, Vec<String>) {
     let mut out = String::with_capacity(text.len());
     let mut refs = Vec::new();
@@ -569,20 +646,57 @@ fn mask_bare_refs(text: &str) -> (String, Vec<String>) {
             }
         } else if c == '"' {
             in_str = true;
-        } else if rest.starts_with("{{")
-            && let Some(end) = rest.find("}}")
-            && is_var_grammar(&rest[2..end])
-        {
-            // The marker holds raw control characters, so escape it by hand.
-            out.push_str(&format!("\"\\u0001wispref{}\\u0001\"", refs.len()));
-            refs.push(rest[..end + 2].to_string());
-            rest = &rest[end + 2..];
-            continue;
+        } else if rest.starts_with("{{") {
+            let inner = rest[2..]
+                .find(|c: char| {
+                    !(c.is_alphanumeric()
+                        || c.is_whitespace()
+                        || matches!(c, '_' | '-' | '.' | '$'))
+                })
+                .unwrap_or(rest.len() - 2);
+            if rest[2 + inner..].starts_with("}}") && is_var_grammar(&rest[2..2 + inner]) {
+                let end = 2 + inner + 2;
+                // The marker holds raw control characters, so escape it by hand.
+                out.push_str(&format!("\"\\u0001wispref{}\\u0001\"", refs.len()));
+                refs.push(rest[..end].to_string());
+                rest = &rest[end..];
+                continue;
+            }
         }
         out.push(c);
         rest = &rest[c.len_utf8()..];
     }
     (out, refs)
+}
+
+/// Put the original `{{ref}}` text back for every quoted marker, in one pass.
+fn restore_bare_refs(text: &str, refs: &[String]) -> String {
+    const OPEN: &str = "\"\\u0001wispref";
+    const CLOSE: &str = "\\u0001\"";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(pos) = rest.find(OPEN) {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + OPEN.len()..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        let original = after[digits..]
+            .starts_with(CLOSE)
+            .then(|| after[..digits].parse::<usize>().ok())
+            .flatten()
+            .and_then(|n| refs.get(n));
+        match original {
+            Some(r) => {
+                out.push_str(r);
+                rest = &after[digits + CLOSE.len()..];
+            }
+            None => {
+                out.push_str(OPEN);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Parses any JSON, failing on a duplicate key in any object (serde_json's `Value` keeps the last).
@@ -657,18 +771,12 @@ fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
     if found.is_empty() {
         return;
     }
-    let Ok(mut text) = serde_json::to_string(&v) else {
+    let Ok(text) = serde_json::to_string(&v) else {
         content.clear();
         note(names, "body".into());
         return;
     };
-    for (i, original) in refs.iter().enumerate() {
-        text = text.replace(
-            &format!("\"{}\"", ref_marker(i).replace('\u{1}', "\\u0001")),
-            original,
-        );
-    }
-    *content = text;
+    *content = restore_bare_refs(&text, &refs);
     for n in found {
         note(names, n);
     }
@@ -876,6 +984,54 @@ pub struct HistoryStore {
     lock_wait: Duration,
 }
 
+/// Recent entries read without touching the history dir; see [`HistoryStore::open_read_only`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecentHistory {
+    /// Newest first.
+    pub entries: Vec<HistoryEntry>,
+    /// Why `entries` is empty, when the store was not read.
+    pub note: Option<String>,
+}
+
+/// A history dir opened for reading only.
+#[derive(Debug, Clone)]
+pub struct ReadOnlyHistory {
+    dir: PathBuf,
+}
+
+impl ReadOnlyHistory {
+    /// Up to `limit` newest entries. A dir without the current scrub marker may hold
+    /// unscrubbed data, so it lists nothing and says so. Writes, renames and creates
+    /// nothing, and takes no lock.
+    pub fn list(&self, limit: usize) -> Result<RecentHistory, StorageError> {
+        if !self.dir.join(SCRUB_MARKER).is_file() {
+            return Ok(RecentHistory {
+                entries: Vec::new(),
+                note: Some("history not yet migrated; open Wisp once".into()),
+            });
+        }
+        let index = self.dir.join(INDEX_FILE);
+        let bytes = match fs::read(&index) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(io(&index, e)),
+        };
+        let entries = bytes
+            .split(|&b| b == b'\n')
+            .filter_map(|l| serde_json::from_slice::<HistoryEntry>(l).ok())
+            .filter(|e| valid_id(&e.id))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .take(limit)
+            .collect();
+        Ok(RecentHistory {
+            entries,
+            note: None,
+        })
+    }
+}
+
 /// Longest an append or clear waits for the cross-process lock.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 /// Present in a history dir once entries from older builds have been re-redacted.
@@ -898,6 +1054,15 @@ impl HistoryStore {
             tracing::warn!(error = %e, "history scrub failed");
         }
         store
+    }
+
+    /// Open a collection's history dir (`DataDir::history_dir`) for reading only. Unlike
+    /// [`HistoryStore::open`] it never migrates, locks, creates, renames or writes. `None`
+    /// when `dir` is not a directory.
+    pub fn open_read_only(dir: &Path) -> Option<ReadOnlyHistory> {
+        dir.is_dir().then(|| ReadOnlyHistory {
+            dir: dir.to_path_buf(),
+        })
     }
 
     /// Shorten the lock wait. For tests.
@@ -962,7 +1127,9 @@ impl HistoryStore {
                 let (request, req_names) = redact_request(&file.request);
                 file.request = request;
                 names.extend(req_names);
-                redact_response_headers(&mut file.response_headers, &mut names);
+                let mut response_names = std::mem::take(&mut file.response_redacted);
+                redact_response_headers(&mut file.response_headers, &mut response_names);
+                file.response_redacted = response_names;
                 let json = serde_json::to_vec(&file).map_err(|e| StorageError::History {
                     message: e.to_string(),
                 })?;
@@ -1054,9 +1221,11 @@ impl HistoryStore {
         let _file_lock = self.lock_file()?;
         ensure_private_dir(&self.bodies())?;
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let (request, mut redacted) = redact_request(&new.request);
+        let (mut request, redacted) = redact_request(&new.request);
         let mut response_headers = new.response_headers;
-        redact_response_headers(&mut response_headers, &mut redacted);
+        let mut response_redacted = Vec::new();
+        redact_response_headers(&mut response_headers, &mut response_redacted);
+        let truncated_request = cap_request_body(&mut request.body);
         let (bin, req) = {
             let [a, b] = self.body_files(&id);
             (a, b)
@@ -1070,6 +1239,8 @@ impl HistoryStore {
         let file = ReqFile {
             request,
             response_headers,
+            response_redacted,
+            truncated: truncated_request,
         };
         let json = serde_json::to_vec(&file).map_err(|e| StorageError::History {
             message: e.to_string(),
@@ -1262,6 +1433,8 @@ impl HistoryStore {
         Ok(StoredEntry {
             request: file.request,
             response_headers: file.response_headers,
+            response_redacted: file.response_redacted,
+            request_truncated: file.truncated,
             body: Vec::new(),
         })
     }
