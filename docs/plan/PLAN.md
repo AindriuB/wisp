@@ -59,6 +59,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] The no-data-dir refusal is only `Invalid{key:"secrets"}`.
 - NOTE: the `cfg(windows)` keychain path is unbuilt locally; Windows CI is the proof.
 - [Low] On Windows `h3_tracked_check_works_with_a_relative_root` does not test a relative root (the leading `/` is never stripped).
+- [P3] Fix the flaky `h3_load_without_a_data_dir_refuses_a_keychain_environment`: change the secret value `t1` to one a random temp path cannot contain (see known-flakes.md).
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
 - [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it. Ship with 168's release.
