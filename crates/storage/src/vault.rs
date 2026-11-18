@@ -607,6 +607,9 @@ pub enum SecretsError {
 /// is forced off on the command line (which outranks every config file) and
 /// optional index locks are disabled.
 fn is_git_tracked(root: &Path, path: &Path) -> bool {
+    // `path` is normally `root.join(..)`; with `-C root` git would resolve a
+    // relative root a second time, so hand it the path relative to `root`.
+    let path = path.strip_prefix(root).unwrap_or(path);
     std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -1089,5 +1092,39 @@ mod tests {
         // Tracked is still reported; the configured command is not run.
         assert!(is_git_tracked(root, &secrets));
         assert!(!marker.exists(), "repo-configured fsmonitor ran");
+    }
+
+    /// A relative collection root must not make git resolve the path under
+    /// the root twice.
+    #[test]
+    fn h3_tracked_check_works_with_a_relative_root() {
+        let git = |dir: &Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+        };
+        let t = tempfile::tempdir().unwrap();
+        let abs = t.path().join("collections").join("demo");
+        std::fs::create_dir_all(&abs).unwrap();
+        if !matches!(git(&abs, &["init", "-q"]), Ok(s) if s.success()) {
+            eprintln!("skipped: git is not available");
+            return;
+        }
+        std::fs::write(abs.join("dev.secrets.toml"), "[vars]\n").unwrap();
+        assert!(matches!(git(&abs, &["add", "dev.secrets.toml"]), Ok(s) if s.success()));
+        // Relative to the cwd without changing it: climb out, then descend.
+        let cwd = std::env::current_dir().unwrap();
+        let mut rel = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            rel.push("..");
+        }
+        rel.push(abs.strip_prefix("/").unwrap_or(&abs));
+        let secrets = rel.join("dev.secrets.toml");
+        assert!(is_git_tracked(&rel, &secrets));
+        assert!(is_git_tracked(&abs, &abs.join("dev.secrets.toml")));
     }
 }
