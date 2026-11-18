@@ -33,6 +33,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
 - [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
 - [P3] 132-3: task 178 and 179 files are not committed yet, though the 168 follow-up below cites 178's path; commit them or drop the path.
+- [P3] The task 166 HISTORY entry misstates the exit codes: 1 is a failed assertion, 7 an unexpected status, 0 a pass.
 - [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
