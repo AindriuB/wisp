@@ -1,4 +1,4 @@
-//! Request pane: sub-tab strip over the seven editors.
+//! Request pane: sub-tab strip over the eight editors.
 
 pub mod assertions;
 pub mod auth;
@@ -7,6 +7,7 @@ pub mod headers;
 pub mod params;
 pub mod path;
 pub mod settings;
+pub mod vars;
 
 use gpui::{
     AppContext as _, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription,
@@ -25,10 +26,12 @@ use headers::HeadersEditor;
 use params::ParamsEditor;
 use path::PathEditor;
 use settings::SettingsEditor;
+use vars::VarsEditor;
 
-const SUB_TABS: [(RequestSubTab, &str); 7] = [
+const SUB_TABS: [(RequestSubTab, &str); 8] = [
     (RequestSubTab::Params, "Params"),
     (RequestSubTab::Path, "Path"),
+    (RequestSubTab::Vars, "Vars"),
     (RequestSubTab::Headers, "Headers"),
     (RequestSubTab::Auth, "Auth"),
     (RequestSubTab::Body, "Body"),
@@ -40,6 +43,7 @@ fn is_dirty(sub: RequestSubTab, d: &DirtySections) -> bool {
     match sub {
         RequestSubTab::Params => d.params,
         RequestSubTab::Path => d.path,
+        RequestSubTab::Vars => d.vars,
         RequestSubTab::Headers => d.headers,
         RequestSubTab::Auth => d.auth,
         RequestSubTab::Body => d.body,
@@ -48,11 +52,12 @@ fn is_dirty(sub: RequestSubTab, d: &DirtySections) -> bool {
     }
 }
 
-/// Sub-tab strip over the seven editors.
+/// Sub-tab strip over the eight editors.
 pub struct RequestPane {
     tab: Entity<RequestTab>,
     params: Entity<ParamsEditor>,
     path: Entity<PathEditor>,
+    vars: Entity<VarsEditor>,
     headers: Entity<HeadersEditor>,
     auth: Entity<AuthEditor>,
     body: Entity<BodyEditor>,
@@ -72,6 +77,7 @@ impl RequestPane {
         Self {
             params: cx.new(|cx| ParamsEditor::new(w.clone(), t.clone(), window, cx)),
             path: cx.new(|cx| PathEditor::new(w.clone(), t.clone(), window, cx)),
+            vars: cx.new(|cx| VarsEditor::new(t.clone(), window, cx)),
             headers: cx.new(|cx| HeadersEditor::new(w.clone(), t.clone(), window, cx)),
             auth: cx.new(|cx| AuthEditor::new(w.clone(), t.clone(), window, cx)),
             body: cx.new(|cx| BodyEditor::new(w.clone(), t.clone(), window, cx)),
@@ -113,6 +119,7 @@ impl Render for RequestPane {
         let editor = match active {
             RequestSubTab::Params => div().child(self.params.clone()),
             RequestSubTab::Path => div().child(self.path.clone()),
+            RequestSubTab::Vars => div().child(self.vars.clone()),
             RequestSubTab::Headers => div().child(self.headers.clone()),
             RequestSubTab::Auth => div().child(self.auth.clone()),
             RequestSubTab::Body => div().child(self.body.clone()),
