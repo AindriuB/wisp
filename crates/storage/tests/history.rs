@@ -2046,7 +2046,10 @@ fn h2_authentication_and_run_together_names_are_redacted() {
             new_entry(Request {
                 url: "https://example.com/?webhooksignature=zz-hunter&awscredentials=zz-hunter"
                     .into(),
-                headers: vec![kv("Authentication", "zz-hunter")],
+                headers: vec![
+                    kv("Authentication", "zz-hunter"),
+                    kv("x-vercel-protection-bypass", "zz-hunter"),
+                ],
                 ..Request::default()
             }),
             None,

@@ -22,9 +22,9 @@ pub const SECRET_FRAGMENTS: [&str; 17] = [
     "assertion",
 ];
 
-/// Ordinary words that contain a fragment (`bypass` has `pass`, `design` has `sig`). A token
+/// Ordinary words that contain a fragment (`compass` has `pass`, `design` has `sig`). A token
 /// equal to one of these contributes no match; the same word inside a longer token still does.
-const ALLOWED_WORDS: [&str; 5] = ["bypass", "compass", "design", "signal", "assignment"];
+const ALLOWED_WORDS: [&str; 4] = ["compass", "design", "signal", "assignment"];
 
 /// True when a token of `text` (a maximal run of alphanumerics, lowercased) that is not in
 /// [`ALLOWED_WORDS`] contains any of [`SECRET_FRAGMENTS`] as a substring.
@@ -99,6 +99,7 @@ mod tests {
         ("Authentication", true),
         ("webhooksignature", true),
         ("awscredentials", true),
+        ("x-vercel-protection-bypass", true),
         ("page", false),
         ("Content-Type", false),
         ("region", false),
@@ -124,6 +125,8 @@ mod tests {
             "DPoP",
             "saml_assertion",
             "bypassCache",
+            "bypass",
+            "X-Bypass-Cache",
             "signals",
             "assignmentId",
             "monkey",
@@ -140,14 +143,7 @@ mod tests {
 
     #[test]
     fn ordinary_words_are_not_credentials() {
-        for name in [
-            "X-Bypass-Cache",
-            "X-Assignment-Id",
-            "design",
-            "signal",
-            "compass",
-            "bypass",
-        ] {
+        for name in ["X-Assignment-Id", "design", "signal", "compass"] {
             assert!(!is_credential_name(name), "{name}");
             assert!(!contains_credential_fragment(name), "{name}");
         }
