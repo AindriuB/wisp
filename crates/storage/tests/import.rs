@@ -827,7 +827,7 @@ fn h4_server_name_avoids_possible_credentials() {
     write(d.path(), Path::new(""), &r, "imported").unwrap();
     let files: Vec<String> = all_files(d.path())
         .into_iter()
-        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .map(|(p, _)| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"))
         .collect();
     assert!(
         files
