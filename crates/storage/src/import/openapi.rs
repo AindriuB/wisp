@@ -386,7 +386,7 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
         let desc = text(s.get("description"));
         let mut name = if desc_is_safe(&desc) {
             env_name(&desc)
-        } else if suspect {
+        } else if suspect || super::may_hold_credentials(&url) {
             String::new()
         } else {
             env_name(&super::url_host(&url))
@@ -1168,6 +1168,15 @@ mod tests {
         let n = env_name(&"a".repeat(1000));
         assert_eq!(n.len(), MAX_NAME_BYTES);
         assert!(n.len() + ".secrets.toml".len() + 6 <= 255);
+    }
+
+    #[test]
+    fn env_name_ignores_suspect_host_exposed_after_userinfo_strip() {
+        let doc = br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+            "servers":[{"url":"https://u:p@bob:1234?rest@h2/y"}],
+            "paths":{}}"#;
+        let r = parse(doc).unwrap();
+        assert_eq!(r.environments[0].name, "server-1");
     }
 
     #[test]
