@@ -37,10 +37,10 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
 
 ### Follow-ups from task 168 (history hardening; not scheduled)
-- [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it.
-- [P3] Spec: AC4 contradicts itself. Its acronym rule splits `OAuth` into O+Auth, so `X-OAuth-Scopes` is now redacted (fail-safe over-redaction), while its example says `OAuth2Token` gives oauth, 2, token. Decide which is intended and fix the wording or the rule.
+- [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it. Ship with 168's release.
+- Task 179 (`docs/plan/tasks/179-openapi-env-name-credentials.md`) is an open follow-up from the 168 and 170 reviews; see the task file.
 - [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
-- NOTE: substring matching clears whole Text/XML bodies that contain a fragment inside any word, such as monkey, hockey or surpass (fail safe, accepted under Amendment 4).
+- NOTE: substring matching clears whole Text/XML bodies that contain a fragment inside any word, such as monkey, hockey or surpass (fail safe, accepted under Amendment 4). Over-redaction is also why `X-OAuth-Scopes` is redacted (`auth` substring).
 - [P3] `x-vercel-protection-bypass` (a real secret header) is stored in clear because `bypass` is allow-listed (accepted under AC4g).
 - [Low] AC5's test shows the request/response header separation with `X-Foo-Token` rather than a redacted response `X-Foo`.
 
