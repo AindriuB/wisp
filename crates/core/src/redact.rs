@@ -1,7 +1,7 @@
 //! Shared credential-name heuristic for redacting stored requests.
 
 /// Name fragments that mark a header, param, var or field as credential-bearing
-/// (matched case-insensitively at name-token boundaries).
+/// (matched case-insensitively as substrings of name tokens, see [`ALLOWED_WORDS`]).
 pub const SECRET_FRAGMENTS: [&str; 17] = [
     "auth",
     "token",
@@ -22,93 +22,27 @@ pub const SECRET_FRAGMENTS: [&str; 17] = [
     "assertion",
 ];
 
-/// Words that stand for a credential beyond [`SECRET_FRAGMENTS`] themselves.
-const EXTRA_WORDS: [&str; 3] = ["authorization", "authorisation", "passphrase"];
+/// Ordinary words that contain a fragment (`bypass` has `pass`, `design` has `sig`). A token
+/// equal to one of these contributes no match; the same word inside a longer token still does.
+const ALLOWED_WORDS: [&str; 5] = ["bypass", "compass", "design", "signal", "assignment"];
 
-/// Words that may join a fragment into one token (`apikey`, `sessionid`, `authtoken`).
-const JOINERS: [&str; 19] = [
-    "api", "access", "refresh", "client", "private", "public", "id", "x", "my", "db", "user",
-    "app", "csrf", "xsrf", "auth", "set", "secret", "key", "code",
-];
-
-/// Fragments that also mark a token when they end it (`githubtoken`, `newpassword`) or end it
-/// before a joiner (`jsessionid`).
-const STRONG_FRAGMENTS: [&str; 6] = [
-    "token", "password", "passwd", "secret", "session", "passcode",
-];
-
-/// Fragments that mark a token when they end it, optionally before one `s` (`rootpass`,
-/// `masterkeys`). Fail safe: `monkey` and `turkey` match too.
-const SUFFIX_FRAGMENTS: [&str; 7] = ["key", "pass", "pwd", "auth", "sig", "jwt", "cookie"];
-
-/// Whole tokens that end in a suffix fragment but are ordinary words.
-const SUFFIX_EXCEPTIONS: [&str; 2] = ["bypass", "compass"];
-
-/// True when `token` (lowercase) is a credential word: a fragment, its plural, a fragment
-/// joined to the words in [`JOINERS`] on either side, or a strong fragment ending it.
-fn token_is_credential(token: &str) -> bool {
-    let token = token.trim_end_matches(|c: char| c.is_ascii_digit());
-    let fragment = SECRET_FRAGMENTS.iter().chain(EXTRA_WORDS.iter()).any(|f| {
-        token == *f
-            || token.strip_suffix('s') == Some(f)
-            || token
-                .strip_prefix(f)
-                .is_some_and(|r| JOINERS.contains(&r) || r == "s")
-            || token.strip_suffix(f).is_some_and(|r| JOINERS.contains(&r))
-    });
-    fragment
-        || (!SUFFIX_EXCEPTIONS.contains(&token)
-            && SUFFIX_FRAGMENTS.iter().any(|f| {
-                token.ends_with(f) || token.strip_suffix('s').is_some_and(|t| t.ends_with(f))
-            }))
-        || STRONG_FRAGMENTS.iter().any(|f| {
-            token.match_indices(f).any(|(i, _)| {
-                let rest = &token[i + f.len()..];
-                rest.is_empty() || rest == "s" || JOINERS.contains(&rest)
-            })
-        })
-}
-
-/// Split a run of alphanumerics at lower-to-upper, letter/digit and acronym boundaries
-/// (`JWTToken` gives `JWT`, `Token`; `OAuth2Token` gives `OAuth`, `2`, `Token`).
-fn split_run(run: &str) -> Vec<String> {
-    let chars: Vec<char> = run.chars().collect();
-    let mut pieces = Vec::new();
-    let mut piece = String::new();
-    for (i, &c) in chars.iter().enumerate() {
-        if let Some(&p) = i.checked_sub(1).map(|j| &chars[j]) {
-            let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
-            let boundary = (p.is_lowercase() && c.is_uppercase())
-                || (p.is_alphabetic() != c.is_alphabetic())
-                || (p.is_uppercase() && c.is_uppercase() && next_lower);
-            if boundary {
-                pieces.push(std::mem::take(&mut piece));
-            }
-        }
-        piece.push(c);
-    }
-    pieces.push(piece);
-    pieces
-}
-
-/// True when any name token of `text` is a credential word. Tokens are the runs of
-/// alphanumerics and the pieces of each run (see [`split_run`]).
+/// True when a token of `text` (a maximal run of alphanumerics, lowercased) that is not in
+/// [`ALLOWED_WORDS`] contains any of [`SECRET_FRAGMENTS`] as a substring.
 fn has_credential_token(text: &str) -> bool {
     text.split(|c: char| !c.is_alphanumeric()).any(|run| {
-        !run.is_empty()
-            && (token_is_credential(&run.to_lowercase())
-                || split_run(run)
-                    .iter()
-                    .any(|p| token_is_credential(&p.to_lowercase())))
+        let token = run.to_lowercase();
+        !token.is_empty()
+            && !ALLOWED_WORDS.contains(&token.as_str())
+            && SECRET_FRAGMENTS.iter().any(|f| token.contains(f))
     })
 }
 
-/// True when a name token of `text` is a credential word (for free-form bodies).
+/// True when a token of `text` contains a credential fragment (for free-form bodies).
 pub fn contains_credential_fragment(text: &str) -> bool {
     has_credential_token(text)
 }
 
-/// True when `name` has a credential word among its name tokens.
+/// True when a token of `name` contains a credential fragment.
 pub fn is_credential_name(name: &str) -> bool {
     has_credential_token(name.trim())
 }
@@ -134,42 +68,73 @@ mod tests {
         assert!(!contains_credential_fragment("hello"));
     }
 
+    const CREDENTIAL_NAME_ROWS: &[(&str, bool)] = &[
+        ("Authorization", true),
+        ("  X-Api-Key ", true),
+        ("access_TOKEN", true),
+        ("client_secret", true),
+        ("Set-Cookie", true),
+        ("PASSWD", true),
+        ("my_credentials", true),
+        ("x-signature", true),
+        ("session_id", true),
+        ("jsessionid", true),
+        ("JSESSIONID", true),
+        ("sessiontoken", true),
+        ("newpassword", true),
+        ("adminpassword", true),
+        ("OAuth2Token", true),
+        ("JWTToken", true),
+        ("githubtoken", true),
+        ("oauthtoken", true),
+        ("bottoken", true),
+        ("passcode", true),
+        ("privkey", true),
+        ("adminpass", true),
+        ("rootpwd", true),
+        ("masterkey", true),
+        ("authcode", true),
+        ("rootpass", true),
+        ("X-Masterkey", true),
+        ("Authentication", true),
+        ("webhooksignature", true),
+        ("awscredentials", true),
+        ("page", false),
+        ("Content-Type", false),
+        ("region", false),
+        ("", false),
+    ];
+
     #[test]
     fn credential_names() {
-        for (name, want) in [
-            ("Authorization", true),
-            ("  X-Api-Key ", true),
-            ("access_TOKEN", true),
-            ("client_secret", true),
-            ("Set-Cookie", true),
-            ("PASSWD", true),
-            ("my_credentials", true),
-            ("x-signature", true),
-            ("session_id", true),
-            ("jsessionid", true),
-            ("JSESSIONID", true),
-            ("sessiontoken", true),
-            ("newpassword", true),
-            ("adminpassword", true),
-            ("OAuth2Token", true),
-            ("JWTToken", true),
-            ("githubtoken", true),
-            ("oauthtoken", true),
-            ("bottoken", true),
-            ("passcode", true),
-            ("privkey", true),
-            ("adminpass", true),
-            ("rootpwd", true),
-            ("masterkey", true),
-            ("authcode", true),
-            ("rootpass", true),
-            ("X-Masterkey", true),
-            ("page", false),
-            ("Content-Type", false),
-            ("region", false),
-            ("", false),
-        ] {
+        for &(name, want) in CREDENTIAL_NAME_ROWS {
             assert_eq!(is_credential_name(name), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn old_true_names_still_match() {
+        let extra = [
+            "x-signature",
+            "x-sig",
+            "my_pass",
+            "db_pwd",
+            "id-jwt",
+            "bearer_x",
+            "DPoP",
+            "saml_assertion",
+            "bypassCache",
+            "signals",
+            "assignmentId",
+            "monkey",
+        ];
+        let table = CREDENTIAL_NAME_ROWS
+            .iter()
+            .filter(|(_, want)| *want)
+            .map(|(name, _)| *name);
+        for name in table.chain(extra) {
+            assert!(is_credential_name(name), "{name}");
+            assert!(contains_credential_fragment(name), "{name}");
         }
     }
 
