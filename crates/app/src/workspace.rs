@@ -6374,6 +6374,20 @@ mod env_wiring_tests {
         }));
     }
 
+    #[gpui::test]
+    fn truncated_sidecar_history_body_stays_equal_to_the_stored_body(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let big = format!("{{\"k\":\"{}\"}}", "a".repeat(1024 * 1024));
+        let tab = history_tab(&fx, json_sidecar_request("big.body.json", &big), cx);
+        tab.read_with(cx, |t, _| {
+            let origin = t.from_history.as_ref().unwrap();
+            assert!(origin.request_truncated);
+            assert_eq!(json_content(&t.draft).1, &None);
+            assert_eq!(t.draft.body, origin.stored_body);
+        });
+    }
+
     #[test]
     fn truncated_refusal_is_the_notice_refused_body_message_recognises() {
         let e = ResolveError {
