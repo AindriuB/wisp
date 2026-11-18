@@ -132,6 +132,8 @@ impl Model {
 struct Slot {
     name: Entity<InputState>,
     value: Entity<InputState>,
+    /// Mask state last applied from the row's name.
+    masked: bool,
     _subs: [Subscription; 2],
 }
 
@@ -142,6 +144,13 @@ pub struct KvTable {
     notes: Vec<Option<SharedString>>,
     slots: Vec<Slot>,
     scroll: gpui_component::VirtualListScrollHandle,
+    /// Per-row value mask decision from the row's name; `None` leaves masking to `options`.
+    row_mask: Option<fn(&str) -> bool>,
+}
+
+/// Whether a row's value is masked: the whole-table option, or the per-row decision.
+fn value_masked(table_wide: bool, row_mask: Option<fn(&str) -> bool>, name: &str) -> bool {
+    table_wide || row_mask.is_some_and(|f| f(name))
 }
 
 impl KvTable {
@@ -157,9 +166,42 @@ impl KvTable {
             notes: Vec::new(),
             slots: Vec::new(),
             scroll: gpui_component::VirtualListScrollHandle::new(),
+            row_mask: None,
         };
         this.sync_slots(window, cx);
         this
+    }
+
+    /// Masks each row's value when `mask(name)` is true, re-evaluated on rename.
+    pub fn set_row_mask(
+        &mut self,
+        mask: fn(&str) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.row_mask = Some(mask);
+        self.apply_masks(window, cx);
+        cx.notify();
+    }
+
+    fn apply_masks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.row_mask.is_none() {
+            return;
+        }
+        for i in 0..self.slots.len() {
+            let name = self
+                .model
+                .rows
+                .get(i)
+                .map(|r| r.name.as_str())
+                .unwrap_or("");
+            let want = value_masked(self.options.mask_values, self.row_mask, name);
+            if self.slots[i].masked != want {
+                self.slots[i].masked = want;
+                let value = self.slots[i].value.clone();
+                value.update(cx, |s, cx| s.set_masked(want, window, cx));
+            }
+        }
     }
 
     /// Replaces the content, reusing input entities; emits no event.
@@ -192,6 +234,7 @@ impl KvTable {
         Slot {
             name,
             value,
+            masked,
             _subs: [s1, s2],
         }
     }
@@ -216,6 +259,7 @@ impl KvTable {
                 }
             }
         }
+        self.apply_masks(window, cx);
     }
 
     fn locate(&self, id: EntityId) -> Option<(usize, Field)> {
@@ -246,10 +290,14 @@ impl KvTable {
         let text = input.read(cx).value();
         match self.model.edit(slot, field, text.as_ref()) {
             Edit::Unchanged => {}
-            Edit::Updated => self.emit_changed(cx),
+            Edit::Updated => {
+                self.apply_masks(window, cx);
+                self.emit_changed(cx);
+            }
             Edit::Appended => {
                 let fresh = self.make_slot(window, cx);
                 self.slots.push(fresh);
+                self.apply_masks(window, cx);
                 self.emit_changed(cx);
             }
         }
@@ -319,7 +367,13 @@ impl KvTable {
             .small()
             .appearance(false)
             .bordered(false);
-        if self.options.mask_values {
+        let row_name = self
+            .model
+            .rows
+            .get(slot)
+            .map(|r| r.name.as_str())
+            .unwrap_or("");
+        if value_masked(self.options.mask_values, self.row_mask, row_name) {
             value = value.mask_toggle();
         }
         row = row.child(div().flex_1().child(value));
@@ -419,6 +473,17 @@ mod tests {
             value: value.into(),
             enabled,
         }
+    }
+
+    #[test]
+    fn vars_value_mask_decision() {
+        let cred: fn(&str) -> bool = wisp_core::redact::is_credential_name;
+        assert!(!value_masked(false, None, "api_token"));
+        assert!(value_masked(true, None, "page"));
+        assert!(value_masked(false, Some(cred), "api_token"));
+        assert!(value_masked(false, Some(cred), "password"));
+        assert!(!value_masked(false, Some(cred), "base_url"));
+        assert!(!value_masked(false, Some(cred), "page"));
     }
 
     #[test]

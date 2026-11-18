@@ -10,6 +10,7 @@ pub struct DirtySections {
     pub url: bool,
     pub params: bool,
     pub path: bool,
+    pub vars: bool,
     pub headers: bool,
     pub auth: bool,
     pub body: bool,
@@ -40,10 +41,6 @@ pub fn is_dirty(saved: Option<&Request>, draft: &Request) -> bool {
 }
 
 /// Which sections differ between `saved` and `draft`.
-///
-/// `Request.vars` has no flag in `DirtySections` (frozen in task 21). v1 has
-/// no editor for per-request vars, so they change only via external file
-/// edits; such a draft is dirty (`is_dirty` true) with no section highlighted.
 pub fn dirty_sections(saved: Option<&Request>, draft: &Request) -> DirtySections {
     let blank;
     let base = match saved {
@@ -59,6 +56,7 @@ pub fn dirty_sections(saved: Option<&Request>, draft: &Request) -> DirtySections
         url: base.url != draft.url,
         params: base.params != draft.params,
         path: base.path != draft.path,
+        vars: base.vars != draft.vars,
         headers: base.headers != draft.headers,
         auth: base.auth != draft.auth,
         body: base.body != draft.body,
@@ -141,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn each_section_flags_alone() {
+    fn each_section_flags_alone_vars_included() {
         let s = base();
         let kv = vec![KeyValue {
             name: "a".into(),
@@ -194,6 +192,18 @@ mod tests {
             d,
             DirtySections {
                 path: true,
+                ..Default::default()
+            },
+        ));
+        let mut d = s.clone();
+        d.vars = vec![Var {
+            name: "a".into(),
+            value: "1".into(),
+        }];
+        cases.push((
+            d,
+            DirtySections {
+                vars: true,
                 ..Default::default()
             },
         ));
