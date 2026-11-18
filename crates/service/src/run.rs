@@ -7,7 +7,9 @@ use std::time::Duration;
 use wisp_core::assert::Verdict;
 use wisp_core::auth::EngineAuth;
 use wisp_core::request::{CollectionDefaults, Environment, Request, Var};
-use wisp_core::resolve::{DynamicValue, HideReason, Problem, Recording, Scope, ShownPart, explain};
+use wisp_core::resolve::{
+    DynamicValue, HideReason, Location, Problem, Recording, Scope, ShownPart, explain,
+};
 use wisp_core::{Engine, EngineConfig, EngineError, ErrorKind, Event, Header, Method, RequestId};
 use wisp_storage::collection::{CollectionTree, open_collection, read_collection_id};
 use wisp_storage::data_dir::DataDir;
@@ -452,9 +454,23 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
     );
     let mut plan = match plan {
         Ok(p) => p,
-        Err(e) => {
-            let problems = e
-                .problems
+        Err(_) => {
+            // The resolver has already expanded secret values, so its problems can carry
+            // pieces of one. Report what Explain finds with the masked environment instead.
+            let masked_env = env.map(masked);
+            let scope: Scope = tree.scope_for(&rel, masked_env.as_ref());
+            let shown = explain(&draft, &scope).problems;
+            // Nothing to show means the problem came from a secret's own value; say so
+            // without naming it.
+            let shown = if shown.is_empty() {
+                vec![Problem::Syntax {
+                    location: Location::Var("<secret>".into()),
+                    message: "a secret value does not resolve".into(),
+                }]
+            } else {
+                shown
+            };
+            let problems = shown
                 .into_iter()
                 .map(|p| match &p {
                     Problem::UnresolvedVar { name, .. } if unloaded.contains(name) => {
@@ -760,6 +776,32 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn run_problems_never_carry_pieces_of_a_secret_value() {
+        for secret in ["ab{cd}", "x{{yz}}"] {
+            let f = fx(server(), true);
+            let w = |rel: &str, t: &str| std::fs::write(f.coll.path().join(rel), t).unwrap();
+            w("environments/dev.toml", "[vars]\n");
+            w(
+                "environments/dev.secrets.toml",
+                &format!("[vars]\ntoken = \"{secret}\"\n"),
+            );
+            w(
+                "a.toml",
+                "name = \"a\"\nmethod = \"GET\"\nurl = \"http://h/{{token}}\"\n",
+            );
+            let mut i = input(&f, false, false, None);
+            i.env = Some("dev".into());
+            let report = run_once(i).unwrap();
+            assert_eq!(report.end, RunEnd::NotPrepared, "{secret}");
+            assert!(!report.problems.is_empty());
+            let dump = format!("{:?} {}", report.problems, report.url);
+            for bad in ["cd", "yz"] {
+                assert!(!dump.contains(bad), "{secret}: {dump}");
+            }
+        }
     }
 
     #[test]
