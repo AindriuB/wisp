@@ -286,7 +286,7 @@ fn ensure_collection_id_locked(root: &Path) -> Result<CollectionId, StorageError
     }
     let id = uuid::Uuid::new_v4().simple().to_string();
     doc.insert("id", toml_edit::value(id.as_str()));
-    fs::atomic_write(&path, doc.to_string().as_bytes())?;
+    crate::environment::write_nofollow(&path, doc.to_string().as_bytes())?;
     Ok(CollectionId(id))
 }
 
@@ -303,7 +303,7 @@ pub fn assign_new_collection_id(root: &Path) -> Result<CollectionId, StorageErro
     });
     let id = uuid::Uuid::new_v4().simple().to_string();
     doc.insert("id", toml_edit::value(id.as_str()));
-    fs::atomic_write(&path, doc.to_string().as_bytes())?;
+    crate::environment::write_nofollow(&path, doc.to_string().as_bytes())?;
     Ok(CollectionId(id))
 }
 
@@ -509,6 +509,35 @@ mod tests {
         w(r, "users/create-user.toml", &req("Create user", "POST"));
         w(r, "users/create-user.body.json", "{}");
         d
+    }
+
+    /// A link swapped in for `collection.toml` between the check and the write
+    /// is refused, and its target is left alone.
+    #[cfg(unix)]
+    #[test]
+    fn h3_id_write_refuses_a_link_swapped_in_after_the_check() {
+        for assign in [false, true] {
+            let t = layout();
+            let out = tempfile::tempdir().unwrap();
+            let target = out.path().join("t");
+            stdfs::write(&target, "outside").unwrap();
+            let p = t.path().join("collection.toml");
+            let (pp, tt) = (p.clone(), target.clone());
+            crate::environment::set_test_hook(Some(Box::new(move |s| {
+                if s == "write:before-rename" {
+                    stdfs::remove_file(&pp).unwrap();
+                    std::os::unix::fs::symlink(&tt, &pp).unwrap();
+                }
+            })));
+            let r = if assign {
+                assign_new_collection_id(t.path())
+            } else {
+                ensure_collection_id(t.path())
+            };
+            crate::environment::set_test_hook(None);
+            assert!(matches!(r, Err(StorageError::Invalid { .. })), "{assign}");
+            assert_eq!(stdfs::read_to_string(&target).unwrap(), "outside");
+        }
     }
 
     fn names(nodes: &[Node]) -> Vec<String> {

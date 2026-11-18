@@ -19,6 +19,13 @@ pub enum Action {
         request: String,
         env: Option<String>,
     },
+    Run {
+        collection: PathBuf,
+        request: String,
+        env: Option<String>,
+        keychain: bool,
+        history: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,10 +66,13 @@ commands:
   validate <collection>
   inspect <collection> [--env <name>]
   explain <collection> <request-path> [--env <name>]
+  run <collection> <request-path> [--env <name>] [--keychain] [--history]
 
 options:
   --json       print one JSON document
   --env <name> select an environment
+  --keychain   run: load keychain-backed secrets
+  --history    run: append a history entry
   --version    print the version
   --help       print this help
   --           treat the rest as positional arguments
@@ -72,6 +82,8 @@ options:
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageError> {
     let mut json = false;
     let mut env: Option<String> = None;
+    let mut keychain = false;
+    let mut history = false;
     let mut help = false;
     let mut version = false;
     let mut pos: Vec<OsString> = Vec::new();
@@ -87,6 +99,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
         }
         match s {
             "--json" => json = true,
+            "--keychain" => keychain = true,
+            "--history" => history = true,
             "--help" | "-h" => help = true,
             "--version" => version = true,
             "--env" => {
@@ -144,6 +158,21 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
                 env: env.take(),
             }
         }
+        "run" => {
+            let collection = collection()?;
+            let request = pos
+                .next()
+                .ok_or(UsageError::MissingArgument("request-path"))?
+                .into_string()
+                .map_err(|_| UsageError::NotUtf8)?;
+            Action::Run {
+                collection,
+                request,
+                env: env.take(),
+                keychain: std::mem::take(&mut keychain),
+                history: std::mem::take(&mut history),
+            }
+        }
         _ => return Err(UsageError::UnknownCommand(name)),
     };
     if let Some(extra) = pos.next() {
@@ -153,6 +182,12 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
     }
     if let Some(_e) = env {
         return Err(UsageError::UnknownFlag("--env".into()));
+    }
+    if keychain {
+        return Err(UsageError::UnknownFlag("--keychain".into()));
+    }
+    if history {
+        return Err(UsageError::UnknownFlag("--history".into()));
     }
     Ok(Parsed { command, json })
 }
@@ -171,6 +206,16 @@ mod tests {
         Action::Inspect {
             collection: c.into(),
             env: env.map(str::to_owned),
+        }
+    }
+
+    fn run(c: &str, r: &str, env: Option<&str>, keychain: bool, history: bool) -> Action {
+        Action::Run {
+            collection: c.into(),
+            request: r.into(),
+            env: env.map(str::to_owned),
+            keychain,
+            history,
         }
     }
 
@@ -241,6 +286,47 @@ mod tests {
             (
                 vec!["inspect", "c", "d"],
                 Err(UsageError::ExtraArgument("d".into())),
+            ),
+            (
+                vec!["run", "c", "a.toml"],
+                ok(run("c", "a.toml", None, false, false), false),
+            ),
+            (
+                vec![
+                    "run",
+                    "c",
+                    "a.toml",
+                    "--env",
+                    "x",
+                    "--keychain",
+                    "--history",
+                    "--json",
+                ],
+                ok(run("c", "a.toml", Some("x"), true, true), true),
+            ),
+            (
+                vec!["run", "c", "a.toml", "--keychain"],
+                ok(run("c", "a.toml", None, true, false), false),
+            ),
+            (
+                vec!["run", "c", "a.toml", "--history"],
+                ok(run("c", "a.toml", None, false, true), false),
+            ),
+            (
+                vec!["run", "c"],
+                Err(UsageError::MissingArgument("request-path")),
+            ),
+            (
+                vec!["run", "c", "a.toml", "--bogus"],
+                Err(UsageError::UnknownFlag("--bogus".into())),
+            ),
+            (
+                vec!["explain", "c", "a.toml", "--keychain"],
+                Err(UsageError::UnknownFlag("--keychain".into())),
+            ),
+            (
+                vec!["validate", "c", "--history"],
+                Err(UsageError::UnknownFlag("--history".into())),
             ),
             (
                 vec!["validate", "c", "--env", "x"],

@@ -6,15 +6,30 @@ use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{load_environment, save_environment};
 use wisp_storage::vault::{
     FailReason, LoadStatus, MemoryStore, NoStores, SecretStore, SecretStoreError, SecretValue,
-    SecretsError, StoreKind, UnavailableReason, VaultCtx, bind, delete_secret,
-    load_environment_with, migrate_to_file, migrate_to_store, refresh_token_account,
-    secret_account, set_secret, store_state_account,
+    SecretsError, StoreKind, UnavailableReason, VaultCtx, delete_secret, load_environment_with,
+    migrate_to_file, migrate_to_store, refresh_token_account, secret_account, set_secret,
+    store_state_account,
 };
 
 const SENTINEL: &str = "s3ntinel-value-xyz";
 
 fn cx() -> VaultCtx {
     VaultCtx::new(DataDir::at(tempfile::tempdir().unwrap().keep()))
+}
+
+/// Make `root` carry `id()` in its own `collection.toml`, as a real collection
+/// does; the binding check reads the id from there.
+fn carry(root: &Path) {
+    let p = root.join("collection.toml");
+    if !p.exists() {
+        std::fs::write(p, format!("format = 1\nid = \"{}\"\n", id().as_str())).unwrap();
+    }
+}
+
+/// `vault::bind` on a root that carries `id()`.
+fn bind(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), SecretsError> {
+    carry(root);
+    wisp_storage::vault::bind(data, id, root)
 }
 
 /// A ctx whose registry already binds `id()` to `root`.
@@ -967,6 +982,7 @@ fn migrate_to_file_unresolved_needs_confirmation() {
 fn bound_to_other_root_fails_closed_everywhere() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
+    carry(b.path());
     let cx = bcx(a.path());
     let s = MemoryStore::new();
     store_env(a.path(), &s);
@@ -1018,7 +1034,7 @@ fn bound_to_other_root_fails_closed_everywhere() {
     ));
     write(b.path(), "dev.toml", STORE_TOML);
     assert!(bound_err(
-        &import_secrets_file(b.path(), "dev", &id(), &s, &cx).unwrap_err()
+        &import_secrets_file(b.path(), "dev", &id(), &s, false, &cx).unwrap_err()
     ));
     assert_eq!(s.accounts(), before);
     assert_eq!(
@@ -1030,12 +1046,14 @@ fn bound_to_other_root_fails_closed_everywhere() {
     );
 
     // Explicit rebind moves it.
+    std::fs::remove_file(a.path().join("collection.toml")).unwrap();
     rebind(&cx.data, &id(), b.path()).unwrap();
     assert_eq!(
         bound_root(&cx.data, &id()).unwrap(),
         Some(std::fs::canonicalize(b.path()).unwrap())
     );
     set_secret(b.path(), "dev", &id(), &s, "token", &v, &cx).unwrap();
+    carry(a.path());
     assert!(bound_err(
         &set_secret(a.path(), "dev", &id(), &s, "token", &v, &cx).unwrap_err()
     ));
@@ -1174,7 +1192,7 @@ fn import_secrets_file_success() {
     let t = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
     import_env(t.path());
-    let w = import_secrets_file(t.path(), "dev", &id(), &s, &bcx(t.path())).unwrap();
+    let w = import_secrets_file(t.path(), "dev", &id(), &s, false, &bcx(t.path())).unwrap();
     assert!(w.is_none());
     assert!(!exists(t.path(), "dev.secrets.toml"));
     assert!(read(t.path(), "dev.toml").contains("\"newone\""));
@@ -1192,7 +1210,7 @@ fn import_secrets_file_failure_rolls_back() {
     let before = read(t.path(), "dev.toml");
     // get, set, get (verify) for token succeed; the fourth call fails.
     s.fail_nth(3, SecretStoreError::Denied);
-    assert!(import_secrets_file(t.path(), "dev", &id(), &s, &bcx(t.path())).is_err());
+    assert!(import_secrets_file(t.path(), "dev", &id(), &s, false, &bcx(t.path())).is_err());
     assert!(exists(t.path(), "dev.secrets.toml"));
     assert_eq!(read(t.path(), "dev.toml"), before);
     assert_eq!(s.get(&acct("token")).unwrap().unwrap().expose(), "pre");
@@ -1260,7 +1278,7 @@ fn unbound_id_with_existing_names_fails_closed() {
     ));
     write(t.path(), "dev.secrets.toml", "[vars]\ntoken = \"t\"\n");
     assert!(unbound(
-        &import_secrets_file(t.path(), "dev", &id(), &s, &cx).unwrap_err()
+        &import_secrets_file(t.path(), "dev", &id(), &s, false, &cx).unwrap_err()
     ));
     assert_eq!(read(t.path(), "dev.toml"), STORE_TOML);
     assert_eq!(s.accounts().len(), 2);
@@ -1340,7 +1358,7 @@ fn sibling_environment_never_auto_binds() {
         &migrate_to_store(t.path(), "filedev", &id(), StoreKind::Keychain, &s, &cx).unwrap_err()
     ));
     assert!(unbound(
-        &import_secrets_file(t.path(), "imp", &id(), &s, &cx).unwrap_err()
+        &import_secrets_file(t.path(), "imp", &id(), &s, false, &cx).unwrap_err()
     ));
     assert_eq!((snap(t.path()), s.accounts()), before);
     assert!(!reg.exists());
@@ -1359,7 +1377,7 @@ fn sibling_environment_never_auto_binds() {
     assert!(matches!(l.status, LoadStatus::Store { .. }));
     set_secret(t.path(), "dev", &id(), &s, "token", &v, &cx).unwrap();
     migrate_to_store(t.path(), "filedev", &id(), StoreKind::Keychain, &s, &cx).unwrap();
-    import_secrets_file(t.path(), "imp", &id(), &s, &cx).unwrap();
+    import_secrets_file(t.path(), "imp", &id(), &s, false, &cx).unwrap();
 }
 
 #[test]
@@ -1420,6 +1438,7 @@ fn marker(root: &Path) -> std::path::PathBuf {
 fn case_variant_id_maps_to_the_same_row() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
+    carry(b.path());
     let cx = bcx(a.path());
     let upper = CollectionId::parse("ABCDEF0123456789").unwrap();
     assert_eq!(upper, id());
@@ -1671,7 +1690,7 @@ fn import_refuses_a_symlinked_secrets_file() {
     std::os::unix::fs::symlink(&target, t.path().join("environments/dev.secrets.toml")).unwrap();
     let cx = bcx(t.path());
     let s = MemoryStore::new();
-    assert!(import_secrets_file(t.path(), "dev", &id(), &s, &cx).is_err());
+    assert!(import_secrets_file(t.path(), "dev", &id(), &s, false, &cx).is_err());
     assert!(s.accounts().is_empty());
 }
 
@@ -2416,4 +2435,302 @@ fn symlinked_plain_env_file_is_refused_not_loaded_as_vars() {
         matches!(e, Err(wisp_storage::StorageError::Invalid { .. })),
         "{e:?}"
     );
+}
+
+// ---- 0.4.0 H3: secret store and binding hardening ----
+
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Turn `root` into a git repo with `environments/dev.secrets.toml` tracked.
+/// `false` (after printing why) when `git` is absent.
+fn track_secrets_file(root: &Path) -> bool {
+    if !git_available() {
+        println!("skipped: git is not available");
+        return false;
+    }
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-f", "environments/dev.secrets.toml"]);
+    true
+}
+
+#[test]
+fn h3_import_conflict_changes_nothing_until_confirmed() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    write(
+        t.path(),
+        "dev.secrets.toml",
+        "[vars]\ntoken = \"v-new-1\"\nkey = \"same\"\n",
+    );
+    let s = MemoryStore::new();
+    put(&s, "token", "v-old-0");
+    put(&s, "key", "same");
+    let cx = bcx(t.path());
+    let e = import_secrets_file(t.path(), "dev", &id(), &s, false, &cx).unwrap_err();
+    match &e {
+        SecretsError::ImportConflict { names } => assert_eq!(names, &vec!["token".to_string()]),
+        other => panic!("{other:?}"),
+    }
+    assert!(!e.to_string().contains("v-old-0") && !e.to_string().contains("v-new-1"));
+    assert_eq!(s.get(&acct("token")).unwrap().unwrap().expose(), "v-old-0");
+    assert!(exists(t.path(), "dev.secrets.toml"));
+    import_secrets_file(t.path(), "dev", &id(), &s, true, &cx).unwrap();
+    assert_eq!(s.get(&acct("token")).unwrap().unwrap().expose(), "v-new-1");
+    assert!(!exists(t.path(), "dev.secrets.toml"));
+}
+
+#[test]
+fn h3_import_refuses_a_git_tracked_file() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    write(t.path(), "dev.secrets.toml", "[vars]\ntoken = \"t\"\n");
+    if !track_secrets_file(t.path()) {
+        return;
+    }
+    let s = MemoryStore::new();
+    let e = import_secrets_file(t.path(), "dev", &id(), &s, true, &bcx(t.path())).unwrap_err();
+    assert!(
+        matches!(e, SecretsError::TrackedSecretsFile { .. }),
+        "{e:?}"
+    );
+    assert!(s.accounts().is_empty());
+    assert!(exists(t.path(), "dev.secrets.toml"));
+}
+
+#[test]
+fn h3_migrate_to_file_refuses_a_git_tracked_target() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    write(t.path(), "dev.secrets.toml", "[vars]\nother = \"o\"\n");
+    if !track_secrets_file(t.path()) {
+        return;
+    }
+    let s = MemoryStore::new();
+    put(&s, "token", "t");
+    put(&s, "key", "k");
+    let e = migrate_to_file(t.path(), "dev", &id(), &s, false, &bcx(t.path())).unwrap_err();
+    assert!(
+        matches!(e, SecretsError::TrackedSecretsFile { .. }),
+        "{e:?}"
+    );
+    assert_eq!(
+        read(t.path(), "dev.secrets.toml"),
+        "[vars]\nother = \"o\"\n"
+    );
+    assert!(read(t.path(), "dev.toml").contains("keychain"));
+}
+
+#[test]
+fn h3_binding_check_reads_the_id_from_the_roots_collection_toml() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let cx = bcx(t.path());
+    let s = MemoryStore::new();
+    let ok = load_environment_with(t.path(), "dev", Some(&id()), &s, &cx).unwrap();
+    assert!(matches!(ok.status, LoadStatus::Store { .. }));
+    // The caller claims another id; the root's own file says otherwise.
+    let other = CollectionId::parse("fedcba9876543210").unwrap();
+    let l = load_environment_with(t.path(), "dev", Some(&other), &s, &cx).unwrap();
+    assert!(
+        matches!(l.status, LoadStatus::Failed { .. }),
+        "{:?}",
+        l.status
+    );
+    let e = set_secret(
+        t.path(),
+        "dev",
+        &other,
+        &s,
+        "t",
+        &SecretValue::new("x"),
+        &cx,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            SecretsError::Unbound | SecretsError::IdBoundElsewhere { .. }
+        ),
+        "{e:?}"
+    );
+    assert!(s.accounts().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn h3_non_utf8_roots_fail_closed_and_never_share_a_binding() {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = tempfile::tempdir().unwrap();
+    let mk = |bytes: &[u8]| {
+        let p = parent.path().join(std::ffi::OsStr::from_bytes(bytes));
+        std::fs::create_dir(&p).map(|()| p)
+    };
+    let (Ok(a), Ok(b)) = (mk(b"a\xff"), mk(b"a\xfe")) else {
+        println!("skipped: this file system refuses non-UTF-8 names");
+        return;
+    };
+    let c = cx();
+    for r in [&a, &b] {
+        carry(r);
+        let e = wisp_storage::vault::bind(&c.data, &id(), r).unwrap_err();
+        assert!(matches!(e, SecretsError::Storage(_)), "{e:?}");
+    }
+    assert!(bound_roots(&c.data, &id()).unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn h3_rebind_fails_closed_when_the_bound_root_cannot_be_inspected() {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = tempfile::tempdir().unwrap();
+    let old = parent.path().join("locked").join("old");
+    std::fs::create_dir_all(&old).unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let c = cx();
+    bind(&c.data, &id(), &old).unwrap();
+    carry(new.path());
+    let locked = parent.path().join("locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let blind = old.try_exists().is_err();
+    let r = rebind(&c.data, &id(), new.path());
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !blind {
+        println!("skipped: permissions do not hide the directory (running as root?)");
+        return;
+    }
+    assert!(matches!(r, Err(SecretsError::Storage(_))), "{r:?}");
+    assert_eq!(
+        bound_root(&c.data, &id()).unwrap(),
+        Some(std::fs::canonicalize(&old).unwrap())
+    );
+}
+
+#[test]
+fn h3_rebind_after_a_genuine_move_succeeds_and_a_live_copy_is_refused() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let c = cx();
+    bind(&c.data, &id(), a.path()).unwrap();
+    carry(b.path());
+    // A copy: the bound root is intact (id and marker nonce), so refused.
+    let e = rebind(&c.data, &id(), b.path()).unwrap_err();
+    assert!(matches!(e, SecretsError::LooksLikeCopy { .. }), "{e:?}");
+    // A move: the old folder is gone.
+    let canon_b = std::fs::canonicalize(b.path()).unwrap();
+    std::fs::remove_dir_all(a.path()).unwrap();
+    rebind(&c.data, &id(), b.path()).unwrap();
+    assert_eq!(bound_roots(&c.data, &id()).unwrap(), vec![canon_b]);
+}
+
+#[test]
+fn h3_a_stale_marker_does_not_make_an_existing_root_look_like_the_bound_one() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let c = cx();
+    bind(&c.data, &id(), a.path()).unwrap();
+    carry(b.path());
+    // The bound folder was recreated: same id, but its marker is gone.
+    std::fs::remove_dir_all(a.path().join("environments")).unwrap();
+    rebind(&c.data, &id(), b.path()).unwrap();
+}
+
+#[test]
+fn h3_save_checks_an_existing_secrets_file_once_for_both_decisions() {
+    #[cfg(unix)]
+    {
+        let t = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        write(t.path(), "dev.toml", "secrets = \"file\"\n");
+        let target = out.path().join("elsewhere.toml");
+        std::fs::write(&target, "[vars]\nk = \"v\"\n").unwrap();
+        std::os::unix::fs::symlink(&target, t.path().join("environments/dev.secrets.toml"))
+            .unwrap();
+        // No secrets to write, but the file is there: it is still checked.
+        let env = Environment {
+            name: "dev".into(),
+            vars: vec![var("h", "1")],
+            secrets: vec![],
+        };
+        assert!(save_environment_locked(t.path(), &env, &cx()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "[vars]\nk = \"v\"\n"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn h3_share_binds_the_canonical_folder_it_checked() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let c = bcx(a.path());
+    carry(b.path());
+    let link = a.path().join("link-to-b");
+    std::os::unix::fs::symlink(b.path(), &link).unwrap();
+    share_with_folder(&c.data, &id(), a.path(), &link).unwrap();
+    let roots = bound_roots(&c.data, &id()).unwrap();
+    assert!(roots.contains(&std::fs::canonicalize(b.path()).unwrap()));
+    assert!(!roots.contains(&link));
+}
+
+#[test]
+fn h3_additional_checkout_binds_the_canonical_worktree() {
+    let a = tempfile::tempdir().unwrap();
+    let w = tempfile::tempdir().unwrap();
+    id_roots(&[a.path(), w.path()]);
+    make_repo(a.path());
+    make_worktree(a.path(), w.path(), "w1");
+    let c = bcx(a.path());
+    #[cfg(unix)]
+    {
+        let link = a.path().join("via-link");
+        std::os::unix::fs::symlink(w.path(), &link).unwrap();
+        bind_additional_checkout(&c.data, &id(), &link).unwrap();
+        let roots = bound_roots(&c.data, &id()).unwrap();
+        assert!(roots.contains(&std::fs::canonicalize(w.path()).unwrap()));
+        assert!(!roots.contains(&link));
+    }
+    #[cfg(not(unix))]
+    bind_additional_checkout(&c.data, &id(), w.path()).unwrap();
+}
+
+#[test]
+fn h3_load_without_a_data_dir_refuses_a_keychain_environment() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let s = MemoryStore::new();
+    put(&s, "token", "t1");
+    let e =
+        wisp_storage::vault::load_environment_without_data_dir(t.path(), "dev", &s).unwrap_err();
+    assert!(
+        matches!(e, wisp_storage::StorageError::Invalid { ref key, .. } if key == "secrets"),
+        "{e:?}"
+    );
+    assert!(!e.to_string().contains("t1"));
+}
+
+#[test]
+fn h3_load_without_a_data_dir_still_loads_a_file_mode_environment() {
+    let t = tempfile::tempdir().unwrap();
+    file_env(t.path());
+    let l =
+        wisp_storage::vault::load_environment_without_data_dir(t.path(), "dev", &NoStores).unwrap();
+    assert_eq!(l.status, LoadStatus::File);
+    assert_eq!(l.env.secrets.len(), 2);
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -103,6 +103,7 @@ struct Inner {
     inflight: Inflight,
     default_timeout: Option<Duration>,
     oauth: Arc<OAuth2>,
+    after_hash: Mutex<Option<AfterHash>>,
 }
 
 impl Drop for Inner {
@@ -170,6 +171,7 @@ impl Engine {
             inflight: Arc::default(),
             default_timeout: config.default_timeout,
             oauth: Arc::new(OAuth2::new(config.refresh_tokens, clock)),
+            after_hash: Mutex::new(None),
         };
         (
             Engine {
@@ -177,6 +179,17 @@ impl Engine {
             },
             rx,
         )
+    }
+
+    /// Test hook: runs on the blocking pool after a SigV4 payload hash is computed and before
+    /// the body is sent, so a test can change the file in that window.
+    #[doc(hidden)]
+    pub fn set_after_hash_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self
+            .inner
+            .after_hash
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(hook));
     }
 
     /// Submit a command; returns immediately.
@@ -245,9 +258,18 @@ impl Engine {
                 let events = self.inner.events.clone();
                 let inflight = self.inner.inflight.clone();
                 let timeout = req.timeout.or(self.inner.default_timeout);
+                let after_hash = self
+                    .inner
+                    .after_hash
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 let fut = async move {
                     let start = Instant::now();
-                    let state = SendState::default();
+                    let state = SendState {
+                        after_hash,
+                        ..SendState::default()
+                    };
                     let _ = events
                         .send(Event::Started {
                             id,
@@ -315,7 +337,14 @@ fn version_of(v: reqwest::Version) -> HttpVersion {
     }
 }
 
+/// Fixed text for a body file whose bytes differ from the ones that were signed; it carries
+/// no path, content or hash.
+const BODY_CHANGED: &str = "the body file changed after it was signed";
+
 fn body_file_error(path: &Path, e: &std::io::Error) -> EngineError {
+    if e.to_string() == BODY_CHANGED {
+        return err(ErrorKind::BodyFile, BODY_CHANGED.to_owned());
+    }
     err(
         ErrorKind::BodyFile,
         format!("cannot read {}: {e}", path.display()),
@@ -335,6 +364,8 @@ enum Segment {
         file: std::fs::File,
         path: PathBuf,
         len: u64,
+        /// SHA-256 of the file as signed; the bytes sent must match it.
+        digest: Option<[u8; 32]>,
     },
 }
 
@@ -364,6 +395,7 @@ async fn open_segment(path: &Path) -> Result<Segment, EngineError> {
             file,
             path: path.to_owned(),
             len,
+            digest: None,
         }),
         Ok(Err(e)) => Err(body_file_error(path, &e)),
         Err(e) => Err(err(
@@ -393,6 +425,7 @@ fn read_exact_vec(
 
 /// Reads small segments into one buffer on the blocking pool.
 async fn gather(segments: Vec<Segment>) -> Result<Vec<u8>, EngineError> {
+    use sha2::Digest as _;
     let joined = tokio::task::spawn_blocking(move || {
         let mut out = Vec::new();
         for seg in segments {
@@ -402,7 +435,14 @@ async fn gather(segments: Vec<Segment>) -> Result<Vec<u8>, EngineError> {
                     mut file,
                     path,
                     len,
-                } => read_exact_vec(&mut file, len, &mut out).map_err(|e| (path, e))?,
+                    digest,
+                } => {
+                    let before = out.len();
+                    read_exact_vec(&mut file, len, &mut out).map_err(|e| (path.clone(), e))?;
+                    if digest.is_some_and(|d| sha2::Sha256::digest(&out[before..])[..] != d[..]) {
+                        return Err((path, std::io::Error::other(BODY_CHANGED)));
+                    }
+                }
             }
         }
         Ok(out)
@@ -417,6 +457,7 @@ async fn gather(segments: Vec<Segment>) -> Result<Vec<u8>, EngineError> {
 
 /// Streams segments in chunks of at most `STREAM_CHUNK`; reads happen on the blocking pool.
 fn stream_body(segments: Vec<Segment>) -> reqwest::Body {
+    use sha2::Digest as _;
     use std::io::Read;
     // Two chunks in flight bounds memory at about 256 KiB
     // (two queued, the sender's buffer and the chunk being written).
@@ -432,8 +473,14 @@ fn stream_body(segments: Vec<Segment>) -> reqwest::Body {
                         }
                     }
                 }
-                Segment::File { mut file, len, .. } => {
+                Segment::File {
+                    mut file,
+                    len,
+                    digest,
+                    ..
+                } => {
                     let mut left = len;
+                    let mut seen = sha2::Sha256::new();
                     while left > 0 {
                         let n = STREAM_CHUNK.min(usize::try_from(left).unwrap_or(STREAM_CHUNK));
                         let mut buf = vec![0u8; n];
@@ -446,7 +493,16 @@ fn stream_body(segments: Vec<Segment>) -> reqwest::Body {
                             Ok(got) => {
                                 buf.truncate(got);
                                 left -= got as u64;
-                                Ok(buf)
+                                seen.update(&buf);
+                                // The last chunk is held back until the whole file matches, so
+                                // a changed file never completes the body.
+                                if left == 0
+                                    && digest.is_some_and(|d| seen.clone().finalize()[..] != d[..])
+                                {
+                                    Err(std::io::Error::other(BODY_CHANGED))
+                                } else {
+                                    Ok(buf)
+                                }
                             }
                             Err(e) => Err(e),
                         };
@@ -612,26 +668,43 @@ fn body_has_file(body: &PreparedBody) -> bool {
     }
 }
 
-/// Feeds a file's first `len` bytes into `hasher`, read in bounded chunks from a fresh open.
-/// Fails if the file is gone, no longer `len` long, or shrinks while read.
+/// Stops a blocking hash when the owning future is dropped (cancel or timeout).
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Feeds a file's first `len` bytes into `hasher`, read in bounded chunks from the already
+/// open handle, then rewinds it so the send reads the same bytes from the same handle.
+/// Fails if the file is no longer `len` long or shrinks while read; stops early on `stop`.
 async fn hash_file(
     mut hasher: sha2::Sha256,
+    file: &mut std::fs::File,
     path: &Path,
     len: u64,
-) -> Result<sha2::Sha256, EngineError> {
-    let owned = path.to_owned();
+    stop: Arc<AtomicBool>,
+) -> Result<(sha2::Sha256, [u8; 32]), EngineError> {
+    // A clone shares the open file description, so reads here move the one handle's offset.
+    let mut shared = file.try_clone().map_err(|e| body_file_error(path, &e))?;
     let hashed = tokio::task::spawn_blocking(move || {
         use sha2::Digest as _;
-        use std::io::Read;
-        let mut file = std::fs::File::open(&owned)?;
-        if file.metadata()?.len() != len {
+        use std::io::{Read, Seek, SeekFrom};
+        if shared.metadata()?.len() != len {
             return Err(std::io::Error::other("length changed before signing"));
         }
+        shared.seek(SeekFrom::Start(0))?;
+        let mut file_hash = sha2::Sha256::new();
         let mut buf = vec![0u8; STREAM_CHUNK];
         let mut left = len;
         while left > 0 {
+            if stop.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("hashing stopped"));
+            }
             let want = STREAM_CHUNK.min(usize::try_from(left).unwrap_or(STREAM_CHUNK));
-            match file.read(&mut buf[..want]) {
+            match shared.read(&mut buf[..want]) {
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Ok(0) => {
                     return Err(std::io::Error::new(
@@ -641,16 +714,18 @@ async fn hash_file(
                 }
                 Ok(got) => {
                     hasher.update(&buf[..got]);
+                    file_hash.update(&buf[..got]);
                     left -= got as u64;
                 }
                 Err(e) => return Err(e),
             }
         }
-        Ok(hasher)
+        shared.seek(SeekFrom::Start(0))?;
+        Ok((hasher, file_hash.finalize().into()))
     })
     .await;
     match hashed {
-        Ok(Ok(h)) => Ok(h),
+        Ok(Ok(done)) => Ok(done),
         Ok(Err(e)) => Err(body_file_error(path, &e)),
         Err(e) => Err(err(
             ErrorKind::BodyFile,
@@ -661,7 +736,7 @@ async fn hash_file(
 
 /// Payload hash for SigV4. S3 signs `UNSIGNED-PAYLOAD` for files and bodies over the memory
 /// limit; other services need the real SHA-256, stream-hashed so a file is never held whole.
-async fn payload_hash(pending: &Pending, service: &str) -> Result<String, EngineError> {
+async fn payload_hash(pending: &mut Pending, service: &str) -> Result<String, EngineError> {
     match pending {
         Pending::None => Ok(sigv4::sha256_hex(&[])),
         Pending::Bytes(b) => Ok(sigv4::sha256_hex(b)),
@@ -672,12 +747,21 @@ async fn payload_hash(pending: &Pending, service: &str) -> Result<String, Engine
             if service == "s3" && (has_file || total > MEMORY_BODY_LIMIT) {
                 return Ok(sigv4::UNSIGNED_PAYLOAD.to_owned());
             }
+            let stop = Arc::new(AtomicBool::new(false));
+            let _guard = StopOnDrop(stop.clone());
             let mut hasher = sha2::Sha256::new();
             for seg in segs {
                 match seg {
                     Segment::Mem(b) => hasher.update(b),
-                    Segment::File { path, len, .. } => {
-                        hasher = hash_file(hasher, path, *len).await?;
+                    Segment::File {
+                        file,
+                        path,
+                        len,
+                        digest,
+                    } => {
+                        let (h, d) = hash_file(hasher, file, path, *len, stop.clone()).await?;
+                        hasher = h;
+                        *digest = Some(d);
                     }
                 }
             }
@@ -686,12 +770,17 @@ async fn payload_hash(pending: &Pending, service: &str) -> Result<String, Engine
     }
 }
 
+/// Callback run between hashing and sending; see `Engine::set_after_hash_hook`.
+type AfterHash = Arc<dyn Fn() + Send + Sync>;
+
 /// What the `Command::Send` task knows about the wire: set just before each request send and
 /// read after the `select!`, so it survives a cancel.
 #[derive(Default)]
 struct SendState {
     started: std::sync::atomic::AtomicU32,
-    connect_failed: std::sync::atomic::AtomicBool,
+    connect_failed: AtomicBool,
+    /// Test hook run once the SigV4 payload hash is known, before the body is sent.
+    after_hash: Option<AfterHash>,
 }
 
 impl SendState {
@@ -817,8 +906,22 @@ async fn perform(
         (true, Pending::Segments(s)) => Replay::Specs(s.iter().map(SegmentSpec::of).collect()),
         _ => Replay::None,
     };
+    // One deadline for hashing and sending together.
+    let began = Instant::now();
     let mut signing_hash = match &req.auth {
-        Some(EngineAuth::AwsSigV4 { service, .. }) => Some(payload_hash(&pending, service).await?),
+        Some(EngineAuth::AwsSigV4 { service, .. }) => {
+            let hashing = payload_hash(&mut pending, service);
+            let hash = match timeout {
+                Some(t) => tokio::time::timeout(t, hashing)
+                    .await
+                    .map_err(|_| err(ErrorKind::Timeout, "request timed out".to_owned()))??,
+                None => hashing.await?,
+            };
+            if let Some(hook) = state.after_hash.clone() {
+                let _ = tokio::task::spawn_blocking(move || hook()).await;
+            }
+            Some(hash)
+        }
         _ => None,
     };
     // reqwest cannot clone a streamed body, so it returns a 307/308 instead of following it.
@@ -832,7 +935,6 @@ async fn perform(
         }
         _ => None,
     };
-    let began = Instant::now();
     let mut url = url;
     let mut hops = 0u32;
     let mut digest_header: Option<String> = None;
@@ -933,8 +1035,16 @@ async fn perform(
             .await
             .map_err(|e| {
                 state.send_failed(&e);
+                if chain_has(&e, BODY_CHANGED) {
+                    return err(ErrorKind::BodyFile, BODY_CHANGED.to_owned());
+                }
                 classify(&e, false)
             })?;
+        // The transport timer can fire late (a stalled worker, a coalesced wakeup) and let a
+        // response that arrived after the deadline through; the one budget is still the budget.
+        if timeout.is_some_and(|t| began.elapsed() >= t) {
+            return Err(err(ErrorKind::Timeout, "request timed out".to_owned()));
+        }
         let hop = clients.timings().claim(token, &resp);
         if timings == Timings::default() {
             timings = hop;
@@ -1130,6 +1240,18 @@ fn kind_of(f: ErrorFlags, chain: &str) -> ErrorKind {
     } else {
         ErrorKind::Other
     }
+}
+
+/// True when `text` is the message of `e` or of any error in its source chain.
+fn chain_has(e: &reqwest::Error, text: &str) -> bool {
+    let mut src: Option<&dyn StdError> = e.source();
+    while let Some(s) = src {
+        if s.to_string() == text {
+            return true;
+        }
+        src = s.source();
+    }
+    false
 }
 
 fn classify(e: &reqwest::Error, reading_body: bool) -> EngineError {

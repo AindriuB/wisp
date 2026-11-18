@@ -164,7 +164,7 @@ fn setting(name: &'static str, s: &Setting) -> SettingDoc {
     }
 }
 
-fn problem(p: &Problem) -> ProblemDoc {
+pub(crate) fn problem(p: &Problem) -> ProblemDoc {
     let doc = |kind, name: Option<&String>, loc: Option<&Location>, message: Option<&String>| {
         ProblemDoc {
             kind,

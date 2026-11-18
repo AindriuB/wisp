@@ -8638,6 +8638,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wisp-core",
+ "wisp-service",
  "wisp-storage",
 ]
 
@@ -8690,6 +8691,7 @@ version = "0.3.0"
 dependencies = [
  "async-channel",
  "keyring",
+ "keyring-core",
  "notify",
  "saphyr",
  "saphyr-parser",

@@ -4,5 +4,6 @@
 pub mod history;
 pub mod outcome;
 pub mod plan;
+pub mod run;
 pub mod send;
 pub mod vault;

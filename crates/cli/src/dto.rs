@@ -178,3 +178,58 @@ pub struct ProblemDoc {
     pub location: Option<String>,
     pub message: Option<String>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct RunDoc {
+    pub schema: &'static str,
+    pub command: &'static str,
+    pub request: String,
+    pub environment: Option<String>,
+    pub method: &'static str,
+    pub url: String,
+    pub result: &'static str,
+    pub exit: u8,
+    pub delivery: &'static str,
+    pub retry_safe: bool,
+    pub status: Option<u16>,
+    /// Text output only: the JSON field set is fixed by the spec.
+    #[serde(skip)]
+    pub reason: Option<String>,
+    pub expected_status: Vec<u16>,
+    pub status_ok: Option<bool>,
+    pub timing_ms: TimingDoc,
+    pub size: Option<u64>,
+    pub error: Option<ErrorDoc>,
+    pub assertions: Vec<CheckDoc>,
+    pub dynamic: Vec<DynamicDoc>,
+    pub history: &'static str,
+    pub problems: Vec<ProblemDoc>,
+}
+dto!(RunDoc);
+
+#[derive(Debug, Serialize)]
+pub struct TimingDoc {
+    pub ttfb: Option<u64>,
+    pub total: Option<u64>,
+}
+
+/// A failure kind. The engine's own message is never carried.
+#[derive(Debug, Serialize)]
+pub struct ErrorDoc {
+    pub kind: &'static str,
+}
+
+/// One assertion: label, state and skip reason. Never an expected or actual value.
+#[derive(Debug, Serialize)]
+pub struct CheckDoc {
+    pub label: String,
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DynamicDoc {
+    pub name: String,
+    pub value: String,
+}
