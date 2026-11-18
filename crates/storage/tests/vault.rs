@@ -2674,21 +2674,19 @@ fn h3_save_checks_an_existing_secrets_file_once_for_both_decisions() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn h3_share_binds_the_canonical_folder_it_checked() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     let c = bcx(a.path());
     carry(b.path());
-    #[cfg(unix)]
-    {
-        let link = a.path().join("link-to-b");
-        std::os::unix::fs::symlink(b.path(), &link).unwrap();
-        share_with_folder(&c.data, &id(), a.path(), &link).unwrap();
-        let roots = bound_roots(&c.data, &id()).unwrap();
-        assert!(roots.contains(&std::fs::canonicalize(b.path()).unwrap()));
-        assert!(!roots.contains(&link));
-    }
+    let link = a.path().join("link-to-b");
+    std::os::unix::fs::symlink(b.path(), &link).unwrap();
+    share_with_folder(&c.data, &id(), a.path(), &link).unwrap();
+    let roots = bound_roots(&c.data, &id()).unwrap();
+    assert!(roots.contains(&std::fs::canonicalize(b.path()).unwrap()));
+    assert!(!roots.contains(&link));
 }
 
 #[test]

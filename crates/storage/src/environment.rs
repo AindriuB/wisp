@@ -139,7 +139,7 @@ pub(crate) fn test_point(stage: &str) {
 pub(crate) fn test_point(_stage: &str) {}
 
 /// Install (or with `None` clear) the [`test_point`] closure on this thread.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_test_hook(f: Option<TestHook>) {
     TEST_HOOK.with(|h| *h.borrow_mut() = f);
 }
@@ -640,12 +640,15 @@ mod tests {
 
     /// Clears the thread's test hook when dropped, so a failed assert cannot
     /// leak it into the next test on this thread.
+    #[cfg(unix)]
     struct HookGuard;
+    #[cfg(unix)]
     impl Drop for HookGuard {
         fn drop(&mut self) {
             set_test_hook(None);
         }
     }
+    #[cfg(unix)]
     fn hook_at(stage: &'static str, f: impl Fn() + 'static) -> HookGuard {
         set_test_hook(Some(Box::new(move |s| {
             if s == stage {
