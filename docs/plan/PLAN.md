@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 167 (hash file body through one handle) and 174 (per-request variables editor) are recorded; next are 172 (CLI budgets measurement), 173 (CLI snapshot and metadata) and 178 (refuse to resend a truncated history body; depends on 168 and 174) once their dependencies land.
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 167 (hash file body through one handle) 174 (per-request variables editor) and 178 (refuse to resend a truncated history body) are recorded; next are 172 (CLI budgets measurement) and 173 (CLI snapshot and metadata) once their dependencies land. 178 must ship in the same release as 168.
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
 
@@ -46,7 +46,6 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] In `run_missing_keychain_secret_is_not_prepared_and_sends_nothing` (crates/service/src/run.rs) the `if carries_id` guard can never be false; bind unconditionally there so a fixture change fails loudly.
 - [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
 - [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
-- [P3] 132-3: task 178 and 179 files are not committed yet, though the 168 follow-up below cites 178's path; commit them or drop the path.
 - [P3] The task 166 HISTORY entry misstates the exit codes: 1 is a failed assertion, 7 an unexpected status, 0 a pass.
 - [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
 
@@ -62,8 +61,12 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] On Windows `h3_tracked_check_works_with_a_relative_root` does not test a relative root (the leading `/` is never stripped).
 - [P3] Fix the flaky `h3_load_without_a_data_dir_refuses_a_keychain_environment`: change the secret value `t1` to one a random temp path cannot contain (see known-flakes.md).
 
+### Follow-ups from task 178 (truncated history body; not scheduled)
+- [P3] `truncated_sidecar_history_body_stays_equal_to_the_stored_body` (`crates/app/src/workspace.rs:~6380`) uses a JSON fixture that the history scrub empties, so it compares empty bodies. A Text sidecar body would hold a real 1 MiB cut body; task 182 fixes the scrub, after which a JSON fixture also works.
+- NOTE: a body both redacted and truncated is refused for redaction first; filling the redacted leaf counts as the edit that clears the truncation refusal (the task's Decision).
+- NOTE: the doc comment on `stored_body` at `crates/service/src/plan.rs:33-34` still says it exists for redaction; it is now read only by the truncation refusal.
+
 ### Follow-ups from task 168 (history hardening; not scheduled)
-- [P2] History reopen drops `request_truncated`, so a body capped at `BODY_CAP` can be resent incomplete without warning. Accepted residual; follow-up task 178 (`docs/plan/tasks/178-history-resend-truncated-body.md`) covers it. Ship with 168's release.
 - Task 179 (`docs/plan/tasks/179-openapi-env-name-credentials.md`) is an open follow-up from the task 170 review (PR #130, 130-1); see the task file.
 - [Low] The 0.3.0-index test lists an index written by the current build, not a hand-written 0.3.0 line, so it does not prove an old line loads.
 - NOTE: substring matching clears whole Text/XML bodies that contain a fragment inside any word, such as monkey, hockey or surpass (fail safe, accepted under Amendment 4). Over-redaction is also why `X-OAuth-Scopes` is redacted (`auth` substring).

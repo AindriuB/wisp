@@ -56,3 +56,16 @@ reuses `refused_body_message` (`workspace.rs:3224`, `ui/root.rs:445`), so
 - Response-body truncation (`HistoryEntry.body_truncated`) and its text.
 - `Workspace::save` and anything else 174 owns in `workspace.rs`.
 - The CLI's history display (`crates/cli/**`, 173).
+
+## Review round 1 — findings
+Reviewed head: d588c2b2e89de58ad0d0f149a0237b1c79c2005d
+Orchestrator note: the new `truncated_` tests in workspace.rs's test module are accepted under Owns, since AC1 and AC6 require them there.
+
+- [P2] crates/app/src/workspace.rs:874 — The `inline_sidecar_body` change to `stored_body` is what makes the truncation refusal work for sidecar-backed bodies, but no test covers it. If that line is reverted, the refusal silently stops firing and every test still passes.
+  route: implementer — add one `truncated_` app test; the spec stays the same.
+  input: A history entry whose request is a Text or JSON body with `sidecar: Some("x.body.json")` and content over 1 MiB. History keeps the sidecar name, as `history_tab_and_editor_stash_never_carry_the_sidecar` at workspace.rs:6450 relies on. Opening the entry inlines the tab body (workspace.rs:2973), so the draft has `sidecar: None`. Without line 874, `stored_body` would keep `sidecar: Some(..)`, so `draft.body == origin.stored_body` (plan.rs:271) is never true and the cut body is resent with no notice. The existing tests cannot catch this. `truncated_history_body_reopens_flagged_and_small_one_does_not` uses `sidecar: None` and checks only the flag. `opening_an_entry_sanitises_it` (workspace.rs:4426) uses a body with no sidecar. The service tests build `stored_body` directly. The fix: open a sidecar body over 1 MiB through `history_tab`, then assert that the tab's `draft.body == from_history.stored_body`, or that `prepare` refuses.
+
+## Wave verified — 1c70e7222a177da3f8767b745743ff49bae2944a
+
+## Outcome
+Merged at 1c70e7222a177da3f8767b745743ff49bae2944a (tester PASS, reviewer APPROVE) after one review round. `HistoryOrigin` now carries `request_truncated`, `origin_line` says `request body truncated at 1 MiB`, and `prepare` refuses a body that is still the stored, cut one until it is edited. Round 1 added a test for the sidecar-inlining line at `workspace.rs:874`. Ships in the same release as 168.
