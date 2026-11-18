@@ -37,6 +37,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] The service keychain-canary test asserts only `Completed` for exits 0/1/7; pin the failed check or bad status.
 - [P3] No CLI-level test of `missing-secret` rendering (text and JSON).
 - [Low] `crates/service/src/run.rs:978` uses a 200 ms sleep against the "no sleeps" rule.
+- [Low] In `run_missing_keychain_secret_is_not_prepared_and_sends_nothing` (crates/service/src/run.rs) the `if carries_id` guard can never be false; bind unconditionally there so a fixture change fails loudly.
 - [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
 - [NOTE] Accepted placement: keychain AC7/AC8 tests live in `crates/service`, because the CLI cannot set the `MemoryStore` seam (AC2).
 
