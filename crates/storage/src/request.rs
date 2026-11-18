@@ -1717,12 +1717,18 @@ file = "create-user.body.json"       # or: content = '''...''' for small bodies
     #[cfg(windows)]
     #[test]
     fn sidecar_rejects_8dot3_short_name_of_sibling_toml() {
-        // Skip when the volume has 8.3 names off: the precondition is not ours to control.
+        // Skip when the volume has 8.3 names off, unless CI demands the real run.
         let probe = tempfile::tempdir().unwrap();
         std::fs::write(probe.path().join("b.toml"), "x").unwrap();
         if !probe.path().join("B~1.TOM").exists() {
+            assert!(
+                std::env::var_os("WISP_REQUIRE_8DOT3").is_none(),
+                "8.3 short names are off on this volume but WISP_REQUIRE_8DOT3 is set"
+            );
+            eprintln!("SKIPPED: 8.3 short names are off on this volume");
             return;
         }
+        eprintln!("RAN: 8.3 short names are on; checking B~1.TOM");
         alias_rejected("B~1.TOM", |_| {});
     }
 

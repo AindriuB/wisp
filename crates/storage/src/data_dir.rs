@@ -87,7 +87,7 @@ fn io(path: &Path, source: std::io::Error) -> StorageError {
     }
 }
 
-/// Create missing directories (mode 0700 on unix). Refuses a symlinked final component, with or
+/// Create missing directories (mode 0700 on unix; owner-only protected DACL on Windows). Refuses a symlinked final component, with or
 /// without a trailing separator. An existing directory wider than 0700 is tightened to 0700.
 pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
     let path = strip_trailing_separators(path);
@@ -124,7 +124,12 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
         }
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
+        crate::win_acl::restrict_to_owner(path).map_err(|e| io(path, e))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         std::fs::create_dir_all(path).map_err(|e| io(path, e))
     }

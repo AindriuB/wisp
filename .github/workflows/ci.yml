@@ -42,6 +42,15 @@ jobs:
       # rustup reads rust-toolchain.toml and installs the pinned toolchain.
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
+      # The 8.3 short-name test needs short names on the temp volume; with
+      # WISP_REQUIRE_8DOT3 set it fails instead of skipping when they are off.
+      - name: Enable 8.3 short names (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $drive = (Get-Item $env:TEMP).PSDrive.Name + ':'
+          fsutil 8dot3name set $drive 0
+          "WISP_REQUIRE_8DOT3=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Format
         run: cargo fmt --check
       - name: Clippy
