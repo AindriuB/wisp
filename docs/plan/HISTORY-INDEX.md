@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-17 | 168 | history masking linear, request bodies capped, token-boundary credential names, response header names split, read-only history reader | ## 2026-11-17 — History hardening and a read-only history reader (task 168) |
 | 2026-11-17 | 175 | Explain pane shows description and expected status; URL bar live check uses the Placeholder source | ## 2026-11-17 — Explain metadata and placeholder URL-bar check (task 175) |
 | 2026-11-17 | 170 | importers: no credential in warnings, names or URLs; validate before write; Postman and OpenAPI descriptions imported | ## 2026-11-17 — Importer hardening and imported descriptions (task 170) |
 | 2026-11-17 | 165 | 0.4.0 wave-1 size measurement; Windows GUI over the wave-1 target, under soft line and gate; nothing cut | ## 2026-11-17 — 0.4.0 wave-1 size measurement (task 165) |
