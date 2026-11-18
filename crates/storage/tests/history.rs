@@ -2016,6 +2016,26 @@ fn h2_encoded_and_run_together_query_names_are_redacted() {
 }
 
 #[test]
+fn h2_run_together_credential_names_are_redacted_in_query_header_and_text_body() {
+    let (_d, data, store) = setup();
+    store
+        .append(
+            new_entry(Request {
+                url: "https://example.com/?rootpass=hunter2".into(),
+                headers: vec![kv("X-Masterkey", "zz-hunter")],
+                body: Body::Text(text_body("masterkey=zz-hunter")),
+                ..Request::default()
+            }),
+            None,
+        )
+        .unwrap();
+    let mut text = String::new();
+    all_text(&hist_dir(&data), &mut text);
+    assert!(!text.contains("hunter2"), "query value stored");
+    assert!(!text.contains("zz-hunter"), "header or body value stored");
+}
+
+#[test]
 fn h2_form_and_multipart_bodies_are_capped_and_flagged() {
     let cap = wisp_storage::history::BODY_CAP;
     let (_d, _data, store) = setup();
