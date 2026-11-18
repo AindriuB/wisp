@@ -728,8 +728,8 @@ mod tests {
         let id = CollectionId::parse(ID).unwrap();
         let root = std::fs::canonicalize(f.coll.path()).unwrap();
         // A folder without an id cannot be bound (the binding check refuses it).
-        let carries_id = std::fs::read_to_string(root.join("collection.toml"))
-            .is_ok_and(|t| t.contains(ID));
+        let carries_id =
+            std::fs::read_to_string(root.join("collection.toml")).is_ok_and(|t| t.contains(ID));
         if carries_id {
             bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
         }
@@ -971,8 +971,8 @@ mod tests {
         let id = CollectionId::parse(ID).unwrap();
         let root = std::fs::canonicalize(f.coll.path()).unwrap();
         // A folder without an id cannot be bound (the binding check refuses it).
-        let carries_id = std::fs::read_to_string(root.join("collection.toml"))
-            .is_ok_and(|t| t.contains(ID));
+        let carries_id =
+            std::fs::read_to_string(root.join("collection.toml")).is_ok_and(|t| t.contains(ID));
         if carries_id {
             bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
         }
