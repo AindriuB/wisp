@@ -26,9 +26,9 @@ pub const SECRET_FRAGMENTS: [&str; 17] = [
 const EXTRA_WORDS: [&str; 3] = ["authorization", "authorisation", "passphrase"];
 
 /// Words that may join a fragment into one token (`apikey`, `sessionid`, `authtoken`).
-const JOINERS: [&str; 18] = [
+const JOINERS: [&str; 19] = [
     "api", "access", "refresh", "client", "private", "public", "id", "x", "my", "db", "user",
-    "app", "csrf", "xsrf", "auth", "set", "secret", "key",
+    "app", "csrf", "xsrf", "auth", "set", "secret", "key", "code",
 ];
 
 /// Fragments that also mark a token when they end it (`githubtoken`, `newpassword`) or end it
@@ -36,6 +36,13 @@ const JOINERS: [&str; 18] = [
 const STRONG_FRAGMENTS: [&str; 6] = [
     "token", "password", "passwd", "secret", "session", "passcode",
 ];
+
+/// Fragments that mark a token when they end it, optionally before one `s` (`rootpass`,
+/// `masterkeys`). Fail safe: `monkey` and `turkey` match too.
+const SUFFIX_FRAGMENTS: [&str; 7] = ["key", "pass", "pwd", "auth", "sig", "jwt", "cookie"];
+
+/// Whole tokens that end in a suffix fragment but are ordinary words.
+const SUFFIX_EXCEPTIONS: [&str; 2] = ["bypass", "compass"];
 
 /// True when `token` (lowercase) is a credential word: a fragment, its plural, a fragment
 /// joined to the words in [`JOINERS`] on either side, or a strong fragment ending it.
@@ -50,6 +57,10 @@ fn token_is_credential(token: &str) -> bool {
             || token.strip_suffix(f).is_some_and(|r| JOINERS.contains(&r))
     });
     fragment
+        || (!SUFFIX_EXCEPTIONS.contains(&token)
+            && SUFFIX_FRAGMENTS.iter().any(|f| {
+                token.ends_with(f) || token.strip_suffix('s').is_some_and(|t| t.ends_with(f))
+            }))
         || STRONG_FRAGMENTS.iter().any(|f| {
             token.match_indices(f).any(|(i, _)| {
                 let rest = &token[i + f.len()..];
@@ -146,6 +157,13 @@ mod tests {
             ("oauthtoken", true),
             ("bottoken", true),
             ("passcode", true),
+            ("privkey", true),
+            ("adminpass", true),
+            ("rootpwd", true),
+            ("masterkey", true),
+            ("authcode", true),
+            ("rootpass", true),
+            ("X-Masterkey", true),
             ("page", false),
             ("Content-Type", false),
             ("region", false),
@@ -163,6 +181,7 @@ mod tests {
             "design",
             "signal",
             "compass",
+            "bypass",
         ] {
             assert!(!is_credential_name(name), "{name}");
             assert!(!contains_credential_fragment(name), "{name}");
