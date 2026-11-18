@@ -361,7 +361,8 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
                 "server URL over {MAX_URL_BYTES} bytes"
             )));
         }
-        if super::may_hold_credentials(&url) {
+        let suspect = super::may_hold_credentials(&url);
+        if suspect {
             result.warn(
                 &root,
                 format!(
@@ -385,6 +386,8 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
         let desc = text(s.get("description"));
         let mut name = if desc_is_safe(&desc) {
             env_name(&desc)
+        } else if suspect || super::may_hold_credentials(&url) {
+            String::new()
         } else {
             env_name(&super::url_host(&url))
         };
