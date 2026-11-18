@@ -2121,7 +2121,7 @@ fn scrub_truncated_append_keeps_json_body_across_reopen() {
     let content = format!("{{\"a\":\"{}\"}}", "x".repeat(cap * 3 / 2));
     let req = Request {
         url: "https://x.test/".into(),
-        body: Body::Text(TextBody {
+        body: Body::Json(TextBody {
             content: content.clone(),
             sidecar: None,
         }),
@@ -2138,7 +2138,7 @@ fn scrub_truncated_append_keeps_json_body_across_reopen() {
     let stored = store.load_without_body(&e.id).unwrap();
     assert!(stored.request_truncated);
     match stored.request.body {
-        Body::Text(b) => {
+        Body::Json(b) => {
             assert!(!b.content.is_empty());
             assert_eq!(b.content.as_bytes(), &content.as_bytes()[..cap]);
         }
@@ -2152,7 +2152,7 @@ fn scrub_truncated_file_in_unmarked_folder_keeps_body() {
     let cap = wisp_storage::history::BODY_CAP;
     let req = Request {
         url: "https://x.test/".into(),
-        body: Body::Text(TextBody {
+        body: Body::Json(TextBody {
             content: format!("{{\"a\":\"{}\"}}", "x".repeat(cap)),
             sidecar: None,
         }),
