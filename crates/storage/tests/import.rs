@@ -821,6 +821,36 @@ fn h4_openapi_env_file_name_never_comes_from_a_secret_description() {
 }
 
 #[test]
+fn h4_server_name_avoids_possible_credentials() {
+    let r = openapi_url("https://bob:1234?rest@h2/y");
+    let d = collection();
+    write(d.path(), Path::new(""), &r, "imported").unwrap();
+    let files: Vec<String> = all_files(d.path())
+        .into_iter()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        files
+            .iter()
+            .all(|f| !f.contains("1234") && !f.contains("bob")),
+        "{files:?}"
+    );
+    assert!(
+        files
+            .iter()
+            .any(|f| f.ends_with("environments/server-1.toml")),
+        "{files:?}"
+    );
+    assert!(warnings_text(&r).contains("may contain credentials"));
+}
+
+#[test]
+fn h4_server_name_keeps_description_and_host() {
+    let r = openapi_url("https://api.example.com:8443/v1");
+    assert_eq!(r.environments[0].name, "api-example-com");
+}
+
+#[test]
 fn h4_openapi_userinfo_warning_names_the_real_host() {
     let r = openapi_url("https://u:p@h1/x?y=@h2");
     let w = warnings_text(&r);
