@@ -727,7 +727,12 @@ mod tests {
     fn bound_store(f: &Fx) -> Arc<MemoryStore> {
         let id = CollectionId::parse(ID).unwrap();
         let root = std::fs::canonicalize(f.coll.path()).unwrap();
-        bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
+        // A folder without an id cannot be bound (the binding check refuses it).
+        let carries_id =
+            std::fs::read_to_string(root.join("collection.toml")).is_ok_and(|t| t.contains(ID));
+        if carries_id {
+            bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
+        }
         let store = Arc::new(MemoryStore::new());
         store
             .set(
@@ -965,7 +970,12 @@ mod tests {
         // Bound, but nothing stored for `kc`.
         let id = CollectionId::parse(ID).unwrap();
         let root = std::fs::canonicalize(f.coll.path()).unwrap();
-        bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
+        // A folder without an id cannot be bound (the binding check refuses it).
+        let carries_id =
+            std::fs::read_to_string(root.join("collection.toml")).is_ok_and(|t| t.contains(ID));
+        if carries_id {
+            bind(&DataDir::at(f.data.path()), &id, &root).unwrap();
+        }
         let store = Arc::new(MemoryStore::new());
         let report = run_once(input(&f, true, true, Some(Box::new(Shared(store))))).unwrap();
         assert_eq!(report.end, RunEnd::NotPrepared);
