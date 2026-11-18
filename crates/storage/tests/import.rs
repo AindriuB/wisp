@@ -847,7 +847,13 @@ fn h4_server_name_avoids_possible_credentials() {
 #[test]
 fn h4_server_name_keeps_description_and_host() {
     let r = openapi_url("https://api.example.com:8443/v1");
-    assert_eq!(r.environments[0].name, "api-example-com");
+    assert_eq!(r.environments[0].name, "api-example-com-8443");
+    let r = openapi::parse(
+        br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+        "servers":[{"url":"https://bob:1234?rest@h2/y","description":"Staging"}],"paths":{}}"#,
+    )
+    .unwrap();
+    assert_eq!(r.environments[0].name, "Staging");
 }
 
 #[test]
