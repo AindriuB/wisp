@@ -20,9 +20,18 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 167 (hash file body through one handle) and 174 (per-request variables editor) are recorded; next are 172 (CLI budgets measurement), 173 (CLI snapshot and metadata) and 178 (refuse to resend a truncated history body; depends on 168 and 174) once their dependencies land.
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 171 (Windows hardening: owner-only data dir, real 8.3 test, file identity), 167 (hash file body through one handle) and 174 (per-request variables editor) are recorded; next are 172 (CLI budgets measurement), 173 (CLI snapshot and metadata) and 178 (refuse to resend a truncated history body; depends on 168 and 174) once their dependencies land.
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 171 (Windows hardening; not scheduled)
+- [P3] `is_owner_only` ignores the ACE access mask (`crates/storage/src/win_acl.rs:103-107`), so a single owner ACE with reduced rights counts as owner-only.
+- [Note] No test proves `restrict_to_owner` is skipped on the already-owner-only path.
+- [Note] `create_dir_all` leaves intermediate directories with inherited ACLs.
+- [Note] ReFS has 128-bit file IDs; `same_file_entry` compares the 64-bit `nFileIndex`.
+- [Note] The 8.3 test could read the short name inside the setup dir instead of a sibling file.
+- Task 180 (no-ACL volumes) already covers the portable FAT case.
+- [Flake] `run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7` is in `known-flakes.md`; find and fix the cause.
 
 ### Follow-ups from task 174 (per-request variables editor; not scheduled)
 - [P3] No test that `VarsEditor` wires `set_row_mask`; the pure decision test would pass without the call.
