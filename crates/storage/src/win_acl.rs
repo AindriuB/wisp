@@ -8,12 +8,14 @@ use std::path::Path;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    SE_FILE_OBJECT, SetNamedSecurityInfoW,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    ConvertStringSidToSidW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SetNamedSecurityInfoW,
 };
 use windows_sys::Win32::Security::{
-    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
-    PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
+    GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
+    PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -53,10 +55,62 @@ pub(crate) fn current_user_sid_string() -> io::Result<String> {
                 n += 1;
             }
             let s = String::from_utf16_lossy(std::slice::from_raw_parts(sid_str, n));
-            LocalFree(sid_str as isize);
+            LocalFree(sid_str.cast());
             Ok(s)
         })();
         CloseHandle(token);
+        result
+    }
+}
+
+/// True when the DACL of `path` is already protected and holds exactly one allow ACE for the
+/// current user that is inherited by files and directories (what `restrict_to_owner` writes).
+pub(crate) fn is_owner_only(path: &Path) -> io::Result<bool> {
+    let me = wide(std::ffi::OsStr::new(&current_user_sid_string()?));
+    let target = wide(path.as_os_str());
+    unsafe {
+        let mut my_sid = std::ptr::null_mut();
+        if ConvertStringSidToSidW(me.as_ptr(), &mut my_sid) == 0 {
+            return Err(last_err());
+        }
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut sd = std::ptr::null_mut();
+        let rc = GetNamedSecurityInfoW(
+            target.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut sd,
+        );
+        if rc != 0 {
+            LocalFree(my_sid.cast());
+            return Err(io::Error::from_raw_os_error(rc as i32));
+        }
+        let result = (|| {
+            let mut control = 0u16;
+            let mut rev = 0u32;
+            if GetSecurityDescriptorControl(sd, &mut control, &mut rev) == 0 {
+                return Err(last_err());
+            }
+            if control & SE_DACL_PROTECTED == 0 || dacl.is_null() || (*dacl).AceCount != 1 {
+                return Ok(false);
+            }
+            let mut ace = std::ptr::null_mut();
+            if GetAce(dacl, 0, &mut ace) == 0 {
+                return Err(last_err());
+            }
+            let ace = &mut *(ace.cast::<ACCESS_ALLOWED_ACE>());
+            // ACCESS_ALLOWED_ACE_TYPE = 0; OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE = 3.
+            let sid = std::ptr::addr_of_mut!(ace.SidStart).cast();
+            Ok(ace.Header.AceType == 0
+                && ace.Header.AceFlags & 3 == 3
+                && EqualSid(sid, my_sid) != 0)
+        })();
+        LocalFree(sd.cast());
+        LocalFree(my_sid.cast());
         result
     }
 }
@@ -101,7 +155,7 @@ pub(crate) fn restrict_to_owner(path: &Path) -> io::Result<()> {
             }
             Ok(())
         })();
-        LocalFree(sd as isize);
+        LocalFree(sd.cast());
         result
     }
 }
@@ -109,12 +163,6 @@ pub(crate) fn restrict_to_owner(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSidToSidW, GetNamedSecurityInfoW,
-    };
-    use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, EqualSid, GetAce, GetSecurityDescriptorControl, SE_DACL_PROTECTED,
-    };
 
     /// Read the DACL back: (protected, allow-ACE count, all ACEs allow the current user).
     fn read_dacl(path: &Path) -> (bool, usize, bool) {
@@ -149,8 +197,8 @@ mod tests {
                 let sid = std::ptr::addr_of_mut!(ace.SidStart).cast();
                 all_me &= is_allow && EqualSid(sid, my_sid) != 0;
             }
-            LocalFree(sd as isize);
-            LocalFree(my_sid as isize);
+            LocalFree(sd.cast());
+            LocalFree(my_sid.cast());
             (control & SE_DACL_PROTECTED != 0, count, all_me)
         }
     }
@@ -170,5 +218,7 @@ mod tests {
         std::fs::create_dir(&wide_dir).unwrap();
         crate::data_dir::ensure_private_dir(&wide_dir).unwrap();
         assert_eq!(read_dacl(&wide_dir), (true, 1, true));
+        assert!(is_owner_only(&wide_dir).unwrap());
+        assert!(!is_owner_only(t.path()).unwrap());
     }
 }

@@ -87,8 +87,9 @@ fn io(path: &Path, source: std::io::Error) -> StorageError {
     }
 }
 
-/// Create missing directories (mode 0700 on unix; owner-only protected DACL on Windows). Refuses a symlinked final component, with or
-/// without a trailing separator. An existing directory wider than 0700 is tightened to 0700.
+/// Create missing directories (mode 0700 on unix; owner-only protected DACL on Windows).
+/// Refuses a symlinked final component, with or without a trailing separator. An existing
+/// directory wider than 0700 (unix) or without the owner-only DACL (Windows) is tightened.
 pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
     let path = strip_trailing_separators(path);
     let path = path.as_path();
@@ -127,7 +128,12 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
     #[cfg(windows)]
     {
         std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
-        crate::win_acl::restrict_to_owner(path).map_err(|e| io(path, e))
+        // Only rewrite the DACL when it is not already owner-only: setting it propagates to
+        // every child, and this runs on hot paths.
+        if !crate::win_acl::is_owner_only(path).map_err(|e| io(path, e))? {
+            crate::win_acl::restrict_to_owner(path).map_err(|e| io(path, e))?;
+        }
+        Ok(())
     }
     #[cfg(not(any(unix, windows)))]
     {
