@@ -20,9 +20,14 @@ than no plan.
 
 ### v0.4.0 (spec agreed)
 
-Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 167 (hash file body through one handle) and 174 (per-request variables editor) are recorded; next are 172 (CLI budgets measurement), 173 (CLI snapshot and metadata) and 178 (refuse to resend a truncated history body; depends on 168 and 174) once their dependencies land.
+Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 167 (hash file body through one handle) and 174 (per-request variables editor) are recorded; next are 172 (CLI budgets measurement), 173 (CLI snapshot and metadata) and 178 (refuse to resend a truncated history body; depends on 168 and 174) once their dependencies land. Task 182 (history scrub no longer empties truncated JSON request bodies; marker written when `append` creates the folder) is recorded; it is a must-ship-before-0.4.0 item (user decision 2026-11-18).
 
 **Size, decision needed before wave 2:** the Windows GUI is 15,560,192 B, over the wave-1 target of 15,543,808 B (+26,624 B against +10,240 B allowed, 16,384 B over). It is 339,808 B under the 15,900,000 B soft line and 439,808 B under the 16,000,000 B gate. Nothing was cut; the spec's cut order is at `docs/plan/specs/2026-11-17-wisp-0-4-0.md:445`. Figures: `scripts/measure/results/v0.4.0-wave-1-size.json` (run 44181832340).
+
+### Follow-ups from task 182 (history scrub and truncated bodies; not scheduled)
+
+- NOTE: the scrub skip covers every truncated body type, not only JSON. The only gap is truncated files written by a dev build of e78aca2 before 0e4325e's `redact.rs` rule change (dev-only data).
+- NOTE: `scrub_truncated_append_keeps_json_body_across_reopen` does not guard the restore (it never scrubs an existing file); `scrub_truncated_file_in_unmarked_folder_keeps_body` does.
 
 ### Follow-ups from task 174 (per-request variables editor; not scheduled)
 - [P3] No test that `VarsEditor` wires `set_row_mask`; the pure decision test would pass without the call.
