@@ -2211,6 +2211,40 @@ fn evidence_is_written_on_every_new_entry() {
 }
 
 #[test]
+fn evidence_wire_values_are_snake_case_in_the_index_line() {
+    let (_d, data, store) = setup();
+    store.append(plain("/stored"), Some(b"x")).unwrap();
+    store
+        .append(
+            plain("/truncated"),
+            Some(&vec![b'a'; wisp_storage::history::BODY_CAP + 1]),
+        )
+        .unwrap();
+    store.append(plain("/off"), None).unwrap();
+    store
+        .append_with(plain("/unreadable"), None, false)
+        .unwrap();
+    let mut n = plain("/noresp");
+    n.status = None;
+    n.outcome = Outcome::Cancelled;
+    store.append(n, Some(b"x")).unwrap();
+    let index = data
+        .history_dir(&cid("abcdef0123456789"))
+        .join("index.jsonl");
+    let text = fs::read_to_string(&index).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 5);
+    for (line, want) in
+        lines
+            .iter()
+            .zip(["stored", "truncated", "off", "unreadable", "no_response"])
+    {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["evidence"]["body"], want, "{line}");
+    }
+}
+
+#[test]
 fn evidence_headers_is_true_exactly_when_status_is_some() {
     let (_d, _data, store) = setup();
     let e = store.append(plain("/a"), None).unwrap();
