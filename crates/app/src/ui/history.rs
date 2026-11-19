@@ -23,6 +23,7 @@ use crate::tab::{HistoryOrigin, Phase, ResponseState};
 use crate::workspace::{Workspace, WorkspaceEvent};
 
 /// The body handed to the history append: none when the setting is off.
+#[cfg(test)]
 pub fn body_to_store(enabled: bool, body: Option<Vec<u8>>) -> Option<Vec<u8>> {
     if enabled { body } else { None }
 }
