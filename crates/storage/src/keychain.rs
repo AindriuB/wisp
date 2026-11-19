@@ -208,6 +208,25 @@ impl SecretStore for PortableStore {
 
 type Job = Box<dyn FnOnce(&dyn Backend) + Send>;
 
+/// Overwrite `buf` with zeros in a way the optimiser may not remove.
+fn wipe(buf: &mut [u8]) {
+    for b in buf.iter_mut() {
+        // SAFETY: `b` is a valid, aligned, exclusive reference to a `u8`.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(Ordering::SeqCst);
+}
+
+/// A secret's bytes, zeroed when dropped: on every exit path of a call, a job
+/// dropped unrun, a result nobody waits for, a timeout and a panic unwind.
+struct Zeroing(Vec<u8>);
+
+impl Drop for Zeroing {
+    fn drop(&mut self) {
+        wipe(&mut self.0);
+    }
+}
+
 /// One worker thread, spawned on first use, running one OS call at a time.
 struct Worker {
     backend: Arc<dyn Backend>,
@@ -325,11 +344,18 @@ impl SecretStore for KeychainStore {
     fn get(&self, account: &str) -> Result<Option<SecretValue>, SecretStoreError> {
         check_account(account)?;
         let account = account.to_owned();
-        match self
-            .worker
-            .run(self.timeouts.call, move |b| b.get(&account))?
-        {
-            Ok(bytes) => match String::from_utf8(bytes) {
+        let job = move |b: &dyn Backend| match b.get(&account) {
+            Ok(v) => Ok(Zeroing(v)),
+            // `BadEncoding` carries the secret's bytes: wipe them here.
+            Err(KeyringError::BadEncoding(mut v)) => {
+                wipe(&mut v);
+                Err(KeyringError::BadEncoding(Vec::new()))
+            }
+            Err(e) => Err(e),
+        };
+        match self.worker.run(self.timeouts.call, job)? {
+            // The only copy left is the `SecretValue`'s; `bytes` is wiped on drop.
+            Ok(bytes) => match std::str::from_utf8(&bytes.0) {
                 Ok(s) => Ok(Some(SecretValue::new(s))),
                 // The bytes are dropped unformatted.
                 Err(_) => Err(SecretStoreError::Other { code: None }),
@@ -345,10 +371,10 @@ impl SecretStore for KeychainStore {
         if bytes.len() > MAX_SECRET_BYTES {
             return Err(SecretStoreError::TooLarge);
         }
-        let (account, bytes) = (account.to_owned(), bytes.to_vec());
+        let (account, bytes) = (account.to_owned(), Zeroing(bytes.to_vec()));
         match self
             .worker
-            .run(self.timeouts.call, move |b| b.set(&account, &bytes))?
+            .run(self.timeouts.call, move |b| b.set(&account, &bytes.0))?
         {
             Ok(()) => Ok(()),
             Err(e) => Err(map_error(&e)),
@@ -496,6 +522,13 @@ mod tests {
         fn delete(&self, _: &str) -> Result<(), KeyringError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn wipe_zeroes_every_byte() {
+        let mut v = SECRET.as_bytes().to_vec();
+        wipe(&mut v);
+        assert!(v.iter().all(|b| *b == 0));
     }
 
     #[test]

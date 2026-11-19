@@ -58,6 +58,14 @@ pub(crate) enum BindError {
 struct Row {
     root: String,
     nonce: String,
+    /// This root's own marker key (random, per root). `None` for a row written
+    /// before per-root keys: its marker entry is under the registry id.
+    key: Option<String>,
+}
+
+/// The key of `row`'s entry in its root's marker.
+fn marker_key<'a>(reg_id: &'a str, row: &'a Row) -> &'a str {
+    row.key.as_deref().unwrap_or(reg_id)
 }
 
 impl From<StorageError> for BindError {
@@ -193,9 +201,19 @@ fn read_registry(path: &Path) -> Result<Registry, StorageError> {
                 .map(|r| {
                     let root = r.get("root").and_then(|x| x.as_str()).ok_or_else(bad)?;
                     let nonce = r.get("nonce").and_then(|x| x.as_str()).ok_or_else(bad)?;
+                    let key = match r.get("key") {
+                        None => None,
+                        Some(k) => Some(
+                            k.as_str()
+                                .filter(|s| valid_token(s))
+                                .ok_or_else(bad)?
+                                .to_string(),
+                        ),
+                    };
                     Ok(Row {
                         root: root.to_string(),
                         nonce: nonce.to_string(),
+                        key,
                     })
                 })
                 .collect::<Result<Vec<_>, StorageError>>()?;
@@ -213,7 +231,10 @@ fn write_registry(path: &Path, reg: &Registry) -> Result<(), StorageError> {
         .map(|(k, rs)| {
             let list: Vec<_> = rs
                 .iter()
-                .map(|r| serde_json::json!({ "root": r.root, "nonce": r.nonce }))
+                .map(|r| match &r.key {
+                    Some(k) => serde_json::json!({ "root": r.root, "nonce": r.nonce, "key": k }),
+                    None => serde_json::json!({ "root": r.root, "nonce": r.nonce }),
+                })
                 .collect();
             (k.clone(), serde_json::Value::Array(list))
         })
@@ -242,50 +263,129 @@ fn safe_marker(root: &Path) -> Result<Option<PathBuf>, StorageError> {
     Ok(fs::confined_regular_file(root, &p, "binding marker")?.then_some(p))
 }
 
-/// The marker's `registry id -> nonce` entries, one `<registry id> <nonce>`
-/// line each. Empty when the marker is missing or refused (fail closed: a
-/// refused marker reads as no marker, so the id is `Unbound`).
-fn read_marker_entries(root: &Path) -> Result<BTreeMap<String, String>, StorageError> {
-    let p = match safe_marker(root) {
-        Ok(Some(p)) => p,
-        Ok(None) | Err(StorageError::Invalid { .. }) => return Ok(BTreeMap::new()),
-        Err(e) => return Err(e),
+/// Largest marker read, in bytes (taken from `lstat`, and again as a read cap).
+const MARKER_CAP: u64 = 16 * 1024;
+/// Most lines a marker may hold; more fails closed.
+const MARKER_MAX_ENTRIES: usize = 64;
+
+/// A marker key or nonce: short, ASCII alphanumeric.
+fn valid_token(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+fn marker_refuse(path: &Path, message: &str) -> StorageError {
+    StorageError::Invalid {
+        path: path.to_path_buf(),
+        key: "path".into(),
+        message: message.into(),
+    }
+}
+
+/// The marker's `key -> nonce` entries, one `<key> <nonce>` line each. Empty
+/// when the marker is missing. A marker over [`MARKER_CAP`] bytes (by `lstat`
+/// and by what is read) or [`MARKER_MAX_ENTRIES`] lines, or one that is
+/// refused (a link), is `Invalid`. Malformed lines are skipped.
+fn read_marker_strict(root: &Path) -> Result<BTreeMap<String, String>, StorageError> {
+    use std::io::Read;
+    let Some(p) = safe_marker(root)? else {
+        return Ok(BTreeMap::new());
     };
-    let text = match crate::environment::read_nofollow(&p) {
-        Ok(t) => t,
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.len() > MARKER_CAP => {
+            return Err(marker_refuse(&p, "the binding marker is too large"));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(io(&p, e)),
+    }
+    let f = match crate::environment::open_nofollow(&p) {
+        Ok(f) => f,
         Err(StorageError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
             return Ok(BTreeMap::new());
         }
-        // A link swapped in after the check reads as no marker.
-        Err(StorageError::Invalid { .. }) => return Ok(BTreeMap::new()),
         Err(e) => return Err(e),
     };
+    let mut bytes = Vec::new();
+    f.take(MARKER_CAP + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| io(&p, e))?;
+    if bytes.len() as u64 > MARKER_CAP {
+        return Err(marker_refuse(&p, "the binding marker is too large"));
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| marker_refuse(&p, "the binding marker is not valid text"))?;
+    if text.lines().filter(|l| !l.trim().is_empty()).count() > MARKER_MAX_ENTRIES {
+        return Err(marker_refuse(&p, "the binding marker has too many entries"));
+    }
     Ok(text
         .lines()
         .filter_map(|l| l.split_once(' '))
-        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .map(|(k, v)| (k.trim(), v.trim()))
+        .filter(|(k, v)| valid_token(k) && valid_token(v))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect())
 }
 
-fn read_marker(root: &Path, registry_id: &str) -> Result<Option<String>, StorageError> {
-    Ok(read_marker_entries(root)?.remove(registry_id))
+/// [`read_marker_strict`] for a check: a refused or oversized marker reads as
+/// no marker (fail closed: the id is `Unbound`).
+fn read_marker_entries(root: &Path) -> Result<BTreeMap<String, String>, StorageError> {
+    match read_marker_strict(root) {
+        Err(StorageError::Invalid { .. }) => Ok(BTreeMap::new()),
+        r => r,
+    }
 }
 
-/// Write a fresh nonce for `registry_id` into the marker (mode `0600`,
-/// git-ignored), keeping other registries' entries, and return it. Refuses,
-/// writing nothing, when the directory or marker is a symlink.
-fn write_marker(root: &Path, registry_id: &str) -> Result<String, StorageError> {
+fn read_marker(root: &Path, key: &str) -> Result<Option<String>, StorageError> {
+    Ok(read_marker_entries(root)?.remove(key))
+}
+
+/// Write a fresh nonce under `key` into the marker (mode `0600`, git-ignored),
+/// keeping other keys' entries but dropping `drop_keys`, malformed lines, and
+/// entries beyond [`MARKER_MAX_ENTRIES`]; return the nonce. Refuses, writing
+/// nothing, when the directory or marker is a symlink or the marker is over a
+/// cap.
+fn write_marker(root: &Path, key: &str, drop_keys: &[&str]) -> Result<String, StorageError> {
     safe_marker(root)?;
     let dir = root.join(crate::environment::DIR);
     std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
     safe_marker(root)?;
     crate::environment::ensure_marker_ignored(&dir)?;
-    let mut entries = read_marker_entries(root)?;
+    let mut entries = read_marker_strict(root)?;
+    for k in drop_keys {
+        entries.remove(*k);
+    }
     let nonce = new_nonce();
-    entries.insert(registry_id.to_string(), nonce.clone());
+    entries.insert(key.to_string(), nonce.clone());
+    while entries.len() > MARKER_MAX_ENTRIES {
+        let Some(victim) = entries.keys().find(|k| *k != key).cloned() else {
+            break;
+        };
+        entries.remove(&victim);
+    }
     let text: String = entries.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
     crate::environment::write_nofollow(&marker_path(root), text.as_bytes())?;
     Ok(nonce)
+}
+
+/// The marker file if git tracks it: a warning for the caller to surface, as
+/// the marker holds a nonce and must stay out of the repository. `None` when it
+/// is not tracked, or when there is no `git` or repository to say.
+pub fn tracked_marker_warning(root: &Path) -> Option<PathBuf> {
+    let marker = marker_path(root);
+    let rel = marker.strip_prefix(root).unwrap_or(&marker);
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["-c", "core.fsmonitor=false"])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(rel)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+        .then_some(marker.clone())
 }
 
 /// The binding check against an already-read registry. `canon` is canonical and
@@ -298,7 +398,7 @@ fn check_in(reg: &Registry, id: &CollectionId, canon: &Path, ckey: &str) -> Resu
     }
     let rows = reg.rows.get(id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
     match rows.iter().find(|r| r.root == ckey) {
-        Some(r) => match read_marker(canon, &reg.id)? {
+        Some(r) => match read_marker(canon, marker_key(&reg.id, r))? {
             Some(n) if n == r.nonce => Ok(()),
             _ => Err(BindError::Unbound),
         },
@@ -336,7 +436,7 @@ fn bind_locked(
     let rows = reg.rows.entry(id.as_str().to_string()).or_default();
     let existing = rows.iter().position(|r| r.root == ckey);
     if let Some(i) = existing {
-        if read_marker(canon, &reg_id)?.as_deref() == Some(&rows[i].nonce) {
+        if read_marker(canon, marker_key(&reg_id, &rows[i]))?.as_deref() == Some(&rows[i].nonce) {
             return Ok(());
         }
     } else if !additional && let Some(r) = rows.first() {
@@ -344,12 +444,21 @@ fn bind_locked(
             bound_root: PathBuf::from(&r.root),
         });
     }
-    let nonce = write_marker(canon, &reg_id)?;
+    let key = new_nonce();
+    let old_key = existing.map(|i| marker_key(&reg_id, &rows[i]).to_string());
+    let mut drop_keys = vec![reg_id.as_str()];
+    drop_keys.extend(old_key.as_deref());
+    let nonce = write_marker(canon, &key, &drop_keys)?;
+    let key = Some(key);
     match existing {
-        Some(i) => rows[i].nonce = nonce,
+        Some(i) => {
+            rows[i].nonce = nonce;
+            rows[i].key = key;
+        }
         None => rows.push(Row {
             root: ckey.to_string(),
             nonce,
+            key,
         }),
     }
     write_registry(&registry_path(data), reg)?;
@@ -505,6 +614,37 @@ fn simplify_verbatim(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// A worktree entry name that Win32 would not rewrite: not a reserved DOS
+/// device (`CON`, `NUL`, `COM1`..., with or without an extension) and not ending
+/// in a dot or space, which Win32 strips so the name would reach another folder.
+/// Applied on every platform, so behaviour does not differ by OS.
+fn safe_entry_name(name: &std::ffi::OsStr) -> bool {
+    let Some(n) = name.to_str() else {
+        return false;
+    };
+    if n.ends_with('.') || n.ends_with(' ') {
+        return false;
+    }
+    let stem = n
+        .split('.')
+        .next()
+        .unwrap_or(n)
+        .trim_end()
+        .to_ascii_uppercase();
+    let reserved = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|p| {
+        stem.strip_prefix(p).is_some_and(|d| {
+            matches!(
+                d,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
+    });
+    !reserved
+}
+
 /// Lexical, no I/O: is `gitdir` exactly `<trusted>/worktrees/<name>`, with
 /// `<trusted>` a canonical trusted common dir and `<name>` one normal component?
 fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
@@ -512,7 +652,8 @@ fn exact_worktree_gitdir(gitdir: &Path, trusted: &[PathBuf]) -> bool {
     let Some(parent) = gitdir.parent() else {
         return false;
     };
-    let name_ok = matches!(gitdir.components().next_back(), Some(Component::Normal(_)));
+    let name_ok =
+        matches!(gitdir.components().next_back(), Some(Component::Normal(n)) if safe_entry_name(n));
     name_ok
         && parent
             .parent()
@@ -594,12 +735,33 @@ fn common_dir(root: &Path, trusted: &[PathBuf]) -> Result<Option<PathBuf>, Stora
     }
     // The worktree's gitdir must name this `.git` back, so a forged `.git`
     // file cannot claim someone else's repository.
-    let back = read_git_file(&gitdir.join("gitdir"))?;
+    // Compared lexically, never canonicalised: a retargeted symlink component in
+    // the entry's path must not make it name another folder.
+    let back_file = gitdir.join("gitdir");
+    let back = read_git_file(&back_file)?;
     let back_ok = back
         .filter(|b| !is_remote_or_device(b))
-        .and_then(|b| canon(&gitdir.join(b)))
+        .map(|b| simplify_verbatim(&lexical(&gitdir.join(b))))
         .is_some_and(|b| b == dot_git);
-    Ok(back_ok.then_some(common))
+    // A worktree's entry and its `.git` file are written together. An entry
+    // whose folder was deleted by hand and later recreated (or forged) at the
+    // same path is much newer than the entry, so it is not verified.
+    Ok((back_ok && written_together(&back_file, &dot_git)).then_some(common))
+}
+
+/// Largest gap between a worktree entry's `gitdir` file and the worktree's
+/// `.git` file, both written by `git worktree add` in one go.
+const WRITTEN_TOGETHER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// True when the two files' modification times are within [`WRITTEN_TOGETHER`].
+/// Fails closed when a time cannot be read.
+fn written_together(entry_file: &Path, dot_git: &Path) -> bool {
+    let time = |p: &Path| std::fs::symlink_metadata(p).and_then(|m| m.modified());
+    let (Ok(a), Ok(b)) = (time(entry_file), time(dot_git)) else {
+        return false;
+    };
+    let gap = a.duration_since(b).or_else(|e| Ok::<_, ()>(e.duration()));
+    gap.is_ok_and(|g| g <= WRITTEN_TOGETHER)
 }
 
 /// The common dir of a bound root that may anchor verification: only a root
@@ -644,6 +806,15 @@ fn verified_siblings_in(
     let Some(want) = common_dir(new_root, &trusted)? else {
         return Ok(Vec::new());
     };
+    // A common dir nested inside some other collection root (any id) is
+    // content that root's author controls, not a repository's own `.git`.
+    let nested = reg.rows.values().flatten().any(|r| {
+        let root = simplify_verbatim(Path::new(&r.root));
+        want.starts_with(&root) && want != root.join(".git")
+    });
+    if nested {
+        return Ok(Vec::new());
+    }
     Ok(bound
         .into_iter()
         .filter(|(_, c)| *c == want)
@@ -694,32 +865,39 @@ pub(crate) fn rebind_confirmed(
     let is_new = !rows.iter().any(|r| r.root == ckey);
     let mut live_other = None;
     let mut keep = Vec::new();
+    let mut old_key = None;
     for r in rows.iter() {
         if r.root == ckey {
+            old_key = Some(marker_key(&reg_id, r).to_string());
             continue;
         }
         let old = PathBuf::from(&r.root);
         // `try_exists`: any error but NotFound fails closed, so a root that
         // cannot be inspected is never taken for a moved one.
         let exists = old.try_exists().map_err(|e| io(&old, e))?;
-        // Still the bound checkout: it exists, carries the id and holds the
-        // row's nonce in its marker.
+        // Live: it exists, carries this id and holds the row's nonce. Other
+        // bound roots being gone does not matter, so a copy cannot be bound as
+        // "moved" once some other root has vanished.
         if exists
             && crate::collection::read_collection_id(&old)?.as_ref() == Some(id)
-            && read_marker(&old, &reg_id)?.as_deref() == Some(r.nonce.as_str())
+            && read_marker(&old, marker_key(&reg_id, r))?.as_deref() == Some(r.nonce.as_str())
         {
             live_other.get_or_insert(old);
             keep.push(r.clone());
         }
     }
-    if is_new
-        && keep.len() == rows.len()
-        && let Some(old) = live_other
-    {
+    if is_new && let Some(old) = live_other {
         return Err(BindError::LooksLikeCopy { bound_root: old });
     }
-    let nonce = write_marker(&canon, &reg_id)?;
-    keep.push(Row { root: ckey, nonce });
+    let key = new_nonce();
+    let mut drop_keys = vec![reg_id.as_str()];
+    drop_keys.extend(old_key.as_deref());
+    let nonce = write_marker(&canon, &key, &drop_keys)?;
+    keep.push(Row {
+        root: ckey,
+        nonce,
+        key: Some(key),
+    });
     *rows = keep;
     write_registry(&path, &reg)?;
     Ok(())
@@ -838,6 +1016,18 @@ mod tests {
         assert!(exact_worktree_gitdir(&joined, &trusted));
         let other = simplify_verbatim(&lexical(&root.join("C:/other/.git/worktrees/w")));
         assert!(!exact_worktree_gitdir(&other, &trusted));
+    }
+
+    #[test]
+    fn reserved_and_rewritten_entry_names_are_refused() {
+        use super::safe_entry_name;
+        use std::ffi::OsStr;
+        for n in ["COM1", "com9", "NUL", "con.txt", "LPT3", "w.", "w ", "AUX "] {
+            assert!(!safe_entry_name(OsStr::new(n)), "{n}");
+        }
+        for n in ["w1", "COM10", "COM0", "feature-x", "a.b"] {
+            assert!(safe_entry_name(OsStr::new(n)), "{n}");
+        }
     }
 
     #[test]
