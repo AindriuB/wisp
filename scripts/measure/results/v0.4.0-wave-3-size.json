@@ -1,0 +1,46 @@
+{
+  "run": "https://github.com/AindriuB/wisp/actions/runs/44593845270",
+  "run_id": 44593845270,
+  "built_commit": "8d6fb0f92e6c86a96d0e57033ac74e438cd8b4b7",
+  "conclusion": "success on every target",
+  "note": "measure.yml dispatched on main 8d6fb0f with tasks 166-176 merged. GUI built alone and with the CLI are identical on every target.",
+  "baseline": {
+    "wave_1": "scripts/measure/results/v0.4.0-wave-1-size.json (run 44181832340)",
+    "wave_2_cli": "scripts/measure/results/v0.4.0-wave-2-cli-size.json (run 44293903312)",
+    "v0_3_0_windows_gui_bytes": 15533568,
+    "v0_3_0_cli_note": "CLI baselines are the 0.3.0 wisp-cli sizes recorded in the wave-2 file"
+  },
+  "windows_gate_bytes": 16000000,
+  "windows_soft_line_bytes": 15900000,
+  "windows_gui_status": "UNDER the 15,900,000 B soft line by 284,000 B; UNDER the 16,000,000 B gate by 384,000 B. Nothing cut.",
+  "cli_limit_bytes": 7340032,
+  "targets": {
+    "aarch64-apple-darwin": {
+      "gui_bytes": 11901136, "cli_bytes": 3535072,
+      "baseline_165_gui_bytes": 11867856, "gui_delta_vs_165_bytes": 33280,
+      "baseline_172_gui_bytes": 11901120, "gui_delta_vs_172_bytes": 16,
+      "baseline_172_cli_bytes": 3485408, "cli_delta_vs_172_bytes": 49664,
+      "baseline_0_3_0_cli_bytes": 1415600, "cli_delta_vs_0_3_0_bytes": 2119472,
+      "cli_limit_bytes": 7340032, "cli_headroom_bytes": 3805960
+    },
+    "x86_64-pc-windows-msvc": {
+      "gui_bytes": 15616000, "cli_bytes": 4263424,
+      "baseline_0_3_0_gui_bytes": 15533568, "gui_delta_vs_0_3_0_bytes": 82432,
+      "baseline_165_gui_bytes": 15560192, "gui_delta_vs_165_bytes": 55808,
+      "baseline_172_gui_bytes": 15609344, "gui_delta_vs_172_bytes": 6656,
+      "baseline_172_cli_bytes": 4201472, "cli_delta_vs_172_bytes": 61952,
+      "baseline_0_3_0_cli_bytes": 1633792, "cli_delta_vs_0_3_0_bytes": 2629632,
+      "under_gate": true, "over_soft_line": false,
+      "gate_headroom_bytes": 384000, "soft_line_headroom_bytes": 284000,
+      "cli_limit_bytes": 7340032, "cli_headroom_bytes": 3076608
+    },
+    "x86_64-unknown-linux-gnu": {
+      "gui_bytes": 26303048, "cli_bytes": 6391544,
+      "baseline_165_gui_bytes": 26250824, "gui_delta_vs_165_bytes": 52224,
+      "baseline_172_gui_bytes": 26302152, "gui_delta_vs_172_bytes": 896,
+      "baseline_172_cli_bytes": 6336504, "cli_delta_vs_172_bytes": 55040,
+      "baseline_0_3_0_cli_bytes": 1970056, "cli_delta_vs_0_3_0_bytes": 4421488,
+      "cli_limit_bytes": 7340032, "cli_headroom_bytes": 948488
+    }
+  }
+}
