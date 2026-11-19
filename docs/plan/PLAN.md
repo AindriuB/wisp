@@ -36,8 +36,11 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] 139-3: the `windows-sys` entry in `crates/storage/Cargo.toml` lacks `default-features = false`, which `docs/conventions.md:83-84` requires (no build effect; PR #139's description wrongly says it is set).
 - [Note] ReFS has 128-bit file IDs; `same_file_entry` compares the 64-bit `nFileIndex`.
 - [Note] The 8.3 test could read the short name inside the setup dir instead of a sibling file.
-- Task 180 (no-ACL volumes) already covers the portable FAT case.
 - [Flake] `run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7` is in `known-flakes.md`; find and fix the cause.
+
+### Follow-ups from task 180 (no-ACL volumes; not scheduled)
+- [Note] `volume_flags` in `crates/storage/src/win_acl.rs`: a relative path whose first component does not exist walks to an empty parent and returns `None`, so the DACL is applied and fails closed; unreachable today because the data dir is always absolute.
+- [Note] `GetVolumePathNameW` uses a fixed 1024-unit buffer; a longer path makes the query fail, so the DACL is applied (fails closed).
 
 ### Follow-ups from task 174 (per-request variables editor; not scheduled)
 - [P3] No test that `VarsEditor` wires `set_row_mask`; the pure decision test would pass without the call.
