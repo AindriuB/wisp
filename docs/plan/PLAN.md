@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Task 184 (TLS trust engine) is recorded. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence) and 184 (TLS trust engine) are recorded. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -34,6 +34,11 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] The test fixture's validity starts at yesterday 00:00 UTC, not now-1h, and the comment saying `time` is needed is wrong (`crates/core/tests/tls.rs:143-164`).
 - [P3] `scratch` leaves `wisp-trust-*` directories in the temp dir (`crates/core/tests/tls.rs:223`).
 - [P3] No FIFO test: the FIFO case shares the directory branch, and a FIFO swapped in between metadata and open could block (`crates/core/src/trust.rs:57-64`).
+
+### Follow-ups from task 183 (history evidence; not scheduled)
+- [P3] If the user turns history bodies on while an append waits for the collection id to be read, a body from a response received with storage off is written; the setting is read in `spawn_record`, not at response time (`crates/app/src/workspace.rs:2875`).
+- [P3] No app-level test checks that the GUI passes `history_bodies = false` through; `body_to_store` is now `#[cfg(test)]` (`crates/app/src/ui/history.rs:27`).
+- [P3] A Failed or Cancelled outcome passed with `Some(body)` writes the `.bin` but records `no_response` (`crates/storage/src/history.rs:1288-1290`); no caller does this today.
 
 ### Follow-ups from task 182 (history scrub and truncated bodies; not scheduled)
 

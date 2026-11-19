@@ -37,13 +37,23 @@ pub fn record(
     bodies: HistoryBodies,
 ) -> Result<HistoryStore, RecordError> {
     let store = HistoryStore::open(data, id);
-    let body = match bodies {
-        HistoryBodies::Store => body,
-        HistoryBodies::Skip => None,
-    };
+    append_to(&store, entry, body, bodies)?;
+    Ok(store)
+}
+
+/// Append to an open store. With `Skip` the body is dropped and recorded as `off`; with
+/// `Store`, a missing body on a completed response is recorded as `unreadable`.
+pub fn append_to(
+    store: &HistoryStore,
+    entry: NewEntry,
+    body: Option<Vec<u8>>,
+    bodies: HistoryBodies,
+) -> Result<(), RecordError> {
+    let off = bodies == HistoryBodies::Skip;
+    let body = if off { None } else { body };
     store
-        .append(entry, body.as_deref())
-        .map(|_| store)
+        .append_with(entry, body.as_deref(), off)
+        .map(|_| ())
         .map_err(|e| RecordError::Append(e.to_string()))
 }
 
@@ -97,5 +107,101 @@ mod tests {
         )
         .unwrap();
         assert!(store.list().unwrap().iter().any(|e| e.body_stored));
+    }
+
+    use wisp_storage::history::{BodyEvidence, Evidence};
+
+    fn recorded(
+        outcome: Outcome,
+        status: Option<u16>,
+        body: Option<Vec<u8>>,
+        bodies: HistoryBodies,
+    ) -> Evidence {
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir::at(dir.path());
+        let id = CollectionId::parse("abcdef0123456789").unwrap();
+        let mut e = entry();
+        e.outcome = outcome;
+        e.status = status;
+        let store = record(&data, &id, e, body, bodies).unwrap();
+        store.list().unwrap()[0].evidence.unwrap()
+    }
+
+    fn failed() -> Outcome {
+        Outcome::Failed {
+            kind: wisp_core::ErrorKind::Connect,
+        }
+    }
+
+    #[test]
+    fn evidence_setting_off_completed_is_off() {
+        let ev = recorded(
+            Outcome::Completed,
+            Some(200),
+            Some(b"hi".to_vec()),
+            HistoryBodies::Skip,
+        );
+        assert_eq!(
+            ev,
+            Evidence {
+                body: BodyEvidence::Off,
+                headers: true
+            }
+        );
+    }
+
+    #[test]
+    fn evidence_setting_on_readable_body_is_stored() {
+        let ev = recorded(
+            Outcome::Completed,
+            Some(200),
+            Some(b"hi".to_vec()),
+            HistoryBodies::Store,
+        );
+        assert_eq!(ev.body, BodyEvidence::Stored);
+    }
+
+    #[test]
+    fn evidence_setting_on_oversized_body_is_truncated() {
+        let big = vec![0u8; wisp_storage::history::BODY_CAP + 1];
+        let ev = recorded(
+            Outcome::Completed,
+            Some(200),
+            Some(big),
+            HistoryBodies::Store,
+        );
+        assert_eq!(ev.body, BodyEvidence::Truncated);
+    }
+
+    #[test]
+    fn evidence_setting_on_unreadable_body_is_unreadable() {
+        let ev = recorded(Outcome::Completed, Some(200), None, HistoryBodies::Store);
+        assert_eq!(ev.body, BodyEvidence::Unreadable);
+    }
+
+    #[test]
+    fn evidence_failed_and_cancelled_are_no_response() {
+        let ev = recorded(failed(), None, None, HistoryBodies::Store);
+        assert_eq!(
+            ev,
+            Evidence {
+                body: BodyEvidence::NoResponse,
+                headers: false
+            }
+        );
+        let ev = recorded(Outcome::Cancelled, None, None, HistoryBodies::Store);
+        assert_eq!(ev.body, BodyEvidence::NoResponse);
+    }
+
+    #[test]
+    fn evidence_run_completed_is_off() {
+        let ev = recorded(Outcome::Completed, Some(200), None, HistoryBodies::Skip);
+        assert_eq!(ev.body, BodyEvidence::Off);
+    }
+
+    #[test]
+    fn evidence_run_failed_is_no_response() {
+        let ev = recorded(failed(), None, None, HistoryBodies::Skip);
+        assert_eq!(ev.body, BodyEvidence::NoResponse);
     }
 }
