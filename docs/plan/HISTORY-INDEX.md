@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-19 | 181 | OpenAPI "credentials dropped" warning omits the host when the stripped URL still looks credentialed, and the may-contain-credentials warning fires | ## 2026-11-19 — OpenAPI "credentials dropped" warning no longer echoes a possible secret host (task 181) |
 | 2026-11-18 | 171 | Windows owner-only data dir DACL (read-first), handle-based `same_file_entry`, real 8.3 short-name test with hard fail in CI | ## 2026-11-18 — Windows hardening: owner-only data dir, real 8.3 test, file identity (task 171) |
 | 2026-11-18 | 178 | history reopen keeps request_truncated; Send refused until the cut body is edited; origin line notes the 1 MiB cut | ## 2026-11-18 — Truncated history request bodies are refused until edited (task 178) |
 | 2026-11-18 | 182 | `append` writes the `.scrubbed-1` marker on a new folder; scrub leaves truncated request bodies alone | ## 2026-11-18 — History scrub keeps truncated request bodies (task 182) |

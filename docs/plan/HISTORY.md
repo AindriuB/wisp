@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — OpenAPI "credentials dropped" warning no longer echoes a possible secret host (task 181)
+When stripping userinfo from an OpenAPI server URL still leaves a URL that `may_hold_credentials` flags (`https://u:p@bob:1234?rest@h2/y`), the warning is now `server 1: credentials in the URL were dropped` with no host, and the "URL may contain credentials; check it before committing" warning fires once for it. A plain `https://alice:pw@api.example.com/v1` keeps today's text with the host. The stored `baseUrl` and the environment-name choice are unchanged. Verified at c6f3886: tester PASS (1535 tests, fmt and clippy clean), reviewer APPROVE.
+**Cost:** The old `suspect` check ran on the URL before the strip, so this input was never flagged; it is now computed from the original or the stripped URL. This supersedes 179's freeze of the warning text, for this warning only. The fix stays in `openapi.rs`; `url_host` is shared with other importers. Not closed: `https://u:p@x:pw/?a@h2/y` still keeps a possible second credential in `baseUrl` unwarned (PLAN follow-up).
+
 ## 2026-11-18 — Windows hardening: owner-only data dir, real 8.3 test, file identity (task 171)
 On Windows `ensure_private_dir` now gives the data dir a protected DACL with one full-control ACE for the current user, inherited by new files, and rewrites it only when the dir is not already owner-only. `same_file_entry` compares volume serial and file index from `GetFileInformationByHandle`, so hard links are detected. The 8.3 sidecar test reads the sibling's real short name and prints SKIPPED or RAN; CI enables 8.3 names and sets `WISP_REQUIRE_8DOT3=1` so a skip fails the leg. The code is in the new `win_acl.rs` and `fs.rs`, using `windows-sys` 0.52.0 (already in `Cargo.lock`, no default features, Windows-only target dependency). Verified at 23ac3cb: CI run 44299517411 green on all four jobs.
 Every directory `ensure_private_dir` creates on Windows is now owner-only, not just the leaf: it creates each missing level top-down and restricts each (round 5, verified at 09c5006).
