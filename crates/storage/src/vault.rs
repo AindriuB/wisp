@@ -596,21 +596,63 @@ pub enum SecretsError {
     /// repository's history; nothing was changed.
     #[error("the secrets file is tracked by git: {}", path.display())]
     TrackedSecretsFile { path: PathBuf },
+    /// The secrets file is inside a git work tree and the check that it is
+    /// not tracked could not run (git missing, failed or timed out); refused
+    /// rather than risk writing secrets into a repository.
+    #[error("the git check could not run, so the secrets file is refused: {}", path.display())]
+    GitCheckFailed { path: PathBuf },
 }
 
-/// True when `git` reports `path` as tracked in the repository around `root`.
-/// No `git` binary, no repository, or any other answer is "not tracked": only
-/// a clean `ls-files --error-unmatch` hit counts.
+/// What the git check found.
+#[derive(Debug, PartialEq, Eq)]
+enum GitCheck {
+    Tracked,
+    NotTracked,
+    /// Inside a work tree, but git could not answer (spawn failure, timeout,
+    /// or a failure other than "not tracked"). Treated as tracked.
+    CouldNotRun,
+}
+
+/// How long the `git` child may run before it is killed.
+const GIT_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// True when some directory from `path`'s parent up to `root` holds `.git`.
+fn has_git_ancestor(root: &Path, path: &Path) -> bool {
+    let mut cur = path.parent();
+    while let Some(dir) = cur {
+        if dir.join(".git").symlink_metadata().is_ok() {
+            return true;
+        }
+        if dir == root {
+            break;
+        }
+        cur = dir.parent();
+        if !dir.starts_with(root) {
+            break;
+        }
+    }
+    false
+}
+
+/// Ask git whether `path` is tracked in the repository around `root`.
+/// Outside a work tree (no `.git` between `path` and `root`) no `git` is run
+/// and the answer is "not tracked". Inside one, any answer other than a clean
+/// hit (exit 0) or a clean miss (exit 1) is [`GitCheck::CouldNotRun`], so the
+/// check fails closed. The child is bounded by [`GIT_CHECK_TIMEOUT`] and on
+/// timeout only that child is killed, by its handle.
 ///
 /// The folder may not be the user's own, and git reads its `.git/config`, so
 /// the repository's config must not be able to run a command: `core.fsmonitor`
 /// is forced off on the command line (which outranks every config file) and
 /// optional index locks are disabled.
-fn is_git_tracked(root: &Path, path: &Path) -> bool {
+fn git_check(root: &Path, path: &Path) -> GitCheck {
+    if !has_git_ancestor(root, path) {
+        return GitCheck::NotTracked;
+    }
     // `path` is normally `root.join(..)`; with `-C root` git would resolve a
     // relative root a second time, so hand it the path relative to `root`.
     let path = path.strip_prefix(root).unwrap_or(path);
-    std::process::Command::new("git")
+    let spawned = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["-c", "core.fsmonitor=false"])
@@ -620,17 +662,48 @@ fn is_git_tracked(root: &Path, path: &Path) -> bool {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        return GitCheck::CouldNotRun;
+    };
+    let deadline = std::time::Instant::now() + GIT_CHECK_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                return match st.code() {
+                    Some(0) => GitCheck::Tracked,
+                    Some(1) => GitCheck::NotTracked,
+                    _ => GitCheck::CouldNotRun,
+                };
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return GitCheck::CouldNotRun;
+            }
+        }
+    }
+}
+
+/// True when `path` is tracked, or when git could not say inside a work tree.
+#[cfg(test)]
+fn is_git_tracked(root: &Path, path: &Path) -> bool {
+    git_check(root, path) != GitCheck::NotTracked
 }
 
 fn refuse_tracked(root: &Path, sp: &Path) -> Result<(), SecretsError> {
-    if is_git_tracked(root, sp) {
-        return Err(SecretsError::TrackedSecretsFile {
+    match git_check(root, sp) {
+        GitCheck::NotTracked => Ok(()),
+        GitCheck::Tracked => Err(SecretsError::TrackedSecretsFile {
             path: sp.to_path_buf(),
-        });
+        }),
+        GitCheck::CouldNotRun => Err(SecretsError::GitCheckFailed {
+            path: sp.to_path_buf(),
+        }),
     }
-    Ok(())
 }
 
 /// A store entry that could not be deleted after `migrate_to_file`.
@@ -956,14 +1029,14 @@ pub fn migrate_to_file(
     let text = render(&sp, &merged)?;
     let dir = root.join(crate::environment::DIR);
     ensure_gitignore(&dir)?;
-    crate::environment::write_nofollow(&sp, text.as_bytes())?;
+    crate::environment::write_secret_nofollow(&sp, text.as_bytes())?;
 
     doc["secrets"] = toml_edit::value(StoreKind::File.as_str());
     doc.remove("secret_names");
     if let Err(e) = fs::atomic_write(&pp, doc.to_string().as_bytes()) {
         match &old_file {
             Some(old) => {
-                let _ = crate::environment::write_nofollow(&sp, old.as_bytes());
+                let _ = crate::environment::write_secret_nofollow(&sp, old.as_bytes());
             }
             None => {
                 let _ = std::fs::remove_file(&sp);

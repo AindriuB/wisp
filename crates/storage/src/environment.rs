@@ -144,6 +144,19 @@ pub(crate) fn set_test_hook(f: Option<TestHook>) {
     TEST_HOOK.with(|h| *h.borrow_mut() = f);
 }
 
+/// `O_NONBLOCK` for the platforms the unix build supports.
+#[cfg(unix)]
+const fn libc_o_nonblock() -> i32 {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        0o4000
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        0x0004
+    }
+}
+
 /// Open `path` for reading without following a final symlink. The path is
 /// lstat-ed, opened, then the handle is compared with a second lstat (same
 /// device and inode on unix), so a link swapped in at any point is refused.
@@ -159,7 +172,15 @@ pub(crate) fn open_nofollow(path: &Path) -> Result<std::fs::File, StorageError> 
         return Err(refuse());
     }
     test_point("open:after-lstat");
-    let f = std::fs::File::open(path).map_err(|e| io(path, e))?;
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        // Never block opening a FIFO swapped in after the lstat.
+        use std::os::unix::fs::OpenOptionsExt;
+        open.custom_flags(libc_o_nonblock());
+    }
+    let f = open.open(path).map_err(|e| io(path, e))?;
     let held = f.metadata().map_err(|e| io(path, e))?;
     test_point("open:after-open");
     let after = std::fs::symlink_metadata(path).map_err(|e| io(path, e))?;
@@ -190,7 +211,18 @@ pub(crate) fn read_nofollow(path: &Path) -> Result<String, StorageError> {
 /// rename it over `path`. A final symlink at `path` is refused, checked
 /// again just before the rename, and is never followed: the rename replaces
 /// the name, not what it points to.
+///
+/// Replacing an existing file keeps its permission mode (unix).
 pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    write_impl(path, bytes, true)
+}
+
+/// [`write_nofollow`] for secrets files: the result is always mode `0600`.
+pub(crate) fn write_secret_nofollow(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    write_impl(path, bytes, false)
+}
+
+fn write_impl(path: &Path, bytes: &[u8], keep_mode: bool) -> Result<(), StorageError> {
     use std::io::Write;
     let refuse_link = || -> Result<(), StorageError> {
         match std::fs::symlink_metadata(path) {
@@ -235,9 +267,27 @@ pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> Result<(), StorageErr
             std::io::Error::other("no temp file name available"),
         ));
     };
+    // Replacing an existing file keeps its mode; only a new file gets 0600.
+    #[cfg(unix)]
+    let existing_mode = std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|_| keep_mode)
+        .map(|m| {
+            use std::os::unix::fs::PermissionsExt;
+            m.permissions().mode() & 0o7777
+        });
     let r = f
         .write_all(bytes)
         .map_err(|e| io(&tmp, e))
+        .and_then(|()| {
+            #[cfg(unix)]
+            if let Some(mode) = existing_mode {
+                use std::os::unix::fs::PermissionsExt;
+                f.set_permissions(std::fs::Permissions::from_mode(mode))
+                    .map_err(|e| io(&tmp, e))?;
+            }
+            Ok(())
+        })
         .and_then(|()| {
             drop(f);
             test_point("write:before-rename");
@@ -255,12 +305,6 @@ pub(crate) fn load_vars_nofollow(
     path: &Path,
 ) -> Result<Vec<wisp_core::request::Var>, StorageError> {
     let text = read_nofollow(path)?;
-    let doc = codec::parse(path, &text)?;
-    codec::read_vars(doc.as_table(), "vars", path)
-}
-
-pub(crate) fn load_vars(path: &Path) -> Result<Vec<wisp_core::request::Var>, StorageError> {
-    let text = fs::read_to_string(path)?;
     let doc = codec::parse(path, &text)?;
     codec::read_vars(doc.as_table(), "vars", path)
 }
@@ -460,11 +504,7 @@ fn ensure_ignore_line(dir: &Path, line: &str) -> Result<(), StorageError> {
 /// True when `vars` holds a name that the file at `other` currently holds,
 /// that is, a var moving from `other` into the file being written.
 fn gains_moved_name(other: &Path, vars: &[wisp_core::request::Var]) -> bool {
-    let current = if other.exists() {
-        load_vars(other).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let current = load_vars_nofollow(other).unwrap_or_default();
     vars.iter()
         .any(|v| current.iter().any(|c| c.name == v.name))
 }
@@ -570,7 +610,7 @@ fn save_unlocked(root: &Path, env: &Environment, dir: &Path) -> Result<(), Stora
     let write_secrets = || -> Result<(), StorageError> {
         if let Some(text) = &secrets_text {
             ensure_gitignore(dir)?;
-            write_nofollow(&sp, text.as_bytes())?;
+            write_secret_nofollow(&sp, text.as_bytes())?;
         }
         Ok(())
     };
