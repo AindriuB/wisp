@@ -78,6 +78,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 
 ### Follow-ups from task 170 (importer hardening and descriptions; not scheduled)
 - [P3] `mod.rs:298` `url_host` returns `user:digits` for the host:digits userinfo shape `may_hold_credentials` flags (`https://bob:1234?rest@h2/y` gives host `bob:1234`). Task 179 keeps it out of OpenAPI environment names; the shared function is unchanged.
+- [P3] `split_userinfo` carve-outs (scheme-name user, `{{` template, `[`) still let a non-digit password into a host-derived env name with no warning, e.g. `https://http:hunter2?x@h/y` gives `http-hunter2`; closing it needs a change in `crates/storage/src/import/mod.rs`.
 - [P3] Task 179: `openapi.rs:389` `suspect ||` is redundant when the URL had no userinfo.
 - [NOTE] Needs a user decision before it becomes a task: `openapi.rs:377-381` the "credentials in the URL were dropped" warning interpolates `url_host` of the stripped URL, so `https://u:p@bob:1234?rest@h2/y` prints `bob:1234` (a possible password) in the warning text, though no longer in the file name. Pre-existing; 179 AC3 froze the warning text. For that input no "may contain credentials" warning fires either, because `suspect` is computed before the strip.
 - [P3] `postman.rs:186-189` the unsupported-method warning still echoes the raw method text.

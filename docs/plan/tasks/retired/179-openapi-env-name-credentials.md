@@ -65,3 +65,8 @@ Round 1's P2 is FIXED at openapi.rs:389. Orchestrator ruling on the DRIFT below:
 
 ## Outcome
 Merged at dd241de (merge 4716999 on record/179-openapi-env-name). AC1-AC4 passed; tester PASS, reviewer APPROVE after two review rounds. The name choice re-checks the stripped URL, and the regression test lives in `crates/storage/tests/import.rs`. Follow-ups are in PLAN.md under the task 170 follow-ups.
+
+## Rounds 4 and 5
+Round 4 made the Windows path assert in `h4_server_name_avoids_possible_credentials` portable (Attempt 3 above).
+
+Round 5, external review of PR #138 at head e93bc5fab82c, finding 138-1 (P2, `openapi.rs:389`): `url_host` runs `split_userinfo` a second time, so a second strip can expose a `user:digits` segment that neither earlier check saw. Failing input (synthetic): `https://u:p@x:y?z@bob:1234?rest@h2/y` with no description gave `bob-1234`. This was over the cap of 4, so nothing was routed. The user decided on one fresh implementer run under systematic-debugging. The decision: with no safe description, any server whose URL had userinfo is named `server-N`; `h4_openapi_env_file_name_never_comes_from_a_secret_description` now expects `server-1`. Round 5 code review: CLEAN. Verified at 8c1f3cbbb46b1960afd6305bcb5de5898c2b91e7.
