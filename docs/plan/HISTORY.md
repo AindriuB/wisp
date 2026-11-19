@@ -17,6 +17,11 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-18 — OpenAPI environment names no longer carry URL credentials (task 179)
+An OpenAPI server with no description whose URL looks like it holds credentials (`https://bob:1234?rest@h2/y`) is now named `server-N` instead of `bob-1234`, so a possible password no longer reaches the environment file name. A safe description still wins, and a plain host such as `api.example.com:8443` still gives a host-derived name. The warning text and the stored `baseUrl` are unchanged. Verified at dd241de: tester PASS, reviewer APPROVE.
+With no safe description, any server whose URL had userinfo is now named `server-N`, which is needed for nested userinfo such as `https://u:p@x:y?z@bob:1234?rest@h2/y`; `h4_openapi_env_file_name_never_comes_from_a_secret_description` now expects `server-1`.
+**Cost:** The first version tested the URL for credentials before `split_userinfo` stripped real userinfo, so `https://u:p@bob:1234?rest@h2/y` passed the check, the strip exposed `bob:1234?...@h2`, and the name fell back to `url_host` and leaked again; the name choice now re-checks the stripped URL. The regression test for that was first put in `openapi.rs`'s own test module, outside Owns and not run by the `server-name` check; it moved to `crates/storage/tests/import.rs`. The fix stayed in `openapi.rs` on purpose: `url_host` is shared with other importers' warnings.
+
 ## 2026-11-18 — Truncated history request bodies are refused until edited (task 178)
 Reopening a history entry now keeps `request_truncated` on the tab's origin, the origin line says `request body truncated at 1 MiB`, and Send is refused with the existing body-refusal notice while the draft body still equals the stored, cut body. Any edit to the body, including a body-type switch, clears the refusal; no new prompt was added.
 **Cost:** The first round had no test for the line that inlines a sidecar body into `stored_body` (`workspace.rs:874`); without it the equality never holds for sidecar bodies and the cut body is resent silently, and every other test still passed. The test added for it uses a JSON fixture the history scrub empties, so it compares empty bodies (task 182). Must ship in the same release as 168.
