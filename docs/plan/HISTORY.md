@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-18 — Truncated history request bodies are refused until edited (task 178)
+Reopening a history entry now keeps `request_truncated` on the tab's origin, the origin line says `request body truncated at 1 MiB`, and Send is refused with the existing body-refusal notice while the draft body still equals the stored, cut body. Any edit to the body, including a body-type switch, clears the refusal; no new prompt was added.
+**Cost:** The first round had no test for the line that inlines a sidecar body into `stored_body` (`workspace.rs:874`); without it the equality never holds for sidecar bodies and the cut body is resent silently, and every other test still passed. The test added for it uses a JSON fixture the history scrub empties, so it compares empty bodies (task 182). Must ship in the same release as 168.
+
 ## 2026-11-18 — History scrub keeps truncated request bodies (task 182)
 A history folder created by `append` now gets the `.scrubbed-1` marker at once, so the next open no longer runs the legacy scrub over it, and `ReadOnlyHistory::list` no longer reports it as not yet migrated. The scrub also skips the body of any `.req.json` flagged `truncated`, while still redacting that file's URL, headers, auth and response headers.
 **Cost:** The scrub emptied any JSON body cut at `BODY_CAP` because the cut text is not valid JSON. The first tests used `Body::Text`, which `redact_json_body` never touches, so they passed with the fix removed; review round 1 caught it and they now use `Body::Json`. `open_scrubs_old_entries_once` had to delete the marker after its `append` to keep modelling a pre-marker folder. Do not try to parse partial JSON in the redactor.

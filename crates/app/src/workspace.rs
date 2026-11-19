@@ -866,11 +866,12 @@ fn sanitized_origin(entry: &HistoryEntry, request: &mut Request) -> HistoryOrigi
         at_ms: entry.at,
         body_stored: entry.body_stored,
         body_truncated: entry.body_truncated,
+        request_truncated: false,
         redacted,
         adjustments,
         request: entry.request.clone(),
         url: request.url.clone(),
-        stored_body: request.body.clone(),
+        stored_body: inline_sidecar_body(request.body.clone()),
         had_assertions: !entry.assertions.is_empty(),
     }
 }
@@ -2967,7 +2968,8 @@ impl Workspace {
                     }
                     Ok((mut stored, handle)) => {
                         let cix = still_open.unwrap_or_default();
-                        let origin = sanitized_origin(&entry, &mut stored.request);
+                        let mut origin = sanitized_origin(&entry, &mut stored.request);
+                        origin.request_truncated = stored.request_truncated;
                         // The tab is path-less: its body is inline from the start, so no
                         // editor stash ever holds the original request's sidecar name.
                         stored.request.body = inline_sidecar_body(stored.request.body);
@@ -4283,6 +4285,7 @@ mod tests {
             at_ms: 0,
             body_stored: false,
             body_truncated: false,
+            request_truncated: false,
             redacted: Vec::new(),
             adjustments: Vec::new(),
             request: request.map(String::from),
@@ -6348,6 +6351,53 @@ mod env_wiring_tests {
             Body::Json(b) => (&b.content, &b.sidecar),
             other => panic!("not a json body: {other:?}"),
         }
+    }
+
+    #[gpui::test]
+    fn truncated_history_body_reopens_flagged_and_small_one_does_not(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let text = |n: usize| Request {
+            body: Body::Text(wisp_core::request::TextBody {
+                content: "a".repeat(n),
+                sidecar: None,
+            }),
+            ..Request::default()
+        };
+        let big = history_tab(&fx, text(1024 * 1024 + 10), cx);
+        assert!(big.read_with(cx, |t, _| {
+            t.from_history.as_ref().unwrap().request_truncated
+        }));
+        let small = history_tab(&fx, text(10), cx);
+        assert!(!small.read_with(cx, |t, _| {
+            t.from_history.as_ref().unwrap().request_truncated
+        }));
+    }
+
+    #[gpui::test]
+    fn truncated_sidecar_history_body_stays_equal_to_the_stored_body(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        open(&fx, cx);
+        let big = format!("{{\"k\":\"{}\"}}", "a".repeat(1024 * 1024));
+        let tab = history_tab(&fx, json_sidecar_request("big.body.json", &big), cx);
+        tab.read_with(cx, |t, _| {
+            let origin = t.from_history.as_ref().unwrap();
+            assert!(origin.request_truncated);
+            assert_eq!(json_content(&t.draft).1, &None);
+            assert_eq!(t.draft.body, origin.stored_body);
+        });
+    }
+
+    #[test]
+    fn truncated_refusal_is_the_notice_refused_body_message_recognises() {
+        let e = ResolveError {
+            problems: vec![Problem::Syntax {
+                location: Location::Body,
+                message: "Edit the request body before resending: the stored body was cut at 1 MiB"
+                    .into(),
+            }],
+        };
+        assert!(refused_body_message(&e).is_some());
     }
 
     #[gpui::test]

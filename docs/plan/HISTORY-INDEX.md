@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-18 | 178 | history reopen keeps request_truncated; Send refused until the cut body is edited; origin line notes the 1 MiB cut | ## 2026-11-18 — Truncated history request bodies are refused until edited (task 178) |
 | 2026-11-18 | 182 | `append` writes the `.scrubbed-1` marker on a new folder; scrub leaves truncated request bodies alone | ## 2026-11-18 — History scrub keeps truncated request bodies (task 182) |
 | 2026-11-18 | 172 | wisp-cli limits all 7,340,032 B after Linux measured 6,336,504 B; Windows GUI 290,656 B under soft line | ## 2026-11-18 — wisp-cli size budgets set to 7 MiB (task 172) |
 | 2026-11-17 | 174 | request pane Vars sub-tab; duplicate names flagged and refused on save; write_vars keeps draft order | ## 2026-11-17 — Per-request variables editor (task 174) |
