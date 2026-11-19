@@ -16,6 +16,7 @@ pub mod validate;
 pub mod vault;
 pub mod vault_binding;
 pub mod watcher;
+mod win_acl;
 
 pub use error::StorageError;
 

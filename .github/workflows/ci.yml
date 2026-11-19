@@ -42,6 +42,27 @@ jobs:
       # rustup reads rust-toolchain.toml and installs the pinned toolchain.
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
+      # The 8.3 short-name test needs short names on the temp volume; with
+      # WISP_REQUIRE_8DOT3 set it fails instead of skipping when they are off.
+      - name: Enable 8.3 short names (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $drive = (Get-Item $env:TEMP).PSDrive.Name + ':'
+          # A per-volume flag is ignored when the system-wide setting is 1
+          # (off everywhere) or 3 (system volume only), so set both.
+          fsutil behavior set disable8dot3 0
+          fsutil 8dot3name set $drive 0
+          # The per-volume set errors when the registry setting is global; ignore.
+          $global:LASTEXITCODE = 0
+          fsutil behavior query disable8dot3
+          fsutil 8dot3name query $drive
+          # Probe the way the test does, so a failure here is explained.
+          $d = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("probe" + [guid]::NewGuid().ToString("N")))
+          Set-Content -Path (Join-Path $d "b.toml") -Value x
+          cmd /c dir /x $d.FullName
+          Remove-Item -Recurse -Force $d
+          "WISP_REQUIRE_8DOT3=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Format
         run: cargo fmt --check
       - name: Clippy

@@ -87,8 +87,9 @@ fn io(path: &Path, source: std::io::Error) -> StorageError {
     }
 }
 
-/// Create missing directories (mode 0700 on unix). Refuses a symlinked final component, with or
-/// without a trailing separator. An existing directory wider than 0700 is tightened to 0700.
+/// Create missing directories (mode 0700 on unix; owner-only protected DACL on Windows).
+/// Refuses a symlinked final component, with or without a trailing separator. An existing
+/// directory wider than 0700 (unix) or without the owner-only DACL (Windows) is tightened.
 pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
     let path = strip_trailing_separators(path);
     let path = path.as_path();
@@ -124,7 +125,39 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
         }
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Create each missing level top-down and restrict every directory this call creates,
+        // so no new ancestor keeps inherited ACLs. Directories that already existed are left
+        // alone (only `path` itself is tightened below). A level another process creates
+        // first (AlreadyExists) is not ours, so it is likewise not touched: the conservative
+        // choice, which cannot loosen or break anyone else's ACL.
+        let mut missing = Vec::new();
+        let mut cur = Some(path);
+        while let Some(p) = cur {
+            match std::fs::symlink_metadata(p) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    missing.push(p);
+                    cur = p.parent().filter(|q| !q.as_os_str().is_empty());
+                }
+                _ => break,
+            }
+        }
+        for p in missing.into_iter().rev() {
+            match std::fs::create_dir(p) {
+                Ok(()) => crate::win_acl::restrict_to_owner(p).map_err(|e| io(p, e))?,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(io(p, e)),
+            }
+        }
+        // Only rewrite the DACL when it is not already owner-only: setting it propagates to
+        // every child, and this runs on hot paths.
+        if !crate::win_acl::is_owner_only(path).map_err(|e| io(path, e))? {
+            crate::win_acl::restrict_to_owner(path).map_err(|e| io(path, e))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         std::fs::create_dir_all(path).map_err(|e| io(path, e))
     }
@@ -182,6 +215,19 @@ mod tests {
             d.cookies_file(&id()),
             Path::new("/r/cookies/abcdef0123456789.json")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_dir_restricts_every_created_ancestor_on_windows() {
+        use crate::win_acl::is_owner_only;
+        let t = tempfile::tempdir().unwrap();
+        let before = is_owner_only(t.path()).unwrap();
+        ensure_private_dir(&t.path().join("a/b/c")).unwrap();
+        for d in ["a", "a/b", "a/b/c"] {
+            assert!(is_owner_only(&t.path().join(d)).unwrap(), "{d}");
+        }
+        assert_eq!(is_owner_only(t.path()).unwrap(), before);
     }
 
     #[cfg(unix)]

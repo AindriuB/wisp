@@ -33,9 +33,8 @@ pub fn is_reserved_device_name(name: &str) -> bool {
     matches!(head, "COM" | "LPT") && matches!(last, '0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}')
 }
 
-/// `a` and `b` are the same file-system entry (Unix dev/ino, so hard links and
-/// symlinks count). Always false elsewhere: std has no stable identity API on
-/// Windows.
+/// `a` and `b` are the same file-system entry (Unix dev/ino; Windows volume serial
+/// and file index, so hard links and symlinks count). False if either is missing.
 pub fn same_file_entry(a: &Path, b: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -43,9 +42,47 @@ pub fn same_file_entry(a: &Path, b: &Path) -> bool {
         if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
             return x.dev() == y.dev() && x.ino() == y.ino();
         }
+        false
     }
-    let _ = (a, b);
-    false
+    #[cfg(windows)]
+    {
+        matches!((file_id(a), file_id(b)), (Some(x), Some(y)) if x == y)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// (volume serial, file index) from `GetFileInformationByHandle`. The handle is
+/// opened following symlinks, with backup semantics so directories open too.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn file_id(path: &Path) -> Option<(u32, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
+    };
+    let f = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(7)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    // SAFETY: the handle is valid for the life of `f`; `info` is a writable struct.
+    let ok = unsafe { GetFileInformationByHandle(f.as_raw_handle() as isize, info.as_mut_ptr()) };
+    if ok == 0 {
+        return None;
+    }
+    // SAFETY: the call succeeded and filled the struct.
+    let info = unsafe { info.assume_init() };
+    Some((
+        info.dwVolumeSerialNumber,
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
 }
 
 /// `target` is the same entry as any `*.toml` file (ignoring case) in `dir`.
@@ -383,5 +420,20 @@ mod tests {
         let needle = ["File", "::create"].concat();
         let body = src.split("#[cfg(test)]").next().unwrap();
         assert!(!body.contains(&needle));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn same_file_entry_uses_file_identity() {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a.txt");
+        let b = d.path().join("b.txt");
+        let link = d.path().join("link.txt");
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "x").unwrap();
+        std::fs::hard_link(&a, &link).unwrap();
+        assert!(same_file_entry(&a, &link));
+        assert!(!same_file_entry(&a, &b));
+        assert!(!same_file_entry(&a, &d.path().join("missing")));
     }
 }
