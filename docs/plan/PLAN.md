@@ -20,13 +20,21 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Task 186 (secret-file safety) is recorded; 185 depends on it because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
 Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 171 (Windows hardening: owner-only data dir, real 8.3 test, file identity), 167 (hash file body through one handle) 174 (per-request variables editor) 172 (CLI budgets measurement), 178 (refuse to resend a truncated history body) and 179 (OpenAPI environment names without URL credentials) are recorded; task 173 (CLI snapshot and metadata) and task 176 (0.4.0 docs: `docs/architecture.md`, `docs/cli.md`, `README.md`, closed ACs in `99-hardening-0-2-0.md`) are recorded; 177 (measure and release dry run) is recorded (PR #147): measure run 44593845270 and release dry run 44596574612 both succeeded on 8d6fb0f. Windows GUI 15,616,000 B (284,000 B under the soft line), all CLIs under 7,340,032 B; figures in `scripts/measure/results/v0.4.0-wave-3-size.json`. The draft release `dryrun-44596574612` exists for the user to delete. The macOS hand checklist (AC4) is in PR #147's body for the user to run. Next is the 0.4.0 version bump and release (user's). 178 must ship in the same release as 168. Task 182 (history scrub no longer empties truncated JSON request bodies; marker written when `append` creates the folder) is recorded; it is a must-ship-before-0.4.0 item (user decision 2026-11-18).
 
 **Size, decided 2026-11-18 (task 172):** every `wisp-cli` limit in `scripts/measure/cli-budgets.json` is 7,340,032 B (7 MiB), the user's decision after Linux measured 45,048 B over the earlier 6 MiB. Measured `wisp-cli`: macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B (run 44293903312, main 910d681). The Windows GUI is 15,609,344 B, 290,656 B under the 15,900,000 B soft line and 390,656 B under the 16,000,000 B gate; this is the tightest margin, so 177 re-measures it. Task 176 put these limits in `docs/architecture.md`; the sizes there were measured before `snapshot` merged, so 177 re-measures. The wave-1 overage (+26,624 B against +10,240 B allowed) was not cut. Figures: `scripts/measure/results/v0.4.0-wave-2-cli-size.json`.
+
+### Follow-ups from task 186 (secret-file safety; not scheduled)
+- [P3] No test covers the git spawn-failure path or the 5 s timeout path (`crates/storage/src/vault.rs:673-675`, `:689-693`).
+- [P3] `O_NONBLOCK` is hard-coded (`crates/storage/src/environment.rs:148-158`); the value is wrong on Linux mips, sparc, alpha and illumos if those are ever built.
+- [P3] The FIFO unit test's watchdog can hang if the main thread is slow but not blocked (`environment.rs:745-750`).
+- [P3] A collection on another filesystem mounted under a repo gets a spurious `GitCheckFailed`, because git stops at the mount boundary.
+- [P3] Fail-closed also refuses on git's "dubious ownership" exit 128, so a repo owned by another user refuses secrets writes.
+- [Note] Integration tests `sfs_fifo_refused_without_hang` and `sfs_moved_name_ignores_symlink` do not reach the code they are named for; the unit tests in `environment.rs` cover it.
 
 ### Follow-ups from task 182 (history scrub and truncated bodies; not scheduled)
 
@@ -83,16 +91,11 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
 
 ### Follow-ups from task 169 (secret store and binding hardening; not scheduled)
-- [P3] `collection.toml` becomes 0600 when an id is written (`write_nofollow` ignores the old mode).
 - [P3] Windows `open_nofollow` has no file-identity check after open (std has no file-index API).
-- [P3] `open_nofollow` lacks O_NONBLOCK; a FIFO swapped in can hang the read.
-- [P3] `is_git_tracked` (`crates/storage/src/vault.rs`) has no timeout and fails open on any git error.
-- [P3] `gains_moved_name` (`crates/storage/src/environment.rs`) reads via `load_vars`, which follows symlinks.
 - [Low] `keyring-core = "1"` is not in `[workspace.dependencies]`.
 - [Low] The no-data-dir refusal is only `Invalid{key:"secrets"}`.
 - NOTE: the `cfg(windows)` keychain path is unbuilt locally; Windows CI is the proof.
 - [Low] On Windows `h3_tracked_check_works_with_a_relative_root` does not test a relative root (the leading `/` is never stripped).
-- [P3] Fix the flaky `h3_load_without_a_data_dir_refuses_a_keychain_environment`: change the secret value `t1` to one a random temp path cannot contain (see known-flakes.md).
 
 ### Follow-ups from task 178 (truncated history body; not scheduled)
 - [P3] `truncated_sidecar_history_body_stays_equal_to_the_stored_body` (`crates/app/src/workspace.rs:~6380`) uses a JSON fixture that the history scrub empties, so it compares empty bodies. A Text sidecar body would hold a real 1 MiB cut body; task 182 fixes the scrub, after which a JSON fixture also works.

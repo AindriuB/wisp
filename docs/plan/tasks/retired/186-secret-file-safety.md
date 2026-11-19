@@ -98,3 +98,8 @@ Reviewed HEAD: 13264128d7fc7b4c3cd14ff8c18bd7cfbdb694ec
   proof: Ran as a scratch integration test at HEAD; it fails with `Ok(None)`. Add it as a real test.
 - [STYLE] crates/storage/src/environment.rs:211 — The rewrapped `write_nofollow` doc comment has a 121-character line. The comment lines either side wrap at about 80.
   route: implementer
+
+## Wave verified — 059ed9c60d73d1d88727e7d6c9cbc8a5837f00bb
+
+## Outcome
+Tester PASS and reviewer APPROVE at 059ed9c60d73d1d88727e7d6c9cbc8a5837f00bb after two review rounds and Amendment 1 to AC3 (search for `.git` above the collection root, per spec Q8). Task 185 depends on this task because it changes one test in `crates/storage/tests/vault.rs`. Follow-ups are in `PLAN.md`.

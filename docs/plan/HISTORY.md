@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Secret-file safety follow-ups from task 169 closed (task 186)
+An id write now keeps `collection.toml`'s mode, `open_nofollow` opens with `O_NONBLOCK` and refuses non-regular files so a swapped-in FIFO cannot hang a read, and the git-tracked check is bounded at 5 s and fails closed inside any work tree, including a repo above the collection root. `gains_moved_name` no longer follows symlinks, and the `t1` flake in the vault suite is fixed by using the value `zz-hunter`. Verified at 059ed9c: tester PASS, reviewer APPROVE.
+**Cost:** Two review rounds and Amendment 1 to AC3. The first wording ("no `.git` ancestor up to the collection root") contradicted spec Q8 and let a tracked secrets file through when the collection sat inside a repo; the ancestor walk must run to the filesystem root and resolve symlinks first, or a symlinked path skips git (fail-open). The first FIFO and moved-name integration tests passed without the fix, so the real proof is in `environment.rs` unit tests; do not rely on the integration tests. Windows clippy needed two passes (`keep_mode` unused, then `bind_instead_of_map`). Six follow-ups are in PLAN.
+
 ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177)
 The 0.4.0 head (8d6fb0f) was measured in CI (run 44593845270) and the release workflow was dry-run (run 44596574612); both succeeded. Windows GUI is 15,616,000 B, 284,000 B under the 15,900,000 B soft line (it was 15,609,344 B in 172), and every `wisp-cli` is under the 7,340,032 B limit. Results are in `scripts/measure/results/v0.4.0-wave-3-size.json`; the macOS hand-test checklist is in PR #147 for the user.
 **Cost:** The Windows GUI margin is now 284,000 B, the tightest in the project; the next feature that adds code should re-measure before merging. The dry run left a draft release `dryrun-44596574612` that only the user deletes. Not retried or cut: no size reduction was needed.

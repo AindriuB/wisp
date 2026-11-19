@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-19 | 186 | id write keeps collection.toml mode; FIFO swap cannot hang a read; git-tracked check bounded at 5 s and fails closed inside any work tree; moved-name check ignores symlinks; `t1` flake fixed | ## 2026-11-19 — Secret-file safety follow-ups from task 169 closed (task 186) |
 | 2026-11-19 | 177 | 0.4.0 head measured and release dry run passed; Windows GUI 15,616,000 B, CLIs under 7 MiB | ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177) |
 | 2026-11-19 | 176 | docs/architecture.md, docs/cli.md, README.md describe wisp-service, `run`, `snapshot`, measured CLI sizes and 7 MiB limit; 31 hardening ACs marked done | ## 2026-11-19 — Docs describe 0.4.0 (task 176) |
 | 2026-11-19 | 181 | OpenAPI "credentials dropped" warning omits the host when the stripped URL still looks credentialed, and the may-contain-credentials warning fires | ## 2026-11-19 — OpenAPI "credentials dropped" warning no longer echoes a possible secret host (task 181) |
