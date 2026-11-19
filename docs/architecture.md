@@ -32,17 +32,18 @@ exists: existing clients are large and memory-heavy.
 
 ## Components
 
-A Cargo workspace of four crates under `crates/`. Port column omitted: nothing
+A Cargo workspace of five crates under `crates/`. Port column omitted: nothing
 here listens on a port.
 
 | Component | Directory | Owns |
 |---|---|---|
 | `core` | `crates/core` | Request/response model, variable and path-param resolution, auth (Basic, Bearer, API key, Digest, AWS SigV4, OAuth2), the `Engine` (reqwest on tokio, rustls only), body store, in-memory cookie jars |
 | `storage` | `crates/storage` | Reading and writing collections, environments and body files; file watcher; request history, cookie persistence and the per-user data dir; secret stores (OS keychain through `keyring`); curl, Postman and OpenAPI importers |
+| `service` | `crates/service` | `wisp-service`, GPUI-free: prepare (resolve, auth, body plan), the one send (`send.rs`), outcome and `delivery`, history recording, the keychain secret store (`KeychainStores`) and `run_once` for the CLI |
 | `app` | `crates/app` | GPUI and `gpui-component` UI, including the workspace that holds up to 8 open collections, the per-user environment guard and the assertion editor; the binary |
-| `cli` | `crates/cli` | `wisp-cli`, a read-only console tool (`validate`, `inspect`, `explain`); no GPUI, no engine, no secret store; see [`cli.md`](cli.md) |
+| `cli` | `crates/cli` | `wisp-cli`: `validate`, `inspect`, `explain` and `snapshot` are read-only; `run` sends one request through `wisp-service` and can write history with `--history`; no GPUI; see [`cli.md`](cli.md) |
 
-The packages are `wisp-core`, `wisp-storage`, `wisp-app` (binary `wisp`) and
+The packages are `wisp-core`, `wisp-storage`, `wisp-service`, `wisp-app` (binary `wisp`) and
 `wisp-cli` (binary `wisp-cli`); see `conventions.md#naming`.
 
 ## Repository topology
@@ -54,11 +55,13 @@ worktree scripts installed from the agent-kit repo, and `agents/` and
 
 ## How they talk
 
-Dependencies point one way: `app` depends on `core` and `storage`; `storage`
-may depend on `core` for the model types; `core` depends on neither. `cli` links
-`core` and `storage` directly, as `app` does, and nothing links `cli`. These rules
-and the CLI's read-only rule are checked by `scripts/check-boundaries.sh` (see
-Boundaries); the 0.3.0 design is
+Dependencies point one way: `app` and `cli` depend on `service`, `core` and
+`storage`; `service` depends on `core` and `storage`; `storage` may depend on
+`core` for the model types; `core` depends on neither. Nothing links `cli` or
+`app`. **One send path:** the GUI and the CLI send only through `wisp-service`
+(`crates/service/src/send.rs` holds the only non-test `Command::Send(` outside
+`core`), so resolution, history and outcome rules cannot diverge. These rules
+are checked by `scripts/check-boundaries.sh` (see Boundaries); the 0.3.0 design is
 [`plan/specs/2026-11-14-wisp-0-3-0.md`](plan/specs/2026-11-14-wisp-0-3-0.md).
 
 ### The Engine
@@ -219,18 +222,20 @@ Where each 0.3.0 piece of state lives:
 
 ## Boundaries that must not be crossed
 
-- Only `crates/app` may depend on GPUI or `gpui-component`. `core`, `storage`
-  and `cli` must build and test without them. `scripts/check-boundaries.sh`
-  enforces this from `cargo tree`, and also fails when `crates/cli/src`
-  mentions network, process, engine, keychain or file-write code, so the CLI
-  stays read-only.
+- Only `crates/app` may depend on GPUI or `gpui-component`. `core`, `storage`,
+  `service` and `cli` must build and test without them.
+  `scripts/check-boundaries.sh` enforces this from `cargo tree`. It also
+  checks that `crates/cli/src` has no direct network, engine or keychain code,
+  so `run` reaches the network only through `wisp-service`, and that
+  `workspace.rs` holds no `resolve(` call or `NewEntry {` outside tests.
 - `core`'s command and event types stay plain serialisable data: no GPUI types,
   no locks, no handles to runtime internals.
 - `resolve` performs no I/O.
 - No TLS other than `rustls`; no OpenSSL or native-tls anywhere in the
   dependency tree.
 - Nothing writes outside the collection folder, `settings.toml` and the
-  per-user data dir (history, cookies; `<exe-dir>/data` in portable mode)
+  per-user data dir (history, cookies; `wisp-cli run --history` appends to the
+  same history, and no other CLI command writes; `<exe-dir>/data` in portable mode)
   (body-store temp files are the one exception and must be removed on close).
 - Secrets (`*.secrets.toml` and keychain values) never appear in logs or
   committed files. History stores no auth values (redacted; resend re-resolves
@@ -321,7 +326,7 @@ different device than the one GPUI picked. A `budgets.json` that is malformed or
 whose top level is not an object makes either script exit 2 with one stderr line,
 before the app is launched. The `measure` job has `timeout-minutes: 45`.
 
-### 0.3.0 limits: `wisp-cli` and the Windows GUI
+### 0.4.0 limits: `wisp-cli` and the Windows GUI
 
 The Windows GUI executable gate is 16,000,000 B and its soft line is 15,900,000 B
 (user decision 2026-11-17, spec Amendment 2, which replaced the earlier 15.5 MB
@@ -330,12 +335,24 @@ soft line is a policy line, not a CI check: crossing it applies the spec's cut
 order. `scripts/measure/budgets.json` keeps its 16 MiB (16,777,216 B) figure
 unchanged.
 
-`wisp-cli` has its own limit of 4,194,304 B per target, in
-`scripts/measure/cli-budgets.json`; `release.yml` and `measure.yml` read it. The
+`wisp-cli` has its own limit, 7,340,032 B (7 MiB) per target from 0.4.0 (user
+decision 2026-11-18; it was 4,194,304 B in 0.3.0 and the pre-approved 6 MiB
+was not enough for Linux), in `scripts/measure/cli-budgets.json`; `release.yml`
+and `measure.yml` read it. The
 limit is checked on the unsigned binary, so a signed `wisp-cli.exe` is a few KB
 larger than the size checked.
 
-Sizes measured at the wave 2 head (`measure.yml` run 43976706350 on `4769107`,
+Sizes measured with `run` built in (measured before `snapshot` merged) (0.4.0, `measure.yml` run 44293903312 on `910d681`, record `scripts/measure/results/v0.4.0-wave-2-cli-size.json`, task 172):
+
+| Target | GUI binary | `wisp-cli` | CLI limit |
+|---|---|---|---|
+| `aarch64-apple-darwin` | 11,901,120 B | 3,485,408 B | 7,340,032 B |
+| `x86_64-pc-windows-msvc` | 15,609,344 B | 4,201,472 B | 7,340,032 B |
+| `x86_64-unknown-linux-gnu` | 26,302,152 B | 6,336,504 B | 7,340,032 B |
+
+The Windows GUI is 290,656 B under its soft line and 390,656 B under the gate.
+
+The 0.3.0 sizes, measured at the wave 2 head (`measure.yml` run 43976706350 on `4769107`,
 record `scripts/measure/results/wave-2-size.json`):
 
 | Target | GUI binary | `wisp-cli` | CLI limit |
