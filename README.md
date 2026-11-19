@@ -2,7 +2,7 @@
 
 Wisp is a portable, lightweight HTTP client for developers working locally, in the spirit of Postman, Bruno and Insomnia. It ships as one self-contained binary per platform, with no installer, and it keeps its collections as TOML files in an ordinary folder, so they diff and review well in git. You open a collection folder, pick an environment, send a request and read the response. Its reason to exist is staying small and light on memory. The interface is built with GPUI, the framework behind the Zed editor.
 
-This is version 0.3.0. It adds Explain Request (where each variable, header and auth setting of a request came from), Save and close prompts, a confirm-before-send guard for chosen environments, assertions on responses with the environment and checks recorded in history, and `wisp-cli`, a read-only command-line tool. Release notes are in `docs/plan/release-notes-0.3.0.md`.
+This is version 0.4.0. It lets `wisp-cli run` send a saved request (with `--json`, `--history` and `--keychain`) and adds `wisp-cli snapshot`, moves request sending into one shared `wisp-service` crate, shows a request's description and expected status in Explain, and closes a long list of hardening gaps including Windows data-directory protection. Release notes are in `docs/plan/release-notes-0.4.0.md`.
 
 Besides sending requests and keeping collections as TOML files, it also can:
 
@@ -24,38 +24,38 @@ Download the archive for your platform and `SHA256SUMS` from the GitHub Release.
 
 ### macOS (Apple silicon)
 
-The asset is `Wisp-0.3.0-macos-arm64.zip`. Apple silicon is required; Intel Macs are not supported.
+The asset is `Wisp-0.4.0-macos-arm64.zip`. Apple silicon is required; Intel Macs are not supported.
 
 ```sh
 shasum -a 256 -c --ignore-missing SHA256SUMS
-unzip Wisp-0.3.0-macos-arm64.zip
+unzip Wisp-0.4.0-macos-arm64.zip
 ```
 
-The zip holds a `Wisp-0.3.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is signed with a Developer ID certificate and notarised by Apple, so it opens without a Gatekeeper warning. A build you make from source is not signed, and macOS may block it.
+The zip holds a `Wisp-0.4.0-macos-arm64` folder containing `Wisp.app`. Move `Wisp.app` to `/Applications` or anywhere else. The app is signed with a Developer ID certificate and notarised by Apple, so it opens without a Gatekeeper warning. A build you make from source is not signed, and macOS may block it.
 
 The archive also holds the command-line tool as `Wisp.app/Contents/MacOS/wisp-cli`, signed and notarised with the app (see "Command line" below). The command palette opens with ⌘K.
 
 ### Windows (x64)
 
-The asset is `Wisp-0.3.0-windows-x64.zip`.
+The asset is `Wisp-0.4.0-windows-x64.zip`.
 
 ```powershell
-(Get-FileHash Wisp-0.3.0-windows-x64.zip -Algorithm SHA256).Hash
-Select-String Wisp-0.3.0-windows-x64.zip SHA256SUMS
+(Get-FileHash Wisp-0.4.0-windows-x64.zip -Algorithm SHA256).Hash
+Select-String Wisp-0.4.0-windows-x64.zip SHA256SUMS
 ```
 
-The two hashes must match, ignoring case. Unpack the zip (Extract All in Explorer, or `Expand-Archive`). It holds a `Wisp-0.3.0-windows-x64` folder with `wisp.exe`; put the folder wherever you like and run `wisp.exe`. `wisp-cli.exe`, the command-line tool, is in the same folder. The executable is not signed, so SmartScreen shows "Windows protected your PC" on first launch. Click "More info", then "Run anyway". The command-line tool `wisp-cli.exe` is not signed either, unless the release notes say it is, so SmartScreen may warn about it too. The command palette opens with Ctrl+K.
+The two hashes must match, ignoring case. Unpack the zip (Extract All in Explorer, or `Expand-Archive`). It holds a `Wisp-0.4.0-windows-x64` folder with `wisp.exe`; put the folder wherever you like and run `wisp.exe`. `wisp-cli.exe`, the command-line tool, is in the same folder. The executable is not signed, so SmartScreen shows "Windows protected your PC" on first launch. Click "More info", then "Run anyway". The command-line tool `wisp-cli.exe` is not signed either, unless the release notes say it is, so SmartScreen may warn about it too. The command palette opens with Ctrl+K.
 
 ### Linux (x64)
 
-The asset is `Wisp-0.3.0-linux-x64.tar.gz`.
+The asset is `Wisp-0.4.0-linux-x64.tar.gz`.
 
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS
-tar -xzf Wisp-0.3.0-linux-x64.tar.gz
+tar -xzf Wisp-0.4.0-linux-x64.tar.gz
 ```
 
-The archive holds a `Wisp-0.3.0-linux-x64` folder. The folder holds the `wisp` binary, an `icons/` folder and a `share/` folder; it also holds the `wisp-cli` command-line tool. To install it for your user, from inside that folder run:
+The archive holds a `Wisp-0.4.0-linux-x64` folder. The folder holds the `wisp` binary, an `icons/` folder and a `share/` folder; it also holds the `wisp-cli` command-line tool. To install it for your user, from inside that folder run:
 
 ```sh
 cp wisp wisp-cli ~/.local/bin/
@@ -99,7 +99,7 @@ You can ask Wisp to confirm before it sends to a chosen environment, to guard ag
 
 ## Platform testing
 
-The maintainer hand-tested 0.3.0 on macOS (Apple silicon) only. Windows x64 and Linux x64 were not hand-tested for 0.3.0; Windows was last hand-tested at 0.1.0, and Linux has never been tested by hand. In CI it is built, its tests are run, and the binary is run under Xvfb with a software Vulkan driver, where its memory is measured and a screenshot of the window is taken and inspected. If something breaks on Linux with a real GPU, please report it.
+The maintainer hand-tested 0.4.0 on macOS (Apple silicon) only. Windows x64 and Linux x64 were not hand-tested for 0.4.0; Windows was last hand-tested at 0.1.0, and Linux has never been tested by hand. In CI it is built, its tests are run, and the binary is run under Xvfb with a software Vulkan driver, where its memory is measured and a screenshot of the window is taken and inspected. If something breaks on Linux with a real GPU, please report it.
 
 ## Unsaved changes
 
