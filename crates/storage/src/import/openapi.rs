@@ -361,7 +361,14 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
                 "server URL over {MAX_URL_BYTES} bytes"
             )));
         }
-        let suspect = super::may_hold_credentials(&url);
+        let flagged_before = super::may_hold_credentials(&url);
+        let (stripped, userinfo) = super::split_userinfo(&url);
+        let had_userinfo = userinfo.is_some();
+        if had_userinfo {
+            url = stripped;
+        }
+        let flagged_after = super::may_hold_credentials(&url);
+        let suspect = flagged_before || flagged_after;
         if suspect {
             result.warn(
                 &root,
@@ -371,18 +378,17 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
                 ),
             );
         }
-        let (stripped, userinfo) = super::split_userinfo(&url);
-        let had_userinfo = userinfo.is_some();
         if had_userinfo {
-            url = stripped;
-            let host = super::url_host(&url);
-            result.warn(
-                &root,
+            let msg = if flagged_after {
+                format!("server {}: credentials in the URL were dropped", i + 1)
+            } else {
+                let host = super::url_host(&url);
                 format!(
                     "server {} (`{host}`): credentials in the URL were dropped",
                     i + 1
-                ),
-            );
+                )
+            };
+            result.warn(&root, msg);
         }
         let desc = text(s.get("description"));
         let mut name = if desc_is_safe(&desc) {
