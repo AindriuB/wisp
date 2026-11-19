@@ -218,6 +218,83 @@ fn save_collection_defaults_locked(
     fs::atomic_write(&path, doc.to_string().as_bytes())
 }
 
+/// Most patterns a collection's compare ignore list may hold.
+pub const MAX_COMPARE_IGNORE: usize = 256;
+/// Longest single compare ignore pattern, in bytes.
+pub const MAX_COMPARE_IGNORE_BYTES: usize = 1024;
+
+/// Read `[compare] ignore` from `collection.toml`. A missing table or key is an empty list.
+pub fn load_compare_ignore(root: &Path) -> Result<Vec<String>, StorageError> {
+    let path = root.join(COLLECTION_FILE);
+    let doc = read_doc(&path)?.ok_or_else(|| StorageError::NotACollection {
+        path: root.to_path_buf(),
+    })?;
+    let key = "compare.ignore";
+    let Some(item) = doc.get("compare") else {
+        return Ok(Vec::new());
+    };
+    let table = item
+        .as_table_like()
+        .ok_or_else(|| invalid(&path, "compare", "expected a table"))?;
+    let Some(item) = table.get("ignore") else {
+        return Ok(Vec::new());
+    };
+    let arr = item
+        .as_array()
+        .ok_or_else(|| invalid(&path, key, "expected an array of strings"))?;
+    if arr.len() > MAX_COMPARE_IGNORE {
+        return Err(invalid(&path, key, "too many entries (at most 256)"));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for v in arr {
+        let s = v
+            .as_str()
+            .ok_or_else(|| invalid(&path, key, "expected an array of strings"))?;
+        if s.len() > MAX_COMPARE_IGNORE_BYTES {
+            return Err(invalid(&path, key, "an entry is over 1,024 bytes"));
+        }
+        out.push(s.to_string());
+    }
+    Ok(out)
+}
+
+/// Write `[compare] ignore` in place, keeping comments and other tables.
+pub fn save_compare_ignore(root: &Path, ignore: &[String]) -> Result<(), StorageError> {
+    with_root_lock(root, || save_compare_ignore_locked(root, ignore))
+}
+
+fn save_compare_ignore_locked(root: &Path, ignore: &[String]) -> Result<(), StorageError> {
+    let path = root.join(COLLECTION_FILE);
+    let key = "compare.ignore";
+    if ignore.len() > MAX_COMPARE_IGNORE {
+        return Err(invalid(&path, key, "too many entries (at most 256)"));
+    }
+    if ignore.iter().any(|s| s.len() > MAX_COMPARE_IGNORE_BYTES) {
+        return Err(invalid(&path, key, "an entry is over 1,024 bytes"));
+    }
+    let mut doc = read_doc(&path)?.unwrap_or_default();
+    let t = doc.as_table_mut();
+    if t.get("format").is_none() {
+        t.insert("format", toml_edit::value(1));
+    }
+    if ignore.is_empty() && t.get("compare").is_none() {
+        return fs::atomic_write(&path, doc.to_string().as_bytes());
+    }
+    if t.get("compare").is_none() {
+        t.insert("compare", Item::Table(Table::new()));
+    }
+    let compare = t
+        .get_mut("compare")
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| invalid(&path, "compare", "expected a table"))?;
+    let mut arr = Array::new();
+    for s in ignore {
+        arr.push(s.as_str());
+    }
+    compare.insert("ignore", Item::Value(Value::Array(arr)));
+    fs::atomic_write(&path, doc.to_string().as_bytes())
+}
+
 /// Random per-collection ID that keys its per-user data. Always a safe path component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CollectionId(String);

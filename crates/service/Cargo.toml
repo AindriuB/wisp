@@ -11,7 +11,7 @@ name = "wisp_service"
 [dependencies]
 wisp-core.workspace = true
 wisp-storage.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-serde_json.workspace = true
