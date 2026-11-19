@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — History entries record body and head evidence (task 183)
+Every new history entry now carries an `evidence` field recording whether the response body and head were stored in full, and it is written as snake_case strings in the index line (for example `no_response`). The `1234` canary flake in the history suite is fixed. Verified at 3359a61: tester PASS, reviewer APPROVE.
+**Cost:** The first attempt (a67fe85) was rejected because the only test round-tripped through `list()`, so it passed under any rename of the wire values; the fix asserts raw index-line text. Do not test serialized spellings through the typed reader. Old entries are not rewritten to add `evidence`. Three P3s are in PLAN.
+
 ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177)
 The 0.4.0 head (8d6fb0f) was measured in CI (run 44593845270) and the release workflow was dry-run (run 44596574612); both succeeded. Windows GUI is 15,616,000 B, 284,000 B under the 15,900,000 B soft line (it was 15,609,344 B in 172), and every `wisp-cli` is under the 7,340,032 B limit. Results are in `scripts/measure/results/v0.4.0-wave-3-size.json`; the macOS hand-test checklist is in PR #147 for the user.
 **Cost:** The Windows GUI margin is now 284,000 B, the tightest in the project; the next feature that adds code should re-measure before merging. The dry run left a draft release `dryrun-44596574612` that only the user deletes. Not retried or cut: no size reduction was needed.
