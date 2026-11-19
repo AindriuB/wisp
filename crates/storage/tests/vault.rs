@@ -2864,3 +2864,39 @@ fn sfs_moved_name_ignores_symlink() {
         "[vars]\nhost = \"h\"\n"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn sfs_tracked_file_reached_through_a_symlinked_dir_is_refused() {
+    if !git_available() {
+        println!("skipped: git is not available");
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let repo = t.path().join("repo");
+    let coll = repo.join("sub").join("coll");
+    std::fs::create_dir_all(&coll).unwrap();
+    write(&coll, "dev.toml", STORE_TOML);
+    write(&coll, "dev.secrets.toml", "[vars]\ntoken = \"t\"\n");
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-f", "sub/coll/environments/dev.secrets.toml"]);
+    let link = t.path().join("link");
+    std::os::unix::fs::symlink(repo.join("sub"), &link).unwrap();
+    let via = link.join("coll");
+    let s = MemoryStore::new();
+    let e = import_secrets_file(&via, "dev", &id(), &s, true, &bcx(&via)).unwrap_err();
+    assert!(
+        matches!(e, SecretsError::TrackedSecretsFile { .. }),
+        "{e:?}"
+    );
+}

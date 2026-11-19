@@ -208,7 +208,8 @@ pub(crate) fn read_nofollow(path: &Path) -> Result<String, StorageError> {
 }
 
 /// Write `bytes` to a fresh temp file beside `path` (mode `0600` on unix for a
-/// new file; an existing file keeps its mode), then rename it over `path`. A final symlink at `path` is refused, checked
+/// new file; an existing file keeps its mode), then rename it over `path`. A
+/// final symlink at `path` is refused, checked
 /// again just before the rename, and is never followed: the rename replaces
 /// the name, not what it points to.
 pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
@@ -278,19 +279,17 @@ fn write_impl(
             use std::os::unix::fs::PermissionsExt;
             m.permissions().mode() & 0o7777
         });
-    let r = f
-        .write_all(bytes)
-        .map_err(|e| io(&tmp, e))
-        .and_then(|()| {
-            #[cfg(unix)]
-            if let Some(mode) = existing_mode {
-                use std::os::unix::fs::PermissionsExt;
-                return f
-                    .set_permissions(std::fs::Permissions::from_mode(mode))
-                    .map_err(|e| io(&tmp, e));
-            }
-            Ok(())
-        })
+    let r = f.write_all(bytes).map_err(|e| io(&tmp, e));
+    #[cfg(unix)]
+    let r = r.and_then(|()| match existing_mode {
+        Some(mode) => {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(mode))
+                .map_err(|e| io(&tmp, e))
+        }
+        None => Ok(()),
+    });
+    let r = r
         .and_then(|()| {
             drop(f);
             test_point("write:before-rename");

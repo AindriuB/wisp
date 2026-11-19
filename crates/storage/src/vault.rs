@@ -619,8 +619,25 @@ const GIT_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5)
 /// True when some directory from `path`'s parent up to the filesystem root
 /// holds `.git`, so the collection may be a subfolder of a repository.
 fn has_git_ancestor(path: &Path) -> bool {
-    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    abs.ancestors()
+    // Resolve symlinks on the deepest existing ancestor, so a collection
+    // reached through a link still finds the real repository above it.
+    let mut base = path;
+    let mut tail = PathBuf::new();
+    let real = loop {
+        if let Ok(r) = std::fs::canonicalize(base) {
+            break r.join(&tail);
+        }
+        match (base.parent(), base.file_name()) {
+            (Some(p), Some(n)) => {
+                tail = Path::new(n).join(&tail);
+                base = p;
+            }
+            _ => {
+                break std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+            }
+        }
+    };
+    real.ancestors()
         .skip(1)
         .any(|dir| dir.join(".git").symlink_metadata().is_ok())
 }
