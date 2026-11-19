@@ -18,7 +18,8 @@ in the same commit.
 -->
 
 ## 2026-11-19 — CLI snapshot and metadata (task 173)
-`wisp-cli snapshot` now prints a bounded, secret-free picture of a workspace (environments, requests, variables, recent history) as text or JSON, dropping sections in a fixed order to stay under 1 MiB, and the CLI carries the description metadata. Tester: 1546 passed, 4 skipped; `cli-snapshot` 12 tests, `cli-meta` 2; no review rounds.
+`wisp-cli snapshot` now prints a bounded, secret-free picture of a workspace (environments, requests, variables, recent history) as text or JSON, dropping sections in a fixed order to stay under 1 MiB, and the CLI carries the description metadata. Tester: 1546 passed, 4 skipped; `cli-snapshot` 12 tests, `cli-meta` 2; one external review round.
+Round 1: an external review found text output could exceed 1 MiB, so `fsize` now takes the larger of the pretty-JSON and rendered-text size; re-verified at be30f70 (1550 tests).
 **Cost:** The minimal fallback (AC7) is unreachable at 1 MiB with real input (about 45-240 KB worst case after drops), so it is proven only by a unit test calling `finish` with a 300-byte limit; do not try to build a real 1 MiB fixture for it. The spec did not name the `truncated` cap entries; the implementer chose `environments`, `environment_variables`, `request_variables` and `request_headers`.
 
 ## 2026-11-19 — Windows data dir on a volume without ACLs works (task 180)

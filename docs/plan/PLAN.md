@@ -33,6 +33,8 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] An environment whose `environment_info` fails (e.g. a malformed `dev.secrets.toml`) is reported as `variable_count` 0 with no note and no `truncated` entry (`crates/cli/src/cmd/snapshot.rs:72-74`).
 - [P3] Text output `== recent ==` omits `RecentInfo.request`, so a reader cannot tell which request each history line belongs to; JSON has it (`output.rs` `snapshot_text`).
 - [P3] Test gaps: the fallback unit test never has `request`/`recent` present, so it does not check that the minimal `truncated` names them; no test for a migrated history dir with no `index.jsonl` (`snapshot.rs:141-145`).
+- [P3] `fsize` renders the whole text form at every fitting step, so a hostile collection (all-bidi names at the caps, about 60 MB of env files) takes about 10 s release / 37 s debug; make the counting writer stop once past the limit.
+- [P3] Rename test `text_rendering_is_bounded_too` to `snapshot_text_rendering_is_bounded_too` so the `cli-snapshot` check counts it.
 - [Note for 176] The cap-hit names in `truncated` (`environments`, `environment_variables`, `request_variables`, `request_headers`) were chosen by the implementer; the spec does not name them, so the docs must.
 
 ### Follow-ups from task 171 (Windows hardening; not scheduled)
