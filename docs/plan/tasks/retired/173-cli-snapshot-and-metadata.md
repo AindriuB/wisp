@@ -45,3 +45,6 @@ written and no secret is ever printed.
 
 ## Out of scope
 - Live IPC or unsaved drafts; `--keychain` for snapshot (never); any change to `run` beyond shared DTO additions.
+
+## Outcome
+Merged at abb9136 (PASS + APPROVE, no review rounds). `wisp-cli snapshot` and description metadata landed; follow-ups are in PLAN.md. Unblocks 176.

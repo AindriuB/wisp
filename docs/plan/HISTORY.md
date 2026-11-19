@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — CLI snapshot and metadata (task 173)
+`wisp-cli snapshot` now prints a bounded, secret-free picture of a workspace (environments, requests, variables, recent history) as text or JSON, dropping sections in a fixed order to stay under 1 MiB, and the CLI carries the description metadata. Tester: 1546 passed, 4 skipped; `cli-snapshot` 12 tests, `cli-meta` 2; no review rounds.
+**Cost:** The minimal fallback (AC7) is unreachable at 1 MiB with real input (about 45-240 KB worst case after drops), so it is proven only by a unit test calling `finish` with a 300-byte limit; do not try to build a real 1 MiB fixture for it. The spec did not name the `truncated` cap entries; the implementer chose `environments`, `environment_variables`, `request_variables` and `request_headers`.
+
 ## 2026-11-18 — Windows hardening: owner-only data dir, real 8.3 test, file identity (task 171)
 On Windows `ensure_private_dir` now gives the data dir a protected DACL with one full-control ACE for the current user, inherited by new files, and rewrites it only when the dir is not already owner-only. `same_file_entry` compares volume serial and file index from `GetFileInformationByHandle`, so hard links are detected. The 8.3 sidecar test reads the sibling's real short name and prints SKIPPED or RAN; CI enables 8.3 names and sets `WISP_REQUIRE_8DOT3=1` so a skip fails the leg. The code is in the new `win_acl.rs` and `fs.rs`, using `windows-sys` 0.52.0 (already in `Cargo.lock`, no default features, Windows-only target dependency). Verified at 23ac3cb: CI run 44299517411 green on all four jobs.
 Every directory `ensure_private_dir` creates on Windows is now owner-only, not just the leaf: it creates each missing level top-down and restricts each (round 5, verified at 09c5006).
