@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Windows ACL follow-ups closed (task 187)
+`is_owner_only` now returns true only when the single DACL ACE is the owner's and grants full file access, so a reduced-rights owner ACE is restricted again. If `restrict_to_owner` fails after the data-dir code created directories, those directories are removed deepest first, only the ones this call created and only if empty. The `windows-sys` line has `default-features = false` and `Cargo.lock` is unchanged. Verified at 679aa19: tester PASS, reviewer APPROVE, no fix rounds; Windows CI ran `acl_reduced_owner_ace_is_not_owner_only` and `acl_failed_restrict_removes_created_dirs` (job 135919944074, run 44626018466).
+**Cost:** The code is `cfg(windows)` and was not built locally, so the Windows CI job was the only proof. Three P3s are in PLAN, including that an INHERIT_ONLY ACE still counts as full access. The ReFS 128-bit file id, `volume_flags` notes and the "already owner-only skips restrict" test were left out of scope.
+
 ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177)
 The 0.4.0 head (8d6fb0f) was measured in CI (run 44593845270) and the release workflow was dry-run (run 44596574612); both succeeded. Windows GUI is 15,616,000 B, 284,000 B under the 15,900,000 B soft line (it was 15,609,344 B in 172), and every `wisp-cli` is under the 7,340,032 B limit. Results are in `scripts/measure/results/v0.4.0-wave-3-size.json`; the macOS hand-test checklist is in PR #147 for the user.
 **Cost:** The Windows GUI margin is now 284,000 B, the tightest in the project; the next feature that adds code should re-measure before merging. The dry run left a draft release `dryrun-44596574612` that only the user deletes. Not retried or cut: no size reduction was needed.
