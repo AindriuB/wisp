@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-19 | 183 | every new history entry records body/head `evidence` with snake_case wire values; `1234` canary flake fixed | ## 2026-11-19 — History entries record body and head evidence (task 183) |
 | 2026-11-19 | 177 | 0.4.0 head measured and release dry run passed; Windows GUI 15,616,000 B, CLIs under 7 MiB | ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177) |
 | 2026-11-19 | 176 | docs/architecture.md, docs/cli.md, README.md describe wisp-service, `run`, `snapshot`, measured CLI sizes and 7 MiB limit; 31 hardening ACs marked done | ## 2026-11-19 — Docs describe 0.4.0 (task 176) |
 | 2026-11-19 | 181 | OpenAPI "credentials dropped" warning omits the host when the stripped URL still looks credentialed, and the may-contain-credentials warning fires | ## 2026-11-19 — OpenAPI "credentials dropped" warning no longer echoes a possible secret host (task 181) |
