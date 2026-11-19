@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177)
+The 0.4.0 head (8d6fb0f) was measured in CI (run 44593845270) and the release workflow was dry-run (run 44596574612); both succeeded. Windows GUI is 15,616,000 B, 284,000 B under the 15,900,000 B soft line (it was 15,609,344 B in 172), and every `wisp-cli` is under the 7,340,032 B limit. Results are in `scripts/measure/results/v0.4.0-wave-3-size.json`; the macOS hand-test checklist is in PR #147 for the user.
+**Cost:** The Windows GUI margin is now 284,000 B, the tightest in the project; the next feature that adds code should re-measure before merging. The dry run left a draft release `dryrun-44596574612` that only the user deletes. Not retried or cut: no size reduction was needed.
+
 ## 2026-11-19 — Docs describe 0.4.0 (task 176)
 `docs/architecture.md`, `docs/cli.md` and `README.md` now describe `wisp-service` as the one send path, `wisp-cli run` (exit codes, `delivery`, `retry_safe`, `--keychain`, `--history`) and `wisp-cli snapshot`, the measured CLI sizes and the 7 MiB limit. `99-hardening-0-2-0.md` marks the 31 ACs closed by 0.4.0 done and notes the re-located line references.
 **Cost:** Review found two wording errors: the size table claimed `snapshot` was built in although 910d681 predates it, and a corrected line reference (`hash_file`) was copied from 167's brief and was wrong (now `engine.rs:683`). Re-locate line references with `rg`, not from a brief. Left open: AC51 credits only task 163 (161 also closed it), and `cli.md` does not name the `truncated` cap-hit entries.

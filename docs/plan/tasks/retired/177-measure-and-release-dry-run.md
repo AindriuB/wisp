@@ -37,3 +37,6 @@ checklist. Tagging, the version bump and publishing stay with the user (D-I).
 
 ## Out of scope
 - The version bump to 0.4.0, the tag, publishing, deleting the draft (user); Windows and Ubuntu hand tests (D-I); any size cut.
+
+## Outcome
+Merged-pending as PR #147 at 037ecdc. Measure run 44593845270 and release dry run 44596574612 succeeded on 8d6fb0f; only the result file changed. Windows GUI 15,616,000 B; CLIs under 7,340,032 B. AC4 hand checklist is in the PR body. Draft `dryrun-44596574612` is for the user to delete.
