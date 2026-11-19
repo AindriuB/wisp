@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-18 — wisp-cli size budgets set to 7 MiB (task 172)
+The first real `wisp-cli` size with `run` linked was measured on every target (macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B), and every limit in `scripts/measure/cli-budgets.json` is now 7,340,032 B. The Windows GUI is 15,609,344 B, 290,656 B under the 15,900,000 B soft line.
+**Cost:** The pre-approved rule (6 MiB) stopped the wave because Linux was 45,048 B over it; the user then chose 7 MiB for every target and the task was amended and rerun, with the main run reused as the measurement. Nothing was cut from the binary. `docs/architecture.md` limits were left to task 176.
+
 ## 2026-11-17 — Per-request variables editor (task 174)
 The request pane has a Vars sub-tab with a name/value table whose values are masked per row (a `KvTable::set_row_mask` setter, unset for other tables), mapped into the draft's dirty state. A duplicate or blank-duplicate name is flagged inline, and `Workspace::save` refuses any request with one before writing, so Ctrl+S and every other save path are covered. `write_vars` now rewrites `[vars]` in the draft's order, so renaming a non-last variable no longer moves it. Verified at 2999253: workspace 1414 passed, AC1-AC5.
 **Cost:** Storage keys `[vars]` by name, so duplicates cannot be preserved on disk; the first plan to keep them was unbuildable, and two stops (Amendments 1 and 2) chose flag-and-refuse, with the refusal as a hook in `Workspace::save` because every save path already goes through it. `write_vars` removed the old key and appended the new one, which reordered a renamed variable. Review then found that blank names were skipped by the duplicate check, so two blank-name rows silently collapsed to one on disk; blank names now count. The per-row mask began as a `KvOptions` field, which would have broken the struct literals in `params.rs`, `headers.rs` and `body.rs`; a setter avoids that.
