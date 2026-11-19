@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — OpenAPI "credentials dropped" warning no longer echoes a possible secret host (task 181)
+When stripping userinfo from an OpenAPI server URL still leaves a URL that `may_hold_credentials` flags (`https://u:p@bob:1234?rest@h2/y`), the warning is now `server 1: credentials in the URL were dropped` with no host, and the "URL may contain credentials; check it before committing" warning fires once for it. A plain `https://alice:pw@api.example.com/v1` keeps today's text with the host. The stored `baseUrl` and the environment-name choice are unchanged. Verified at c6f3886: tester PASS (1535 tests, fmt and clippy clean), reviewer APPROVE.
+**Cost:** The old `suspect` check ran on the URL before the strip, so this input was never flagged; it is now computed from the original or the stripped URL. This supersedes 179's freeze of the warning text, for this warning only. The fix stays in `openapi.rs`; `url_host` is shared with other importers. Not closed: `https://u:p@x:pw/?a@h2/y` still keeps a possible second credential in `baseUrl` unwarned (PLAN follow-up).
+
 ## 2026-11-19 — CLI snapshot and metadata (task 173)
 `wisp-cli snapshot` now prints a bounded, secret-free picture of a workspace (environments, requests, variables, recent history) as text or JSON, dropping sections in a fixed order to stay under 1 MiB, and the CLI carries the description metadata. Tester: 1546 passed, 4 skipped; `cli-snapshot` 12 tests, `cli-meta` 2; one external review round.
 Round 1: an external review found text output could exceed 1 MiB, so `fsize` now takes the larger of the pretty-JSON and rendered-text size; re-verified at be30f70 (1550 tests).
