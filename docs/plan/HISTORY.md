@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Engine trusts private CAs (task 184)
+`wisp_core::TlsTrust` holds a `system` flag (default on) and extra CA certificates; `TlsTrust::load_pem_file` loads a PEM CA file with strict refusals, and `Engine::set_tls_trust` drops cached clients so the next send uses the new trust. Bundled roots stay in both modes, `verify_tls = false` still accepts anything, and OAuth2 token requests share the trust. Verified at 263495f: tester PASS, reviewer APPROVE, no fix rounds. Measure run 44626294433: Windows GUI 15,616,512 B, +512 B over 15,616,000 B.
+**Cost:** Core only; settings, palette and CLI flags are tasks 190 and 191. Whether `system: true` differs from `false` is untested and left to the macOS hand test. Five P3s are in PLAN.
+
 ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177)
 The 0.4.0 head (8d6fb0f) was measured in CI (run 44593845270) and the release workflow was dry-run (run 44596574612); both succeeded. Windows GUI is 15,616,000 B, 284,000 B under the 15,900,000 B soft line (it was 15,609,344 B in 172), and every `wisp-cli` is under the 7,340,032 B limit. Results are in `scripts/measure/results/v0.4.0-wave-3-size.json`; the macOS hand-test checklist is in PR #147 for the user.
 **Cost:** The Windows GUI margin is now 284,000 B, the tightest in the project; the next feature that adds code should re-measure before merging. The dry run left a draft release `dryrun-44596574612` that only the user deletes. Not retried or cut: no size reduction was needed.
