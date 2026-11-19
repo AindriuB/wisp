@@ -453,3 +453,68 @@ fn explain_keychain_secret_shadows_lower_scope() {
     assert_eq!(part["name"], "tok", "{t}");
     assert_eq!(part["resolved"], false, "{t}");
 }
+
+fn description_fixture() -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    w(d.path(), "collection.toml", "format = 1\n");
+    let long = "d".repeat(1200);
+    w(
+        d.path(),
+        "a.toml",
+        &format!(
+            "name = \"A\"\nmethod = \"GET\"\nurl = \"https://h.test/\"\ndescription = \"see {{{{var}}}} {long}\"\nexpected_status = [200, 404]\n"
+        ),
+    );
+    w(
+        d.path(),
+        "b.toml",
+        "name = \"B\"\nmethod = \"GET\"\nurl = \"https://h.test/\"\n",
+    );
+    d
+}
+
+#[test]
+fn explain_json_carries_description_and_expected_status() {
+    let d = description_fixture();
+    let o = bin(&["explain", p(&d), "a.toml", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let text = v["description"].as_str().unwrap();
+    // capped at 1,000 characters plus the ellipsis; never expanded
+    assert_eq!(text.chars().count(), 1001);
+    assert!(text.starts_with("see {{var}} "));
+    assert!(text.ends_with('…'));
+    assert_eq!(v["expected_status"], serde_json::json!([200, 404]));
+    let o = bin(&["explain", p(&d), "b.toml", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["description"], "");
+    assert_eq!(v["expected_status"], serde_json::json!([]));
+    let t = out(&["explain", p(&d), "b.toml"]);
+    assert!(!t.contains("description:") && !t.contains("expected status"));
+    let t = out(&["explain", p(&d), "a.toml"]);
+    assert!(t.contains("expected status: 200,404"), "{t}");
+}
+
+#[test]
+fn inspect_nodes_carry_has_description_and_expected_status() {
+    let d = description_fixture();
+    let o = bin(&["inspect", p(&d), "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let find = |path: &str| {
+        v["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["path"] == path)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(find("a.toml")["has_description"], true);
+    assert_eq!(
+        find("a.toml")["expected_status"],
+        serde_json::json!([200, 404])
+    );
+    assert_eq!(find("b.toml")["has_description"], false);
+    assert_eq!(find("b.toml")["expected_status"], serde_json::json!([]));
+    // the description text itself is never an inspect field
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("ddd"));
+}
