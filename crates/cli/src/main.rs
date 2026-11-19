@@ -113,6 +113,27 @@ fn run<I: IntoIterator<Item = std::ffi::OsString>>(
             },
             Err(f) => failure(err, f),
         },
+        Action::Snapshot {
+            collection,
+            env,
+            request,
+            recent,
+        } => match cmd::snapshot::run(&collection, env.as_deref(), request.as_deref(), recent) {
+            Ok(s) => {
+                for n in &s.notes {
+                    let _ = writeln!(err, "wisp-cli: {}", output::display(n));
+                }
+                finish(match (&s.doc, parsed.json) {
+                    (cmd::snapshot::Out::Full(d), true) => output::json(out, d),
+                    (cmd::snapshot::Out::Full(d), false) => output::snapshot_text(out, d),
+                    (cmd::snapshot::Out::Minimal(d), true) => output::json(out, d),
+                    (cmd::snapshot::Out::Minimal(d), false) => {
+                        output::snapshot_minimal_text(out, d)
+                    }
+                })
+            }
+            Err(f) => failure(err, f),
+        },
         Action::Inspect { collection, env } => {
             match cmd::inspect::run(&collection, env.as_deref()) {
                 Ok(doc) => finish(if parsed.json {

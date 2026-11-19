@@ -13,6 +13,7 @@ pub const MAX_NODES: usize = 2000;
 const MAX_NAME: usize = 200;
 const MAX_HEADERS: usize = 100;
 
+#[derive(Debug)]
 pub enum Failure {
     /// Collection could not be read (exit 3).
     Unreadable(String),
@@ -120,6 +121,8 @@ impl Walk {
                         auth: None,
                         headers: Vec::new(),
                         valid: true,
+                        has_description: false,
+                        expected_status: Vec::new(),
                     });
                     self.walk(root, children);
                 }
@@ -138,11 +141,15 @@ impl Walk {
                         auth: None,
                         headers: Vec::new(),
                         valid: true,
+                        has_description: false,
+                        expected_status: Vec::new(),
                     };
                     match load_request(&root.join(&meta.path)) {
                         Ok(r) => {
                             info.url = Some(safe_url(&r.url));
                             info.auth = Some(auth_kind(&r.auth));
+                            info.has_description = !r.description.is_empty();
+                            info.expected_status = r.expected_status.clone();
                             info.headers = r
                                 .headers
                                 .iter()
@@ -168,6 +175,8 @@ impl Walk {
                         auth: None,
                         headers: Vec::new(),
                         valid: false,
+                        has_description: false,
+                        expected_status: Vec::new(),
                     });
                 }
             }

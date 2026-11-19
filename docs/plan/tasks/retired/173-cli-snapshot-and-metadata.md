@@ -45,3 +45,16 @@ written and no secret is ever printed.
 
 ## Out of scope
 - Live IPC or unsaved drafts; `--keychain` for snapshot (never); any change to `run` beyond shared DTO additions.
+
+## External review — findings
+Key: sha256:d7c370a3066f · reviewed head: ec91130154e39a489e53b454dfc242bd4733fa29 (assumed: pasted review named no head; PR head unchanged since CI) · round 1
+
+PR #145: one P2 finding — text snapshots can exceed the 1 MiB limit.
+crates/cli/src/cmd/snapshot.rs:54–55
+The size check measures JSON, but text rendering expands control and bidi characters. A modeled collection produces 1,045,314 bytes of JSON while its rendered header names and separators alone exceed 2.7 MiB. Measure the selected output format or conservatively bound both formats.
+Overall, #145 adds useful snapshot functionality, but its text-output size guarantee needs fixing.
+
+## Outcome
+Merged at abb9136 (PASS + APPROVE). `wisp-cli snapshot` and description metadata landed; follow-ups are in PLAN.md. Unblocks 176.
+
+Rounds: 1. Round 1: external P2 "text snapshots can exceed 1 MiB" fixed in be30f70 (`fsize` takes the larger of pretty-JSON and rendered-text size; test `text_rendering_is_bounded_too`); re-verified PASS + APPROVE at be30f70 (1550 tests); CI green; fresh external review clean at be30f70.

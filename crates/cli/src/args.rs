@@ -26,6 +26,12 @@ pub enum Action {
         keychain: bool,
         history: bool,
     },
+    Snapshot {
+        collection: PathBuf,
+        env: Option<String>,
+        request: Option<String>,
+        recent: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +48,7 @@ pub enum UsageError {
     MissingValue(String),
     MissingArgument(&'static str),
     ExtraArgument(String),
+    BadValue(&'static str),
     NotUtf8,
 }
 
@@ -54,6 +61,7 @@ impl std::fmt::Display for UsageError {
             Self::MissingValue(c) => write!(f, "option `{c}` needs a value"),
             Self::MissingArgument(a) => write!(f, "missing argument <{a}>"),
             Self::ExtraArgument(a) => write!(f, "unexpected argument `{a}`"),
+            Self::BadValue(o) => write!(f, "option `{o}` takes a number from 1 to 50"),
             Self::NotUtf8 => f.write_str("environment name and request path must be UTF-8"),
         }
     }
@@ -67,16 +75,27 @@ commands:
   inspect <collection> [--env <name>]
   explain <collection> <request-path> [--env <name>]
   run <collection> <request-path> [--env <name>] [--keychain] [--history]
+  snapshot <collection> [--env <name>] [--request <request-path>] [--recent <n>]
 
 options:
   --json       print one JSON document
   --env <name> select an environment
   --keychain   run: load keychain-backed secrets
   --history    run: append a history entry
+  --request <request-path>
+               snapshot: include the explanation of one request
+  --recent <n> snapshot: include the n newest history entries (1-50)
   --version    print the version
   --help       print this help
   --           treat the rest as positional arguments
 ";
+
+fn recent_n(v: &str) -> Result<usize, UsageError> {
+    v.parse::<usize>()
+        .ok()
+        .filter(|n| (1..=50).contains(n))
+        .ok_or(UsageError::BadValue("--recent"))
+}
 
 /// Parse the arguments after the program name.
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageError> {
@@ -84,6 +103,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
     let mut env: Option<String> = None;
     let mut keychain = false;
     let mut history = false;
+    let mut request_opt: Option<String> = None;
+    let mut recent: Option<usize> = None;
     let mut help = false;
     let mut version = false;
     let mut pos: Vec<OsString> = Vec::new();
@@ -109,6 +130,22 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
                     .ok_or_else(|| UsageError::MissingValue("--env".into()))?;
                 env = Some(v.into_string().map_err(|_| UsageError::NotUtf8)?);
             }
+            "--request" => {
+                let v = it
+                    .next()
+                    .ok_or_else(|| UsageError::MissingValue("--request".into()))?;
+                request_opt = Some(v.into_string().map_err(|_| UsageError::NotUtf8)?);
+            }
+            _ if s.starts_with("--request=") => {
+                request_opt = Some(s["--request=".len()..].to_owned());
+            }
+            "--recent" => {
+                let v = it
+                    .next()
+                    .ok_or_else(|| UsageError::MissingValue("--recent".into()))?;
+                recent = Some(recent_n(&v.to_string_lossy())?);
+            }
+            _ if s.starts_with("--recent=") => recent = Some(recent_n(&s["--recent=".len()..])?),
             _ if s.starts_with("--env=") => env = Some(s["--env=".len()..].to_owned()),
             _ if s.starts_with("--") && s.len() > 2 => {
                 let name = s.split('=').next().unwrap_or(s);
@@ -173,6 +210,12 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
                 history: std::mem::take(&mut history),
             }
         }
+        "snapshot" => Action::Snapshot {
+            collection: collection()?,
+            env: env.take(),
+            request: request_opt.take(),
+            recent: recent.take(),
+        },
         _ => return Err(UsageError::UnknownCommand(name)),
     };
     if let Some(extra) = pos.next() {
@@ -182,6 +225,12 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
     }
     if let Some(_e) = env {
         return Err(UsageError::UnknownFlag("--env".into()));
+    }
+    if request_opt.is_some() {
+        return Err(UsageError::UnknownFlag("--request".into()));
+    }
+    if recent.is_some() {
+        return Err(UsageError::UnknownFlag("--recent".into()));
     }
     if keychain {
         return Err(UsageError::UnknownFlag("--keychain".into()));
@@ -206,6 +255,15 @@ mod tests {
         Action::Inspect {
             collection: c.into(),
             env: env.map(str::to_owned),
+        }
+    }
+
+    fn snapshot(c: &str, env: Option<&str>, r: Option<&str>, recent: Option<usize>) -> Action {
+        Action::Snapshot {
+            collection: c.into(),
+            env: env.map(str::to_owned),
+            request: r.map(str::to_owned),
+            recent,
         }
     }
 
@@ -327,6 +385,60 @@ mod tests {
             (
                 vec!["validate", "c", "--history"],
                 Err(UsageError::UnknownFlag("--history".into())),
+            ),
+            (
+                vec!["snapshot", "c"],
+                ok(snapshot("c", None, None, None), false),
+            ),
+            (
+                vec![
+                    "snapshot",
+                    "c",
+                    "--env",
+                    "x",
+                    "--request",
+                    "a.toml",
+                    "--recent",
+                    "7",
+                    "--json",
+                ],
+                ok(snapshot("c", Some("x"), Some("a.toml"), Some(7)), true),
+            ),
+            (
+                vec!["snapshot", "c", "--recent=50"],
+                ok(snapshot("c", None, None, Some(50)), false),
+            ),
+            (
+                vec!["snapshot", "c", "--recent", "0"],
+                Err(UsageError::BadValue("--recent")),
+            ),
+            (
+                vec!["snapshot", "c", "--recent", "51"],
+                Err(UsageError::BadValue("--recent")),
+            ),
+            (
+                vec!["snapshot", "c", "--recent", "x"],
+                Err(UsageError::BadValue("--recent")),
+            ),
+            (
+                vec!["snapshot", "c", "--recent"],
+                Err(UsageError::MissingValue("--recent".into())),
+            ),
+            (
+                vec!["snapshot", "c", "--keychain"],
+                Err(UsageError::UnknownFlag("--keychain".into())),
+            ),
+            (
+                vec!["snapshot", "c", "--history"],
+                Err(UsageError::UnknownFlag("--history".into())),
+            ),
+            (
+                vec!["inspect", "c", "--recent", "3"],
+                Err(UsageError::UnknownFlag("--recent".into())),
+            ),
+            (
+                vec!["inspect", "c", "--request", "a.toml"],
+                Err(UsageError::UnknownFlag("--request".into())),
             ),
             (
                 vec!["validate", "c", "--env", "x"],
