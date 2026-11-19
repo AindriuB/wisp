@@ -1038,3 +1038,52 @@ fn h4_long_descriptions_import_whole() {
     .unwrap();
     assert_eq!(first_request_description(&oa), long);
 }
+
+fn dropped_creds_warnings(url: &str) -> Vec<String> {
+    let r = openapi_url(url);
+    warnings_text(&r)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+}
+
+#[test]
+fn h4_dropped_creds_hides_exposed_host() {
+    let w = dropped_creds_warnings("https://u:p@bob:1234?rest@h2/y");
+    assert!(
+        w.iter().all(|l| !l.contains("bob") && !l.contains("1234")),
+        "{w:?}"
+    );
+    let dropped = "server 1: credentials in the URL were dropped";
+    let may = "server 1: the URL may contain credentials; check it before committing";
+    assert_eq!(w.iter().filter(|l| l.contains(dropped)).count(), 1, "{w:?}");
+    assert_eq!(w.iter().filter(|l| l.contains(may)).count(), 1, "{w:?}");
+}
+
+#[test]
+fn h4_dropped_creds_plain_keeps_host() {
+    let w = dropped_creds_warnings("https://alice:pw@api.example.com/v1");
+    assert!(
+        w.iter().any(
+            |l| l.contains("server 1 (`api.example.com`): credentials in the URL were dropped")
+        ),
+        "{w:?}"
+    );
+    assert!(
+        w.iter().all(|l| !l.contains("may contain credentials")),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn h4_dropped_creds_flagged_without_userinfo() {
+    let w = dropped_creds_warnings("https://bob:1234?rest@h2/y");
+    assert_eq!(
+        w.iter()
+            .filter(|l| l.contains("may contain credentials"))
+            .count(),
+        1,
+        "{w:?}"
+    );
+    assert!(w.iter().all(|l| !l.contains("were dropped")), "{w:?}");
+}
