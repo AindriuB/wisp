@@ -644,9 +644,10 @@ fn has_git_ancestor(path: &Path) -> bool {
 
 /// Ask git whether `path` is tracked in the repository around `root`.
 /// Outside a work tree (no `.git` in any ancestor of `path`) no `git` is run
-/// and the answer is "not tracked". Inside one, any answer other than a clean
-/// hit (exit 0) or a clean miss (exit 1) is [`GitCheck::CouldNotRun`], so the
-/// check fails closed. The child is bounded by [`GIT_CHECK_TIMEOUT`] and on
+/// and the answer is "not tracked". Inside one, `git ls-files -- <path>` must
+/// exit 0: output means tracked, empty output means not tracked, and anything
+/// else (including exit 1) is [`GitCheck::CouldNotRun`], so the check fails
+/// closed. The child is bounded by [`GIT_CHECK_TIMEOUT`] and on
 /// timeout only that child is killed, by its handle.
 ///
 /// The folder may not be the user's own, and git reads its `.git/config`, so
@@ -654,33 +655,52 @@ fn has_git_ancestor(path: &Path) -> bool {
 /// is forced off on the command line (which outranks every config file) and
 /// optional index locks are disabled.
 fn git_check(root: &Path, path: &Path) -> GitCheck {
+    git_check_with("git", root, path)
+}
+
+/// [`git_check`] with the git program named, so a test can substitute one.
+fn git_check_with(program: &str, root: &Path, path: &Path) -> GitCheck {
     if !has_git_ancestor(path) {
         return GitCheck::NotTracked;
     }
     // `path` is normally `root.join(..)`; with `-C root` git would resolve a
     // relative root a second time, so hand it the path relative to `root`.
     let path = path.strip_prefix(root).unwrap_or(path);
-    let spawned = std::process::Command::new("git")
+    let spawned = std::process::Command::new(program)
         .arg("-C")
         .arg(root)
         .args(["-c", "core.fsmonitor=false"])
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(["ls-files", "--error-unmatch", "--"])
+        .args(["ls-files", "--"])
         .arg(path)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn();
     let Ok(mut child) = spawned else {
         return GitCheck::CouldNotRun;
     };
+    // Drain stdout on a thread so a full pipe cannot stall the child.
+    let out = child.stdout.take().map(|mut o| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut o, &mut buf).map(|_| buf)
+        })
+    });
     let deadline = std::time::Instant::now() + GIT_CHECK_TIMEOUT;
     loop {
         match child.try_wait() {
             Ok(Some(st)) => {
-                return match st.code() {
-                    Some(0) => GitCheck::Tracked,
-                    Some(1) => GitCheck::NotTracked,
+                // Positive evidence only: exit 0 with the path listed is a
+                // hit, exit 0 with nothing listed is a miss. Any other exit
+                // (including 1, which a broken git or stub also gives) fails
+                // closed.
+                let listed = out.and_then(|h| h.join().ok()).and_then(Result::ok);
+                return match (st.code(), listed) {
+                    (Some(0), Some(b)) if b.iter().all(u8::is_ascii_whitespace) => {
+                        GitCheck::NotTracked
+                    }
+                    (Some(0), Some(_)) => GitCheck::Tracked,
                     _ => GitCheck::CouldNotRun,
                 };
             }
@@ -1136,6 +1156,22 @@ mod tests {
 
     /// A repository whose own config names an fsmonitor command must not get
     /// that command run by the tracked-file check.
+    #[cfg(unix)]
+    #[test]
+    fn git_exit_one_without_evidence_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir(t.path().join(".git")).unwrap();
+        let fake = t.path().join("fakegit");
+        std::fs::write(&fake, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sp = t.path().join("dev.secrets.toml");
+        assert_eq!(
+            git_check_with(fake.to_str().unwrap(), t.path(), &sp),
+            GitCheck::CouldNotRun
+        );
+    }
+
     #[test]
     fn h3_tracked_check_does_not_run_repo_configured_commands() {
         let git = |dir: &Path, args: &[&str]| {
