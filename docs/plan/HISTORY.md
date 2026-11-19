@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Windows data dir on a volume without ACLs works (task 180)
+On Windows `ensure_private_dir` now asks the path's volume (`GetVolumePathNameW`, `GetVolumeInformationW`) whether it keeps persistent ACLs. If the flags lack `FILE_PERSISTENT_ACLS` (FAT or exFAT, as on a portable USB install) it creates the directory, skips the DACL and logs one `tracing::warn!` per process. A failed query counts as ACL-capable, so the DACL is applied and its failure is still an error. The decision is the pure function `acl_policy`, unit-tested on every platform. Verified at 7c36a28: tester PASS, reviewer APPROVE.
+**Cost:** No local Windows build, so the Windows-only code and the `cfg(windows)` test `no_acl_volume_temp_dir_reports_persistent_acls` are first compiled by the Windows CI leg. Review round 1 found the new `volume_flags` inserted between `is_owner_only` and its doc comment, which gave it a wrong four-line doc. Only an explicit missing-flag answer skips the DACL; do not skip on a query error.
+
 ## 2026-11-18 — Windows hardening: owner-only data dir, real 8.3 test, file identity (task 171)
 On Windows `ensure_private_dir` now gives the data dir a protected DACL with one full-control ACE for the current user, inherited by new files, and rewrites it only when the dir is not already owner-only. `same_file_entry` compares volume serial and file index from `GetFileInformationByHandle`, so hard links are detected. The 8.3 sidecar test reads the sibling's real short name and prints SKIPPED or RAN; CI enables 8.3 names and sets `WISP_REQUIRE_8DOT3=1` so a skip fails the leg. The code is in the new `win_acl.rs` and `fs.rs`, using `windows-sys` 0.52.0 (already in `Cargo.lock`, no default features, Windows-only target dependency). Verified at 23ac3cb: CI run 44299517411 green on all four jobs.
 Every directory `ensure_private_dir` creates on Windows is now owner-only, not just the leaf: it creates each missing level top-down and restricts each (round 5, verified at 09c5006).
