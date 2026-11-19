@@ -1,0 +1,39 @@
+{
+  "run": "https://github.com/AindriuB/wisp/actions/runs/44293903312",
+  "run_id": 44293903312,
+  "built_commit": "910d681008181221b134fe353a711db56f8623a2",
+  "note": "measure.yml dispatched on main 910d681 (166 run merged); all targets built and measured. Its CLI-limit step failed at the old 4,194,304 B limit; the sizes were still written.",
+  "baseline": {
+    "note": "165 wave-1 result, scripts/measure/results/v0.4.0-wave-1-size.json; CLI baseline is 0.3.0",
+    "run": "https://github.com/AindriuB/wisp/actions/runs/44181832340",
+    "run_id": 44181832340
+  },
+  "budget_decision": "User decision 2026-11-18 (superseding 2026-11-17's 6 MiB): every target's wisp-cli limit in cli-budgets.json becomes 7,340,032 B (7 MiB). Rests on the measured wisp-cli sizes macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B (Linux was 45,048 B over 6 MiB).",
+  "cli_limit_bytes": 7340032,
+  "branch_verification_run": "https://github.com/AindriuB/wisp/actions/runs/44306383390",
+  "branch_verification_run_id": 44306383390,
+  "branch_verification_commit": "7ada11b5dcee6875e3a3e3a7716e40942a21b2c1",
+  "branch_verification_conclusion": "success on every target at the 7 MiB limits; sizes identical to the main run",
+  "windows_gate_bytes": 16000000,
+  "windows_soft_line_bytes": 15900000,
+  "windows_gui_status": "UNDER the 15,900,000 B soft line by 290,656 B; UNDER the 16,000,000 B gate by 390,656 B. Nothing cut.",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "gui_bytes": 11901120, "cli_bytes": 3485408,
+      "baseline_gui_bytes": 11867856, "gui_delta_bytes": 33264,
+      "baseline_cli_bytes": 1415600, "cli_delta_bytes": 2069808
+    },
+    "x86_64-pc-windows-msvc": {
+      "gui_bytes": 15609344, "cli_bytes": 4201472,
+      "baseline_gui_bytes": 15560192, "gui_delta_bytes": 49152,
+      "baseline_cli_bytes": 1633792, "cli_delta_bytes": 2567680,
+      "under_gate": true, "over_soft_line": false,
+      "gate_headroom_bytes": 390656, "soft_line_headroom_bytes": 290656
+    },
+    "x86_64-unknown-linux-gnu": {
+      "gui_bytes": 26302152, "cli_bytes": 6336504,
+      "baseline_gui_bytes": 26250824, "gui_delta_bytes": 51328,
+      "baseline_cli_bytes": 1970056, "cli_delta_bytes": 4366448
+    }
+  }
+}
