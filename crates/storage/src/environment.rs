@@ -300,7 +300,7 @@ fn write_impl(path: &Path, bytes: &[u8], keep_mode: bool) -> Result<(), StorageE
     r
 }
 
-/// [`load_vars`] without following a final symlink.
+/// Read the `[vars]` table of `path` without following a final symlink.
 pub(crate) fn load_vars_nofollow(
     path: &Path,
 ) -> Result<Vec<wisp_core::request::Var>, StorageError> {
