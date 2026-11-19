@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-18 — History scrub keeps truncated request bodies (task 182)
+A history folder created by `append` now gets the `.scrubbed-1` marker at once, so the next open no longer runs the legacy scrub over it, and `ReadOnlyHistory::list` no longer reports it as not yet migrated. The scrub also skips the body of any `.req.json` flagged `truncated`, while still redacting that file's URL, headers, auth and response headers.
+**Cost:** The scrub emptied any JSON body cut at `BODY_CAP` because the cut text is not valid JSON. The first tests used `Body::Text`, which `redact_json_body` never touches, so they passed with the fix removed; review round 1 caught it and they now use `Body::Json`. `open_scrubs_old_entries_once` had to delete the marker after its `append` to keep modelling a pre-marker folder. Do not try to parse partial JSON in the redactor.
+
 ## 2026-11-18 — wisp-cli size budgets set to 7 MiB (task 172)
 The first real `wisp-cli` size with `run` linked was measured on every target (macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B), and every limit in `scripts/measure/cli-budgets.json` is now 7,340,032 B. The Windows GUI is 15,609,344 B, 290,656 B under the 15,900,000 B soft line.
 **Cost:** The pre-approved rule (6 MiB) stopped the wave because Linux was 45,048 B over it; the user then chose 7 MiB for every target and the task was amended and rerun, with the main run reused as the measurement. Nothing was cut from the binary. `docs/architecture.md` limits were left to task 176.
