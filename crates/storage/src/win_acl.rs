@@ -17,6 +17,7 @@ use windows_sys::Win32::Security::{
     GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
     PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
+use windows_sys::Win32::Storage::FileSystem::{GetVolumeInformationW, GetVolumePathNameW};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -61,6 +62,37 @@ pub(crate) fn current_user_sid_string() -> io::Result<String> {
         CloseHandle(token);
         result
     }
+}
+
+/// Filesystem flags of the volume holding `path` (or its nearest existing ancestor).
+/// `None` when any step of the query fails.
+pub(crate) fn volume_flags(path: &Path) -> Option<u32> {
+    let mut cur = path;
+    while !cur.exists() {
+        cur = cur.parent().filter(|q| !q.as_os_str().is_empty())?;
+    }
+    let abs = std::path::absolute(cur).ok()?;
+    let w = wide(abs.as_os_str());
+    let mut root = vec![0u16; 1024];
+    // SAFETY: `w` is NUL-terminated; `root` is a writable buffer of the stated length.
+    if unsafe { GetVolumePathNameW(w.as_ptr(), root.as_mut_ptr(), root.len() as u32) } == 0 {
+        return None;
+    }
+    let mut flags = 0u32;
+    // SAFETY: `root` is NUL-terminated by the call above; unused out-pointers are null.
+    let ok = unsafe {
+        GetVolumeInformationW(
+            root.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut flags,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (ok != 0).then_some(flags)
 }
 
 /// True when the DACL of `path` is already protected and holds exactly one allow ACE for the
@@ -201,6 +233,17 @@ mod tests {
             LocalFree(my_sid.cast());
             (control & SE_DACL_PROTECTED != 0, count, all_me)
         }
+    }
+
+    #[test]
+    fn no_acl_volume_temp_dir_reports_persistent_acls() {
+        let dir = tempfile::tempdir().unwrap();
+        let flags = volume_flags(dir.path()).expect("volume query succeeds");
+        assert_ne!(flags & 0x8, 0, "NTFS temp volume supports persistent ACLs");
+        assert_eq!(
+            crate::data_dir::acl_policy(Some(flags)),
+            crate::data_dir::AclPolicy::Apply
+        );
     }
 
     #[test]
