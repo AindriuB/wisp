@@ -342,7 +342,7 @@ and `measure.yml` read it. The
 limit is checked on the unsigned binary, so a signed `wisp-cli.exe` is a few KB
 larger than the size checked.
 
-Sizes measured with `run` and `snapshot` built in (0.4.0, `measure.yml` run 44293903312 on `910d681`, record `scripts/measure/results/v0.4.0-wave-2-cli-size.json`, task 172):
+Sizes measured with `run` built in (measured before `snapshot` merged) (0.4.0, `measure.yml` run 44293903312 on `910d681`, record `scripts/measure/results/v0.4.0-wave-2-cli-size.json`, task 172):
 
 | Target | GUI binary | `wisp-cli` | CLI limit |
 |---|---|---|---|
