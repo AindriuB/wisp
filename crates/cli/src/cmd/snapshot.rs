@@ -17,7 +17,7 @@ use crate::dto::{
     SnapshotCounts, SnapshotDoc, SnapshotMinimal, ValidationSnapshot,
 };
 
-/// The serialised document never exceeds this.
+/// Neither the JSON nor the text rendering of the document exceeds this.
 pub const MAX_BYTES: usize = 1024 * 1024;
 const MAX_FINDINGS: usize = 500;
 const MAX_ENVIRONMENTS: usize = 200;
@@ -53,6 +53,27 @@ fn mark(truncated: &mut Vec<String>, name: &str) {
 /// Serialised size as `--json` prints it.
 fn size<T: Serialize>(doc: &T) -> usize {
     serde_json::to_string_pretty(doc).map_or(usize::MAX, |s| s.len() + 1)
+}
+
+/// Bytes written, nothing kept.
+struct Count(usize);
+
+impl std::io::Write for Count {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0 += b.len();
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The larger of the two renderings, so the bound holds whichever format is printed.
+/// The text form escapes control characters and can be longer than the JSON.
+fn fsize(doc: &SnapshotDoc) -> usize {
+    let mut c = Count(0);
+    let text = crate::output::snapshot_text(&mut c, doc).map_or(usize::MAX, |()| c.0);
+    size(doc).max(text)
 }
 
 fn environments(
@@ -179,7 +200,7 @@ fn fit_tree(doc: &mut SnapshotDoc, limit: usize) {
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
         doc.tree = all[..mid].to_vec();
-        if size(&*doc) <= limit {
+        if fsize(&*doc) <= limit {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -275,28 +296,28 @@ struct Counts {
 
 /// Drop, in the spec's order, until the document fits `limit`; else the minimal form.
 fn finish(mut doc: SnapshotDoc, counts: Counts, mut notes: Vec<String>, limit: usize) -> Snapshot {
-    let mut fits = size(&doc) <= limit;
+    let mut fits = fsize(&doc) <= limit;
     if !fits && doc.recent.as_ref().is_some_and(|r| !r.is_empty()) {
         doc.recent = Some(Vec::new());
         mark(&mut doc.truncated, "recent");
-        fits = size(&doc) <= limit;
+        fits = fsize(&doc) <= limit;
     }
     if !fits && !doc.validation.findings.is_empty() {
         doc.validation.findings.clear();
         doc.validation.findings_truncated = true;
         mark(&mut doc.truncated, "findings");
-        fits = size(&doc) <= limit;
+        fits = fsize(&doc) <= limit;
     }
     if !fits && !doc.tree.is_empty() {
         fit_tree(&mut doc, limit);
         doc.tree_truncated = true;
         mark(&mut doc.truncated, "tree");
-        fits = size(&doc) <= limit;
+        fits = fsize(&doc) <= limit;
     }
     if !fits && matches!(doc.request, Some(RequestSlot::Doc(_))) {
         doc.request = Some(RequestSlot::Omitted { omitted: true });
         mark(&mut doc.truncated, "request");
-        fits = size(&doc) <= limit;
+        fits = fsize(&doc) <= limit;
     }
     if !fits {
         let mut any = false;
@@ -309,7 +330,7 @@ fn finish(mut doc: SnapshotDoc, counts: Counts, mut notes: Vec<String>, limit: u
         if any {
             mark(&mut doc.truncated, "environment_variables");
         }
-        fits = size(&doc) <= limit;
+        fits = fsize(&doc) <= limit;
     }
     if fits {
         return Snapshot {
@@ -404,6 +425,27 @@ mod tests {
             recent: None,
             request: None,
         }
+    }
+
+    #[test]
+    fn text_rendering_is_bounded_too() {
+        // A bidi mark is 3 bytes in JSON and 10 once the text form escapes it.
+        let mut d = doc(40);
+        for n in &mut d.tree {
+            n.name = "\u{200f}".repeat(400);
+        }
+        let limit = size(&d) + 100;
+        assert!(size(&d) <= limit);
+        let mut c = Count(0);
+        crate::output::snapshot_text(&mut c, &d).unwrap();
+        assert!(c.0 > limit, "text {} must exceed {limit}", c.0);
+        let s = finish(d, counts(40), Vec::new(), limit);
+        let Out::Full(f) = s.doc else {
+            panic!("expected a trimmed full document")
+        };
+        assert!(f.tree.len() < 40);
+        assert!(f.truncated.contains(&"tree".to_owned()));
+        assert!(fsize(&f) <= limit);
     }
 
     #[test]
