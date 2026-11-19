@@ -809,7 +809,7 @@ fn h4_openapi_env_file_name_never_comes_from_a_secret_description() {
     ] {
         let r = doc(desc, "https://u:pw@api.example.com/v1");
         assert!(!r.environments[0].name.contains("SECRETVAL"), "{desc}");
-        assert_eq!(r.environments[0].name, "api-example-com");
+        assert_eq!(r.environments[0].name, "server-1");
         let d = collection();
         write(d.path(), Path::new(""), &r, "imported").unwrap();
         for (p, _) in all_files(d.path()) {
@@ -818,6 +818,67 @@ fn h4_openapi_env_file_name_never_comes_from_a_secret_description() {
     }
     let r = doc("Production", "https://api.example.com");
     assert_eq!(r.environments[0].name, "Production");
+}
+
+#[test]
+fn h4_server_name_avoids_possible_credentials() {
+    let r = openapi_url("https://bob:1234?rest@h2/y");
+    let d = collection();
+    write(d.path(), Path::new(""), &r, "imported").unwrap();
+    let files: Vec<String> = all_files(d.path())
+        .into_iter()
+        .map(|(p, _)| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"))
+        .collect();
+    assert!(
+        files
+            .iter()
+            .all(|f| !f.contains("1234") && !f.contains("bob")),
+        "{files:?}"
+    );
+    assert!(
+        files
+            .iter()
+            .any(|f| f.ends_with("environments/server-1.toml")),
+        "{files:?}"
+    );
+    assert!(warnings_text(&r).contains("may contain credentials"));
+}
+
+#[test]
+fn h4_server_name_ignores_suspect_host_exposed_after_userinfo_strip() {
+    let r = openapi_url("https://u:p@bob:1234?rest@h2/y");
+    assert_eq!(r.environments[0].name, "server-1");
+}
+
+#[test]
+fn h4_server_name_ignores_nested_userinfo_after_strip() {
+    let r = openapi_url("https://u:p@x:y?z@bob:1234?rest@h2/y");
+    let d = collection();
+    write(d.path(), Path::new(""), &r, "imported").unwrap();
+    let files: Vec<String> = all_files(d.path())
+        .into_iter()
+        .map(|(p, _)| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"))
+        .collect();
+    assert_eq!(r.environments[0].name, "server-1");
+    assert!(
+        files
+            .iter()
+            .any(|f| f.ends_with("environments/server-1.toml")),
+        "{files:?}"
+    );
+    assert!(files.iter().all(|f| !f.contains("1234")), "{files:?}");
+}
+
+#[test]
+fn h4_server_name_keeps_description_and_host() {
+    let r = openapi_url("https://api.example.com:8443/v1");
+    assert_eq!(r.environments[0].name, "api-example-com-8443");
+    let r = openapi::parse(
+        br#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+        "servers":[{"url":"https://bob:1234?rest@h2/y","description":"Staging"}],"paths":{}}"#,
+    )
+    .unwrap();
+    assert_eq!(r.environments[0].name, "Staging");
 }
 
 #[test]
