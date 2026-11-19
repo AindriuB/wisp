@@ -64,8 +64,6 @@ pub(crate) fn current_user_sid_string() -> io::Result<String> {
     }
 }
 
-/// True when the DACL of `path` is already protected and holds exactly one allow ACE for the
-/// current user that is inherited by files and directories (what `restrict_to_owner` writes).
 /// Filesystem flags of the volume holding `path` (or its nearest existing ancestor).
 /// `None` when any step of the query fails.
 pub(crate) fn volume_flags(path: &Path) -> Option<u32> {
@@ -97,6 +95,8 @@ pub(crate) fn volume_flags(path: &Path) -> Option<u32> {
     (ok != 0).then_some(flags)
 }
 
+/// True when the DACL of `path` is already protected and holds exactly one allow ACE for the
+/// current user that is inherited by files and directories (what `restrict_to_owner` writes).
 pub(crate) fn is_owner_only(path: &Path) -> io::Result<bool> {
     let me = wide(std::ffi::OsStr::new(&current_user_sid_string()?));
     let target = wide(path.as_os_str());
