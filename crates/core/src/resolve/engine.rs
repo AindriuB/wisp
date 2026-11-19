@@ -13,7 +13,7 @@ use crate::auth::EngineAuth;
 use crate::model::{
     ClientSettings, Header, PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest,
 };
-use crate::request::{ApiKeyLocation, Auth, Body, KeyValue, PartValue, Request, TextBody};
+use crate::request::{ApiKeyLocation, Auth, Body, GraphQlBody, KeyValue, PartValue, Request, TextBody};
 use crate::template::{self, PathToken};
 
 /// Maximum nesting of variables whose values contain further variables.
@@ -671,6 +671,25 @@ impl Resolver<'_> {
         self.subst(&t.content, &Location::Body).into_bytes()
     }
 
+    fn graphql(&mut self, g: &GraphQlBody) -> Vec<u8> {
+        let query = self.subst(&g.query, &Location::Body);
+        let variables = self.subst(&g.variables, &Location::Body);
+        let mut obj = serde_json::Map::new();
+        obj.insert("query".into(), serde_json::Value::String(query));
+        if !variables.trim().is_empty() {
+            match serde_json::from_str::<serde_json::Value>(&variables) {
+                Ok(v @ serde_json::Value::Object(_)) => {
+                    obj.insert("variables".into(), v);
+                }
+                _ => self.problem(Problem::Syntax {
+                    location: Location::Body,
+                    message: "GraphQL variables are not a JSON object".into(),
+                }),
+            }
+        }
+        serde_json::Value::Object(obj).to_string().into_bytes()
+    }
+
     fn build_body(&mut self, headers: &mut Vec<Header>) -> PreparedBody {
         let (body, content_type) = match &self.req.body {
             Body::None => (PreparedBody::None, None),
@@ -680,6 +699,10 @@ impl Resolver<'_> {
                 Some("text/plain; charset=utf-8"),
             ),
             Body::Xml(t) => (PreparedBody::Bytes(self.text(t)), Some("application/xml")),
+            Body::GraphQl(g) => (
+                PreparedBody::Bytes(self.graphql(g)),
+                Some("application/json"),
+            ),
             Body::Form(fields) => {
                 let mut pairs = Vec::new();
                 for f in fields.iter().filter(|f| f.enabled) {

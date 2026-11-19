@@ -762,3 +762,60 @@ fn auth_unresolved_var_in_oauth2_is_a_problem_at_auth() {
         );
     }
 }
+
+fn gql(query: &str, variables: &str) -> Body {
+    Body::GraphQl(crate::request::GraphQlBody {
+        query: query.into(),
+        variables: variables.into(),
+    })
+}
+
+#[test]
+fn graphql_resolve_substitutes_and_sends_compact_json() {
+    let mut r = req("http://h");
+    r.vars = vec![var("f", "name"), var("id", "7")];
+    r.body = gql("{ user { {{f}} } }", "{\"id\": {{id}}}");
+    let p = run(&r).unwrap();
+    assert_eq!(
+        p.body,
+        PreparedBody::Bytes(br#"{"query":"{ user { name } }","variables":{"id":7}}"#.to_vec())
+    );
+    assert_eq!(p.headers, vec![hdr("Content-Type", "application/json")]);
+}
+
+#[test]
+fn graphql_resolve_omits_blank_variables() {
+    let mut r = req("http://h");
+    r.body = gql("{ a }", "  \n");
+    assert_eq!(
+        run(&r).unwrap().body,
+        PreparedBody::Bytes(br#"{"query":"{ a }"}"#.to_vec())
+    );
+}
+
+#[test]
+fn graphql_resolve_rejects_non_object_variables_without_the_value() {
+    for v in ["[1]", "not json", "\"s3cret\""] {
+        let mut r = req("http://h");
+        r.body = gql("{ a }", v);
+        let e = run(&r).unwrap_err();
+        assert!(
+            e.problems.iter().any(|p| matches!(p,
+                Problem::Syntax { location: Location::Body, message }
+                    if message == "GraphQL variables are not a JSON object")),
+            "{v}: {e:?}"
+        );
+        assert!(!format!("{e:?}").contains("s3cret"));
+    }
+}
+
+#[test]
+fn graphql_resolve_keeps_a_user_content_type() {
+    let mut r = req("http://h");
+    r.headers = vec![kv("content-type", "application/graphql+json", true)];
+    r.body = gql("{ a }", "");
+    assert_eq!(
+        run(&r).unwrap().headers,
+        vec![hdr("content-type", "application/graphql+json")]
+    );
+}
