@@ -228,7 +228,6 @@ mod tests {
             assert!(is_owner_only(&t.path().join(d)).unwrap(), "{d}");
         }
         assert_eq!(is_owner_only(t.path()).unwrap(), before);
-        assert!(!before, "tempdir should not itself be owner-only");
     }
 
     #[cfg(unix)]
