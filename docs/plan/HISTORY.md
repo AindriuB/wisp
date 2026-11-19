@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Docs describe 0.4.0 (task 176)
+`docs/architecture.md`, `docs/cli.md` and `README.md` now describe `wisp-service` as the one send path, `wisp-cli run` (exit codes, `delivery`, `retry_safe`, `--keychain`, `--history`) and `wisp-cli snapshot`, the measured CLI sizes and the 7 MiB limit. `99-hardening-0-2-0.md` marks the 31 ACs closed by 0.4.0 done and notes the re-located line references.
+**Cost:** Review found two wording errors: the size table claimed `snapshot` was built in although 910d681 predates it, and a corrected line reference (`hash_file`) was copied from 167's brief and was wrong (now `engine.rs:683`). Re-locate line references with `rg`, not from a brief. Left open: AC51 credits only task 163 (161 also closed it), and `cli.md` does not name the `truncated` cap-hit entries.
+
 ## 2026-11-19 — OpenAPI "credentials dropped" warning no longer echoes a possible secret host (task 181)
 When stripping userinfo from an OpenAPI server URL still leaves a URL that `may_hold_credentials` flags (`https://u:p@bob:1234?rest@h2/y`), the warning is now `server 1: credentials in the URL were dropped` with no host, and the "URL may contain credentials; check it before committing" warning fires once for it. A plain `https://alice:pw@api.example.com/v1` keeps today's text with the host. The stored `baseUrl` and the environment-name choice are unchanged. Verified at c6f3886: tester PASS (1535 tests, fmt and clippy clean), reviewer APPROVE.
 **Cost:** The old `suspect` check ran on the URL before the strip, so this input was never flagged; it is now computed from the original or the stripped URL. This supersedes 179's freeze of the warning text, for this warning only. The fix stays in `openapi.rs`; `url_host` is shared with other importers. Not closed: `https://u:p@x:pw/?a@h2/y` still keeps a possible second credential in `baseUrl` unwarned (PLAN follow-up).
