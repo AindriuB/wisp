@@ -188,7 +188,7 @@ fn fit_tree(doc: &mut SnapshotDoc, limit: usize) {
     doc.tree = all[..lo].to_vec();
 }
 
-pub(crate) fn build(
+fn build(
     collection: &Path,
     env: Option<&str>,
     request: Option<&str>,
@@ -231,7 +231,7 @@ pub(crate) fn build(
 
     let tree_total = ins.nodes.len();
     let recent_total = recent.as_ref().map(Vec::len);
-    let mut doc = SnapshotDoc {
+    let doc = SnapshotDoc {
         schema: SCHEMA,
         command: "snapshot",
         wisp_cli: env!("CARGO_PKG_VERSION"),
@@ -251,7 +251,30 @@ pub(crate) fn build(
         truncated,
     };
 
-    // Drop, in the spec's order, until it fits.
+    Ok(finish(
+        doc,
+        Counts {
+            environments: env_total,
+            tree: tree_total,
+            findings: finding_total,
+            recent: recent_total,
+            request: request.map(|_| 1),
+        },
+        notes,
+        limit,
+    ))
+}
+
+struct Counts {
+    environments: usize,
+    tree: usize,
+    findings: usize,
+    recent: Option<usize>,
+    request: Option<usize>,
+}
+
+/// Drop, in the spec's order, until the document fits `limit`; else the minimal form.
+fn finish(mut doc: SnapshotDoc, counts: Counts, mut notes: Vec<String>, limit: usize) -> Snapshot {
     let mut fits = size(&doc) <= limit;
     if !fits && doc.recent.as_ref().is_some_and(|r| !r.is_empty()) {
         doc.recent = Some(Vec::new());
@@ -289,10 +312,10 @@ pub(crate) fn build(
         fits = size(&doc) <= limit;
     }
     if fits {
-        return Ok(Snapshot {
+        return Snapshot {
             doc: Out::Full(doc),
             notes,
-        });
+        };
     }
 
     let mut truncated = vec![
@@ -300,14 +323,14 @@ pub(crate) fn build(
         "tree".to_owned(),
         "findings".to_owned(),
     ];
-    if request.is_some() {
+    if counts.request.is_some() {
         truncated.push("request".into());
     }
-    if recent_total.is_some() {
+    if counts.recent.is_some() {
         truncated.push("recent".into());
     }
     notes.push("snapshot is too large; printing the counts only".into());
-    Ok(Snapshot {
+    Snapshot {
         doc: Out::Minimal(SnapshotMinimal {
             schema: SCHEMA,
             command: "snapshot",
@@ -315,45 +338,77 @@ pub(crate) fn build(
             source: SNAPSHOT_SOURCE,
             collection: doc.collection,
             counts: SnapshotCounts {
-                environments: env_total,
-                tree: tree_total,
-                findings: finding_total,
-                recent: recent_total,
-                request: request.map(|_| 1),
+                environments: counts.environments,
+                tree: counts.tree,
+                findings: counts.findings,
+                recent: counts.recent,
+                request: counts.request,
             },
             truncated,
         }),
         notes,
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::{CollectionInfo, NodeInfo};
 
-    fn w(root: &Path, rel: &str, text: &str) {
-        let p = root.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, text).unwrap();
+    fn doc(n: usize) -> SnapshotDoc {
+        SnapshotDoc {
+            schema: SCHEMA,
+            command: "snapshot",
+            wisp_cli: "0",
+            source: SNAPSHOT_SOURCE,
+            collection: CollectionInfo {
+                id: None,
+                format: 1,
+                folders: 0,
+                requests: n,
+                invalid: Some(0),
+            },
+            environments: Vec::new(),
+            tree: (0..n)
+                .map(|i| NodeInfo {
+                    path: format!("r{i}.toml"),
+                    kind: "request",
+                    name: format!("R{i}"),
+                    method: Some("GET".into()),
+                    url: Some("https://h.test/".into()),
+                    auth: Some("none"),
+                    headers: Vec::new(),
+                    valid: true,
+                    has_description: false,
+                    expected_status: Vec::new(),
+                })
+                .collect(),
+            tree_truncated: false,
+            validation: ValidationSnapshot {
+                errors: 0,
+                warnings: 0,
+                findings: Vec::new(),
+                findings_truncated: false,
+            },
+            request: None,
+            recent: None,
+            truncated: Vec::new(),
+        }
     }
 
-    fn fixture(n: usize) -> tempfile::TempDir {
-        let d = tempfile::tempdir().unwrap();
-        w(d.path(), "collection.toml", "format = 1\n");
-        for i in 0..n {
-            w(
-                d.path(),
-                &format!("r{i}.toml"),
-                &format!("name = \"R{i}\"\nmethod = \"GET\"\nurl = \"https://h.test/{i}\"\n"),
-            );
+    fn counts(n: usize) -> Counts {
+        Counts {
+            environments: 0,
+            tree: n,
+            findings: 0,
+            recent: None,
+            request: None,
         }
-        d
     }
 
     #[test]
     fn snapshot_fallback_when_nothing_fits() {
-        let d = fixture(30);
-        let s = build(d.path(), None, None, None, 300).unwrap();
+        let s = finish(doc(30), counts(30), Vec::new(), 300);
         let Out::Minimal(m) = s.doc else {
             panic!("expected the minimal form")
         };
@@ -365,12 +420,8 @@ mod tests {
 
     #[test]
     fn snapshot_tree_drops_from_the_end_to_fit() {
-        let d = fixture(30);
-        let full = match build(d.path(), None, None, None, MAX_BYTES).unwrap().doc {
-            Out::Full(f) => size(&f),
-            Out::Minimal(_) => panic!(),
-        };
-        let s = build(d.path(), None, None, None, full - 100).unwrap();
+        let full = size(&doc(30));
+        let s = finish(doc(30), counts(30), Vec::new(), full - 100);
         let Out::Full(f) = s.doc else { panic!() };
         assert!(f.tree.len() < 30 && !f.tree.is_empty());
         assert!(f.tree_truncated);
