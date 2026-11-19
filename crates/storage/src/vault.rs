@@ -616,26 +616,17 @@ enum GitCheck {
 /// How long the `git` child may run before it is killed.
 const GIT_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// True when some directory from `path`'s parent up to `root` holds `.git`.
-fn has_git_ancestor(root: &Path, path: &Path) -> bool {
-    let mut cur = path.parent();
-    while let Some(dir) = cur {
-        if dir.join(".git").symlink_metadata().is_ok() {
-            return true;
-        }
-        if dir == root {
-            break;
-        }
-        cur = dir.parent();
-        if !dir.starts_with(root) {
-            break;
-        }
-    }
-    false
+/// True when some directory from `path`'s parent up to the filesystem root
+/// holds `.git`, so the collection may be a subfolder of a repository.
+fn has_git_ancestor(path: &Path) -> bool {
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    abs.ancestors()
+        .skip(1)
+        .any(|dir| dir.join(".git").symlink_metadata().is_ok())
 }
 
 /// Ask git whether `path` is tracked in the repository around `root`.
-/// Outside a work tree (no `.git` between `path` and `root`) no `git` is run
+/// Outside a work tree (no `.git` in any ancestor of `path`) no `git` is run
 /// and the answer is "not tracked". Inside one, any answer other than a clean
 /// hit (exit 0) or a clean miss (exit 1) is [`GitCheck::CouldNotRun`], so the
 /// check fails closed. The child is bounded by [`GIT_CHECK_TIMEOUT`] and on
@@ -646,7 +637,7 @@ fn has_git_ancestor(root: &Path, path: &Path) -> bool {
 /// is forced off on the command line (which outranks every config file) and
 /// optional index locks are disabled.
 fn git_check(root: &Path, path: &Path) -> GitCheck {
-    if !has_git_ancestor(root, path) {
+    if !has_git_ancestor(path) {
         return GitCheck::NotTracked;
     }
     // `path` is normally `root.join(..)`; with `-C root` git would resolve a

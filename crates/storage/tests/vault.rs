@@ -2790,6 +2790,39 @@ fn sfs_git_missing_outside_repo_allows() {
 }
 
 #[test]
+fn sfs_nested_collection_tracked_secrets_refuses() {
+    // The repo root is above the collection root.
+    if !git_available() {
+        println!("skipped: git is not available");
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let coll = t.path().join("coll");
+    std::fs::create_dir_all(&coll).unwrap();
+    write(&coll, "dev.toml", STORE_TOML);
+    write(&coll, "dev.secrets.toml", "[vars]\ntoken = \"t\"\n");
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(t.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-f", "coll/environments/dev.secrets.toml"]);
+    let s = MemoryStore::new();
+    let e = import_secrets_file(&coll, "dev", &id(), &s, true, &bcx(&coll)).unwrap_err();
+    assert!(
+        matches!(e, SecretsError::TrackedSecretsFile { .. }),
+        "{e:?}"
+    );
+    assert!(s.accounts().is_empty());
+}
+
+#[test]
 fn sfs_git_failure_inside_repo_refuses() {
     // An empty `.git` directory marks a work tree, but git cannot use it:
     // the check fails, so the target is refused rather than allowed.

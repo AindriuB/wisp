@@ -207,12 +207,10 @@ pub(crate) fn read_nofollow(path: &Path) -> Result<String, StorageError> {
     Ok(text)
 }
 
-/// Write `bytes` (mode `0600` on unix) to a fresh temp file beside `path`, then
-/// rename it over `path`. A final symlink at `path` is refused, checked
+/// Write `bytes` to a fresh temp file beside `path` (mode `0600` on unix for a
+/// new file; an existing file keeps its mode), then rename it over `path`. A final symlink at `path` is refused, checked
 /// again just before the rename, and is never followed: the rename replaces
 /// the name, not what it points to.
-///
-/// Replacing an existing file keeps its permission mode (unix).
 pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     write_impl(path, bytes, true)
 }
@@ -222,7 +220,11 @@ pub(crate) fn write_secret_nofollow(path: &Path, bytes: &[u8]) -> Result<(), Sto
     write_impl(path, bytes, false)
 }
 
-fn write_impl(path: &Path, bytes: &[u8], keep_mode: bool) -> Result<(), StorageError> {
+fn write_impl(
+    path: &Path,
+    bytes: &[u8],
+    #[allow(unused_variables)] keep_mode: bool,
+) -> Result<(), StorageError> {
     use std::io::Write;
     let refuse_link = || -> Result<(), StorageError> {
         match std::fs::symlink_metadata(path) {
@@ -283,8 +285,9 @@ fn write_impl(path: &Path, bytes: &[u8], keep_mode: bool) -> Result<(), StorageE
             #[cfg(unix)]
             if let Some(mode) = existing_mode {
                 use std::os::unix::fs::PermissionsExt;
-                f.set_permissions(std::fs::Permissions::from_mode(mode))
-                    .map_err(|e| io(&tmp, e))?;
+                return f
+                    .set_permissions(std::fs::Permissions::from_mode(mode))
+                    .map_err(|e| io(&tmp, e));
             }
             Ok(())
         })
@@ -716,6 +719,62 @@ mod tests {
             read_nofollow(&p),
             Err(StorageError::Invalid { .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sfs_open_nonblock_fifo_swapped_in_after_lstat() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m");
+        std::fs::write(&p, "real").unwrap();
+        let pp = p.clone();
+        let _g = hook_at("open:after-lstat", move || {
+            std::fs::remove_file(&pp).unwrap();
+            let st = std::process::Command::new("mkfifo")
+                .arg(&pp)
+                .status()
+                .unwrap();
+            assert!(st.success());
+        });
+        static HUNG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let q = p.clone();
+        // The hook is per thread, so run the open on this thread and watch
+        // from another: a blocking open would never send.
+        let dog = std::thread::spawn(move || {
+            if rx.recv_timeout(std::time::Duration::from_secs(10)).is_err() {
+                HUNG.store(true, std::sync::atomic::Ordering::SeqCst);
+                // Unblock a stuck open by opening the write end.
+                let _ = std::fs::OpenOptions::new().write(true).open(&q);
+            }
+        });
+        let r = open_nofollow(&p);
+        let _ = tx.send(());
+        dog.join().unwrap();
+        assert!(
+            !HUNG.load(std::sync::atomic::Ordering::SeqCst),
+            "open blocked"
+        );
+        assert!(matches!(r, Err(StorageError::Invalid { .. })), "{r:?}");
+    }
+
+    #[test]
+    fn sfs_gains_moved_name_ignores_a_symlink() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real.toml");
+        std::fs::write(&real, "[vars]\nhost = \"x\"\n").unwrap();
+        let link = d.path().join("link.toml");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&real, &link).is_err() {
+            return;
+        }
+        let v = wisp_core::request::Var {
+            name: "host".into(),
+            value: "x".into(),
+        };
+        assert!(!gains_moved_name(&link, &[v]));
     }
 
     #[cfg(unix)]
