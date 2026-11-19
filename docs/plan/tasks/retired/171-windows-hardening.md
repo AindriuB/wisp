@@ -88,3 +88,7 @@ Branch push CI run 44299517411 at 23ac3cb: check (ubuntu-24.04) failed `crates/s
 
 ## Outcome
 Recorded 2026-11-18 at 23ac3cb. Tester PASS and reviewer APPROVE on the code; AC5 and AC6 rest on CI run 44299517411 at that SHA, all four jobs green (the Windows job ran `sidecar_rejects_8dot3_short_name_of_sibling_toml` for real under `WISP_REQUIRE_8DOT3=1`, which hard-fails on a skip). It took three attempts: a `LocalFree` type mismatch, then a stale `THIRD-PARTY-NOTICES`, then a hard-coded `B~1.TOM` that Windows replaces with a hashed short name. The ubuntu leg failed once on an unrelated flake (`run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7`) and passed on re-run.
+
+## Round 5 — external review of #139 (2026-11-19)
+Finding on 661006684a9a: Windows `ensure_private_dir` restricted only the leaf, so newly created ancestors such as the data root kept inherited ACLs. The user chose to fix it on #139. The fix (099c5df, 09c5006) creates each missing level top-down and restricts each; levels that already exist (`AlreadyExists`) are left alone. Test `private_dir_restricts_every_created_ancestor_on_windows` passed on Windows CI. Review CLEAN; verified at 09c5006a7ff623ab9cf4b2716db72cba080704c2.
+A second external review of 661006684a9a was not counted as a round: 139-1 (FAT/exFAT volumes without ACLs) is an accepted residual for task 180; 139-2 (`is_owner_only` ignores the access mask) and 139-3 (`windows-sys` lacks `default-features = false`) are P3 follow-ups in PLAN.md.

@@ -32,7 +32,8 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 ### Follow-ups from task 171 (Windows hardening; not scheduled)
 - [P3] `is_owner_only` ignores the ACE access mask (`crates/storage/src/win_acl.rs:103-107`), so a single owner ACE with reduced rights counts as owner-only.
 - [Note] No test proves `restrict_to_owner` is skipped on the already-owner-only path.
-- [Note] `create_dir_all` leaves intermediate directories with inherited ACLs.
+- [P3] If `restrict_to_owner` fails after `create_dir` made an ancestor, that ancestor keeps its inherited ACLs and later calls never fix it (`crates/storage/src/data_dir.rs` ~148); e.g. remove the just-created dir on failure.
+- [P3] 139-3: the `windows-sys` entry in `crates/storage/Cargo.toml` lacks `default-features = false`, which `docs/conventions.md:83-84` requires (no build effect; PR #139's description wrongly says it is set).
 - [Note] ReFS has 128-bit file IDs; `same_file_entry` compares the 64-bit `nFileIndex`.
 - [Note] The 8.3 test could read the short name inside the setup dir instead of a sibling file.
 - Task 180 (no-ACL volumes) already covers the portable FAT case.
