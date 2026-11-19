@@ -16,7 +16,7 @@ Besides sending requests and keeping collections as TOML files, it also can:
 
 It also includes the fixes meant for a 0.1.1 that was never released: Wisp asks before discarding unsaved changes on quit, secrets are kept out of debug output, streamed bodies are resent on 307/308 redirects, Windows-unsafe file names are rejected, the Linux window and launcher have an icon, and the interface fits narrow windows. Redirect handling, history redaction, importers and the reading of collection files were also hardened against leaking credentials or following symlinks out of a collection.
 
-Still missing: scripting, GraphQL, global variables, a command-line runner, and a TCP/TLS split in the timings. Postman scripts are not translated. OAuth2 access tokens are never saved to disk; refresh tokens are saved only for keychain-backed environments. The Windows executable is not signed, and there is no Intel Mac build.
+Still missing: scripting, GraphQL, global variables, and a TCP/TLS split in the timings. Postman scripts are not translated. OAuth2 access tokens are never saved to disk; refresh tokens are saved only for keychain-backed environments. The Windows executable is not signed, and there is no Intel Mac build.
 
 ## Install
 
@@ -77,7 +77,13 @@ The Vulkan driver depends on your GPU: `mesa-vulkan-drivers` covers AMD, Intel a
 
 `wisp-cli` ships from Wisp 0.3.0 in every archive.
 
-`wisp-cli` is a read-only tool for a terminal, a script or an agent: `wisp-cli validate <collection>` reports every problem in a collection, `wisp-cli inspect <collection>` summarises it, and `wisp-cli explain <collection> <request-path> --env <name>` shows where each variable, header and auth setting of a request comes from. It never sends a request, writes a file or prints a secret value, and `--json` prints one versioned JSON document. Commands, exit codes and the JSON fields are in [docs/cli.md](docs/cli.md).
+`wisp-cli` is a tool for a terminal, a script or an agent. `wisp-cli validate <collection>` reports every problem in a collection, `wisp-cli inspect <collection>` summarises it, `wisp-cli explain <collection> <request-path> --env <name>` shows where each variable, header and auth setting of a request comes from, and `wisp-cli snapshot <collection>` prints one bounded picture of a workspace. These four never send a request, write a file or print a secret value. From 0.4.0, `wisp-cli run` sends one saved request and reports the result with a distinct exit code for each outcome, so a CI job can tell an assertion failure from an unexpected status or a transport failure. It never retries, and it says whether a retry is safe:
+
+```sh
+wisp-cli run ./my-collection orders/create.toml --env staging --json
+```
+
+`--json` prints one versioned JSON document and is the interface meant for agents. Commands, exit codes and the JSON fields are in [docs/cli.md](docs/cli.md).
 
 Where it is: on macOS inside the app, at `Wisp.app/Contents/MacOS/wisp-cli`; on Windows as `wisp-cli.exe` beside `wisp.exe`; on Linux as `wisp-cli` beside `wisp`. To use it from any macOS terminal, link it onto your `PATH`:
 

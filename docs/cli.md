@@ -1,18 +1,25 @@
 # wisp-cli
 
-`wisp-cli` is a read-only console tool for Wisp collections, shipped from 0.3.0
-as a separate binary beside the GUI. It is meant for a terminal, a script or an
-agent that needs to check a collection or see how a request would be built. It
-links `wisp-core` and `wisp-storage` and no GPUI (see
+`wisp-cli` is a console tool for Wisp collections, shipped from 0.3.0 as a
+separate binary beside the GUI. It is meant for a terminal, a script or an
+agent that needs to check a collection, see how a request would be built, send
+one request in CI, or take a picture of a workspace. `validate`, `inspect`,
+`explain` and `snapshot` are read-only; `run` sends one request. **`--json` is
+the agent interface:** there is no MCP server, no change set and no approval
+step, and every command prints one versioned JSON document with `--json`. It
+links `wisp-core`, `wisp-storage` and `wisp-service` and no GPUI (see
 [`architecture.md`](architecture.md#boundaries-that-must-not-be-crossed)). The
 source is `crates/cli/src`.
 
 ## Contract
 
-- **Read-only.** It never writes a file, never sends a request, opens no
-  network connection and never writes a collection id. `scripts/check-boundaries.sh`
-  fails the build if `crates/cli/src` mentions the engine, `reqwest`, `tokio`, a
-  secret store or a write call.
+- **Read-only, except `run`.** `validate`, `inspect`, `explain` and `snapshot`
+  never write a file, never send a request, open no network connection and
+  never write a collection id. `run` sends one request, and with `--history`
+  appends one history entry; it writes nothing else and never writes a
+  collection id. `scripts/check-boundaries.sh` fails the build if
+  `crates/cli/src` mentions the engine, `reqwest`, `tokio`, a secret store or a
+  write call: `run` reaches the network only through `wisp-service`.
 - **No secret value is printed.** File-mode secret values are replaced with a
   placeholder before the variable scope is built. An environment whose secrets
   live in the OS keychain is not opened at all; `explain` says
@@ -35,17 +42,23 @@ commands:
   validate <collection>
   inspect <collection> [--env <name>]
   explain <collection> <request-path> [--env <name>]
+  run <collection> <request-path> [--env <name>] [--keychain] [--history]
+  snapshot <collection> [--env <name>] [--request <request-path>] [--recent <n>]
 
 options:
   --json       print one JSON document
   --env <name> select an environment (also --env=<name>)
+  --keychain   (run) load keychain-backed secrets
+  --history    (run) append a history entry
+  --request <request-path>  (snapshot) include that request's explain document
+  --recent <n> (snapshot) include the last n history entries, 1 to 50
   --version    print "wisp-cli <version>"
   --help, -h   print the usage text
   --           treat the rest as positional arguments
 ```
 
-`--json` may appear anywhere. `--env` is accepted only by `inspect` and
-`explain`; on `validate` it is an unknown option. `--help` and `--version` win
+`--json` may appear anywhere. `--env` is accepted only by `inspect`,
+`explain`, `run` and `snapshot`; on `validate` it is an unknown option. `--help` and `--version` win
 over a command and exit 0.
 
 ## Commands
@@ -104,16 +117,138 @@ example `{"kind":"text","text":"..."}` and
 location, message }`. A dynamic variable such as `{{$uuid}}` is marked, never
 generated.
 
+### run
+
+`wisp-cli run <collection> <request-path> [--env <name>] [--keychain] [--history] [--json]`
+sends one saved request through the same service code as the GUI and reports
+what happened. Arguments are as for `explain`. One request per call: there are
+no folder runs, so loop in the shell. Example:
+
+```sh
+wisp-cli run ./shop orders/create.toml --env staging --json
+```
+
+- **Never retries.** A failed send is reported, never repeated. `retry_safe`
+  tells the caller whether repeating it is safe.
+- **Ignores the GUI send guard.** The per-user "confirm before send" setting in
+  `settings.toml` is a GUI accident guard; `run` does not read it.
+- **Cookies.** `run` uses a fresh in-memory cookie jar per call and writes no
+  cookie file.
+- **OAuth2 authorization code** needs a browser, so `run` fails with exit 4 and
+  says so. Client credentials work; refresh tokens are held in memory only.
+- **`--keychain`** loads keychain-backed environment secrets. `run` never
+  prompts for secrets by itself. Without `--keychain`, a request that uses a
+  keychain secret fails with exit 4 and `secret NAME is in the keychain; pass
+  --keychain`. File-mode secrets (`*.secrets.toml`) load as in the GUI. After
+  `--keychain`, the operating system may show its own keychain prompt: on macOS
+  access is per binary, so the first use by `wisp-cli` (inside `Wisp.app`) of an
+  item the app created may ask for permission.
+- **`--history`** appends one history entry as the GUI would, only when the
+  collection already has an id; `run` never creates one. Without an id the
+  result says `history: skipped (collection has no id)`. Off by default.
+- **Status.** The status is acceptable when it is in the request's
+  `expected_status`, or, without one, below 400. Redirects are followed per the
+  request's settings before the check. A `status` assertion is separate: it
+  decides exit 1, `expected_status` decides exit 7.
+- **Output.** The result lists assertion label, state and skip reason, never
+  actual values, and never the response body. Each dynamic value (`{{$uuid}}`
+  and the like) is reported once per occurrence.
+- **Spill file.** A response body over 10 MiB is spilled to a file in a
+  private temp dir. If `run` is killed mid-send, one such file can remain
+  there.
+
+JSON fields: `schema`, `command`, `request`, `environment`, `method`, `url`,
+`result`, `exit`, `delivery`, `retry_safe`, `status`, `expected_status`,
+`status_ok`, `timing_ms` (`ttfb`, `total`), `size`, `error`, `assertions`,
+`dynamic`, `history` and `problems`.
+
+#### Delivery and `retry_safe`
+
+`delivery` says whether the request reached the server:
+
+| `delivery` | Meaning |
+|---|---|
+| `not_sent` | No byte of the request could have been written to any connection: a pre-send failure (bad URL, signing, unreadable body file, a failed OAuth2 token fetch) or a connect, DNS or TLS-handshake failure on the first send. |
+| `responded` | A response head arrived, even if the transfer then failed. |
+| `unknown` | The request may have been written and nothing proves otherwise: a connection that broke after the send started, or a failure on a redirect hop or an authentication resend. |
+
+The engine computes this fail-closed: anything it cannot prove `not_sent` is
+`unknown`. `retry_safe` is true when `delivery` is `not_sent`, or the method
+you sent (not a later redirect hop's) is GET, HEAD, OPTIONS, PUT or DELETE. A
+POST that failed with `delivery: unknown` is never `retry_safe`.
+
+### snapshot
+
+`wisp-cli snapshot <collection> [--env <name>] [--request <request-path>] [--recent <n>] [--json]`
+prints one bounded, secret-free picture of a workspace. It is built from
+**persisted files only**: unsaved edits in the app are not included, and the
+`source` field says so. It never writes a file; history is read through a
+read-only API that never migrates, locks or creates anything.
+
+JSON fields: `schema`, `command`, `wisp_cli`, `source`, `collection`,
+`environments`, `tree` and `tree_truncated`, `validation` (`errors`,
+`warnings`, `findings`, `findings_truncated`), `request` (only with
+`--request`; an `explain` document), `recent` (only with `--recent`; per entry
+`at`, `request`, `method`, `url`, `outcome`, `delivery`, `status`,
+`environment`, `assertions` as label and state) and `truncated`. There is no
+timestamp of the snapshot itself, so two snapshots of an unchanged collection
+are byte-identical.
+
+**Bounds.** The tree has at most 2,000 nodes, findings 500, `recent` 50,
+environments 200, variable names per environment 500, and the `request`
+document 500 variables and 500 headers. Names are cut at 200 characters and
+descriptions at 1,000. The whole document is at most 1 MiB. Over that, parts
+are dropped in this order, each drop named in `truncated`: `recent`,
+`findings`, `tree` entries from the end, the `request` detail (replaced by
+`{"omitted":true}`), then each environment's variable list (the count is kept).
+
+**Fallback.** If it is still over 1 MiB, only `schema`, `command`,
+`wisp_cli`, `source`, the collection info, a count per section and `truncated`
+are emitted. The exit code stays 0, with a note on stderr.
+
+## Request metadata
+
+Two optional keys in a request file, both additive (`format = 1` is unchanged):
+
+```toml
+description = """
+Creates an order. Idempotency key required in production.
+"""
+expected_status = 201          # or a list: expected_status = [200, 204]
+```
+
+- `description` is a TOML string of any length on disk. `explain` and `snapshot` show up to 1,000 characters, cut with an ellipsis; `inspect` only says whether one exists. It is printed as written and not expanded, so a `{{var}}` in it stays literal.
+- `expected_status` is an integer from 100 to 599, or an array of 1 to 16 of them. Anything else is an invalid-key error that `validate` reports. It decides `run`'s exit 7 and is shown by `explain`. There is no GUI editor for either key: the GUI shows them read-only.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Success. Also a closed output pipe, `--help` and `--version`, and `explain` of a request that exists even when it has unresolved variables (they are the report). |
-| 1 | `validate` found at least one error, or writing the output failed. |
+| 1 | `validate` found at least one error, or writing the output failed. (`run` uses the table below.) |
 | 2 | Usage error: no command, unknown command or option, missing or extra argument, an unknown environment name. Usage text goes to stderr. |
 | 3 | The collection or request could not be read: not a collection, request not found, a refused path, an unreadable file. |
 
 Errors go to stderr as `wisp-cli: <message>`; results go to stdout.
+
+### `run` exit codes
+
+`run` uses its own table, so that 1 means only "an assertion failed".
+
+| Code | `result` | Meaning |
+|---|---|---|
+| 0 | `passed` | Response received, status acceptable, no assertion failed (skipped ones do not fail). |
+| 1 | `assertion_failed` | Response received, status acceptable, at least one assertion failed. |
+| 2 | (usage) | Bad arguments. |
+| 3 | (unreadable) | The collection, request or environment cannot be read or parsed, or `--env` names no environment. |
+| 4 | `not_prepared` | Resolution failed (unresolved variable, cycle, missing secret, keychain secret without `--keychain`, keychain store failed), or the auth needs interactive authorization. Nothing was sent. |
+| 5 | `transport_failed` | The engine failed and `delivery` is `not_sent` or `responded`. |
+| 6 | `outcome_unknown` | The engine failed and `delivery` is `unknown`: the request may have reached the server. |
+| 7 | `status_unexpected` | Response received, status not acceptable. |
+| 8 | `output_failed` | Writing the result failed (not a closed pipe). |
+
+When several apply, the order is: 4, then 5 or 6, then 7, then 1. A response
+with a bad status and failed assertions exits 7, and the JSON lists both.
 
 ## JSON schema version
 
