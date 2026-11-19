@@ -340,7 +340,7 @@ fn raw_files(data: &DataDir) -> String {
 #[test]
 fn redacts_secrets_in_url_params_vars_and_bodies() {
     let (_d, data, store) = setup();
-    let json = r#"{"user":"bob","password":"JSONPW","nested":{"api_token":"JSONTOK","ok":"fine","ref_token":"{{t}}"},"list":[{"secret":"JSONSEC"}],"pin_key":1234}"#;
+    let json = r#"{"user":"bob","password":"JSONPW","nested":{"api_token":"JSONTOK","ok":"fine","ref_token":"{{t}}"},"list":[{"secret":"JSONSEC"}],"pin_key":918273645}"#;
     let req = Request {
         url: "https://uuser:UPASS@host/p?api_key=QKEY&x=1&token={{t}}#f".into(),
         params: vec![kv("access_token", "PARAMTOK"), kv("page", "2")],
@@ -363,7 +363,15 @@ fn redacts_secrets_in_url_params_vars_and_bodies() {
     let e = store.append(new_entry(req), None).unwrap();
     let raw = raw_files(&data);
     for lit in [
-        "UPASS", "uuser", "QKEY", "PARAMTOK", "VARSEC", "JSONPW", "JSONTOK", "JSONSEC", "1234",
+        "UPASS",
+        "uuser",
+        "QKEY",
+        "PARAMTOK",
+        "VARSEC",
+        "JSONPW",
+        "JSONTOK",
+        "JSONSEC",
+        "918273645",
     ] {
         assert!(!raw.contains(lit), "{lit} leaked");
     }
@@ -2168,4 +2176,48 @@ fn scrub_truncated_file_in_unmarked_folder_keeps_body() {
     let _ = HistoryStore::open(&data, &cid("abcdef0123456789"));
     assert_eq!(fs::read(&path).unwrap(), before);
     assert!(dir.join(".scrubbed-1").is_file());
+}
+
+#[test]
+fn evidence_old_line_loads_as_none() {
+    let (_d, data, store) = setup();
+    let e = store.append(plain("/1"), None).unwrap();
+    let index = data
+        .history_dir(&cid("abcdef0123456789"))
+        .join("index.jsonl");
+    let text = fs::read_to_string(&index).unwrap();
+    assert!(text.contains("\"evidence\""));
+    let mut v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    v.as_object_mut().unwrap().remove("evidence");
+    fs::write(&index, format!("{v}\n")).unwrap();
+    let old = store.list().unwrap();
+    assert_eq!(old.len(), 1);
+    assert_eq!(old[0].id, e.id);
+    assert_eq!(old[0].evidence, None);
+}
+
+#[test]
+fn evidence_is_written_on_every_new_entry() {
+    use wisp_storage::history::BodyEvidence;
+    let (_d, _data, store) = setup();
+    let e = store.append(plain("/a"), Some(b"x")).unwrap();
+    assert_eq!(e.evidence.unwrap().body, BodyEvidence::Stored);
+    let e = store.append(plain("/b"), None).unwrap();
+    assert_eq!(e.evidence.unwrap().body, BodyEvidence::Off);
+    let e = store.append_with(plain("/c"), None, false).unwrap();
+    assert_eq!(e.evidence.unwrap().body, BodyEvidence::Unreadable);
+    let listed = store.list().unwrap();
+    assert!(listed.iter().all(|e| e.evidence.is_some()));
+}
+
+#[test]
+fn evidence_headers_is_true_exactly_when_status_is_some() {
+    let (_d, _data, store) = setup();
+    let e = store.append(plain("/a"), None).unwrap();
+    assert!(e.evidence.unwrap().headers);
+    let mut n = plain("/b");
+    n.status = None;
+    n.outcome = Outcome::Cancelled;
+    let e = store.append(n, None).unwrap();
+    assert!(!e.evidence.unwrap().headers);
 }

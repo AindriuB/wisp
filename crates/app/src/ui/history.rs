@@ -385,6 +385,7 @@ mod tests {
             environment: None,
             assertions: Vec::new(),
             delivery: None,
+            evidence: None,
         }
     }
 
