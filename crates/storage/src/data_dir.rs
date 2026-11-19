@@ -127,6 +127,10 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
     }
     #[cfg(windows)]
     {
+        if acl_policy(crate::win_acl::volume_flags(path)) == AclPolicy::Skip {
+            warn_no_acl_volume_once();
+            return std::fs::create_dir_all(path).map_err(|e| io(path, e));
+        }
         // Create each missing level top-down and restrict every directory this call creates,
         // so no new ancestor keeps inherited ACLs. Directories that already existed are left
         // alone (only `path` itself is tightened below). A level another process creates
@@ -163,6 +167,39 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
     }
 }
 
+/// Whether to set an owner-only DACL on a directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum AclPolicy {
+    Apply,
+    Skip,
+}
+
+/// `FILE_PERSISTENT_ACLS` from `GetVolumeInformationW`'s flags word.
+#[cfg_attr(not(windows), allow(dead_code))]
+const FILE_PERSISTENT_ACLS: u32 = 0x8;
+
+/// Skip only on an explicit "no persistent ACLs" answer; a failed query (`None`) applies the
+/// DACL, so its failure stays an error.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn acl_policy(volume_flags: Option<u32>) -> AclPolicy {
+    match volume_flags {
+        Some(f) if f & FILE_PERSISTENT_ACLS == 0 => AclPolicy::Skip,
+        _ => AclPolicy::Apply,
+    }
+}
+
+#[cfg(windows)]
+fn warn_no_acl_volume_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            "data directory is on a volume without ACL support (FAT/exFAT); \
+             owner-only permissions are not applied"
+        );
+    });
+}
+
 /// `a/b/` -> `a/b`; a root such as `/` is returned unchanged.
 fn strip_trailing_separators(path: &Path) -> PathBuf {
     let s = path.as_os_str().to_string_lossy();
@@ -179,6 +216,22 @@ mod tests {
 
     fn id() -> CollectionId {
         CollectionId::parse("abcdef0123456789").unwrap()
+    }
+
+    #[test]
+    fn no_acl_volume_flags_without_persistent_acls_skip() {
+        assert_eq!(acl_policy(Some(0x0000_0003)), AclPolicy::Skip);
+        assert_eq!(acl_policy(Some(0)), AclPolicy::Skip);
+    }
+
+    #[test]
+    fn no_acl_volume_flags_with_persistent_acls_apply() {
+        assert_eq!(acl_policy(Some(0x0000_0008 | 0x3)), AclPolicy::Apply);
+    }
+
+    #[test]
+    fn no_acl_volume_failed_query_applies() {
+        assert_eq!(acl_policy(None), AclPolicy::Apply);
     }
 
     #[test]
