@@ -3,7 +3,10 @@
 use std::io::{self, Write};
 
 use crate::cmd;
-use crate::dto::{Dto, ExplainDoc, InspectDoc, PartDoc, ProblemDoc, RunDoc, ValidateDoc};
+use crate::dto::{
+    Dto, ExplainDoc, FindingInfo, InspectDoc, NodeInfo, PartDoc, ProblemDoc, RequestSlot, RunDoc,
+    SnapshotDoc, SnapshotMinimal, ValidateDoc,
+};
 
 pub fn json<T: Dto>(w: &mut dyn Write, doc: &T) -> io::Result<()> {
     let text = serde_json::to_string_pretty(doc).map_err(io::Error::other)?;
@@ -53,7 +56,11 @@ pub fn inspect_text(w: &mut dyn Write, d: &InspectDoc) -> io::Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     )?;
-    for n in &d.nodes {
+    write_nodes(w, &d.nodes, d.truncated)
+}
+
+fn write_nodes(w: &mut dyn Write, nodes: &[NodeInfo], truncated: bool) -> io::Result<()> {
+    for n in nodes {
         write!(
             w,
             "{} {} \"{}\"",
@@ -81,23 +88,33 @@ pub fn inspect_text(w: &mut dyn Write, d: &InspectDoc) -> io::Result<()> {
                     .join(",")
             )?;
         }
+        if n.has_description {
+            write!(w, " described")?;
+        }
+        if !n.expected_status.is_empty() {
+            write!(w, " expects={}", status_list(&n.expected_status))?;
+        }
         if !n.valid {
             write!(w, " INVALID")?;
         }
         writeln!(w)?;
     }
-    if d.truncated {
-        writeln!(
-            w,
-            "(truncated: more nodes than the {} shown)",
-            d.nodes.len()
-        )?;
+    if truncated {
+        writeln!(w, "(truncated: more nodes than the {} shown)", nodes.len())?;
     }
     Ok(())
 }
 
 pub fn validate_text(w: &mut dyn Write, d: &ValidateDoc) -> io::Result<()> {
-    for f in &d.findings {
+    write_findings(w, &d.findings)?;
+    if d.truncated {
+        writeln!(w, "(truncated: the folder limit stopped the walk early)")?;
+    }
+    writeln!(w, "{} error(s), {} warning(s)", d.errors, d.warnings)
+}
+
+fn write_findings(w: &mut dyn Write, findings: &[FindingInfo]) -> io::Result<()> {
+    for f in findings {
         let key = f
             .key
             .as_deref()
@@ -110,10 +127,7 @@ pub fn validate_text(w: &mut dyn Write, d: &ValidateDoc) -> io::Result<()> {
             display(&f.message)
         )?;
     }
-    if d.truncated {
-        writeln!(w, "(truncated: the folder limit stopped the walk early)")?;
-    }
-    writeln!(w, "{} error(s), {} warning(s)", d.errors, d.warnings)
+    Ok(())
 }
 
 /// Markers are bracketed when they sit among other parts, so they read as markers.
@@ -142,6 +156,12 @@ fn parts(p: &[PartDoc]) -> String {
 
 pub fn explain_text(w: &mut dyn Write, d: &ExplainDoc) -> io::Result<()> {
     writeln!(w, "request: {}", display(&d.request))?;
+    if !d.description.is_empty() {
+        writeln!(w, "description: {}", display(&d.description))?;
+    }
+    if !d.expected_status.is_empty() {
+        writeln!(w, "expected status: {}", status_list(&d.expected_status))?;
+    }
     match &d.environment {
         None => writeln!(w, "environment: none")?,
         Some(e) => {
@@ -292,6 +312,116 @@ pub fn explain_text(w: &mut dyn Write, d: &ExplainDoc) -> io::Result<()> {
     Ok(())
 }
 
+pub fn snapshot_text(w: &mut dyn Write, d: &SnapshotDoc) -> io::Result<()> {
+    let c = &d.collection;
+    writeln!(w, "== collection ==")?;
+    writeln!(w, "{}", display(d.source))?;
+    writeln!(
+        w,
+        "collection: {}",
+        display(c.id.as_deref().unwrap_or("(no id)"))
+    )?;
+    writeln!(w, "format: {}", c.format)?;
+    let invalid = c
+        .invalid
+        .map_or_else(|| "unknown (truncated)".to_owned(), |n| n.to_string());
+    writeln!(
+        w,
+        "folders: {}  requests: {}  invalid: {invalid}",
+        c.folders, c.requests
+    )?;
+    writeln!(w, "== environments ==")?;
+    for e in &d.environments {
+        write!(w, "{} ({} variable(s))", display(&e.name), e.variable_count)?;
+        if !e.variables.is_empty() {
+            write!(
+                w,
+                ": {}",
+                e.variables
+                    .iter()
+                    .map(|v| display(v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+        }
+        writeln!(w)?;
+    }
+    writeln!(w, "== inspect ==")?;
+    write_nodes(w, &d.tree, d.tree_truncated)?;
+    writeln!(w, "== validate ==")?;
+    write_findings(w, &d.validation.findings)?;
+    if d.validation.findings_truncated {
+        writeln!(w, "(truncated: findings are not all shown)")?;
+    }
+    writeln!(
+        w,
+        "{} error(s), {} warning(s)",
+        d.validation.errors, d.validation.warnings
+    )?;
+    match &d.request {
+        Some(RequestSlot::Doc(x)) => {
+            writeln!(w, "== explain ==")?;
+            explain_text(w, x)?;
+        }
+        Some(RequestSlot::Omitted { .. }) => {
+            writeln!(w, "== explain ==")?;
+            writeln!(w, "(omitted: the snapshot size limit)")?;
+        }
+        None => {}
+    }
+    if let Some(recent) = &d.recent {
+        writeln!(w, "== recent ==")?;
+        for r in recent {
+            write!(
+                w,
+                "{} {} {} {}",
+                r.at,
+                display(&r.method),
+                display(&r.url),
+                r.outcome
+            )?;
+            if let Some(x) = r.delivery {
+                write!(w, " delivery={x}")?;
+            }
+            if let Some(s) = r.status {
+                write!(w, " status={s}")?;
+            }
+            if let Some(e) = &r.environment {
+                write!(w, " env={}", display(e))?;
+            }
+            for a in &r.assertions {
+                write!(w, " [{} {}]", display(&a.label), a.state)?;
+            }
+            writeln!(w)?;
+        }
+    }
+    if !d.truncated.is_empty() {
+        writeln!(w, "truncated: {}", d.truncated.join(", "))?;
+    }
+    Ok(())
+}
+
+pub fn snapshot_minimal_text(w: &mut dyn Write, d: &SnapshotMinimal) -> io::Result<()> {
+    let c = &d.collection;
+    writeln!(w, "{}", display(d.source))?;
+    writeln!(
+        w,
+        "collection: {}",
+        display(c.id.as_deref().unwrap_or("(no id)"))
+    )?;
+    writeln!(w, "format: {}", c.format)?;
+    writeln!(w, "environments: {}", d.counts.environments)?;
+    writeln!(w, "tree: {}", d.counts.tree)?;
+    writeln!(w, "findings: {}", d.counts.findings)?;
+    if let Some(n) = d.counts.recent {
+        writeln!(w, "recent: {n}")?;
+    }
+    if let Some(n) = d.counts.request {
+        writeln!(w, "request: {n}")?;
+    }
+    writeln!(w, "truncated: {}", d.truncated.join(", "))
+}
+
 pub fn run_text(w: &mut dyn Write, d: &RunDoc) -> io::Result<()> {
     write!(w, "{} {}", d.method, display(&d.url))?;
     if let Some(e) = &d.environment {
@@ -337,6 +467,10 @@ pub fn run_text(w: &mut dyn Write, d: &RunDoc) -> io::Result<()> {
     }
     writeln!(w, "history: {}", d.history)?;
     writeln!(w, "result: {} (exit {})", d.result, d.exit)
+}
+
+fn status_list(s: &[u16]) -> String {
+    s.iter().map(u16::to_string).collect::<Vec<_>>().join(",")
 }
 
 /// B, KB or MB, as the response pane shows it.

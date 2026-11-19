@@ -218,6 +218,8 @@ fn map(
         schema: SCHEMA,
         command: "explain",
         request: cap(request),
+        description: r.description.plain_text().unwrap_or_default(),
+        expected_status: r.expected_status.clone(),
         environment: r.environment.as_ref().map(|e| EnvDoc {
             name: cap(&e.name),
             keychain,

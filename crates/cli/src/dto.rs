@@ -40,7 +40,7 @@ pub struct CollectionInfo {
     pub invalid: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NodeInfo {
     pub path: String,
     pub kind: &'static str,
@@ -50,6 +50,8 @@ pub struct NodeInfo {
     pub auth: Option<&'static str>,
     pub headers: Vec<String>,
     pub valid: bool,
+    pub has_description: bool,
+    pub expected_status: Vec<u16>,
 }
 dto!(NodeInfo);
 
@@ -77,6 +79,9 @@ pub struct ExplainDoc {
     pub schema: &'static str,
     pub command: &'static str,
     pub request: String,
+    /// Authored text, never expanded; capped at 1,000 characters.
+    pub description: String,
+    pub expected_status: Vec<u16>,
     pub environment: Option<EnvDoc>,
     pub method: String,
     pub url: Vec<PartDoc>,
@@ -177,6 +182,94 @@ pub struct ProblemDoc {
     pub name: Option<String>,
     pub location: Option<String>,
     pub message: Option<String>,
+}
+
+pub const SNAPSHOT_SOURCE: &str = "persisted files only; unsaved edits in the app are not included";
+
+#[derive(Debug, Serialize)]
+pub struct SnapshotDoc {
+    pub schema: &'static str,
+    pub command: &'static str,
+    pub wisp_cli: &'static str,
+    pub source: &'static str,
+    pub collection: CollectionInfo,
+    pub environments: Vec<EnvSnapshot>,
+    pub tree: Vec<NodeInfo>,
+    pub tree_truncated: bool,
+    pub validation: ValidationSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<RequestSlot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent: Option<Vec<RecentInfo>>,
+    pub truncated: Vec<String>,
+}
+dto!(SnapshotDoc);
+
+/// The form `snapshot` falls back to when the full document cannot fit.
+#[derive(Debug, Serialize)]
+pub struct SnapshotMinimal {
+    pub schema: &'static str,
+    pub command: &'static str,
+    pub wisp_cli: &'static str,
+    pub source: &'static str,
+    pub collection: CollectionInfo,
+    pub counts: SnapshotCounts,
+    pub truncated: Vec<String>,
+}
+dto!(SnapshotMinimal);
+
+#[derive(Debug, Serialize)]
+pub struct SnapshotCounts {
+    pub environments: usize,
+    pub tree: usize,
+    pub findings: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnvSnapshot {
+    pub name: String,
+    /// Plain and secret names together; never a value.
+    pub variable_count: usize,
+    pub variables: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidationSnapshot {
+    pub errors: usize,
+    pub warnings: usize,
+    pub findings: Vec<FindingInfo>,
+    pub findings_truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum RequestSlot {
+    Doc(Box<ExplainDoc>),
+    Omitted { omitted: bool },
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecentInfo {
+    pub at: u64,
+    pub request: Option<String>,
+    pub method: String,
+    pub url: String,
+    pub outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<&'static str>,
+    pub status: Option<u16>,
+    pub environment: Option<String>,
+    pub assertions: Vec<RecentCheck>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecentCheck {
+    pub label: String,
+    pub state: &'static str,
 }
 
 #[derive(Debug, Serialize)]
