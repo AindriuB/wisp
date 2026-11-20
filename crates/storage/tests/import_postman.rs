@@ -564,20 +564,17 @@ fn pm_strict_empty_and_comment_only_scripts_are_clean() {
     assert!(r.warnings.is_empty());
 }
 
-fn assert_one_warning(a: &[Assertion], r: &ImportResult, what: &str) {
-    assert!(a.is_empty(), "{what}: {a:?}");
-    assert_eq!(r.warnings.len(), 1, "{what}");
-}
-
 #[test]
 fn pm_strict_unicode_line_separator_ends_comment() {
     for sep in ["\u{2028}", "\u{2029}"] {
         let c = format!("// note{sep}if (pm.response.code === 500)");
-        let (a, r) = import_tests(&[
-            &c,
-            "pm.test('err', function () { pm.response.to.have.status(500); });",
-        ]);
-        assert_one_warning(&a, &r, "comment");
+        assert_untranslated(
+            &[
+                &c,
+                "pm.test('err', function () { pm.response.to.have.status(500); });",
+            ],
+            1,
+        );
     }
 }
 
@@ -589,7 +586,12 @@ fn pm_strict_non_string_exec_entry() {
     ]}}]);
     let item = request_with(json!({"method": "GET", "url": "http://h/x"}), events);
     let r = postman::parse(&collection(json!([item]), json!({}))).unwrap();
-    assert_one_warning(&first(&r).assertions, &r, "exec");
+    assert!(first(&r).assertions.is_empty());
+    assert_eq!(r.warnings.len(), 1);
+    assert_eq!(
+        r.warnings[0].message,
+        "1 of 1 tests not translated; scripts are not run"
+    );
 }
 
 #[test]
@@ -606,8 +608,7 @@ fn pm_strict_raw_line_break_in_string_or_before_arrow() {
         vec!["pm.test('a', () /* x\n */ => { pm.response.to.have.status(200); });"],
         vec!["pm.test('a', function () { pm.expect(pm.response.json().a).to.eql('x\r y'); });"],
     ] {
-        let (a, r) = import_tests(&lines);
-        assert_one_warning(&a, &r, &format!("{lines:?}"));
+        assert_untranslated(&lines, lines.join("\n").matches("pm.test(").count().max(1));
     }
 }
 
@@ -617,7 +618,20 @@ fn pm_strict_leading_zero_integer() {
         let src = format!(
             "pm.test('a', function () {{ pm.expect(pm.response.json().a).to.eql({lit}); }});"
         );
-        let (a, r) = import_tests(&[&src]);
-        assert_one_warning(&a, &r, lit);
+        assert_untranslated(&[&src], 1);
     }
+}
+
+#[test]
+fn pm_strict_leading_zero_json_index() {
+    for idx in ["010", "00"] {
+        let src = format!(
+            "pm.test('a', function () {{ pm.expect(pm.response.json().items[{idx}]).to.eql(1); }});"
+        );
+        assert_untranslated(&[&src], 1);
+    }
+    let (a, _) = import_tests(&[
+        "pm.test('a', function () { pm.expect(pm.response.json().items[0]).to.eql(1); });",
+    ]);
+    assert_eq!(a.len(), 1);
 }

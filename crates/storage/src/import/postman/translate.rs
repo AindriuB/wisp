@@ -288,7 +288,10 @@ impl<'a> Cursor<'a> {
                     while self.peek().is_some_and(|c| c.is_ascii_digit()) {
                         self.pos += 1;
                     }
-                    if self.pos == d || self.peek() != Some(b']') {
+                    if self.pos == d
+                        || self.peek() != Some(b']')
+                        || (self.pos - d > 1 && self.b[d] == b'0')
+                    {
                         return None;
                     }
                     self.pos += 1;
