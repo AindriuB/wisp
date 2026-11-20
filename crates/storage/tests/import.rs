@@ -1087,3 +1087,107 @@ fn h4_dropped_creds_flagged_without_userinfo() {
     );
     assert!(w.iter().all(|l| !l.contains("were dropped")), "{w:?}");
 }
+
+fn warned(r: &ImportResult) -> String {
+    r.warnings
+        .iter()
+        .map(|w| w.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn h4b_deep_example_too_large() {
+    let inner = "0,".repeat(2_500_000);
+    let example = format!("{}{inner}0{}", "[".repeat(50), "]".repeat(50));
+    let doc = format!(
+        r#"{{"openapi":"3.0.0","info":{{"title":"t","version":"1"}},"paths":{{"/p":{{"post":{{
+        "requestBody":{{"content":{{"application/json":{{"example":{example}}}}}}},
+        "responses":{{"200":{{"description":"ok"}}}}}}}}}}}}"#
+    );
+    let err = openapi::parse(doc.as_bytes()).unwrap_err();
+    assert!(
+        matches!(err, wisp_storage::import::ImportError::TooLarge(_)),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn h4b_unique_many_equal_names() {
+    let items: Vec<wisp_storage::import::ImportItem> = (0..5000)
+        .map(|_| wisp_storage::import::ImportItem::Folder {
+            name: "same".into(),
+            items: Vec::new(),
+        })
+        .collect();
+    let r = ImportResult {
+        items,
+        ..ImportResult::default()
+    };
+    let d = collection();
+    let report = write(d.path(), Path::new(""), &r, "imported").unwrap();
+    assert_eq!(report.folders, 5000);
+    assert_eq!(report.renamed.len(), 4999);
+    let mut names: Vec<&str> = report.renamed.iter().map(|(_, n)| n.as_str()).collect();
+    names.push("same");
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 5000);
+}
+
+#[test]
+fn h4b_non_digit_password_behind_scheme_carve_out_is_not_named() {
+    let r = openapi_url("https://http:hunter2?x@h/y");
+    assert!(!r.environments[0].name.contains("hunter2"));
+    let w = warned(&r);
+    assert!(w.contains("credentials"), "{w}");
+    assert!(!w.contains("hunter2"), "{w}");
+}
+
+#[test]
+fn h4b_second_credential_after_first_strip_is_removed() {
+    let r = openapi_url("https://u:p@x:pw/?a@h2/y");
+    let v = &r.environments[0].vars[0].value;
+    assert!(
+        !v.contains("pw") && !v.contains("u:p") && !v.contains("a@"),
+        "{v}"
+    );
+    assert!(!r.environments[0].name.contains("pw"));
+    assert!(!warned(&r).contains("pw"));
+}
+
+#[test]
+fn h4b_missing_folder_has_its_own_error() {
+    let r = postman::parse(&fixture("postman.json")).unwrap();
+    let d = collection();
+    let err = write(d.path(), Path::new("missing"), &r, "imported").unwrap_err();
+    assert!(
+        matches!(err, wisp_storage::import::ImportError::Folder(_)),
+        "{err:?}"
+    );
+    assert!(!err.to_string().contains("cannot parse"), "{err}");
+}
+
+#[test]
+fn h4b_unique_numbering_keeps_case_insensitive_distinct() {
+    let items: Vec<wisp_storage::import::ImportItem> = ["A", "a", "A", "a 2"]
+        .iter()
+        .map(|n| wisp_storage::import::ImportItem::Folder {
+            name: (*n).into(),
+            items: Vec::new(),
+        })
+        .collect();
+    let r = ImportResult {
+        items,
+        ..ImportResult::default()
+    };
+    let d = collection();
+    let report = write(d.path(), Path::new(""), &r, "imported").unwrap();
+    let mut got: Vec<String> = report
+        .renamed
+        .iter()
+        .map(|(_, n)| n.to_lowercase())
+        .collect();
+    got.sort();
+    assert_eq!(got, vec!["a 2", "a 2 2", "a 3"]);
+}
