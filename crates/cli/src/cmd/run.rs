@@ -294,9 +294,12 @@ mod tests {
 
     #[test]
     fn run_missing_secret_renders_in_text_and_json_without_a_value() {
-        let doc = map(&not_prepared(vec![RunProblem::MissingSecret {
+        let mut report = not_prepared(vec![RunProblem::MissingSecret {
             name: "kc".into(),
-        }]));
+        }]);
+        // A value that must never surface: the problem line names the secret, not a value.
+        report.reason = Some("CANARY-reason".into());
+        let doc = map(&report);
         assert_eq!(doc.exit, NOT_PREPARED);
         let mut json = Vec::new();
         crate::output::json(&mut json, &doc).unwrap();

@@ -51,3 +51,12 @@ failure. Remove the port race in the CLI tests. Close the 0.4.0 snapshot and
 - The task 166 Lows (the 200 ms sleep, the `carries_id` guard); NOTEs.
 - `docs/cli.md` (scribe, task 197).
 - Any behaviour change to `run` exit codes or output beyond AC4 and AC5.
+
+## Review round 1 — findings
+
+Reviewed HEAD: fc81449ba6d1513abb3abf2602b0c34336952561. Verdict CLEAN; one optional finding.
+
+- [P3, optional] crates/cli/src/cmd/run.rs:296-320 — In `run_missing_secret_renders_in_text_and_json_without_a_value`, the "no secret value appears" check can never fail. The hand-built `RunReport` (`not_prepared`, :272-293) contains no `CANARY` string anywhere, so `!out.contains("CANARY")` holds whatever `map`, `output::json` or `run_text` emit. The kind, name and message assertions are real. Only the no-leak half of AC3 is empty.
+  route: implementer
+  input: change `map`/`run_text` to echo any report field into the problem line → the test still passes, because nothing in the input looks like a secret.
+  fix (cheap): put a canary value in a field a renderer could leak, such as a sibling problem, `reason` or `dynamics`, and assert it is absent. The binary tests cannot fill a real keychain (`env_remove("WISP_KEYCHAIN_SERVICE")`, crates/cli/tests/run.rs:72), so this unit test is the right place for it.
