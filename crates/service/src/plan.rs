@@ -273,6 +273,8 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
         };
         return Some(format!("Edit the request body before resending: {what}"));
     }
+    // A per-field clearing of a stored GraphQL body emptied part of the whole body.
+    let whole = whole || (gql_stored && fields.iter().any(|f| matches!(*f, "query" | "variables")));
     let fields: Vec<&str> = if gql_stored {
         fields
             .into_iter()
@@ -586,6 +588,25 @@ mod tests {
         assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_some());
         assert!(body_redaction_refusal(&gql_body("", "{}"), &o).is_some());
         assert!(body_redaction_refusal(&gql_body("{ a }", "{}"), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_field_clearing_refuses_switch_to_blank_non_graphql_body() {
+        let sets: [&[&str]; 3] = [
+            &["body.query"],
+            &["body.variables"],
+            &["body.query", "body.variables"],
+        ];
+        for names in sets {
+            let o = body_origin(gql_body("", "").body, names);
+            for body in [Body::None, Body::Json(Default::default())] {
+                let draft = Request {
+                    body,
+                    ..Request::default()
+                };
+                assert!(body_redaction_refusal(&draft, &o).is_some(), "{names:?}");
+            }
+        }
     }
 
     fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {
