@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list) and 189 (GraphQL body model) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model) and 191 (TLS trust for `wisp-cli run`) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -33,11 +33,22 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] An entry from before 0.5.0 (`evidence: None`) with `status: None` does not flag its headers as not recorded (`compare.rs:300-301`).
 - [Note] For task 192's brief: build a `Side` only from a `StoredEntry` returned by `HistoryStore::load`, never from `load_without_body`, which returns an empty body even when the `.bin` exists.
 
+### Follow-ups from task 191 (TLS trust for `wisp-cli run`; not scheduled)
+- [P3] A bad CA file is reported as "cannot read collection: CA file ..." (`crates/cli/src/main.rs:45-50`).
+- [P3] The `--ca-bundle=<file>` form is not accepted (`crates/cli/src/args.rs:135`).
+- [P3] The doc comment on `serve_private_ca` is stale (`crates/cli/tests/run.rs:753`).
+- [P3] No test covers `system: !a.no_system_trust` (`crates/cli/src/cmd/run.rs:218`).
+
+### Follow-ups carried from PRs #154 and #155 (not scheduled)
+- [P3] 154-1: GraphQL query redaction clears ordinary words such as `author`; needs a spec decision.
+- [P3] 154-2: duplicate GraphQL `variables` keys are dropped silently (`crates/core/src/resolve/engine.rs:682`).
+- [P3] 155-1: no escape for a literal `*` key in compare pointers (`crates/service/src/compare.rs:87`).
+- [P3] 155-2: `header:` ignore names are not trimmed or validated (`crates/service/src/compare.rs:53`).
+
 ### Follow-ups from task 189 (GraphQL body model; not scheduled)
 - [P3] AC8 of 189, not done: the stale redirect comments in `crates/core/src/engine.rs` at ~:927 and ~:1090 (outside 189's Owns). The task 164 follow-up below stays open.
 - [P3] The resend refusal says "the body was not stored" even when only a redacted leaf triggered it (`crates/service/src/plan.rs:275-279`).
 - [P3] Draft GraphQL from a non-GraphQL stored body stays refused until both fields are non-blank; it should be `blank(&d.query)` (`crates/service/src/plan.rs:259`). Folded into task 193.
-- [P3] No test for the cleared-variables branch (`crates/service/src/plan.rs:256-257`).
 - [P3] Integers beyond i64/u64 in GraphQL variables lose precision, because serde_json lacks `arbitrary_precision` (`crates/core/src/resolve/engine.rs:682`).
 - [P3] Explain reports a body size for non-object variables (`crates/core/src/resolve/report.rs:1566`).
 - [P3] The read-only GraphQL placeholder has no scroll area (`crates/app/src/ui/request/body.rs:641-665`); task 193 replaces it.
