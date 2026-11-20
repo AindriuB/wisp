@@ -58,8 +58,16 @@ pub(super) fn translate(src: &str) -> Translated {
                     break;
                 }
                 // Resynchronise past the failed unit; always moves forward.
+                // Never move back over bytes a block scan already covered.
                 cur.pos = start;
                 cur.skip_statement();
+                if cur.scanned_to > cur.pos {
+                    let skipped = src.get(cur.pos..cur.scanned_to).unwrap_or("");
+                    let n = skipped.matches("pm.test(").count();
+                    out.total += n;
+                    out.untranslated += n;
+                    cur.pos = cur.scanned_to;
+                }
             }
         }
     }
@@ -72,6 +80,8 @@ struct Cursor<'a> {
     pos: usize,
     /// Set when `block_body` failed after scanning to the end of the input.
     exhausted: bool,
+    /// Furthest position a successful `block_body` reached.
+    scanned_to: usize,
 }
 
 impl<'a> Cursor<'a> {
@@ -81,6 +91,7 @@ impl<'a> Cursor<'a> {
             src,
             pos: 0,
             exhausted: false,
+            scanned_to: 0,
         }
     }
 
@@ -150,6 +161,7 @@ impl<'a> Cursor<'a> {
     fn skip_statement(&mut self) {
         let first = self.pos;
         let mut prev = b';';
+        let mut prev_pos = 0usize;
         let mut depth = 0usize;
         while let Some(c) = self.peek() {
             match c {
@@ -158,14 +170,16 @@ impl<'a> Cursor<'a> {
                         self.pos = self.b.len();
                     }
                     prev = b'"';
+                    prev_pos = self.pos - 1;
                     continue;
                 }
                 b'/' if matches!(self.b.get(self.pos + 1), Some(b'/' | b'*')) => {
                     self.skip_ws();
                     continue;
                 }
-                b'/' if regex_allowed(prev) && self.skip_regex() => {
+                b'/' if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() => {
                     prev = b'"';
+                    prev_pos = self.pos - 1;
                     continue;
                 }
                 b'(' | b'{' | b'[' => depth += 1,
@@ -178,6 +192,7 @@ impl<'a> Cursor<'a> {
             }
             if !c.is_ascii_whitespace() {
                 prev = c;
+                prev_pos = self.pos;
             }
             self.pos += 1;
         }
@@ -199,6 +214,7 @@ impl<'a> Cursor<'a> {
     fn block_body_inner(&mut self) -> Option<&'a str> {
         let start = self.pos;
         let mut prev = b'{';
+        let mut prev_pos = 0usize;
         let mut depth = 1usize;
         while let Some(c) = self.peek() {
             match c {
@@ -207,14 +223,16 @@ impl<'a> Cursor<'a> {
                         return None;
                     }
                     prev = b'"';
+                    prev_pos = self.pos - 1;
                     continue;
                 }
                 b'/' if matches!(self.b.get(self.pos + 1), Some(b'/' | b'*')) => {
                     self.skip_ws();
                     continue;
                 }
-                b'/' if regex_allowed(prev) && self.skip_regex() => {
+                b'/' if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() => {
                     prev = b'"';
+                    prev_pos = self.pos - 1;
                     continue;
                 }
                 b'{' => depth += 1,
@@ -223,6 +241,7 @@ impl<'a> Cursor<'a> {
                     if depth == 0 {
                         let body = self.src.get(start..self.pos)?;
                         self.pos += 1;
+                        self.scanned_to = self.pos;
                         return Some(body);
                     }
                 }
@@ -230,6 +249,7 @@ impl<'a> Cursor<'a> {
             }
             if !c.is_ascii_whitespace() {
                 prev = c;
+                prev_pos = self.pos;
             }
             self.pos += 1;
         }
@@ -387,12 +407,45 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Whether a `/` after this byte starts a regex literal rather than a division.
-fn regex_allowed(prev: u8) -> bool {
-    matches!(
+/// Keywords after which a `/` starts a regex literal.
+const REGEX_KEYWORDS: [&[u8]; 12] = [
+    b"return",
+    b"typeof",
+    b"void",
+    b"case",
+    b"throw",
+    b"in",
+    b"of",
+    b"delete",
+    b"await",
+    b"yield",
+    b"instanceof",
+    b"new",
+];
+
+/// Whether a `/` after the significant byte `prev` (at `prev_pos`) starts a regex
+/// literal rather than a division.
+fn regex_allowed(b: &[u8], prev: u8, prev_pos: usize) -> bool {
+    if matches!(
         prev,
         b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';'
-    )
+    ) {
+        return true;
+    }
+    let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    if !is_id(prev) {
+        return false;
+    }
+    // Look back over at most one longer-than-any-keyword identifier run.
+    let end = prev_pos + 1;
+    let mut s = end;
+    while s > 0 && end - s <= 10 && is_id(b[s - 1]) {
+        s -= 1;
+    }
+    if s > 0 && (is_id(b[s - 1]) || b[s - 1] == b'.') {
+        return false;
+    }
+    REGEX_KEYWORDS.contains(&&b[s..end])
 }
 
 /// `pm.test("name", function () { ... })` or the arrow form, then an optional `;`.

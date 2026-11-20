@@ -352,3 +352,34 @@ fn pm_regex_literal_does_not_desync_resync() {
     ]);
     assert!(!format!("{a:?}").contains("500"), "{a:?}");
 }
+
+#[test]
+fn pm_failing_units_with_balanced_body_parse_in_linear_time() {
+    let n = 1920;
+    let src = format!(
+        "{}{}",
+        "pm.test('a', function () { ));".repeat(n),
+        "})".repeat(n)
+    );
+    let start = std::time::Instant::now();
+    for _ in 0..20 {
+        let (a, r) = import_tests(&[&src]);
+        assert!(a.is_empty());
+        assert!(r.warnings[0].message.contains("tests not translated"));
+    }
+    assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+}
+
+#[test]
+fn pm_regex_after_keyword_does_not_desync_resync() {
+    let (a, _) = import_tests(&[
+        "if (pm.response.code === 500) {",
+        "  const ok = [1].some(function (x) { return /}/.test(x) });",
+        "  pm.test('err', function () { pm.response.to.have.status(500); });",
+        "}",
+        "pm.test('ok', function () { pm.response.to.have.status(200); });",
+    ]);
+    let s = format!("{a:?}");
+    assert!(!s.contains("500"), "{s}");
+    assert!(s.contains("200"), "{s}");
+}
