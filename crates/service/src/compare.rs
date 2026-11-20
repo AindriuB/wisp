@@ -226,10 +226,10 @@ impl BodyKind {
     pub fn text(self) -> &'static str {
         match self {
             BodyKind::StoredUnavailable => "Stored body unavailable (deleted or unreadable)",
-            BodyKind::Truncated => "Body truncated",
-            BodyKind::Off => "Body not recorded",
-            BodyKind::Unreadable => "Body unreadable",
-            BodyKind::NoResponse => "No response",
+            BodyKind::Truncated => "body cut at 1 MiB; not compared",
+            BodyKind::Off => "body not stored (history bodies off, or a `wisp-cli run` entry)",
+            BodyKind::Unreadable => "body could not be read when recorded",
+            BodyKind::NoResponse => "no response body (request failed or was cancelled)",
         }
     }
 }
@@ -903,6 +903,25 @@ mod tests {
         let ok = body(&deep(100, "1"), &deep(100, "2"), &IgnoreList::default());
         assert!(matches!(ok, BodyDiff::Different { total: 1, .. }), "{ok:?}");
     }
+
+    #[test]
+    fn body_kind_text_matches_spec_wording() {
+        assert_eq!(BodyKind::Truncated.text(), "body cut at 1 MiB; not compared");
+        assert_eq!(
+            BodyKind::Off.text(),
+            "body not stored (history bodies off, or a `wisp-cli run` entry)"
+        );
+        assert_eq!(BodyKind::Unreadable.text(), "body could not be read when recorded");
+        assert_eq!(
+            BodyKind::NoResponse.text(),
+            "no response body (request failed or was cancelled)"
+        );
+        assert_eq!(
+            BodyKind::StoredUnavailable.text(),
+            "Stored body unavailable (deleted or unreadable)"
+        );
+    }
+
     fn stored_entry(id_hint: &str) -> HistoryEntry {
         serde_json::from_value(serde_json::json!({
             "id": id_hint, "at": 0, "method": "Get", "url": "http://x/", "outcome": "Completed",
