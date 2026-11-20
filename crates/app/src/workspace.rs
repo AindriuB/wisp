@@ -5211,17 +5211,38 @@ mod env_wiring_tests {
     }
 
     const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----
-MIIBpzCCAUygAwIBAgIULQXfTIwOt/VWzWZlBPa9NgO52ygwCgYIKoZIzj0EAwIw
-FzEVMBMGA1UEAwwMd2lzcCB0ZXN0IGNhMCAXDTI2MTEyMDA3MjA0OVoYDzIxMjYx
-MDI3MDcyMDQ5WjAXMRUwEwYDVQQDDAx3aXNwIHRlc3QgY2EwWTATBgcqhkjOPQIB
-BggqhkjOPQMBBwNCAAQu5KpoIQFh0jxpwRuz/ZUHBboPhtA9GJOgj5M/B3K6ggyg
-F+OXpJgVR6egcWEKvrIDBLPVDe/gey/zE1D4kTljo3QwcjAdBgNVHQ4EFgQUhUpm
-EdlUOUumvOEd/r5nMjZt1FMwHwYDVR0jBBgwFoAUhUpmEdlUOUumvOEd/r5nMjZt
-1FMwDwYDVR0TAQH/BAUwAwEB/zAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQE
-AwICBDAKBggqhkjOPQQDAgNJADBGAiEAgNRQXoYiCw4Ohml36gB0Ql3uXDSLM9Nc
-VI5XJ7RHyYwCIQC29mK6ELFqyGA8Wcbf3imSmfsZOuSSsqZdnPe77sOd3w==
+MIIBVTCB+6ADAgECAhQZcT++9isQvwfbCwILUQW53mlTgDAKBggqhkjOPQQDAjAX
+MRUwEwYDVQQDDAx3aXNwIHRlc3QgY2EwIBcNMjYxMTIwMDcyNDI1WhgPMjEyNjEw
+MjcwNzI0MjVaMBcxFTATBgNVBAMMDHdpc3AgdGVzdCBjYTBZMBMGByqGSM49AgEG
+CCqGSM49AwEHA0IABNrqJL1sDS/8X1FJRufWB227XSjhf36XL75ceuECkz4Eh40j
+GMi3NLEIKSEZC05IfQNIdlLGleIAKEPQp7imryqjIzAhMA8GA1UdEwEB/wQFMAMB
+Af8wDgYDVR0PAQH/BAQDAgIEMAoGCCqGSM49BAMCA0kAMEYCIQD+GLyBwZtMqHJT
+kw37AFWy0JYvU9uiiFqbGhCCIm7XCAIhAJ84T+4I/dbyqP2MyGxU+M1yfMKUlRiG
+f+i1mjR701R2
 -----END CERTIFICATE-----
 ";
+
+    #[gpui::test]
+    fn tls_apply_startup_loads_the_ca_file_or_starts_without_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("ca.pem");
+        std::fs::write(&good, TEST_CA_PEM).unwrap();
+        let start = |cx: &mut TestAppContext, ca: PathBuf| {
+            let settings = Settings {
+                ca_bundle: Some(ca),
+                system_trust: false,
+                ..Settings::default()
+            };
+            let shared: vault::SharedStores = Arc::new(MemoryStore::new());
+            cx.new(|cx| Workspace::with_data_dir(settings, None, None, shared, None, cx))
+        };
+        let ws = start(cx, good);
+        let t = ws.read_with(cx, |w, _| w.tls_trust());
+        assert_eq!((t.system, t.extra.len()), (false, 1));
+        let ws = start(cx, dir.path().join("missing.pem"));
+        let t = ws.read_with(cx, |w, _| w.tls_trust());
+        assert_eq!((t.system, t.extra.len()), (false, 0));
+    }
 
     #[gpui::test]
     fn tls_apply_choose_toggle_and_clear_change_the_trust(cx: &mut TestAppContext) {
