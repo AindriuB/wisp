@@ -6,7 +6,7 @@ use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
     ConvertStringSidToSidW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
@@ -17,7 +17,9 @@ use windows_sys::Win32::Security::{
     GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
     PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows_sys::Win32::Storage::FileSystem::{GetVolumeInformationW, GetVolumePathNameW};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ALL_ACCESS, GetVolumeInformationW, GetVolumePathNameW,
+};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -137,8 +139,11 @@ pub(crate) fn is_owner_only(path: &Path) -> io::Result<bool> {
             let ace = &mut *(ace.cast::<ACCESS_ALLOWED_ACE>());
             // ACCESS_ALLOWED_ACE_TYPE = 0; OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE = 3.
             let sid = std::ptr::addr_of_mut!(ace.SidStart).cast();
+            // Full file access, either as the specific mask or as GENERIC_ALL.
+            let full = ace.Mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS || ace.Mask & GENERIC_ALL != 0;
             Ok(ace.Header.AceType == 0
                 && ace.Header.AceFlags & 3 == 3
+                && full
                 && EqualSid(sid, my_sid) != 0)
         })();
         LocalFree(sd.cast());
@@ -151,7 +156,11 @@ pub(crate) fn is_owner_only(path: &Path) -> io::Result<bool> {
 /// the current user only, inherited by new files (OI) and directories (CI).
 pub(crate) fn restrict_to_owner(path: &Path) -> io::Result<()> {
     let sid = current_user_sid_string()?;
-    let sddl = wide(std::ffi::OsStr::new(&format!("D:P(A;OICI;FA;;;{sid})")));
+    apply_sddl(path, &format!("D:P(A;OICI;FA;;;{sid})"))
+}
+
+fn apply_sddl(path: &Path, sddl: &str) -> io::Result<()> {
+    let sddl = wide(std::ffi::OsStr::new(sddl));
     let target = wide(path.as_os_str());
     unsafe {
         let mut sd = std::ptr::null_mut();
@@ -233,6 +242,18 @@ mod tests {
             LocalFree(my_sid.cast());
             (control & SE_DACL_PROTECTED != 0, count, all_me)
         }
+    }
+
+    #[test]
+    fn acl_reduced_owner_ace_is_not_owner_only() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("d");
+        std::fs::create_dir(&dir).unwrap();
+        let sid = current_user_sid_string().unwrap();
+        apply_sddl(&dir, &format!("D:P(A;OICI;FR;;;{sid})")).unwrap();
+        assert!(!is_owner_only(&dir).unwrap());
+        restrict_to_owner(&dir).unwrap();
+        assert!(is_owner_only(&dir).unwrap());
     }
 
     #[test]

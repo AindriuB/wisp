@@ -131,40 +131,68 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), StorageError> {
             warn_no_acl_volume_once();
             return std::fs::create_dir_all(path).map_err(|e| io(path, e));
         }
-        // Create each missing level top-down and restrict every directory this call creates,
-        // so no new ancestor keeps inherited ACLs. Directories that already existed are left
-        // alone (only `path` itself is tightened below). A level another process creates
-        // first (AlreadyExists) is not ours, so it is likewise not touched: the conservative
-        // choice, which cannot loosen or break anyone else's ACL.
-        let mut missing = Vec::new();
-        let mut cur = Some(path);
-        while let Some(p) = cur {
-            match std::fs::symlink_metadata(p) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    missing.push(p);
-                    cur = p.parent().filter(|q| !q.as_os_str().is_empty());
-                }
-                _ => break,
-            }
-        }
-        for p in missing.into_iter().rev() {
-            match std::fs::create_dir(p) {
-                Ok(()) => crate::win_acl::restrict_to_owner(p).map_err(|e| io(p, e))?,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(io(p, e)),
-            }
-        }
-        // Only rewrite the DACL when it is not already owner-only: setting it propagates to
-        // every child, and this runs on hot paths.
-        if !crate::win_acl::is_owner_only(path).map_err(|e| io(path, e))? {
-            crate::win_acl::restrict_to_owner(path).map_err(|e| io(path, e))?;
-        }
-        Ok(())
+        ensure_private_dir_windows(path, &crate::win_acl::restrict_to_owner)
     }
     #[cfg(not(any(unix, windows)))]
     {
         std::fs::create_dir_all(path).map_err(|e| io(path, e))
     }
+}
+
+/// Create each missing level top-down and restrict every directory this call creates,
+/// so no new ancestor keeps inherited ACLs. Directories that already existed are left
+/// alone (only `path` itself is tightened). A level another process creates first
+/// (AlreadyExists) is not ours, so it is likewise not touched. If a restrict fails, the
+/// directories this call created are removed, deepest first, only while still empty.
+/// `restrict` is a seam so tests can inject a failure.
+#[cfg(windows)]
+fn ensure_private_dir_windows(
+    path: &Path,
+    restrict: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> Result<(), StorageError> {
+    let mut missing = Vec::new();
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        match std::fs::symlink_metadata(p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(p);
+                cur = p.parent().filter(|q| !q.as_os_str().is_empty());
+            }
+            _ => break,
+        }
+    }
+    let mut created: Vec<&Path> = Vec::new();
+    let cleanup = |created: &[&Path]| {
+        for d in created.iter().rev() {
+            // remove_dir fails on a non-empty directory, so nothing foreign is deleted.
+            let _ = std::fs::remove_dir(d);
+        }
+    };
+    for p in missing.into_iter().rev() {
+        match std::fs::create_dir(p) {
+            Ok(()) => {
+                created.push(p);
+                if let Err(e) = restrict(p) {
+                    cleanup(&created);
+                    return Err(io(p, e));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                cleanup(&created);
+                return Err(io(p, e));
+            }
+        }
+    }
+    // Only rewrite the DACL when it is not already owner-only: setting it propagates to
+    // every child, and this runs on hot paths.
+    let tighten = || -> Result<(), StorageError> {
+        if !crate::win_acl::is_owner_only(path).map_err(|e| io(path, e))? {
+            restrict(path).map_err(|e| io(path, e))?;
+        }
+        Ok(())
+    };
+    tighten().inspect_err(|_| cleanup(&created))
 }
 
 /// Whether to set an owner-only DACL on a directory.
@@ -213,6 +241,25 @@ fn strip_trailing_separators(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn acl_failed_restrict_removes_created_dirs() {
+        let t = tempfile::tempdir().unwrap();
+        let existing = t.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        let target = existing.join("a").join("b");
+        let r = ensure_private_dir_windows(&target, &|p: &Path| {
+            if p.ends_with("b") {
+                Err(std::io::Error::other("injected"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(r.is_err());
+        assert!(!existing.join("a").exists());
+        assert!(existing.exists());
+    }
 
     fn id() -> CollectionId {
         CollectionId::parse("abcdef0123456789").unwrap()

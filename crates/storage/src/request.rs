@@ -10,11 +10,21 @@ use std::time::Duration;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 use wisp_core::Method;
 use wisp_core::assert::{Assertion, Expected};
-use wisp_core::request::{Auth, Body, Part, PartValue, Request, RequestSettings, TextBody};
+use wisp_core::request::{
+    Auth, Body, GraphQlBody, Part, PartValue, Request, RequestSettings, TextBody,
+};
 
 use crate::{StorageError, codec, fs};
 
-const BODY_KEYS: [&str; 5] = ["content", "file", "fields", "parts", "path"];
+const BODY_KEYS: [&str; 7] = [
+    "content",
+    "file",
+    "fields",
+    "parts",
+    "path",
+    "query",
+    "variables",
+];
 
 fn invalid(path: &Path, key: impl Into<String>, message: impl Into<String>) -> StorageError {
     StorageError::Invalid {
@@ -350,6 +360,15 @@ fn read_body(doc: &Table, dir: &Path, path: &Path) -> Result<Body, StorageError>
         "json" => Body::Json(read_text_body(t, dir, path)?),
         "text" => Body::Text(read_text_body(t, dir, path)?),
         "xml" => Body::Xml(read_text_body(t, dir, path)?),
+        "graphql" => {
+            let field = |k: &str| {
+                codec::read_opt_str(t, k, path).map_err(|e| with_key(e, format!("body.{k}")))
+            };
+            Body::GraphQl(GraphQlBody {
+                query: field("query")?.unwrap_or_default(),
+                variables: field("variables")?.unwrap_or_default(),
+            })
+        }
         "form" => Body::Form(match codec::read_key_values(t, "fields", path) {
             Ok(v) => v,
             Err(StorageError::Invalid { path, key, message }) => {
@@ -725,11 +744,15 @@ fn string_value(s: &str) -> Value {
     Value::from(s)
 }
 
-fn set_content(t: &mut Table, content: &str) {
-    if t.get("content").and_then(Item::as_str) == Some(content) {
+fn set_string(t: &mut Table, key: &str, text: &str) {
+    if t.get(key).and_then(Item::as_str) == Some(text) {
         return;
     }
-    replace_value(t, "content", string_value(content));
+    replace_value(t, key, string_value(text));
+}
+
+fn set_content(t: &mut Table, content: &str) {
+    set_string(t, "content", content);
 }
 
 fn write_body(doc: &mut Table, body: &Body, dir: &Path, path: &Path) -> Result<(), StorageError> {
@@ -754,6 +777,7 @@ fn write_body(doc: &mut Table, body: &Body, dir: &Path, path: &Path) -> Result<(
         Body::Json(tb) => ("json", text_keys(tb)),
         Body::Text(tb) => ("text", text_keys(tb)),
         Body::Xml(tb) => ("xml", text_keys(tb)),
+        Body::GraphQl(_) => ("graphql", &["query", "variables"]),
         Body::Form(_) => ("form", &["fields"]),
         Body::Multipart(_) => ("multipart", &["parts"]),
         Body::File(_) => ("file", &["path"]),
@@ -776,6 +800,13 @@ fn write_body(doc: &mut Table, body: &Body, dir: &Path, path: &Path) -> Result<(
             }
             None => set_content(t, &tb.content),
         },
+        Body::GraphQl(g) => {
+            for (key, text) in [("query", &g.query), ("variables", &g.variables)] {
+                if t.contains_key(key) || !text.is_empty() {
+                    set_string(t, key, text);
+                }
+            }
+        }
         Body::Form(fields) => codec::write_key_values(t, "fields", fields),
         Body::Multipart(parts) => {
             let same = t

@@ -20,6 +20,12 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 188 | compare of two history entries (status, headers, JSON body) with evidence wording; per-collection `[compare] ignore` list; stored-body-unavailable state | ## 2026-11-20 — Compare engine and collection ignore list (task 188) |
+| 2026-11-20 | 189 | `Body::GraphQl` in model, TOML file format, resolve, Explain, history redaction/cap, import scan, resend plan; read-only picker entry in app | ## 2026-11-20 — GraphQL body in the model (task 189) |
+| 2026-11-19 | 186 | id write keeps collection.toml mode; FIFO swap cannot hang a read; git-tracked check bounded at 5 s and fails closed inside any work tree; moved-name check ignores symlinks; `t1` flake fixed | ## 2026-11-19 — Secret-file safety follow-ups from task 169 closed (task 186) |
+| 2026-11-19 | 187 | `is_owner_only` requires full file rights on the single owner ACE; failed `restrict_to_owner` removes the dirs this call created; `windows-sys` has `default-features = false` | ## 2026-11-19 — Windows ACL follow-ups closed (task 187) |
+| 2026-11-19 | 184 | engine trusts private CAs through the OS store and a PEM CA file; `Engine::set_tls_trust` swaps trust at run time; Windows GUI +512 B | ## 2026-11-19 — Engine trusts private CAs (task 184) |
+| 2026-11-19 | 183 | every new history entry records body/head `evidence` with snake_case wire values; `1234` canary flake fixed | ## 2026-11-19 — History entries record body and head evidence (task 183) |
 | 2026-11-19 | 177 | 0.4.0 head measured and release dry run passed; Windows GUI 15,616,000 B, CLIs under 7 MiB | ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177) |
 | 2026-11-19 | 176 | docs/architecture.md, docs/cli.md, README.md describe wisp-service, `run`, `snapshot`, measured CLI sizes and 7 MiB limit; 31 hardening ACs marked done | ## 2026-11-19 — Docs describe 0.4.0 (task 176) |
 | 2026-11-19 | 181 | OpenAPI "credentials dropped" warning omits the host when the stripped URL still looks credentialed, and the may-contain-credentials warning fires | ## 2026-11-19 — OpenAPI "credentials dropped" warning no longer echoes a possible secret host (task 181) |

@@ -18,11 +18,62 @@ than no plan.
 **In flight:** 01, 02
 -->
 
+### v0.5.0 (spec agreed 2026-11-19)
+
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list) and 189 (GraphQL body model) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+
 ### v0.4.0 (spec agreed)
 
 Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 171 (Windows hardening: owner-only data dir, real 8.3 test, file identity), 167 (hash file body through one handle) 174 (per-request variables editor) 172 (CLI budgets measurement), 178 (refuse to resend a truncated history body) and 179 (OpenAPI environment names without URL credentials) are recorded; task 173 (CLI snapshot and metadata) and task 176 (0.4.0 docs: `docs/architecture.md`, `docs/cli.md`, `README.md`, closed ACs in `99-hardening-0-2-0.md`) are recorded; 177 (measure and release dry run) is recorded (PR #147): measure run 44593845270 and release dry run 44596574612 both succeeded on 8d6fb0f. Windows GUI 15,616,000 B (284,000 B under the soft line), all CLIs under 7,340,032 B; figures in `scripts/measure/results/v0.4.0-wave-3-size.json`. The draft release `dryrun-44596574612` exists for the user to delete. The macOS hand checklist (AC4) is in PR #147's body for the user to run. Next is the 0.4.0 version bump and release (user's). 178 must ship in the same release as 168. Task 182 (history scrub no longer empties truncated JSON request bodies; marker written when `append` creates the folder) is recorded; it is a must-ship-before-0.4.0 item (user decision 2026-11-18).
 
 **Size, decided 2026-11-18 (task 172):** every `wisp-cli` limit in `scripts/measure/cli-budgets.json` is 7,340,032 B (7 MiB), the user's decision after Linux measured 45,048 B over the earlier 6 MiB. Measured `wisp-cli`: macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B (run 44293903312, main 910d681). The Windows GUI is 15,609,344 B, 290,656 B under the 15,900,000 B soft line and 390,656 B under the 16,000,000 B gate; this is the tightest margin, so 177 re-measures it. Task 176 put these limits in `docs/architecture.md`; the sizes there were measured before `snapshot` merged, so 177 re-measures. The wave-1 overage (+26,624 B against +10,240 B allowed) was not cut. Figures: `scripts/measure/results/v0.4.0-wave-2-cli-size.json`.
+
+### Follow-ups from task 188 (compare engine and ignore list; not scheduled)
+- [P3] JSON nested exactly 128 deep returns TooDeep because of serde_json's limit, while AC7 says beyond 128 (`crates/service/src/compare.rs:421-427`, `:506-509`).
+- [P3] An entry from before 0.5.0 (`evidence: None`) with `status: None` does not flag its headers as not recorded (`compare.rs:300-301`).
+- [Note] For task 192's brief: build a `Side` only from a `StoredEntry` returned by `HistoryStore::load`, never from `load_without_body`, which returns an empty body even when the `.bin` exists.
+
+### Follow-ups from task 189 (GraphQL body model; not scheduled)
+- [P3] AC8 of 189, not done: the stale redirect comments in `crates/core/src/engine.rs` at ~:927 and ~:1090 (outside 189's Owns). The task 164 follow-up below stays open.
+- [P3] The resend refusal says "the body was not stored" even when only a redacted leaf triggered it (`crates/service/src/plan.rs:275-279`).
+- [P3] Draft GraphQL from a non-GraphQL stored body stays refused until both fields are non-blank; it should be `blank(&d.query)` (`crates/service/src/plan.rs:259`). Folded into task 193.
+- [P3] No test for the cleared-variables branch (`crates/service/src/plan.rs:256-257`).
+- [P3] Integers beyond i64/u64 in GraphQL variables lose precision, because serde_json lacks `arbitrary_precision` (`crates/core/src/resolve/engine.rs:682`).
+- [P3] Explain reports a body size for non-object variables (`crates/core/src/resolve/report.rs:1566`).
+- [P3] The read-only GraphQL placeholder has no scroll area (`crates/app/src/ui/request/body.rs:641-665`); task 193 replaces it.
+- [P3] No serde round-trip test of `Body::GraphQl` in core, and no check that a multi-line query is written as `'''`.
+- [P3] Spec Feature 3 and AC6 (`docs/plan/specs/2026-11-19-wisp-0-5-0.md`) call `crates/storage/src/import/mod.rs:363` "the credential scan", but it is the undefined-variable scan; the wording needs fixing.
+- [P3] The `redact_json_body` doc comment still says "`body` is recorded" (`crates/storage/src/history.rs:793-795`).
+- [P3] `graphql_query_refill_lifts_refusal_with_blank_variables` now duplicates `graphql_resend_query_only_cleared_allows_blank_variables` (`crates/service/src/plan.rs:531`).
+- [P3] The round-4 test `graphql_field_clearing_refuses_switch_to_blank_non_graphql_body` is not under the `graphql_resend_` check prefix.
+
+### Follow-ups from task 186 (secret-file safety; not scheduled)
+- [P3] No test covers the git spawn-failure path or the 5 s timeout path (`crates/storage/src/vault.rs:673-675`, `:689-693`).
+- [P3] `O_NONBLOCK` is hard-coded (`crates/storage/src/environment.rs:148-158`); the value is wrong on Linux mips, sparc, alpha and illumos if those are ever built.
+- [P3] The FIFO unit test's watchdog can hang if the main thread is slow but not blocked (`environment.rs:745-750`).
+- [P3] A collection on another filesystem mounted under a repo gets a spurious `GitCheckFailed`, because git stops at the mount boundary.
+- [P3] Fail-closed also refuses on git's "dubious ownership" exit 128, so a repo owned by another user refuses secrets writes.
+- [Note] Integration tests `sfs_fifo_refused_without_hang` and `sfs_moved_name_ignores_symlink` do not reach the code they are named for; the unit tests in `environment.rs` cover it.
+- [P3] The stdout-drain join after git exits has no time limit, so a git wrapper whose background child holds the pipe can exceed the 5 s bound (`crates/storage/src/vault.rs:695-698`).
+- [P3] No test that a really untracked file inside a real repo is allowed.
+- [P3] 151-2: `write_marker` (`crates/storage/src/vault_binding.rs:287`) uses `write_nofollow`, which now keeps an existing mode, so its documented 0600 is false.
+
+### Follow-ups from task 187 (Windows ACL; not scheduled)
+- [P3] `is_owner_only` accepts an INHERIT_ONLY (0x08) ACE as granting full access (`crates/storage/src/win_acl.rs:142-146`); it also needs `AceFlags & 0x08 == 0`.
+- [P3] The `is_owner_only` doc comment does not mention the new full-rights condition (`win_acl.rs:100-101`).
+- [P3] Cleanup can remove an empty parent that a concurrent caller is about to use, but only after a failed restrict (`crates/storage/src/data_dir.rs:166-171`).
+
+### Follow-ups from task 184 (TLS trust engine; not scheduled)
+- [P3] `escape_debug()` doubles backslashes, so Windows paths in `TrustError` come out mangled (`crates/core/src/trust.rs:49`).
+- [P3] No test tells `system: true` apart from `false` (`crates/core/src/client.rs:73`); the spec leaves this to the macOS hand test.
+- [P3] The test fixture's validity starts at yesterday 00:00 UTC, not now-1h, and the comment saying `time` is needed is wrong (`crates/core/tests/tls.rs:143-164`).
+- [P3] `scratch` leaves `wisp-trust-*` directories in the temp dir (`crates/core/tests/tls.rs:223`).
+- [P3] No FIFO test: the FIFO case shares the directory branch, and a FIFO swapped in between metadata and open could block (`crates/core/src/trust.rs:57-64`).
+
+### Follow-ups from task 183 (history evidence; not scheduled)
+- [P3] If the user turns history bodies on while an append waits for the collection id to be read, a body from a response received with storage off is written; the setting is read in `spawn_record`, not at response time (`crates/app/src/workspace.rs:2875`).
+- [P3] No app-level test checks that the GUI passes `history_bodies = false` through; `body_to_store` is now `#[cfg(test)]` (`crates/app/src/ui/history.rs:27`).
+- [P3] A Failed or Cancelled outcome passed with `Some(body)` writes the `.bin` but records `no_response` (`crates/storage/src/history.rs:1288-1290`); no caller does this today.
 
 ### Follow-ups from task 182 (history scrub and truncated bodies; not scheduled)
 
@@ -41,10 +92,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] AC51 in `docs/plan/tasks/99-hardening-0-2-0.md` says "(done, task 163)"; it should credit tasks 161 and 163.
 
 ### Follow-ups from task 171 (Windows hardening; not scheduled)
-- [P3] `is_owner_only` ignores the ACE access mask (`crates/storage/src/win_acl.rs:103-107`), so a single owner ACE with reduced rights counts as owner-only.
 - [Note] No test proves `restrict_to_owner` is skipped on the already-owner-only path.
-- [P3] If `restrict_to_owner` fails after `create_dir` made an ancestor, that ancestor keeps its inherited ACLs and later calls never fix it (`crates/storage/src/data_dir.rs` ~148); e.g. remove the just-created dir on failure.
-- [P3] 139-3: the `windows-sys` entry in `crates/storage/Cargo.toml` lacks `default-features = false`, which `docs/conventions.md:83-84` requires (no build effect; PR #139's description wrongly says it is set).
 - [Note] ReFS has 128-bit file IDs; `same_file_entry` compares the 64-bit `nFileIndex`.
 - [Note] The 8.3 test could read the short name inside the setup dir instead of a sibling file.
 - [Flake] `run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7` is in `known-flakes.md`; find and fix the cause.
@@ -79,16 +127,11 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [NOTE] The fallback problem text for exit 4 could read as a secret problem if `prepare` ever fails on something Explain does not model.
 
 ### Follow-ups from task 169 (secret store and binding hardening; not scheduled)
-- [P3] `collection.toml` becomes 0600 when an id is written (`write_nofollow` ignores the old mode).
 - [P3] Windows `open_nofollow` has no file-identity check after open (std has no file-index API).
-- [P3] `open_nofollow` lacks O_NONBLOCK; a FIFO swapped in can hang the read.
-- [P3] `is_git_tracked` (`crates/storage/src/vault.rs`) has no timeout and fails open on any git error.
-- [P3] `gains_moved_name` (`crates/storage/src/environment.rs`) reads via `load_vars`, which follows symlinks.
 - [Low] `keyring-core = "1"` is not in `[workspace.dependencies]`.
 - [Low] The no-data-dir refusal is only `Invalid{key:"secrets"}`.
 - NOTE: the `cfg(windows)` keychain path is unbuilt locally; Windows CI is the proof.
 - [Low] On Windows `h3_tracked_check_works_with_a_relative_root` does not test a relative root (the leading `/` is never stripped).
-- [P3] Fix the flaky `h3_load_without_a_data_dir_refuses_a_keychain_environment`: change the secret value `t1` to one a random temp path cannot contain (see known-flakes.md).
 
 ### Follow-ups from task 178 (truncated history body; not scheduled)
 - [P3] `truncated_sidecar_history_body_stays_equal_to_the_stored_body` (`crates/app/src/workspace.rs:~6380`) uses a JSON fixture that the history scrub empties, so it compares empty bodies. A Text sidecar body would hold a real 1 MiB cut body; task 182 fixes the scrub, after which a JSON fixture also works.

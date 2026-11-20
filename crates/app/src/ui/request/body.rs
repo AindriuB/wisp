@@ -12,7 +12,7 @@ use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme as _, IconName, IndexPath, Sizable as _};
-use wisp_core::request::{Body, KeyValue, Part, PartValue, TextBody};
+use wisp_core::request::{Body, GraphQlBody, KeyValue, Part, PartValue, TextBody};
 
 use crate::pretty::pretty_json;
 use crate::tab::{RequestTab, TabEvent};
@@ -27,16 +27,18 @@ pub enum BodyKind {
     Json,
     Text,
     Xml,
+    GraphQl,
     Form,
     Multipart,
     File,
 }
 
-const KINDS: [BodyKind; 7] = [
+const KINDS: [BodyKind; 8] = [
     BodyKind::None,
     BodyKind::Json,
     BodyKind::Text,
     BodyKind::Xml,
+    BodyKind::GraphQl,
     BodyKind::Form,
     BodyKind::Multipart,
     BodyKind::File,
@@ -49,6 +51,7 @@ impl BodyKind {
             Body::Json(_) => Self::Json,
             Body::Text(_) => Self::Text,
             Body::Xml(_) => Self::Xml,
+            Body::GraphQl(_) => Self::GraphQl,
             Body::Form(_) => Self::Form,
             Body::Multipart(_) => Self::Multipart,
             Body::File(_) => Self::File,
@@ -61,6 +64,7 @@ impl BodyKind {
             Self::Json => "JSON",
             Self::Text => "Text",
             Self::Xml => "XML",
+            Self::GraphQl => "GraphQL",
             Self::Form => "Form",
             Self::Multipart => "Multipart",
             Self::File => "File",
@@ -81,6 +85,7 @@ impl BodyKind {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stash {
     pub text: TextBody,
+    pub graphql: GraphQlBody,
     pub form: Vec<KeyValue>,
     pub multipart: Vec<Part>,
     pub file: PathBuf,
@@ -92,6 +97,7 @@ impl Stash {
         match body {
             Body::None => {}
             Body::Json(t) | Body::Text(t) | Body::Xml(t) => self.text = t.clone(),
+            Body::GraphQl(g) => self.graphql = g.clone(),
             Body::Form(rows) => self.form = rows.clone(),
             Body::Multipart(parts) => self.multipart = parts.clone(),
             Body::File(path) => self.file = path.clone(),
@@ -104,6 +110,7 @@ impl Stash {
             BodyKind::Json => Body::Json(self.text.clone()),
             BodyKind::Text => Body::Text(self.text.clone()),
             BodyKind::Xml => Body::Xml(self.text.clone()),
+            BodyKind::GraphQl => Body::GraphQl(self.graphql.clone()),
             BodyKind::Form => Body::Form(self.form.clone()),
             BodyKind::Multipart => Body::Multipart(self.multipart.clone()),
             BodyKind::File => Body::File(self.file.clone()),
@@ -631,6 +638,32 @@ impl BodyEditor {
     }
 }
 
+impl BodyEditor {
+    /// Read-only view until the GraphQL editor exists.
+    fn render_graphql_placeholder(&self, cx: &Context<Self>) -> impl IntoElement {
+        let g = &self.stash.graphql;
+        let block = |title: &'static str, text: &str| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_color(cx.theme().muted_foreground).child(title))
+                .child(div().font_family("monospace").child(text.to_string()))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("The GraphQL editor is not built yet; this body is read-only."),
+            )
+            .child(block("Query", &g.query))
+            .child(block("Variables", &g.variables))
+    }
+}
+
 /// Lets a row builder skip the checkbox and delete button on the trailing row.
 trait TrailingExt: Sized {
     fn when_not_trailing<E: IntoElement>(self, trailing: bool, f: impl FnOnce() -> E) -> Self;
@@ -652,6 +685,7 @@ impl Render for BodyEditor {
         col = match self.kind {
             BodyKind::None => col,
             BodyKind::Json | BodyKind::Text | BodyKind::Xml => col.child(self.render_text(cx)),
+            BodyKind::GraphQl => col.child(self.render_graphql_placeholder(cx)),
             BodyKind::Form => col.child(div().flex_1().min_h_0().child(self.form.clone())),
             BodyKind::Multipart => col.child(Self::scroll_area(
                 "body-multipart",

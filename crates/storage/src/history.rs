@@ -318,6 +318,30 @@ pub enum Delivery {
     Responded,
 }
 
+/// Why a response body is or is not in the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyEvidence {
+    /// The whole response body is in the store.
+    Stored,
+    /// Only the first [`BODY_CAP`] bytes are stored.
+    Truncated,
+    /// The caller chose not to store bodies.
+    Off,
+    /// The response completed, but its body could not be read for the store.
+    Unreadable,
+    /// The outcome was Failed or Cancelled before a body existed.
+    NoResponse,
+}
+
+/// What an entry holds of the response. Absent on entries written before 0.5.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Evidence {
+    pub body: BodyEvidence,
+    /// True when the entry carries the response head (`status` is `Some`).
+    pub headers: bool,
+}
+
 /// One index line. Unknown fields are ignored and optional ones default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -359,6 +383,9 @@ pub struct HistoryEntry {
     /// Whether the request was delivered; absent on older entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Delivery>,
+    /// Whether the body and head were recorded, and why not; absent before 0.5.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Evidence>,
 }
 
 /// What the caller hands to [`HistoryStore::append`].
@@ -425,6 +452,14 @@ fn cap_request_body(body: &mut Body) -> bool {
                 return false;
             }
             cut(&mut b.content, BODY_CAP);
+            true
+        }
+        Body::GraphQl(g) => {
+            if g.query.len() + g.variables.len() <= BODY_CAP {
+                return false;
+            }
+            cut(&mut g.query, BODY_CAP);
+            cut(&mut g.variables, BODY_CAP - g.query.len());
             true
         }
         Body::Form(fields) => {
@@ -600,10 +635,17 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
                 }
             }
         }
-        Body::Json(b) => redact_json_body(&mut b.content, &mut names),
+        Body::Json(b) => redact_json_body(&mut b.content, "body", &mut names),
         Body::Text(b) | Body::Xml(b) if contains_credential_fragment(&b.content) => {
             b.content.clear();
             note(&mut names, "body".into());
+        }
+        Body::GraphQl(g) => {
+            if contains_credential_fragment(&g.query) {
+                g.query.clear();
+                note(&mut names, "body.query".into());
+            }
+            redact_json_body(&mut g.variables, "body.variables", &mut names);
         }
         _ => {}
     }
@@ -751,19 +793,19 @@ impl<'de> Deserialize<'de> for NoDupKeys {
 /// Redact credential-named keys in a JSON body template. Bodies are text templates, so
 /// `{{ref}}` in value position is masked for the parse and restored unquoted. A body that
 /// still does not parse is dropped (fail closed) and `body` is recorded.
-fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
+fn redact_json_body(content: &mut String, whole: &str, names: &mut Vec<String>) {
     if content.trim().is_empty() {
         return;
     }
     let (masked, refs) = mask_bare_refs(content);
     if serde_json::from_str::<NoDupKeys>(&masked).is_err() {
         content.clear();
-        note(names, "body".into());
+        note(names, whole.into());
         return;
     }
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&masked) else {
         content.clear();
-        note(names, "body".into());
+        note(names, whole.into());
         return;
     };
     let mut found = Vec::new();
@@ -773,7 +815,7 @@ fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
     }
     let Ok(text) = serde_json::to_string(&v) else {
         content.clear();
-        note(names, "body".into());
+        note(names, whole.into());
         return;
     };
     *content = restore_bare_refs(&text, &refs);
@@ -1221,8 +1263,21 @@ impl HistoryStore {
         }
     }
 
-    /// Store one finished request. `body` is cut to [`BODY_CAP`] bytes.
+    /// Store one finished request. `body` is cut to [`BODY_CAP`] bytes. A completed
+    /// response with no `body` is recorded as `off`; use [`Self::append_with`] to say
+    /// the body was unreadable instead.
     pub fn append(&self, new: NewEntry, body: Option<&[u8]>) -> Result<HistoryEntry, StorageError> {
+        self.append_with(new, body, true)
+    }
+
+    /// As [`Self::append`]. `bodies_off` says a completed response has no `body` because
+    /// the caller chose not to store bodies; when false, a missing body is `unreadable`.
+    pub fn append_with(
+        &self,
+        new: NewEntry,
+        body: Option<&[u8]>,
+        bodies_off: bool,
+    ) -> Result<HistoryEntry, StorageError> {
         let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _file_lock = self.lock_file()?;
         let created = !self.dir.exists();
@@ -1245,6 +1300,17 @@ impl HistoryStore {
         if let Some(b) = stored {
             atomic_write_private(&bin, b)?;
         }
+        let body_evidence = match (&new.outcome, stored, bodies_off) {
+            (Outcome::Failed { .. } | Outcome::Cancelled, _, _) => BodyEvidence::NoResponse,
+            (_, Some(_), _) if truncated => BodyEvidence::Truncated,
+            (_, Some(_), _) => BodyEvidence::Stored,
+            (_, None, true) => BodyEvidence::Off,
+            (_, None, false) => BodyEvidence::Unreadable,
+        };
+        let evidence = Evidence {
+            body: body_evidence,
+            headers: new.status.is_some(),
+        };
         let url = request.url.clone();
         let file = ReqFile {
             request,
@@ -1276,6 +1342,7 @@ impl HistoryStore {
             environment: new.environment,
             assertions: new.assertions,
             delivery: new.delivery,
+            evidence: Some(evidence),
         };
         let mut line = serde_json::to_string(&entry).map_err(|e| StorageError::History {
             message: e.to_string(),
