@@ -748,7 +748,7 @@ mod tests {
             r
         };
         let (x, y) = (mk("x"), mk("y"));
-        let data = DataDir::at(&dir.path().join("data"));
+        let data = DataDir::at(dir.path().join("data"));
         let ws = cx.new(|cx| {
             Workspace::with_data_dir(
                 Settings::default(),
