@@ -14,11 +14,11 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme as _, IconName, Sizable as _};
 
 use crate::actions::{
-    CancelRequest, ClearHistory, CloseCollection, CloseTab, KeepMine, NewCollection,
-    NewEnvironment, NewRequest, NextTab, OpenCollection, OpenImport, OpenPalette, PrevTab,
-    ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets,
-    ShowHistory, SwitchEnvironment, ToggleConfirmSend, ToggleHistoryBodies, ToggleLayout,
-    ToggleTheme,
+    CancelRequest, ChooseCaFile, ClearCaFile, ClearHistory, CloseCollection, CloseTab, KeepMine,
+    NewCollection, NewEnvironment, NewRequest, NextTab, OpenCollection, OpenImport, OpenPalette,
+    PrevTab, ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar,
+    ShowEnvSecrets, ShowHistory, SwitchEnvironment, ToggleConfirmSend, ToggleHistoryBodies,
+    ToggleLayout, ToggleSystemTrust, ToggleTheme,
 };
 use crate::guard::{self, Answer, Next};
 use crate::palette::PaletteMode;
@@ -302,6 +302,27 @@ impl WorkspaceView {
                 && let Some(path) = paths.first()
             {
                 ws.update(cx, |w, cx| w.request_share(path.clone(), cx));
+            }
+        })
+        .detach();
+    }
+
+    /// "Choose CA certificate file…": pick a file; the workspace loads it off the UI thread.
+    fn on_choose_ca_file(&mut self, cx: &mut Context<Self>) {
+        let ws = self.workspace.clone();
+        cx.spawn(async move |_, cx| {
+            let rx = cx.update(|cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: false,
+                    prompt: None,
+                })
+            });
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(path) = paths.first()
+            {
+                ws.update(cx, |w, cx| w.set_ca_file(path.clone(), cx));
             }
         })
         .detach();
@@ -1159,6 +1180,15 @@ impl Render for WorkspaceView {
                     };
                     cx.emit(WorkspaceEvent::Notice(text.into()));
                 });
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSystemTrust, _, cx| {
+                this.workspace.update(cx, |w, cx| w.toggle_system_trust(cx));
+            }))
+            .on_action(cx.listener(|this, _: &ChooseCaFile, _, cx| {
+                this.on_choose_ca_file(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClearCaFile, _, cx| {
+                this.workspace.update(cx, |w, cx| w.clear_ca_file(cx));
             }))
             .on_action(cx.listener(|this, _: &SwitchEnvironment, window, cx| {
                 this.open_palette(PaletteMode::Environments, window, cx);

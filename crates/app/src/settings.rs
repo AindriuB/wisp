@@ -57,6 +57,10 @@ pub struct Settings {
     pub active_collection: Option<PathBuf>,
     /// Collection and environment pairs that confirm before sending.
     pub confirm_send: BTreeSet<GuardKey>,
+    /// Also trust the operating system's certificate store.
+    pub system_trust: bool,
+    /// An extra PEM CA file (absolute path).
+    pub ca_bundle: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -70,6 +74,8 @@ impl Default for Settings {
             open_collections: Vec::new(),
             active_collection: None,
             confirm_send: BTreeSet::new(),
+            system_trust: true,
+            ca_bundle: None,
         }
     }
 }
@@ -219,6 +225,29 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
             }
         }
     }
+    if let Some(tls) = doc.get("tls") {
+        if let Some(t) = tls.as_table_like() {
+            if let Some(item) = t.get("system_trust") {
+                match item.as_bool() {
+                    Some(b) => settings.system_trust = b,
+                    None => bad.push("tls.system_trust"),
+                }
+            }
+            if let Some(item) = t.get("ca_bundle") {
+                match item.as_str() {
+                    Some(p) if Path::new(p).is_absolute() => {
+                        settings.ca_bundle = Some(PathBuf::from(p));
+                    }
+                    Some(_) => {
+                        tracing::warn!("settings: tls.ca_bundle is not an absolute path; ignored");
+                    }
+                    None => bad.push("tls.ca_bundle"),
+                }
+            }
+        } else {
+            bad.push("tls");
+        }
+    }
     let warning = (!bad.is_empty()).then(|| {
         format!(
             "invalid value for setting(s): {}; using defaults",
@@ -362,11 +391,76 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
             i.as_integer() == Some(n)
         });
     }
+    save_tls(&mut doc, settings);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     wisp_storage::fs::atomic_write(path, doc.to_string().as_bytes())?;
     Ok(())
+}
+
+/// Replace a key's value, keeping the old line's decor (spacing, trailing comment).
+fn set_keep_decor(t: &mut dyn toml_edit::TableLike, key: &str, new: Item) {
+    let decor = t
+        .get(key)
+        .and_then(|i| i.as_value())
+        .map(|v| v.decor().clone());
+    match t.get_mut(key) {
+        Some(item) => *item = new,
+        None => {
+            t.insert(key, new);
+        }
+    }
+    if let (Some(d), Some(v)) = (decor, t.get_mut(key).and_then(|i| i.as_value_mut())) {
+        *v.decor_mut() = d;
+    }
+}
+
+/// Write `[tls]`, leaving other keys in the table alone and removing the table when it
+/// ends up empty.
+fn save_tls(doc: &mut DocumentMut, settings: &Settings) {
+    let has_table = doc.get("tls").is_some_and(|t| t.as_table_like().is_some());
+    let needed = !settings.system_trust || settings.ca_bundle.is_some();
+    if !has_table {
+        if !needed {
+            return;
+        }
+        doc["tls"] = toml_edit::table();
+    }
+    let Some(t) = doc["tls"].as_table_like_mut() else {
+        return;
+    };
+    // An explicit `system_trust = true` is the default; keep it (and its comment) as is.
+    let trust_is = |t: &dyn toml_edit::TableLike, want: bool| {
+        t.get("system_trust")
+            .and_then(|i| i.as_bool())
+            .is_some_and(|b| b == want)
+    };
+    if settings.system_trust {
+        if t.contains_key("system_trust") && !trust_is(t, true) {
+            set_keep_decor(t, "system_trust", value(true));
+        }
+    } else if !trust_is(t, false) {
+        set_keep_decor(t, "system_trust", value(false));
+    }
+    match &settings.ca_bundle {
+        Some(p) => {
+            let s = p.to_string_lossy();
+            let same = t
+                .get("ca_bundle")
+                .and_then(|i| i.as_str())
+                .is_some_and(|e| e == s.as_ref());
+            if !same {
+                set_keep_decor(t, "ca_bundle", value(s.as_ref()));
+            }
+        }
+        None => {
+            t.remove("ca_bundle");
+        }
+    }
+    if t.is_empty() {
+        doc.remove("tls");
+    }
 }
 
 /// The collections to open at startup.
@@ -426,6 +520,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn tls_settings_default() {
+        let d = dir("tls-default");
+        let (s, w) = load(&d.join("settings.toml"));
+        assert!(w.is_none());
+        assert!(s.system_trust);
+        assert_eq!(s.ca_bundle, None);
+    }
+
+    #[test]
+    fn tls_settings_round_trip_keeps_other_keys() {
+        let d = dir("tls-rt");
+        let p = d.join("settings.toml");
+        std::fs::write(&p, "# note\ntheme = \"dark\"\n[tls]\nother = 1\n").unwrap();
+        let (mut s, _) = load(&p);
+        s.system_trust = false;
+        let ca = d.join("ca.pem");
+        s.ca_bundle = Some(ca.clone());
+        save(&p, &s).unwrap();
+        let (r, w) = load(&p);
+        assert!(w.is_none());
+        assert!(!r.system_trust);
+        assert_eq!(r.ca_bundle, Some(ca));
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("# note") && text.contains("other = 1"));
+        s.system_trust = true;
+        s.ca_bundle = None;
+        save(&p, &s).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("other = 1") && !text.contains("ca_bundle"));
+        assert!(load(&p).0.system_trust);
+    }
+
+    #[test]
+    fn tls_settings_relative_or_empty_path_ignored() {
+        let d = dir("tls-rel");
+        let p = d.join("settings.toml");
+        for v in ["certs/ca.pem", ""] {
+            std::fs::write(&p, format!("[tls]\nca_bundle = \"{v}\"\n")).unwrap();
+            let (s, w) = load(&p);
+            assert_eq!(s.ca_bundle, None);
+            assert!(w.is_none());
+        }
     }
 
     #[test]
@@ -562,6 +701,8 @@ mod tests {
             open_collections: Vec::new(),
             active_collection: None,
             confirm_send: Default::default(),
+            system_trust: true,
+            ca_bundle: None,
         };
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();
@@ -577,6 +718,74 @@ mod tests {
         };
         save(&p, &s).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "theme = \"dark\"\n");
+    }
+
+    /// Absolute CA paths on every OS (forward slashes keep TOML basic strings valid).
+    fn abs_pems(d: &Path) -> (String, String) {
+        let f = |n: &str| d.join(n).to_string_lossy().replace('\\', "/");
+        (f("ca.pem"), f("new.pem"))
+    }
+
+    #[test]
+    fn save_tls_keeps_comments_when_unchanged_or_changed() {
+        let d = dir("tls-decor");
+        let p = d.join("settings.toml");
+        let (old, new) = abs_pems(&d);
+        let before =
+            format!("[tls]\nca_bundle = \"{old}\"  # work CA\nsystem_trust = true  # keep\n");
+        std::fs::write(&p, &before).unwrap();
+        let mut s = load(&p).0;
+        s.theme = ThemeMode::Dark;
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains(&format!("ca_bundle = \"{old}\"  # work CA")),
+            "{after}"
+        );
+        assert!(after.contains("system_trust = true  # keep"), "{after}");
+        s.ca_bundle = Some(PathBuf::from(&new));
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains(&format!("ca_bundle = \"{new}\"  # work CA")),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn save_tls_change_keeps_comment_line_and_spacing() {
+        let d = dir("tls-decor2");
+        let p = d.join("settings.toml");
+        let (old, new) = abs_pems(&d);
+        std::fs::write(
+            &p,
+            format!("[tls]\n# my work CA\n  ca_bundle   = \"{old}\"  # c\n"),
+        )
+        .unwrap();
+        let mut s = load(&p).0;
+        s.ca_bundle = Some(PathBuf::from(&new));
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains("# my work CA\n"), "{after}");
+        assert!(
+            after.contains(&format!("  ca_bundle   = \"{new}\"  # c")),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn save_tls_system_trust_back_on_keeps_comment() {
+        let p = dir("tls-decor3").join("settings.toml");
+        std::fs::write(&p, "[tls]\nsystem_trust = false  # off for proxy\n").unwrap();
+        let mut s = load(&p).0;
+        s.system_trust = true;
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains("system_trust = true  # off for proxy"),
+            "{after}"
+        );
+        assert!(load(&p).0.system_trust);
     }
 
     #[test]
