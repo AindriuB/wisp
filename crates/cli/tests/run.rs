@@ -146,10 +146,11 @@ fn silent() -> SocketAddr {
     addr
 }
 
-/// An address nothing listens on.
+/// An address nothing listens on. Port 0 is never connectable: connect() to it fails on
+/// Linux (refused), macOS and Windows (address not available). Unlike binding a port and
+/// dropping it, no other process or test can take it between the call and the connect.
 fn closed() -> SocketAddr {
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap()
+    SocketAddr::from(([127, 0, 0, 1], 0))
 }
 
 /// A request reading every canary kind: secret in path, query, header and auth, a plain

@@ -268,6 +268,66 @@ fn snapshot_migrated_history_lists_entries_and_changes_nothing() {
 }
 
 #[test]
+fn snapshot_migrated_history_without_an_index_is_noted() {
+    let s = Sandbox::new();
+    s.history(true);
+    fs::remove_file(s.history_dir().join("index.jsonl")).unwrap();
+    let before = snap(s.data.path());
+    let o = s.go(&["--recent", "5", "--json"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["recent"], serde_json::json!([]));
+    assert!(
+        stderr(&o).contains("history has no index"),
+        "{}",
+        stderr(&o)
+    );
+    assert_eq!(before, snap(s.data.path()));
+}
+
+#[test]
+fn snapshot_unreadable_environment_gets_a_note_and_a_truncated_entry() {
+    let s = Sandbox::new();
+    s.w("environments/dev.secrets.toml", "not toml [[[");
+    let o = s.go(&["--json"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(
+        v["truncated"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::from("environment:dev")),
+        "{}",
+        v["truncated"]
+    );
+    assert!(
+        stderr(&o).contains("environment dev could not be read"),
+        "{}",
+        stderr(&o)
+    );
+    let t = s.go(&[]);
+    assert!(String::from_utf8_lossy(&t.stdout).contains("truncated: environment:dev"));
+}
+
+#[test]
+fn snapshot_text_recent_lines_name_the_request_escaped() {
+    let s = Sandbox::new();
+    s.history(true);
+    let e = r#"{"id":"00000000000000000000000000000003","at":1763380002000,"request":"x\u202ey.toml","method":"Get","url":"https://api.test/x","outcome":"Completed","redacted":[]}"#;
+    let d = s.history_dir().join("index.jsonl");
+    let old = fs::read_to_string(&d).unwrap();
+    fs::write(&d, format!("{old}{e}\n")).unwrap();
+    let o = s.go(&["--recent", "5"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let out = String::from_utf8(o.stdout).unwrap();
+    let recent = out.split("== recent ==\n").nth(1).unwrap();
+    assert!(recent.contains("sub/b.toml GET"), "{recent}");
+    assert!(recent.contains("a.toml POST"), "{recent}");
+    assert!(recent.contains("x\\u{202e}y.toml GET"), "{recent}");
+    assert!(!recent.contains('\u{202e}'));
+}
+
+#[test]
 fn snapshot_without_history_dir_or_id_says_so_and_creates_nothing() {
     let s = Sandbox::new();
     let before = snap(s.data.path());

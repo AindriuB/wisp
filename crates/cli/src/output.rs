@@ -374,8 +374,9 @@ pub fn snapshot_text(w: &mut dyn Write, d: &SnapshotDoc) -> io::Result<()> {
         for r in recent {
             write!(
                 w,
-                "{} {} {} {}",
+                "{} {} {} {} {}",
                 r.at,
+                r.request.as_deref().map_or_else(|| "-".to_owned(), display),
                 display(&r.method),
                 display(&r.url),
                 r.outcome
@@ -396,7 +397,7 @@ pub fn snapshot_text(w: &mut dyn Write, d: &SnapshotDoc) -> io::Result<()> {
         }
     }
     if !d.truncated.is_empty() {
-        writeln!(w, "truncated: {}", d.truncated.join(", "))?;
+        writeln!(w, "truncated: {}", display(&d.truncated.join(", ")))?;
     }
     Ok(())
 }

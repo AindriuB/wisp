@@ -48,9 +48,12 @@ if [ "$(printf '%s\n' "$sends" | grep -c .)" -ne 1 ]; then
     fail=1
 fi
 
-# The GUI plans through the service: no free-function resolve( above the tests.
-if sed '/^#\[cfg(test)\]/,$d' crates/app/src/workspace.rs | grep -nE '(^|[^:.[:alnum:]_])resolve\('; then
-    echo "check-boundaries: crates/app/src/workspace.rs calls resolve(" >&2
+# The GUI plans through the service: no free-function resolve( above the tests, whether
+# called bare, path-qualified (wisp_core::resolve::resolve( or resolve::resolve( ) or
+# imported under another name (use wisp_core::resolve::resolve as r;).
+if sed '/^#\[cfg(test)\]/,$d' crates/app/src/workspace.rs |
+    grep -nE '(^|[^:.[:alnum:]_])resolve\(|resolve::resolve\(|(^|[^[:alnum:]_])resolve[[:space:]]+as[[:space:]]'; then
+    echo "check-boundaries: crates/app/src/workspace.rs calls or aliases resolve" >&2
     fail=1
 fi
 
