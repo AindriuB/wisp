@@ -13,7 +13,7 @@ use crate::collection::{
     Node, load_collection_defaults, open_collection, save_collection_defaults, save_folder_defaults,
 };
 use crate::environment::{list_environments, save_environment};
-use crate::ops::{create_folder, create_request, slug};
+use crate::ops::{StemHints, create_folder_hinted, create_request_hinted, slug};
 use crate::request::save_request;
 
 use super::openapi::env_name;
@@ -54,7 +54,10 @@ pub fn write(
         });
         existing = found.unwrap_or(&[]);
     }
-    let mut taken: HashSet<String> = existing.iter().map(|n| fold(&node_name(n))).collect();
+    let mut taken = Names {
+        taken: existing.iter().map(|n| fold(&node_name(n))).collect(),
+        ..Names::default()
+    };
 
     if !result.collection_vars.is_empty() {
         let mut defaults = load_collection_defaults(root)?;
@@ -132,7 +135,7 @@ pub fn write(
 /// collection; checked before the first file is written.
 fn check_folder_rel(root: &Path, folder_rel: &Path) -> Result<(), ImportError> {
     let bad =
-        |why: &str| ImportError::Parse(format!("import folder `{}` {why}", folder_rel.display()));
+        |why: &str| ImportError::Folder(format!("import folder `{}` {why}", folder_rel.display()));
     if !folder_rel
         .components()
         .all(|c| matches!(c, std::path::Component::Normal(_)))
@@ -191,15 +194,29 @@ fn clean_name(name: &str) -> String {
     s
 }
 
-fn unique(name: &str, taken: &mut HashSet<String>) -> String {
+/// Names in use within one folder, and the next suffix to try for each base,
+/// so n equal names cost O(n) rather than O(n^2).
+#[derive(Default)]
+struct Names {
+    taken: HashSet<String>,
+    next: std::collections::HashMap<String, usize>,
+    hints: StemHints,
+}
+
+fn unique(name: &str, names: &mut Names) -> String {
     let base = clean_name(name);
     let mut out = base.clone();
-    let mut n = 2;
-    while taken.contains(&fold(&out)) {
-        out = format!("{base} {n}");
-        n += 1;
+    if names.taken.contains(&fold(&out)) {
+        let n = names.next.entry(fold(&base)).or_insert(2);
+        loop {
+            out = format!("{base} {n}");
+            *n += 1;
+            if !names.taken.contains(&fold(&out)) {
+                break;
+            }
+        }
     }
-    taken.insert(fold(&out));
+    names.taken.insert(fold(&out));
     out
 }
 
@@ -207,20 +224,20 @@ fn write_items(
     root: &Path,
     dir: &Path,
     items: &[ImportItem],
-    taken: &mut HashSet<String>,
+    names: &mut Names,
     report: &mut WriteReport,
 ) -> Result<Vec<String>, ImportError> {
     let mut stems = Vec::new();
     for item in items {
         match item {
             ImportItem::Folder { name, items } => {
-                let used = unique(name, taken);
+                let used = unique(name, names);
                 if used != *name {
                     report.renamed.push((name.clone(), used.clone()));
                 }
-                let rel = create_folder(root, dir, &used)?;
+                let rel = create_folder_hinted(root, dir, &used, &mut names.hints)?;
                 report.folders += 1;
-                let mut inner = HashSet::new();
+                let mut inner = Names::default();
                 let order = write_items(root, &rel, items, &mut inner, report)?;
                 save_folder_defaults(
                     &root.join(&rel),
@@ -232,11 +249,11 @@ fn write_items(
                 stems.push(stem(&rel));
             }
             ImportItem::Request { name, request } => {
-                let used = unique(name, taken);
+                let used = unique(name, names);
                 if used != *name {
                     report.renamed.push((name.clone(), used.clone()));
                 }
-                let rel = create_request(root, dir, &used)?;
+                let rel = create_request_hinted(root, dir, &used, &mut names.hints)?;
                 let mut req = request.clone();
                 req.name = used;
                 save_request(&root.join(&rel), &req)?;
@@ -270,7 +287,7 @@ mod tests {
 
     #[test]
     fn collisions_get_suffixes() {
-        let mut t = HashSet::new();
+        let mut t = Names::default();
         assert_eq!(unique("A", &mut t), "A");
         assert_eq!(unique("a", &mut t), "a 2");
         assert_eq!(unique("A", &mut t), "A 3");

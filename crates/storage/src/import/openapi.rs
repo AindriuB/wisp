@@ -65,6 +65,39 @@ fn spend(budget: &mut usize, n: usize) -> Result<(), ImportError> {
     Ok(())
 }
 
+/// A writer that charges every byte to the work budget and fails at once when
+/// it runs out, so a large example is never built past the budget.
+struct BudgetWriter<'a> {
+    buf: Vec<u8>,
+    budget: &'a mut usize,
+}
+
+impl std::io::Write for BudgetWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        *self.budget = self
+            .budget
+            .checked_sub(data.len())
+            .ok_or_else(|| std::io::Error::other("over budget"))?;
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn pretty_within_budget(v: &Value, budget: &mut usize) -> Result<String, ImportError> {
+    let mut w = BudgetWriter {
+        buf: Vec::new(),
+        budget,
+    };
+    serde_json::to_writer_pretty(&mut w, v).map_err(|_| {
+        ImportError::TooLarge("work over budget while serialising an example".into())
+    })?;
+    Ok(String::from_utf8(w.buf).unwrap_or_default())
+}
+
 /// Work units charged for each path item, operation, parameter visit and
 /// `$ref` hop, so shared references cannot multiply unseen work.
 const VISIT_COST: usize = 256;
@@ -393,7 +426,7 @@ fn environments(doc: &Value, result: &mut ImportResult) -> Result<(), ImportErro
         let desc = text(s.get("description"));
         let mut name = if desc_is_safe(&desc) {
             env_name(&desc)
-        } else if suspect || had_userinfo || super::may_hold_credentials(&url) {
+        } else if had_userinfo || super::may_hold_credentials(&url) {
             String::new()
         } else {
             env_name(&super::url_host(&url))
@@ -615,13 +648,14 @@ fn operation(
             .or_else(|| content.iter().find(|(k, _)| k.contains("json")));
         match json {
             Some((_, media)) => {
-                let content = example(doc, media, &at, result, budget)?
-                    .map(|v| match v {
-                        Value::String(s) => s.clone(),
-                        other => serde_json::to_string_pretty(other).unwrap_or_default(),
-                    })
-                    .unwrap_or_default();
-                spend(budget, content.len())?;
+                let content = match example(doc, media, &at, result, budget)? {
+                    None => String::new(),
+                    Some(Value::String(s)) => {
+                        spend(budget, s.len())?;
+                        s.clone()
+                    }
+                    Some(other) => pretty_within_budget(other, budget)?,
+                };
                 req.body = Body::Json(TextBody {
                     content,
                     sidecar: None,

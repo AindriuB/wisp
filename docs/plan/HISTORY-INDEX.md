@@ -20,6 +20,8 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 195 | OpenAPI example budget charged through a size-limited writer; linear name uniqueness and import stem picking (hinted `ops.rs`); `url_host` and `split_userinfo` credential carve-outs closed; own error for a missing import folder | ## 2026-11-20 — OpenAPI importer and URL credential hardening, H4b (task 195) |
+| 2026-11-20 | 199 | JSON assertion numbers compare by value (`1` equals `1.0`); string against number stays type-strict; amends 0.3.0 spec :186 | ## 2026-11-20 — JSON assertion numbers compare by value (task 199) |
 | 2026-11-20 | 194 | request-level Postman tests translate to `[[assert]]` only when the whole script is table-form `pm.test` units, else wholly untranslated with a warning; GraphQL import; 170 importer P3s closed; strict grammar replaced the resync scanner | ## 2026-11-20 — Postman test translation and importer hardening (task 194) |
 | 2026-11-20 | 185 | per-root marker keys with lazy re-key, marker size and entry caps, 64-root cap per id, rebind refused while another root is live, unix worktree provenance by ctime, uid and folder owner, common dir nested in a bound root refused, Windows device names refused, keychain worker zeroizes copies | ## 2026-11-20 — Binding registry and keychain worker hardening, H3b (task 185) |
 | 2026-11-20 | 193 | GraphQL kind in the body picker: Query and Variables editors, Format on variables, non-blocking not-an-object note; no `{{var}}` highlighting (deferred, Amendment 1); non-GraphQL stored body resend needs only a query | ## 2026-11-20 — GraphQL editor in the request pane (task 193) |

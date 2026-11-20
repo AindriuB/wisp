@@ -250,9 +250,24 @@ fn reserved_at_root(parent_rel: &Path, name: &str) -> bool {
     parent_rel.as_os_str().is_empty() && (folded == ENV_DIR || folded == STATE_DIR)
 }
 
+/// Next suffix to try per (directory, slug, is-request), carried across the
+/// calls of one import so colliding slugs cost O(1) probes each, not O(k).
+pub(crate) type StemHints = std::collections::HashMap<(PathBuf, String, bool), u32>;
+
 /// Pick `<slug>`, `<slug>-2`, ... for which neither `<n>.toml` nor folder `<n>` exists.
-fn unique_stem(abs_dir: &Path, parent_rel: &Path, base: &str, request: bool) -> String {
-    let mut n = 1u32;
+/// Probing starts at the hint's suffix (1 when absent); the hint is left at
+/// the suffix after the one returned.
+fn unique_stem(
+    abs_dir: &Path,
+    parent_rel: &Path,
+    base: &str,
+    request: bool,
+    hints: &mut StemHints,
+) -> String {
+    let hint = hints
+        .entry((parent_rel.to_path_buf(), base.to_string(), request))
+        .or_insert(1);
+    let mut n = *hint;
     loop {
         let cand = if n == 1 {
             base.to_string()
@@ -265,6 +280,7 @@ fn unique_stem(abs_dir: &Path, parent_rel: &Path, base: &str, request: bool) -> 
         let reserved = reserved_at_root(parent_rel, &cand)
             || (request && (cand == "collection" || cand == "folder"));
         if !taken && !reserved {
+            *hint = n;
             return cand;
         }
     }
@@ -449,11 +465,21 @@ fn read_request_doc(abs: &Path) -> Result<DocumentMut> {
 
 /// Create a request named `name` in `dir`. Returns its path relative to `root`.
 pub fn create_request(root: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
+    create_request_hinted(root, dir, name, &mut StemHints::new())
+}
+
+/// `create_request` that starts its suffix search at `hints` and updates them.
+pub(crate) fn create_request_hinted(
+    root: &Path,
+    dir: &Path,
+    name: &str,
+    hints: &mut StemHints,
+) -> Result<PathBuf> {
     check_name(name)?;
     let rootc = canon_root(root)?;
     let dir_rel = clean_dir(&rootc, dir)?;
     let abs_dir = rootc.join(&dir_rel);
-    let stem = unique_stem(&abs_dir, &dir_rel, &slug(name), true);
+    let stem = unique_stem(&abs_dir, &dir_rel, &slug(name), true, hints);
     let rel = dir_rel.join(format!("{stem}.toml"));
     let abs = rootc.join(&rel);
     ensure_free(&abs, None)?;
@@ -547,11 +573,21 @@ pub fn create_environment(root: &Path, name: &str) -> Result<PathBuf> {
 
 /// Create a folder named after `name` in `parent`.
 pub fn create_folder(root: &Path, parent: &Path, name: &str) -> Result<PathBuf> {
+    create_folder_hinted(root, parent, name, &mut StemHints::new())
+}
+
+/// `create_folder` that starts its suffix search at `hints` and updates them.
+pub(crate) fn create_folder_hinted(
+    root: &Path,
+    parent: &Path,
+    name: &str,
+    hints: &mut StemHints,
+) -> Result<PathBuf> {
     check_name(name)?;
     let rootc = canon_root(root)?;
     let parent_rel = clean_dir(&rootc, parent)?;
     let abs_parent = rootc.join(&parent_rel);
-    let stem = unique_stem(&abs_parent, &parent_rel, &slug(name), false);
+    let stem = unique_stem(&abs_parent, &parent_rel, &slug(name), false, hints);
     let rel = parent_rel.join(&stem);
     let abs = rootc.join(&rel);
     std::fs::create_dir(&abs).map_err(|e| {

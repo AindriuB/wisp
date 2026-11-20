@@ -35,6 +35,8 @@ pub enum ImportError {
     Parse(String),
     #[error("unsupported input: {0}")]
     Unsupported(String),
+    #[error("{0}")]
+    Folder(String),
     #[error(transparent)]
     Storage(#[from] crate::StorageError),
 }
@@ -297,6 +299,10 @@ fn authority_start(url: &str) -> usize {
 /// stripped, no path, query or fragment.
 pub(crate) fn url_host(url: &str) -> String {
     let (url, _) = split_userinfo(url);
+    // `name:<secret>` that is kept as host:port is not a host to show or name.
+    if may_hold_credentials(&url) {
+        return String::new();
+    }
     let rest = &url[authority_start(&url)..];
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let auth = &rest[..end];
@@ -438,8 +444,25 @@ fn is_port_like(p: &str) -> bool {
 }
 
 /// Split `user:pass@` off the authority of `[scheme://]host...`. Returns the URL
-/// without it and the percent-decoded `(user, password)`.
+/// without it and the percent-decoded `(user, password)` of the first one.
+/// A second credential left behind by the first strip (`u:p@x:pw/?a@h2/y`) is
+/// removed too; its text is dropped.
 pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
+    let (mut cur, first) = split_userinfo_once(url);
+    if first.is_some() {
+        // Every pass shortens `cur`, so this ends.
+        loop {
+            let (next, more) = split_userinfo_once(&cur);
+            if more.is_none() {
+                break;
+            }
+            cur = next;
+        }
+    }
+    (cur, first)
+}
+
+fn split_userinfo_once(url: &str) -> (String, Option<(String, String)>) {
     let scheme_end = authority_start(url);
     let rest = &url[scheme_end..];
     let first_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -492,10 +515,15 @@ pub(crate) fn may_hold_credentials(url: &str) -> bool {
     let Some((h, p)) = seg.split_once(':') else {
         return false;
     };
+    // `http:hunter2?x@h`: a scheme-like head is not userinfo for
+    // `split_userinfo`, but a non-digit tail with a later `@` may be a password.
+    let scheme_like = ["http", "https", "ws", "wss"]
+        .iter()
+        .any(|s| h.eq_ignore_ascii_case(s));
     !seg.contains('@')
         && (!h.is_empty() || authority_start(url) > 0)
         && !seg.starts_with('[')
-        && is_port_like(p)
+        && (is_port_like(p) || (scheme_like && !p.is_empty() && !p.contains("{{")))
         && rest[end..].contains('@')
 }
 
@@ -755,6 +783,16 @@ mod tests {
                 .expect("scan did not finish in 10s: not linear");
             assert!(warnings.is_empty(), "{warnings:?}");
         }
+    }
+
+    #[test]
+    fn url_host_never_returns_userinfo_shape() {
+        let h = super::url_host("https://bob:1234?rest@h2/y");
+        assert!(!h.contains("bob") && !h.contains("1234"), "{h}");
+        assert_eq!(
+            super::url_host("https://a.example:8443/x"),
+            "a.example:8443"
+        );
     }
 
     #[test]
