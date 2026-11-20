@@ -132,3 +132,38 @@ Follow-up for the scribe at record time: add a supersession note to spec :264, i
 ## Outcome
 
 Recorded on the PR branch. Verified at bedafd74496fa86ef7d0d3facb4c945debdb940c: tester PASS, reviewer APPROVE on AC1-AC6 and AC8-AC11. AC7's Windows read (`h3b_win_com1_refused`, `h3b_win_trailing_dot_refused`) waits on the PR's Windows CI. Follow-ups are in PLAN under "Follow-ups from task 185". The spec :264 supersession note was added at record time.
+
+## Attempt 1 — failed
+CI on PR #160 at 95720c4ab33bee2487db567fa695d8f21583c489: `check (windows-latest)` failed in `-p wisp-storage --test binding` (11 passed; 2 failed). The `h3b_win_com1_refused` and `h3b_win_trailing_dot_refused` tests passed (AC7 win-ci).
+- `h3b_planted_common_dir_refused` panicked at crates\storage\tests\binding.rs:280:46: `unwrap()` on `Err(UnverifiedCheckout { bound_roots: ["\\?\C:\Users\runneradmin\AppData\Local\Temp\.tmp…\sub"] })`.
+- `h3b_recreated_worktree_not_verified` panicked at crates\storage\tests\binding.rs:210:46: `unwrap()` on `Err(UnverifiedCheckout { bound_roots: ["\\?\C:\…\.tmp…"] })`.
+- Both are the positive controls: a freshly created worktree does not verify on Windows. Likely cause (check, do not assume): the new lexical back-pointer comparison (vault_binding.rs:~812-826) compares the `\\?\`-verbatim canonical path with the plain path git writes in the entry's `gitdir` file, or the Windows mtime window rejects it. If so, every one-click worktree bind on Windows now fails closed — a regression of the worktree feature on Windows, not just a test issue. Fix within Owns so a genuine fresh worktree verifies on Windows while the forged cases stay refused; confirm the vault.rs worktree-regression tests on Windows too.
+
+## Wave verified — e2625e5a182ad221b8d50c98347f52469af70b16
+(tester PASS; reviewer APPROVE except AC7 win-ci, pending this head's Windows CI)
+
+## External review — findings
+key sha256:2faa4f629f54 · head e2625e5a182ad221b8d50c98347f52469af70b16 · round 2
+
+## AindriuB/wisp#160 · Changes suggested · head e2625e5a182a
+0 P1 · 1 P2 · 1 P3
+
+| ID | Sev | Where | Issue | Failing input | Fix |
+|---|---|---|---|---|---|
+| 160-1 | P2 | `crates/storage/src/vault_binding.rs:870` | written_together requires the entry's gitdir file and the worktree's .git file to have ctimes within 10 s, but git before 2.48 (e.g. Ubuntu 24.04's 2.43, Apple git 2.39) rewrites only the entry's gitdir file in `git worktree move` and `git worktree repair`, so a real worktree that was moved or repaired later never verifies again. No test covers a moved worktree. | Bind main checkout /r, run `git worktree add ../w`, wait over 10 s, run `git worktree move ../w ../w2`, then bind_additional_checkout(/w2). Before this PR it was a one-click verified sibling. Now it is unverified and falls back to the full bind prompt. | Also accept a pair whose gitdir file is newer than the .git file, as long as the .git file is still owned by the common dir's uid. Or document this as a residual and add a test for a moved worktree. |
+| 160-2 | P3 | `crates/storage/src/vault_binding.rs:453` | check's lazy re-key writes the marker first, removing the legacy registry-id entry, and then writes the registry. If only the registry write fails, the failure is logged and Ok is returned, but the row stays key None with the old nonce, which no longer exists in the marker. | Legacy row (key None). Run check while the data dir is full or the registry file cannot be replaced: the marker write succeeds and write_registry fails. This check passes, but every later check of that root returns Unbound and needs the bind prompt again. | In the re-key path, keep the registry-id entry in the marker (pass no drop_keys) and remove it only on a later write after the registry has saved the key. Or, on registry-write failure, restore the old marker entry. |
+
+Not assessed: Windows behaviour (AC7's cfg(windows) tests and the mtime window) and anything that would need building or running the PR. Items already listed as follow-ups in PLAN.md (dead-row key drop on rebind and re-key, the cross-registry marker write race, the unescaped LooksLikeCopy Display, and tracked_marker_warning having no production caller) are not repeated.
+
+## Wave stopped — step 7 — orchestrator: 160-1 asks to relax the AC4 provenance window for moved/repaired worktrees (design decision: relax vs accept as residual)
+
+## External review — findings
+key: user's private review (pasted 2026-11-20) · head e2625e5a182ad221b8d50c98347f52469af70b16 · round 3
+
+- [P2] crates/storage/src/vault_binding.rs:453-459 — Preserve the existing binding when migration cannot save its registry row. Migration replaces the legacy marker before saving the matching registry row. If the registry write fails, the error is logged and the current check succeeds, but subsequent checks report Unbound: the old registry entry no longer matches the marker. An ordinary secret read can therefore invalidate a working binding. Preserve the old marker on failure or make the migration recoverable. (Same defect as 160-2 above, raised to P2 by the user.)
+  route: implementer — AC2 says a re-key write failure is logged and check still returns Ok; that must not break the binding. Fix: in the re-key path keep the legacy registry-id marker entry until the registry has saved the new key (drop it only on a later write), or restore the old marker entry if the registry write fails. Add a test with an injected registry-write failure: the next check still passes.
+
+## Residual accepted — 160-1 (user, 2026-11-20)
+A worktree moved or repaired by git < 2.48 (only the entry gitdir file is rewritten) no longer verifies for one-click binding and falls back to the bind prompt (fails closed). Relaxing the ctime pairing would accept the recreated-worktree forgery shape AC4 blocks. Follow-up for task 197: document `git worktree move` next to `repair`.
+
+## Wave resumed — user accepted 160-1 as a known residual; round-3 P2 (re-key partial write) fixed in 1f45f26
