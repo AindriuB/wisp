@@ -1,0 +1,318 @@
+//! Postman importer: test translation and hardening.
+
+use serde_json::{Value, json};
+use wisp_core::assert::{Assertion, Expected, Op};
+use wisp_core::request::{Auth, Body, GraphQlBody, Request};
+use wisp_storage::import::{ImportError, ImportItem, ImportResult, postman};
+
+const SCHEMA: &str = "https://schema.getpostman.com/json/collection/v2.1.0/collection.json";
+
+fn collection(items: Value, extra: Value) -> Vec<u8> {
+    let mut doc = json!({"info": {"name": "c", "schema": SCHEMA}, "item": items});
+    if let Value::Object(e) = extra {
+        for (k, v) in e {
+            doc[k] = v;
+        }
+    }
+    serde_json::to_vec(&doc).unwrap()
+}
+
+fn request_with(request: Value, events: Value) -> Value {
+    json!({"name": "r", "request": request, "event": events})
+}
+
+fn test_event(lines: &[&str]) -> Value {
+    json!([{"listen": "test", "script": {"exec": lines}}])
+}
+
+fn import_tests(lines: &[&str]) -> (Vec<Assertion>, ImportResult) {
+    let item = request_with(
+        json!({"method": "GET", "url": "http://h/x"}),
+        test_event(lines),
+    );
+    let r = postman::parse(&collection(json!([item]), json!({}))).unwrap();
+    (first(&r).assertions.clone(), r)
+}
+
+fn first(r: &ImportResult) -> &Request {
+    match &r.items[0] {
+        ImportItem::Request { request, .. } => request,
+        ImportItem::Folder { .. } => panic!("folder"),
+    }
+}
+
+fn one(stmt: &str) -> Assertion {
+    let src = format!("pm.test(\"t\", function () {{ {stmt} }});");
+    let (a, r) = import_tests(&[&src]);
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(a.len(), 1);
+    a.into_iter().next().unwrap()
+}
+
+#[test]
+fn pm_status_have_status() {
+    assert_eq!(
+        one("pm.response.to.have.status(201);"),
+        Assertion::Status {
+            op: Op::Equals,
+            expected: Expected::Int(201)
+        }
+    );
+}
+
+#[test]
+fn pm_status_code_eql_and_equal() {
+    let want = Assertion::Status {
+        op: Op::Equals,
+        expected: Expected::Int(200),
+    };
+    assert_eq!(one("pm.expect(pm.response.code).to.eql(200);"), want);
+    assert_eq!(one("pm.expect(pm.response.code).to.equal(200);"), want);
+}
+
+#[test]
+fn pm_header_exists() {
+    assert_eq!(
+        one("pm.response.to.have.header(\"X-Id\");"),
+        Assertion::Header {
+            name: "X-Id".into(),
+            op: Op::Exists,
+            expected: Expected::Bool(true)
+        }
+    );
+}
+
+#[test]
+fn pm_header_equals_two_forms() {
+    let want = Assertion::Header {
+        name: "Content-Type".into(),
+        op: Op::Equals,
+        expected: Expected::Str("text/plain".into()),
+    };
+    assert_eq!(
+        one("pm.response.to.have.header('Content-Type', 'text/plain');"),
+        want
+    );
+    assert_eq!(
+        one("pm.expect(pm.response.headers.get(\"Content-Type\")).to.eql(\"text/plain\");"),
+        want
+    );
+}
+
+#[test]
+fn pm_header_include() {
+    assert_eq!(
+        one("pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"json\");"),
+        Assertion::Header {
+            name: "Content-Type".into(),
+            op: Op::Contains,
+            expected: Expected::Str("json".into())
+        }
+    );
+}
+
+#[test]
+fn pm_json_path_literals() {
+    let path = "$.a.b[0].c";
+    let json = |e| Assertion::Json {
+        path: path.into(),
+        op: Op::Equals,
+        expected: e,
+    };
+    let t = |lit: &str| {
+        one(&format!(
+            "pm.expect(pm.response.json().a.b[0].c).to.eql({lit});"
+        ))
+    };
+    assert_eq!(t("5"), json(Expected::Int(5)));
+    assert_eq!(t("1.5"), json(Expected::Float(1.5)));
+    assert_eq!(t("true"), json(Expected::Bool(true)));
+    assert_eq!(t("false"), json(Expected::Bool(false)));
+    assert_eq!(
+        t("\"a\\\"b\\\\c\\n\""),
+        json(Expected::Str("a\"b\\c\n".into()))
+    );
+    assert_eq!(t("'it\\'s'"), json(Expected::Str("it's".into())));
+}
+
+#[test]
+fn pm_arrow_function_and_multiple_statements() {
+    let (a, r) = import_tests(&[
+        "pm.test(\"a\", () => {",
+        "  pm.response.to.have.status(200);",
+        "  pm.response.to.have.header(\"X\");",
+        "});",
+        "pm.test(\"b\", function() { pm.expect(pm.response.code).to.eql(404) })",
+    ]);
+    assert!(r.warnings.is_empty());
+    assert_eq!(a.len(), 3);
+}
+
+#[test]
+fn pm_mixed_test_not_translated() {
+    let (a, r) = import_tests(&[
+        "pm.test(\"ok\", function () { pm.response.to.have.status(200); });",
+        "pm.test(\"mixed\", function () {",
+        "  pm.response.to.have.status(200);",
+        "  pm.environment.set(\"k\", \"v\");",
+        "});",
+    ]);
+    assert_eq!(a.len(), 1);
+    assert_eq!(r.warnings.len(), 1);
+    assert_eq!(
+        r.warnings[0].message,
+        "1 of 2 tests not translated; scripts are not run"
+    );
+}
+
+#[test]
+fn pm_unsupported_forms_not_translated() {
+    for stmt in [
+        "pm.response.to.have.status(\"OK\");",
+        "pm.response.to.be.ok;",
+        "pm.expect(pm.response.code).to.be.oneOf([200]);",
+        "pm.expect(pm.response.json().a).to.eql(1e3);",
+        "pm.expect(pm.response.json().a).to.eql(x);",
+        "pm.response.to.have.status(200).and.have.header(\"a\");",
+        "pm.response.to.have.status(99);",
+    ] {
+        let src = format!("pm.test(\"t\", function () {{ {stmt} }});");
+        let (a, r) = import_tests(&[&src]);
+        assert!(a.is_empty(), "{stmt}");
+        assert_eq!(r.warnings.len(), 1, "{stmt}");
+    }
+}
+
+#[test]
+fn pm_warning_never_echoes_script_text() {
+    let (_, r) = import_tests(&[
+        "pm.test(\"CANARY-NAME\", function () { pm.environment.set(\"CANARY-KEY\", \"CANARY-VAL\"); });",
+        "console.log(\"CANARY-LOG\");",
+    ]);
+    assert_eq!(r.warnings.len(), 1);
+    assert!(!r.warnings[0].message.contains("CANARY"));
+    assert!(!r.warnings[0].at.contains("CANARY"));
+    assert_eq!(
+        r.warnings[0].message,
+        "2 of 2 tests not translated; scripts are not run"
+    );
+}
+
+#[test]
+fn pm_prerequest_and_folder_scripts_keep_warning() {
+    let req = request_with(
+        json!({"method": "GET", "url": "http://h/x"}),
+        json!([{"listen": "prerequest", "script": {"exec": ["x();"]}}]),
+    );
+    let folder = json!({"name": "F", "item": [req],
+        "event": [{"listen": "test", "script": {"exec": ["pm.test('a', () => {});"]}}]});
+    let r = postman::parse(&collection(json!([folder]), json!({}))).unwrap();
+    let msgs: Vec<&str> = r.warnings.iter().map(|w| w.message.as_str()).collect();
+    assert_eq!(msgs.len(), 2, "{msgs:?}");
+    assert!(msgs.iter().all(|m| m.contains("are not imported")));
+}
+
+#[test]
+fn pm_script_over_64kib_is_not_parsed() {
+    let mut lines =
+        vec!["pm.test(\"a\", function () { pm.response.to.have.status(200); });".to_string()];
+    lines.push(format!("// {}", "x".repeat(64 * 1024)));
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let (a, r) = import_tests(&refs);
+    assert!(a.is_empty());
+    assert_eq!(
+        r.warnings[0].message,
+        "1 of 1 tests not translated; scripts are not run"
+    );
+}
+
+#[test]
+fn pm_hostile_scripts_terminate() {
+    for src in [
+        "pm.test(\"a\", function () { ".repeat(2000),
+        "{{{{{{{{{{".repeat(5000),
+        "\"unterminated".to_string(),
+        "pm.test(\"a\", function () { /* open".to_string(),
+        "/".repeat(10_000),
+    ] {
+        let (a, _) = import_tests(&[&src]);
+        assert!(a.is_empty());
+    }
+}
+
+#[test]
+fn pm_graphql_body_imports() {
+    let body_obj = json!({"mode": "graphql", "graphql": {"query": "{ a }", "variables": {"x": 1}}});
+    let body_str =
+        json!({"mode": "graphql", "graphql": {"query": "{ b }", "variables": "{\"y\":2}"}});
+    let mk = |b: Value| {
+        let item =
+            json!({"name": "r", "request": {"method": "POST", "url": "http://h/x", "body": b}});
+        postman::parse(&collection(json!([item]), json!({}))).unwrap()
+    };
+    let r = mk(body_obj);
+    assert!(r.warnings.is_empty());
+    assert_eq!(
+        first(&r).body,
+        Body::GraphQl(GraphQlBody {
+            query: "{ a }".into(),
+            variables: "{\"x\":1}".into()
+        })
+    );
+    let r = mk(body_str);
+    assert_eq!(
+        first(&r).body,
+        Body::GraphQl(GraphQlBody {
+            query: "{ b }".into(),
+            variables: "{\"y\":2}".into()
+        })
+    );
+}
+
+#[test]
+fn pm_folders_count_toward_node_cap() {
+    let n = wisp_storage::import::MAX_REQUESTS + 1;
+    let folders: Vec<Value> = (0..n)
+        .map(|i| json!({"name": format!("f{i}"), "item": []}))
+        .collect();
+    let err = postman::parse(&collection(Value::Array(folders), json!({}))).unwrap_err();
+    assert!(matches!(err, ImportError::TooLarge(_)), "{err:?}");
+}
+
+#[test]
+fn pm_generated_secret_names_avoid_collection_variable_keys() {
+    let item = json!({"name": "r", "request": {"method": "GET", "url": "http://h/x",
+        "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "s3cret"}]}}});
+    let extra = json!({"variable": [{"key": "r_token", "value": "plain"}]});
+    let r = postman::parse(&collection(json!([item]), extra)).unwrap();
+    let keys: Vec<&str> = r.collection_vars.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(keys, ["r_token"]);
+    let secrets = &r.environments[0].secrets;
+    assert!(secrets.iter().all(|s| s.name != "r_token"), "{secrets:?}");
+    assert_eq!(secrets.len(), 2);
+}
+
+#[test]
+fn pm_userinfo_becomes_basic_only_without_auth_object() {
+    let mk = |auth: Option<Value>| {
+        let mut req = json!({"method": "GET", "url": "http://u:p@h/x"});
+        if let Some(a) = auth {
+            req["auth"] = a;
+        }
+        let item = json!({"name": "r", "request": req});
+        postman::parse(&collection(json!([item]), json!({}))).unwrap()
+    };
+    assert!(matches!(first(&mk(None)).auth, Auth::Basic { .. }));
+    let r = mk(Some(json!({"type": "ntlm", "ntlm": []})));
+    assert_eq!(first(&r).auth, Auth::Inherit);
+    assert!(!r.environments.iter().any(|e| !e.secrets.is_empty()));
+}
+
+#[test]
+fn pm_unsupported_method_warning_has_no_raw_text() {
+    let item =
+        json!({"name": "r", "request": {"method": "TOKEN-sk_live_abc123", "url": "http://h/x"}});
+    let r = postman::parse(&collection(json!([item]), json!({}))).unwrap();
+    assert!(r.warnings.iter().any(|w| w.message.contains("method")));
+    assert!(r.warnings.iter().all(|w| !w.message.contains("sk_live")));
+}
