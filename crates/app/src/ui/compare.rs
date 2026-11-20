@@ -815,6 +815,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compare_view_incomplete_body_shows_evidence_notes_not_equal() {
+        let side = |kind| SideReason {
+            kind,
+            before_0_5_0: false,
+        };
+        let a = side(BodyKind::StoredUnavailable);
+        let b = side(BodyKind::Truncated);
+        let rows = report_rows(&cmp(
+            no_headers(),
+            BodyDiff::Incomplete {
+                a: Some(a),
+                b: Some(b),
+            },
+        ));
+        let t = texts(&rows);
+        let body = t.iter().position(|s| s == "Body").unwrap();
+        assert_eq!(t[body + 1], format!("A: {}", evidence_note(&a)));
+        assert_eq!(t[body + 2], format!("B: {}", evidence_note(&b)));
+        assert!(t[body + 3].starts_with("Hidden by the ignore list"));
+        assert!(!t[body..].iter().any(|s| s.contains("equal")));
+    }
+
     #[gpui::test]
     fn compare_view_opens_a_pair_and_shows_status(cx: &mut gpui::TestAppContext) {
         use gpui::AppContext as _;
