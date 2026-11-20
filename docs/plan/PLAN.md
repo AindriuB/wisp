@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model) and 191 (TLS trust for `wisp-cli run`) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view) and 193 (GraphQL editor) are recorded; 185 (binding registry H3b) is on a PR awaiting review and its Windows CI; it depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -28,10 +28,45 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 
 **Size, decided 2026-11-18 (task 172):** every `wisp-cli` limit in `scripts/measure/cli-budgets.json` is 7,340,032 B (7 MiB), the user's decision after Linux measured 45,048 B over the earlier 6 MiB. Measured `wisp-cli`: macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B (run 44293903312, main 910d681). The Windows GUI is 15,609,344 B, 290,656 B under the 15,900,000 B soft line and 390,656 B under the 16,000,000 B gate; this is the tightest margin, so 177 re-measures it. Task 176 put these limits in `docs/architecture.md`; the sizes there were measured before `snapshot` merged, so 177 re-measures. The wave-1 overage (+26,624 B against +10,240 B allowed) was not cut. Figures: `scripts/measure/results/v0.4.0-wave-2-cli-size.json`.
 
+### Follow-ups from task 193 (GraphQL editor; not scheduled)
+- `{{var}}` highlighting for all body editors (JSON, text, GraphQL Query/Variables); none has it today (`crates/app/src/ui/request/body.rs:201-203`); spec :163 deferred by 193 Amendment 1.
+- `graphql::variables_note` pretty-prints the whole variables text on every render; cache it per edit like `refresh_json` (`body.rs:345`, `:247-253`).
+- The variables note checks text as typed, so `{"id": {{id}}}` shows "not a JSON object" though it sends fine after substitution (`crates/app/src/ui/request/graphql.rs:20-26` vs `crates/core/src/resolve/engine.rs:676-690`); revisit with highlighting.
+- The comment at `crates/service/src/plan.rs:250-253` says a "body"-only redaction needs both fields; since 193 that holds only when the stored body was GraphQL.
+
+### Follow-ups from task 185 (binding registry H3b; not scheduled)
+- [P3] `rebind_confirmed` (`crates/storage/src/vault_binding.rs:1023-1026`) and `check`'s re-key (`:452`) do not drop this registry's dead-row keys for the same root under other ids, as AC11 asks; after about 64 re-ids the rebind fails closed.
+- `h3b_win_trailing_dot_refused` and `h3b_win_com1_refused` do not test the `safe_entry_name` wiring (`verbatim_worktree` ignores setup errors); add a cross-platform lexical test of `exact_worktree_gitdir`.
+- `git worktree move` and ctime changes such as xattrs make worktrees read as unverified; add these beside `git worktree repair` in task 197.
+- `check`'s re-key warning leaves out `error = %e` and logs on every check of a read-only checkout.
+- `tracked_marker_warning` has no production caller; app work.
+- [160-1 residual] Task 197 should document `git worktree move` next to `git worktree repair`.
+- The re-key marker restore at `crates/storage/src/vault_binding.rs:487` is best effort and is not logged on its own.
+- A case-insensitive path on macOS (`WORK` versus `work`) makes a worktree read as unverified.
+- The two `h3b_win_` tests do not prove the name check is wired in.
+- Dead registry rows for a parent folder block nested one-click verification permanently.
+- Tests leak temp dirs (`tempdir().keep()`, `mem::forget` at `crates/storage/tests/binding.rs:22`, `:288`, `:293`).
+- Amendment 3 follow-ups: a cross-registry lock for the marker write race (now also reachable from `check`'s re-key); a test for the uid half of AC4's check; `LooksLikeCopy`'s `Display` prints `bound_root` unescaped (`crates/storage/src/vault.rs:579`); the stale rebind doc comment in `vault.rs` (~:808).
+
+### Follow-ups from task 190 (TLS trust in the GUI; not scheduled)
+- [P3] The CA file is read synchronously on the UI thread at startup (`crates/app/src/workspace.rs:1259-1268`); a CA path on a stalled network mount would block the window opening.
+- [P3] The TLS hint names "Toggle system certificate trust" even when system trust is already on, so following it turns trust off (`crates/app/src/ui/response/mod.rs:70-83`).
+- [P3] Startup trust is covered only by construction: `applied_tls` and `EngineConfig.tls` come from the same local (`workspace.rs:1271-1276`); a test cannot catch a wrong argument unless the engine exposes its trust.
+
+### Follow-ups from task 192 (compare view; not scheduled)
+- [Spec call] If the ignore list cannot be loaded, the whole compare fails and the list cannot be fixed from the view (`crates/app/src/ui/compare.rs:169`). Decide: compare with no patterns and show the error?
+- [Spec call] A change to the body root has pointer "", so Ignore writes the invalid pattern `body:` (`compare.rs:47-49`, `:432-435`). Decide: hide Ignore on the root row?
+- [P3] `start_compare` does nothing visible when `history_job` fails or `open_existing` returns Err or None (`crates/app/src/ui/history.rs:265-282`).
+- [P3] The IgnoreProblem reason is shown unescaped (`compare.rs:550`); pass it through `escape_display` like the pattern beside it.
+- [P3] The save lock is per view, so a save from a replaced view is not ordered against a new view's save; consider one lock per collection (`compare.rs:141`, `:207`). Same class as the cross-process race, which needs a storage API change.
+- [P3] `previous_entry` runs per row per render, O(n^2) at 500 entries (`history.rs:339-345`).
+- [P3] A JSON key literally `*` becomes a wildcard pointer segment, so ignoring it hides every sibling (`compare.rs:47`; grammar from 188, see 155-1).
+- [P3] Tests cover the per-row compare helpers, not the "Compare from" button wiring (`history.rs:366`).
+- [P3] Test names `compare_view_header_pattern` and `compare_view_body_pattern` do not read as sentences (`docs/conventions.md:106`).
+
 ### Follow-ups from task 188 (compare engine and ignore list; not scheduled)
 - [P3] JSON nested exactly 128 deep returns TooDeep because of serde_json's limit, while AC7 says beyond 128 (`crates/service/src/compare.rs:421-427`, `:506-509`).
 - [P3] An entry from before 0.5.0 (`evidence: None`) with `status: None` does not flag its headers as not recorded (`compare.rs:300-301`).
-- [Note] For task 192's brief: build a `Side` only from a `StoredEntry` returned by `HistoryStore::load`, never from `load_without_body`, which returns an empty body even when the `.bin` exists.
 
 ### Follow-ups from task 191 (TLS trust for `wisp-cli run`; not scheduled)
 - [P3] A bad CA file is reported as "cannot read collection: CA file ..." (`crates/cli/src/main.rs:45-50`).
@@ -48,10 +83,10 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 ### Follow-ups from task 189 (GraphQL body model; not scheduled)
 - [P3] AC8 of 189, not done: the stale redirect comments in `crates/core/src/engine.rs` at ~:927 and ~:1090 (outside 189's Owns). The task 164 follow-up below stays open.
 - [P3] The resend refusal says "the body was not stored" even when only a redacted leaf triggered it (`crates/service/src/plan.rs:275-279`).
+- [P3] No test for the cleared-variables branch (`crates/service/src/plan.rs:256-257`).
 - [P3] Draft GraphQL from a non-GraphQL stored body stays refused until both fields are non-blank; it should be `blank(&d.query)` (`crates/service/src/plan.rs:259`). Folded into task 193.
 - [P3] Integers beyond i64/u64 in GraphQL variables lose precision, because serde_json lacks `arbitrary_precision` (`crates/core/src/resolve/engine.rs:682`).
 - [P3] Explain reports a body size for non-object variables (`crates/core/src/resolve/report.rs:1566`).
-- [P3] The read-only GraphQL placeholder has no scroll area (`crates/app/src/ui/request/body.rs:641-665`); task 193 replaces it.
 - [P3] No serde round-trip test of `Body::GraphQl` in core, and no check that a multi-line query is written as `'''`.
 - [P3] Spec Feature 3 and AC6 (`docs/plan/specs/2026-11-19-wisp-0-5-0.md`) call `crates/storage/src/import/mod.rs:363` "the credential scan", but it is the undefined-variable scan; the wording needs fixing.
 - [P3] The `redact_json_body` doc comment still says "`body` is recorded" (`crates/storage/src/history.rs:793-795`).
