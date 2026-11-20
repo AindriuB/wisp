@@ -244,27 +244,55 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
         Body::GraphQl(g) => (Some(g.query.as_str()), Some(g.variables.as_str())),
         _ => (None, None),
     };
-    let unedited = if whole {
-        // A GraphQL body has two fields and either one clears as "body". The cleared one is
-        // blank in the stored body (the query when both are); refuse while it is still blank.
+    let gql_stored = matches!(&origin.stored_body, Body::GraphQl(_));
+    if let (Body::GraphQl(d), true) = (&draft.body, whole || gql_stored) {
+        // A GraphQL body names the field history cleared: "body.query" or "body.variables".
+        // Any other "body.<leaf>" is a leaf inside the variables. An entry with only "body"
+        // (no per-field name) stays fail-safe: both fields must be filled.
         let blank = |t: &str| t.trim().is_empty();
-        match (&draft.body, &origin.stored_body) {
-            (Body::GraphQl(d), Body::GraphQl(st)) => {
-                if blank(&st.query) {
-                    blank(&d.query)
-                } else {
-                    blank(&st.variables) && blank(&d.variables)
-                }
-            }
-            (Body::GraphQl(d), _) => blank(&d.query) || blank(&d.variables),
-            _ => {
-                whole_text.is_none_or(blank)
-                    && matches!(
-                        &draft.body,
-                        Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
-                    )
-            }
+        let q = gql_stored && fields.contains(&"query");
+        let v = gql_stored && fields.contains(&"variables");
+        let legacy = whole && !q && !v;
+        let leaves: Vec<&str> = fields
+            .iter()
+            .copied()
+            .filter(|f| !(gql_stored && matches!(*f, "query" | "variables")))
+            .collect();
+        let whole_open = (q && blank(&d.query))
+            || (v && blank(&d.variables))
+            || (legacy && (blank(&d.query) || blank(&d.variables)));
+        let leaves_open = !leaves.is_empty()
+            && match empty_json_leaves(&d.variables, &leaves) {
+                Some(found) => found,
+                None => true,
+            };
+        if !whole_open && !leaves_open {
+            return None;
         }
+        let what = if whole_open {
+            "the body was not stored".to_string()
+        } else {
+            format!("{} was not stored", leaves.join(", "))
+        };
+        return Some(format!("Edit the request body before resending: {what}"));
+    }
+    let fields: Vec<&str> = if gql_stored {
+        fields
+            .into_iter()
+            .filter(|f| !matches!(*f, "query" | "variables"))
+            .collect()
+    } else {
+        fields
+    };
+    if !whole && fields.is_empty() {
+        return None;
+    }
+    let unedited = if whole {
+        whole_text.is_none_or(|t| t.trim().is_empty())
+            && matches!(
+                &draft.body,
+                Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
+            )
     } else {
         match text.map(|t| empty_json_leaves(t, &fields)) {
             Some(Some(found)) => found,
@@ -272,16 +300,7 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
             None => false,
         }
     };
-    // A GraphQL body also redacts variables leaves, whether or not the query was cleared.
-    let leaves_unedited = whole
-        && matches!(&draft.body, Body::GraphQl(_))
-        && !fields.is_empty()
-        && match text.map(|t| empty_json_leaves(t, &fields)) {
-            Some(Some(found)) => found,
-            Some(None) => true,
-            None => false,
-        };
-    if !unedited && !leaves_unedited {
+    if !unedited {
         return None;
     }
     let what = if whole {
@@ -519,7 +538,7 @@ mod tests {
                 variables: v.into(),
             })
         };
-        let o = body_origin(gql("", ""), &["body"]);
+        let o = body_origin(gql("", ""), &["body.query"]);
         let blank = Request {
             body: gql("", ""),
             ..Request::default()
@@ -530,6 +549,46 @@ mod tests {
             ..Request::default()
         };
         assert!(body_redaction_refusal(&refilled, &o).is_none());
+    }
+
+    fn gql_body(q: &str, v: &str) -> Request {
+        Request {
+            body: Body::GraphQl(wisp_core::request::GraphQlBody {
+                query: q.into(),
+                variables: v.into(),
+            }),
+            ..Request::default()
+        }
+    }
+
+    #[test]
+    fn graphql_resend_both_cleared_query_only_refilled_is_refused() {
+        let o = body_origin(gql_body("", "").body, &["body.query", "body.variables"]);
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", "{}"), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_resend_query_only_cleared_allows_blank_variables() {
+        let o = body_origin(gql_body("", "").body, &["body.query"]);
+        assert!(body_redaction_refusal(&gql_body("", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_resend_variables_only_cleared_needs_variables() {
+        let o = body_origin(gql_body("{ a }", "").body, &["body.variables"]);
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", "{}"), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_resend_old_body_only_entry_needs_both_fields() {
+        let o = body_origin(gql_body("", "").body, &["body"]);
+        assert!(body_redaction_refusal(&gql_body("", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("", "{}"), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", "{}"), &o).is_none());
     }
 
     fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {

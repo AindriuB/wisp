@@ -167,7 +167,16 @@ fn graphql_history_redacts_variables_like_json() {
 fn graphql_history_clears_a_query_holding_a_credential() {
     let (r, names, _) = stored(gql("{ a(password: \"hunter2\") }", "{}"));
     assert_eq!(parts(&r).0, "");
-    assert!(names.iter().any(|n| n == "body"), "{names:?}");
+    assert!(names.iter().any(|n| n == "body.query"), "{names:?}");
+}
+
+#[test]
+fn graphql_history_names_each_cleared_field() {
+    let (r, names, _) = stored(gql("{ a(password: \"hunter2\") }", "password=hunter2"));
+    assert_eq!(parts(&r), ("", ""));
+    assert!(names.iter().any(|n| n == "body.query"), "{names:?}");
+    assert!(names.iter().any(|n| n == "body.variables"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "body"), "{names:?}");
 }
 
 #[test]
