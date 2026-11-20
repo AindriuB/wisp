@@ -8634,6 +8634,8 @@ dependencies = [
 name = "wisp-cli"
 version = "0.4.0"
 dependencies = [
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",

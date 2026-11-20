@@ -43,6 +43,8 @@ pub struct RunInput {
     pub data: Option<DataDir>,
     /// Test seam: replaces the OS keychain when `keychain` is set. The CLI never sets it.
     pub stores: Option<Box<dyn SecretStores>>,
+    /// TLS trust for the request and its OAuth2 token requests.
+    pub tls: wisp_core::TlsTrust,
 }
 
 /// Why nothing was run: the collection, request or environment cannot be read (exit 3).
@@ -496,6 +498,7 @@ pub fn run_once(input: RunInput) -> Result<RunReport, RunError> {
     // default timeout (all of `EngineConfig::default`).
     let (engine, events) = Engine::start(EngineConfig {
         worker_threads: 1,
+        tls: input.tls.clone(),
         ..EngineConfig::default()
     });
     let sent = submit(
@@ -737,6 +740,7 @@ mod tests {
             history,
             data: Some(DataDir::at(f.data.path())),
             stores,
+            tls: wisp_core::TlsTrust::default(),
         }
     }
 

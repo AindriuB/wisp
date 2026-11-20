@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use wisp_core::assert::Verdict;
-use wisp_core::{ErrorKind, Method};
+use wisp_core::{ErrorKind, Method, TlsTrust};
 use wisp_service::run::{
     HistoryStatus, RunEnd, RunError, RunInput, RunProblem, RunReport, run_once,
 };
@@ -27,6 +27,8 @@ pub struct Args {
     pub env: Option<String>,
     pub keychain: bool,
     pub history: bool,
+    pub ca_bundle: Option<PathBuf>,
+    pub no_system_trust: bool,
 }
 
 /// The fixed text of a failure kind; the engine's message is never printed.
@@ -210,6 +212,17 @@ fn map(r: &RunReport) -> RunDoc {
 }
 
 pub fn run(a: Args) -> Result<RunDoc, Failure> {
+    // Flags only: the CLI never reads the GUI's settings. A bad bundle stops the run before
+    // anything is prepared or sent.
+    let tls = TlsTrust {
+        system: !a.no_system_trust,
+        extra: match &a.ca_bundle {
+            Some(path) => {
+                TlsTrust::load_pem_file(path).map_err(|e| Failure::Unreadable(e.to_string()))?
+            }
+            None => Vec::new(),
+        },
+    };
     let report = run_once(RunInput {
         collection: a.collection,
         request: a.request,
@@ -218,6 +231,7 @@ pub fn run(a: Args) -> Result<RunDoc, Failure> {
         history: a.history,
         data: None,
         stores: None,
+        tls,
     })
     .map_err(|RunError::Unreadable(m)| Failure::Unreadable(m))?;
     Ok(map(&report))
