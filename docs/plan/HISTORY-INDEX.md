@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 192 | History panel: Compare with previous / Compare from-to; comparison view with status, headers, body and ignore-list sections; Ignore with confirmation writes `[compare] ignore`; all loads and saves off the UI thread | ## 2026-11-20 — Compare view in the History panel (task 192) |
 | 2026-11-20 | 188 | compare of two history entries (status, headers, JSON body) with evidence wording; per-collection `[compare] ignore` list; stored-body-unavailable state | ## 2026-11-20 — Compare engine and collection ignore list (task 188) |
 | 2026-11-20 | 189 | `Body::GraphQl` in model, TOML file format, resolve, Explain, history redaction/cap, import scan, resend plan; read-only picker entry in app | ## 2026-11-20 — GraphQL body in the model (task 189) |
 | 2026-11-19 | 186 | id write keeps collection.toml mode; FIFO swap cannot hang a read; git-tracked check bounded at 5 s and fails closed inside any work tree; moved-name check ignores symlinks; `t1` flake fixed | ## 2026-11-19 — Secret-file safety follow-ups from task 169 closed (task 186) |

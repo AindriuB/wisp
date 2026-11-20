@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list) and 189 (GraphQL body model) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model) and 192 (compare view) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -28,10 +28,20 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 
 **Size, decided 2026-11-18 (task 172):** every `wisp-cli` limit in `scripts/measure/cli-budgets.json` is 7,340,032 B (7 MiB), the user's decision after Linux measured 45,048 B over the earlier 6 MiB. Measured `wisp-cli`: macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B (run 44293903312, main 910d681). The Windows GUI is 15,609,344 B, 290,656 B under the 15,900,000 B soft line and 390,656 B under the 16,000,000 B gate; this is the tightest margin, so 177 re-measures it. Task 176 put these limits in `docs/architecture.md`; the sizes there were measured before `snapshot` merged, so 177 re-measures. The wave-1 overage (+26,624 B against +10,240 B allowed) was not cut. Figures: `scripts/measure/results/v0.4.0-wave-2-cli-size.json`.
 
+### Follow-ups from task 192 (compare view; not scheduled)
+- [Spec call] If the ignore list cannot be loaded, the whole compare fails and the list cannot be fixed from the view (`crates/app/src/ui/compare.rs:169`). Decide: compare with no patterns and show the error?
+- [Spec call] A change to the body root has pointer "", so Ignore writes the invalid pattern `body:` (`compare.rs:47-49`, `:432-435`). Decide: hide Ignore on the root row?
+- [P3] `start_compare` does nothing visible when `history_job` fails or `open_existing` returns Err or None (`crates/app/src/ui/history.rs:265-282`).
+- [P3] The IgnoreProblem reason is shown unescaped (`compare.rs:550`); pass it through `escape_display` like the pattern beside it.
+- [P3] The save lock is per view, so a save from a replaced view is not ordered against a new view's save; consider one lock per collection (`compare.rs:141`, `:207`). Same class as the cross-process race, which needs a storage API change.
+- [P3] `previous_entry` runs per row per render, O(n^2) at 500 entries (`history.rs:339-345`).
+- [P3] A JSON key literally `*` becomes a wildcard pointer segment, so ignoring it hides every sibling (`compare.rs:47`; grammar from 188, see 155-1).
+- [P3] Tests cover the per-row compare helpers, not the "Compare from" button wiring (`history.rs:366`).
+- [P3] Test names `compare_view_header_pattern` and `compare_view_body_pattern` do not read as sentences (`docs/conventions.md:106`).
+
 ### Follow-ups from task 188 (compare engine and ignore list; not scheduled)
 - [P3] JSON nested exactly 128 deep returns TooDeep because of serde_json's limit, while AC7 says beyond 128 (`crates/service/src/compare.rs:421-427`, `:506-509`).
 - [P3] An entry from before 0.5.0 (`evidence: None`) with `status: None` does not flag its headers as not recorded (`compare.rs:300-301`).
-- [Note] For task 192's brief: build a `Side` only from a `StoredEntry` returned by `HistoryStore::load`, never from `load_without_body`, which returns an empty body even when the `.bin` exists.
 
 ### Follow-ups from task 189 (GraphQL body model; not scheduled)
 - [P3] AC8 of 189, not done: the stale redirect comments in `crates/core/src/engine.rs` at ~:927 and ~:1090 (outside 189's Owns). The task 164 follow-up below stays open.
