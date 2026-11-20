@@ -315,13 +315,13 @@ fn side_header(label: &str, e: &HistoryEntry, now: u64) -> String {
     let mut line = format!(
         "{label}: {}, {}, {} {}",
         relative_time(now, e.at),
-        e.request.as_deref().unwrap_or("(no request path)"),
+        escape_display(e.request.as_deref().unwrap_or("(no request path)")),
         method_text(e.method),
         escape_display(&e.url)
     );
     line.push_str(&format!(
         ", env {}",
-        e.environment.as_deref().unwrap_or("none")
+        escape_display(e.environment.as_deref().unwrap_or("none"))
     ));
     line.push_str(&format!(", {}", outcome_label(e)));
     if let Some(c) = delivery_chip(e.delivery) {
@@ -346,6 +346,107 @@ fn body_change_text(c: &BodyChange) -> String {
         opt_shown(&c.before),
         opt_shown(&c.after)
     )
+}
+
+/// One line of the comparison report, in display order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Row {
+    Section(String),
+    Text(String),
+    Note(String),
+    /// A change with an "ignore" action for `pattern`.
+    Ignorable {
+        id: String,
+        text: String,
+        pattern: String,
+    },
+}
+
+/// The report's lines, from the status section to the hidden-by-ignore count.
+fn report_rows(cmp: &Comparison) -> Vec<Row> {
+    let mut rows = vec![
+        Row::Section("Status".into()),
+        Row::Text(status_text(&cmp.status)),
+        Row::Section("Headers".into()),
+    ];
+    let h = &cmp.headers;
+    if h.a_not_recorded {
+        rows.push(Row::Text("Headers not recorded for A".into()));
+    }
+    if h.b_not_recorded {
+        rows.push(Row::Text("Headers not recorded for B".into()));
+    }
+    for (i, ch) in h.changes.iter().enumerate() {
+        let (name, text) = match ch {
+            HeaderChange::Added { name, values } => {
+                (name, format!("added: {}", shown_list(values)))
+            }
+            HeaderChange::Removed { name, values } => {
+                (name, format!("removed: {}", shown_list(values)))
+            }
+            HeaderChange::Changed { name, a, b } => (
+                name,
+                format!("changed: A {} / B {}", shown_list(a), shown_list(b)),
+            ),
+        };
+        rows.push(Row::Ignorable {
+            id: format!("ignore-header-{i}"),
+            text: format!("{}: {text}", escape_display(name)),
+            pattern: header_pattern(name),
+        });
+    }
+    if !h.redacted.is_empty() {
+        rows.push(Row::Note(format!(
+            "Redacted, not compared: {}",
+            h.redacted
+                .iter()
+                .map(|n| escape_display(n))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    if h.changes.is_empty() && !h.a_not_recorded && !h.b_not_recorded {
+        rows.push(Row::Note("No header changes".into()));
+    }
+    rows.push(Row::Section("Body".into()));
+    let mut hidden = h.ignored;
+    match &cmp.body {
+        BodyDiff::Equal { ignored } => {
+            hidden += ignored;
+            rows.push(Row::Text("Bodies are equal".into()));
+        }
+        BodyDiff::Different {
+            changes,
+            total,
+            ignored,
+        } => {
+            hidden += ignored;
+            for (i, ch) in changes.iter().enumerate() {
+                rows.push(Row::Ignorable {
+                    id: format!("ignore-body-{i}"),
+                    text: body_change_text(ch),
+                    pattern: body_pattern(&ch.path),
+                });
+            }
+            if *total > changes.len() {
+                rows.push(Row::Note(format!("and {} more", total - changes.len())));
+            }
+        }
+        BodyDiff::NotJson { equal } => rows.push(Row::Text(format!(
+            "Bodies are not JSON; text diff not available ({})",
+            if *equal { "equal" } else { "different" }
+        ))),
+        BodyDiff::Incomplete { a, b } => {
+            for (label, r) in [("A", a), ("B", b)] {
+                if let Some(r) = r {
+                    rows.push(Row::Text(format!("{label}: {}", evidence_note(r))));
+                }
+            }
+        }
+        BodyDiff::TooDeep => rows.push(Row::Text("Too deeply nested to compare".into())),
+    }
+    rows.push(Row::Section(format!("Hidden by the ignore list: {hidden}")));
+    rows
 }
 
 fn scroll(col: gpui::Div) -> gpui::Stateful<gpui::Div> {
@@ -379,123 +480,27 @@ impl Render for CompareView {
             return scroll(col);
         };
         let now = now_ms();
-        let section = |t: &str| {
-            div()
-                .text_color(muted)
-                .child(SharedString::from(t.to_string()))
-        };
         col = col
             .child(div().child(side_header("A", &data.a, now)))
-            .child(div().child(side_header("B", &data.b, now)))
-            .child(section("Status"))
-            .child(div().child(status_text(&c.comparison.status)));
-
-        // Headers.
-        let h = &c.comparison.headers;
-        col = col.child(section("Headers"));
-        if h.a_not_recorded {
-            col = col.child(div().child("Headers not recorded for A"));
-        }
-        if h.b_not_recorded {
-            col = col.child(div().child("Headers not recorded for B"));
-        }
-        let mut rows: Vec<gpui::AnyElement> = Vec::new();
-        for (i, ch) in h.changes.iter().enumerate() {
-            let (name, text) = match ch {
-                HeaderChange::Added { name, values } => {
-                    (name, format!("added: {}", shown_list(values)))
-                }
-                HeaderChange::Removed { name, values } => {
-                    (name, format!("removed: {}", shown_list(values)))
-                }
-                HeaderChange::Changed { name, a, b } => (
-                    name,
-                    format!("changed: A {} / B {}", shown_list(a), shown_list(b)),
-                ),
-            };
-            let line = format!("{}: {text}", escape_display(name));
-            let ignore = self.ignore_row(
-                SharedString::from(format!("ignore-header-{i}")),
-                header_pattern(name),
-                cx,
-            );
-            rows.push(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().child(line))
-                    .child(ignore)
-                    .into_any_element(),
-            );
-        }
-        col = col.children(rows);
-        if !h.redacted.is_empty() {
-            col = col.child(div().text_color(muted).child(format!(
-                "Redacted, not compared: {}",
-                h.redacted.iter().map(|n| escape_display(n)).collect::<Vec<_>>().join(", ")
-            )));
-        }
-        if h.changes.is_empty() && !h.a_not_recorded && !h.b_not_recorded {
-            col = col.child(div().text_color(muted).child("No header changes"));
-        }
-
-        // Body.
-        col = col.child(section("Body"));
-        let mut hidden = h.ignored;
-        match &c.comparison.body {
-            BodyDiff::Equal { ignored } => {
-                hidden += ignored;
-                col = col.child(div().child("Bodies are equal"));
-            }
-            BodyDiff::Different {
-                changes,
-                total,
-                ignored,
-            } => {
-                hidden += ignored;
-                let mut rows: Vec<gpui::AnyElement> = Vec::new();
-                for (i, ch) in changes.iter().enumerate() {
-                    let ignore = self.ignore_row(
-                        SharedString::from(format!("ignore-body-{i}")),
-                        body_pattern(&ch.path),
-                        cx,
-                    );
-                    rows.push(
+            .child(div().child(side_header("B", &data.b, now)));
+        for row in report_rows(&c.comparison) {
+            col = match row {
+                Row::Section(t) => col.child(div().text_color(muted).child(SharedString::from(t))),
+                Row::Text(t) => col.child(div().child(t)),
+                Row::Note(t) => col.child(div().text_color(muted).child(t)),
+                Row::Ignorable { id, text, pattern } => {
+                    let ignore = self.ignore_row(SharedString::from(id), pattern, cx);
+                    col.child(
                         div()
                             .flex()
                             .flex_row()
                             .gap_2()
-                            .child(div().flex_1().min_w_0().child(body_change_text(ch)))
-                            .child(ignore)
-                            .into_any_element(),
-                    );
+                            .child(div().flex_1().min_w_0().child(text))
+                            .child(ignore),
+                    )
                 }
-                col = col.children(rows);
-                if *total > changes.len() {
-                    col = col.child(
-                        div()
-                            .text_color(muted)
-                            .child(format!("and {} more", total - changes.len())),
-                    );
-                }
-            }
-            BodyDiff::NotJson { equal } => {
-                col = col.child(div().child(format!(
-                    "Bodies are not JSON; text diff not available ({})",
-                    if *equal { "equal" } else { "different" }
-                )));
-            }
-            BodyDiff::Incomplete { a, b } => {
-                for (label, r) in [("A", a), ("B", b)] {
-                    if let Some(r) = r {
-                        col = col.child(div().child(format!("{label}: {}", evidence_note(r))));
-                    }
-                }
-            }
-            BodyDiff::TooDeep => col = col.child(div().child("Too deeply nested to compare")),
+            };
         }
-        col = col.child(section(&format!("Hidden by the ignore list: {hidden}")));
 
         // Inline confirmation, before any write.
         if let Some(p) = self.pending.clone() {
@@ -533,7 +538,7 @@ impl Render for CompareView {
         }
 
         // The current patterns.
-        col = col.child(section("Ignore list"));
+        col = col.child(div().text_color(muted).child("Ignore list"));
         if self.patterns.is_empty() {
             col = col.child(div().text_color(muted).child("No patterns"));
         }
@@ -691,6 +696,123 @@ mod tests {
             cut: true,
         };
         assert_eq!(shown_text(&s), "ab…");
+    }
+
+    fn sh(t: &str) -> Shown {
+        Shown {
+            text: t.into(),
+            cut: false,
+        }
+    }
+
+    fn cmp(headers: wisp_service::compare::HeadersDiff, body: BodyDiff) -> Comparison {
+        Comparison {
+            status: StatusDiff::Equal(200),
+            headers,
+            body,
+        }
+    }
+
+    fn no_headers() -> wisp_service::compare::HeadersDiff {
+        wisp_service::compare::HeadersDiff {
+            a_not_recorded: false,
+            b_not_recorded: false,
+            changes: Vec::new(),
+            redacted: Vec::new(),
+            ignored: 0,
+        }
+    }
+
+    fn texts(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match r {
+                Row::Section(t) | Row::Text(t) | Row::Note(t) => t.clone(),
+                Row::Ignorable { text, .. } => text.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compare_view_report_orders_sections_and_lists_header_changes() {
+        let mut h = no_headers();
+        h.changes = vec![
+            HeaderChange::Added {
+                name: "x-new".into(),
+                values: vec![sh("1")],
+            },
+            HeaderChange::Removed {
+                name: "x-old".into(),
+                values: vec![sh("2")],
+            },
+            HeaderChange::Changed {
+                name: "x-chg".into(),
+                a: vec![sh("a")],
+                b: vec![sh("b")],
+            },
+        ];
+        h.redacted = vec!["authorization".into()];
+        h.ignored = 2;
+        let rows = report_rows(&cmp(h, BodyDiff::Equal { ignored: 3 }));
+        assert_eq!(
+            texts(&rows),
+            [
+                "Status",
+                "Status: 200 (equal)",
+                "Headers",
+                "x-new: added: 1",
+                "x-old: removed: 2",
+                "x-chg: changed: A a / B b",
+                "Redacted, not compared: authorization",
+                "Body",
+                "Bodies are equal",
+                "Hidden by the ignore list: 5",
+            ]
+        );
+        assert!(matches!(&rows[3], Row::Ignorable { pattern, .. } if pattern == "header:x-new"));
+    }
+
+    #[test]
+    fn compare_view_report_notes_unrecorded_headers() {
+        let mut h = no_headers();
+        h.a_not_recorded = true;
+        let t = texts(&report_rows(&cmp(h, BodyDiff::TooDeep)));
+        assert!(t.contains(&"Headers not recorded for A".to_string()));
+        assert!(!t.contains(&"Headers not recorded for B".to_string()));
+        assert!(!t.contains(&"No header changes".to_string()));
+        assert!(t.contains(&"Too deeply nested to compare".to_string()));
+        let t = texts(&report_rows(&cmp(no_headers(), BodyDiff::TooDeep)));
+        assert!(t.contains(&"No header changes".to_string()));
+    }
+
+    #[test]
+    fn compare_view_report_body_cases() {
+        let t = texts(&report_rows(&cmp(
+            no_headers(),
+            BodyDiff::NotJson { equal: false },
+        )));
+        assert!(t.contains(&"Bodies are not JSON; text diff not available (different)".into()));
+        let change = |p: &str| BodyChange {
+            path: p.into(),
+            kind: ChangeKind::Changed,
+            before: Some(sh("1")),
+            after: Some(sh("2")),
+        };
+        let rows = report_rows(&cmp(
+            no_headers(),
+            BodyDiff::Different {
+                changes: vec![change("/a"), change("/b")],
+                total: 5,
+                ignored: 1,
+            },
+        ));
+        let t = texts(&rows);
+        assert!(t.contains(&"/a (changed): A 1 / B 2".to_string()));
+        assert!(t.contains(&"and 3 more".to_string()));
+        assert_eq!(t.last().unwrap(), "Hidden by the ignore list: 1");
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, Row::Ignorable { pattern, .. } if pattern == "body:/b"))
+        );
     }
 
     #[gpui::test]

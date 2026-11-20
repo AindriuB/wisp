@@ -731,7 +731,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn history_root_change_clears_rows_and_cancels_a_pending_compare(
+    fn compare_view_root_change_clears_mark_rows_and_pending_compare(
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::settings::Settings;
@@ -767,6 +767,7 @@ mod tests {
         view.update(cx, |v, _| {
             v.listing = Listing::Ready(vec![entry(Outcome::Completed, Some(200))])
         });
+        view.update(cx, |v, _| v.mark = Some("e1".into()));
         let before = view.read_with(cx, |v, _| (v.generation, v.compare_generation));
         ws.update(cx, |w, cx| w.open_collection(&y, cx).unwrap());
         view.read_with(cx, |v, _| {
@@ -774,6 +775,7 @@ mod tests {
                 matches!(v.listing, Listing::Loading),
                 "X's rows must not stay under Y"
             );
+            assert!(v.mark.is_none(), "the mark must not follow to Y");
             assert_eq!(v.compare_generation, before.1 + 1);
             assert_eq!(v.generation, before.0 + 1);
         });
