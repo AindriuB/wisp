@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 193 | GraphQL kind in the body picker: Query and Variables editors, Format on variables, non-blocking not-an-object note; no `{{var}}` highlighting (deferred, Amendment 1); non-GraphQL stored body resend needs only a query | ## 2026-11-20 — GraphQL editor in the request pane (task 193) |
 | 2026-11-20 | 190 | `[tls]` in `settings.toml`; palette commands to toggle system trust and choose/clear a CA file, applied without restart; startup trust with a notice on a bad file; unknown-issuer hint; three workspace carry-overs | ## 2026-11-20 — TLS trust settings in the GUI (task 190) |
 | 2026-11-20 | 188 | compare of two history entries (status, headers, JSON body) with evidence wording; per-collection `[compare] ignore` list; stored-body-unavailable state | ## 2026-11-20 — Compare engine and collection ignore list (task 188) |
 | 2026-11-20 | 191 | `wisp-cli run --ca-bundle <file>` and `--no-system-trust`; trust reaches request and OAuth2 token calls; unreadable bundle exits 3 before sending | ## 2026-11-20 — TLS trust flags for `wisp-cli run` (task 191) |
