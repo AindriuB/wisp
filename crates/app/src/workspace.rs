@@ -16,7 +16,9 @@ use wisp_core::request::{
 };
 use wisp_core::resolve::{Location, Problem, Recording, ResolveError, Scope};
 use wisp_core::{Command, Engine, EngineConfig, EngineError, Event, EventReceiver, RequestId};
-use wisp_service::history::{HistoryBodies, RecordError, record as record_history};
+use wisp_service::history::{
+    HistoryBodies, RecordError, append_to as append_history_to, record as record_history,
+};
 use wisp_service::outcome::{Response, ResponseTimings, Terminal, finish};
 pub(crate) use wisp_service::plan::scope_path_for;
 use wisp_service::plan::{ResendFacts, SendInput, SendPlan, prepare, prepare_authorize};
@@ -2726,7 +2728,6 @@ impl Workspace {
         let data = job.data;
         let recovered = job.store;
         let generation = self.collections[cix].history_gen;
-        let body = history_ui::body_to_store(self.settings.history_bodies, body);
         match known_id(&self.collections[cix].coll_id) {
             // One current store: once `history` holds it, every append goes there.
             _ if recovered.is_some() => {
@@ -2871,14 +2872,14 @@ impl Workspace {
         body: Option<Vec<u8>>,
         cx: &mut Context<Self>,
     ) {
+        let bodies = HistoryBodies::from_setting(self.settings.history_bodies);
         cx.spawn(async move |this, cx| {
             let work = cx.background_executor().spawn(async move {
                 match to {
-                    RecordTo::Id(id) => record_history(&data, &id, new, body, HistoryBodies::Store),
-                    RecordTo::Store(store) => store
-                        .append(new, body.as_deref())
-                        .map(|_| store)
-                        .map_err(|e| RecordError::Append(e.to_string())),
+                    RecordTo::Id(id) => record_history(&data, &id, new, body, bodies),
+                    RecordTo::Store(store) => {
+                        append_history_to(&store, new, body, bodies).map(|_| store)
+                    }
                 }
             });
             let result = work.await;
@@ -4379,6 +4380,7 @@ mod tests {
             environment: None,
             assertions: Vec::new(),
             delivery: None,
+            evidence: None,
         }
     }
 

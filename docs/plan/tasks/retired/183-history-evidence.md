@@ -53,3 +53,12 @@ guessing. Also fix the `1234` canary flake in the history suite.
 - Any compare logic, or showing evidence in the History panel (tasks 188 and 192).
 - The `delivery` field and the history redaction rules.
 - Rewriting old entries to add `evidence`.
+
+## Attempt 1 — failed
+
+Reviewer REQUEST CHANGES at a67fe8500e7f33b7bfef766c58af84f89bf45f46. AC1 not proven: no test checks the snake_case wire strings. `evidence_is_written_on_every_new_entry` (crates/storage/tests/history.rs:2200) round-trips through `list()`, so it passes with any rename, and the raw-text check at :2191 only asserts the `"evidence"` key exists. Fix: add raw index-line assertions for the wire values (at least `"body":"no_response"`, `"off"`, `"unreadable"`, plus `stored`/`truncated` where reachable). Also reword commit 4934893's body if the branch is rewritten anyway (stale "PARTIAL: suite and clippy still running" note) — optional, do not rewrite pushed history just for this.
+
+## Wave verified — 3359a61c76639d301a8e58e56bced21b869948c7
+
+## Outcome
+Tester PASS and reviewer APPROVE at 3359a61c76639d301a8e58e56bced21b869948c7 after one failed attempt (Attempt 1: no test of the evidence wire spelling; now asserted on raw index lines). Each new history entry records `evidence` (body and head completeness) and the `1234` canary flake in the history suite is fixed. Follow-ups are in `PLAN.md`.

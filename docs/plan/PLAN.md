@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Task 186 (secret-file safety) is recorded; 185 depends on it because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety) and 187 (Windows ACL follow-ups) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -39,6 +39,23 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] No test that a really untracked file inside a real repo is allowed.
 - [P3] 151-2: `write_marker` (`crates/storage/src/vault_binding.rs:287`) uses `write_nofollow`, which now keeps an existing mode, so its documented 0600 is false.
 
+### Follow-ups from task 187 (Windows ACL; not scheduled)
+- [P3] `is_owner_only` accepts an INHERIT_ONLY (0x08) ACE as granting full access (`crates/storage/src/win_acl.rs:142-146`); it also needs `AceFlags & 0x08 == 0`.
+- [P3] The `is_owner_only` doc comment does not mention the new full-rights condition (`win_acl.rs:100-101`).
+- [P3] Cleanup can remove an empty parent that a concurrent caller is about to use, but only after a failed restrict (`crates/storage/src/data_dir.rs:166-171`).
+
+### Follow-ups from task 184 (TLS trust engine; not scheduled)
+- [P3] `escape_debug()` doubles backslashes, so Windows paths in `TrustError` come out mangled (`crates/core/src/trust.rs:49`).
+- [P3] No test tells `system: true` apart from `false` (`crates/core/src/client.rs:73`); the spec leaves this to the macOS hand test.
+- [P3] The test fixture's validity starts at yesterday 00:00 UTC, not now-1h, and the comment saying `time` is needed is wrong (`crates/core/tests/tls.rs:143-164`).
+- [P3] `scratch` leaves `wisp-trust-*` directories in the temp dir (`crates/core/tests/tls.rs:223`).
+- [P3] No FIFO test: the FIFO case shares the directory branch, and a FIFO swapped in between metadata and open could block (`crates/core/src/trust.rs:57-64`).
+
+### Follow-ups from task 183 (history evidence; not scheduled)
+- [P3] If the user turns history bodies on while an append waits for the collection id to be read, a body from a response received with storage off is written; the setting is read in `spawn_record`, not at response time (`crates/app/src/workspace.rs:2875`).
+- [P3] No app-level test checks that the GUI passes `history_bodies = false` through; `body_to_store` is now `#[cfg(test)]` (`crates/app/src/ui/history.rs:27`).
+- [P3] A Failed or Cancelled outcome passed with `Some(body)` writes the `.bin` but records `no_response` (`crates/storage/src/history.rs:1288-1290`); no caller does this today.
+
 ### Follow-ups from task 182 (history scrub and truncated bodies; not scheduled)
 
 - NOTE: the scrub skip covers every truncated body type, not only JSON. The only gap is truncated files written by a dev build of e78aca2 before 0e4325e's `redact.rs` rule change (dev-only data).
@@ -56,10 +73,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] AC51 in `docs/plan/tasks/99-hardening-0-2-0.md` says "(done, task 163)"; it should credit tasks 161 and 163.
 
 ### Follow-ups from task 171 (Windows hardening; not scheduled)
-- [P3] `is_owner_only` ignores the ACE access mask (`crates/storage/src/win_acl.rs:103-107`), so a single owner ACE with reduced rights counts as owner-only.
 - [Note] No test proves `restrict_to_owner` is skipped on the already-owner-only path.
-- [P3] If `restrict_to_owner` fails after `create_dir` made an ancestor, that ancestor keeps its inherited ACLs and later calls never fix it (`crates/storage/src/data_dir.rs` ~148); e.g. remove the just-created dir on failure.
-- [P3] 139-3: the `windows-sys` entry in `crates/storage/Cargo.toml` lacks `default-features = false`, which `docs/conventions.md:83-84` requires (no build effect; PR #139's description wrongly says it is set).
 - [Note] ReFS has 128-bit file IDs; `same_file_entry` compares the 64-bit `nFileIndex`.
 - [Note] The 8.3 test could read the short name inside the setup dir instead of a sibling file.
 - [Flake] `run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7` is in `known-flakes.md`; find and fix the cause.

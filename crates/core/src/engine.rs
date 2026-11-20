@@ -39,6 +39,8 @@ pub struct EngineConfig {
     pub refresh_tokens: Arc<dyn RefreshTokenStore>,
     /// The in-memory cookie jars, one per collection; the app keeps a clone to reach them.
     pub cookies: CookieJars,
+    /// Which certificate authorities HTTPS requests trust.
+    pub tls: crate::TlsTrust,
 }
 
 impl fmt::Debug for EngineConfig {
@@ -49,6 +51,7 @@ impl fmt::Debug for EngineConfig {
             .field("body_memory_limit", &self.body_memory_limit)
             .field("refresh_tokens", &format_args!("<redacted>"))
             .field("cookies", &self.cookies)
+            .field("tls", &self.tls)
             .finish()
     }
 }
@@ -61,6 +64,7 @@ impl Default for EngineConfig {
             body_memory_limit: DEFAULT_MEMORY_LIMIT,
             refresh_tokens: Arc::new(MemoryOnly::default()),
             cookies: CookieJars::default(),
+            tls: crate::TlsTrust::default(),
         }
     }
 }
@@ -164,7 +168,7 @@ impl Engine {
         let (tx, rx) = async_channel::unbounded();
         let inner = Inner {
             runtime: Some(runtime),
-            clients: Arc::new(ClientCache::new(config.cookies)),
+            clients: Arc::new(ClientCache::with_trust(config.cookies, config.tls)),
             bodies: BodyStore::new(config.body_memory_limit),
             events: tx,
             next_id: AtomicU64::new(1),
@@ -179,6 +183,12 @@ impl Engine {
             },
             rx,
         )
+    }
+
+    /// Replace the TLS trust. Cached clients are dropped, so the next send builds with it;
+    /// requests in flight keep their client and cookie jars are kept.
+    pub fn set_tls_trust(&self, trust: crate::TlsTrust) {
+        self.inner.clients.set_trust(trust);
     }
 
     /// Test hook: runs on the blocking pool after a SigV4 payload hash is computed and before
