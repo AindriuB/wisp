@@ -1191,3 +1191,10 @@ fn h4b_unique_numbering_keeps_case_insensitive_distinct() {
     got.sort();
     assert_eq!(got, vec!["a 2", "a 2 2", "a 3"]);
 }
+
+#[test]
+fn h4b_postman_second_credential_after_first_strip_is_removed() {
+    let r = postman_url("https://u:p@x:pw/?a@h2/y");
+    assert_result_no_leak(&r, "pw");
+    assert_result_no_leak(&r, "u:p");
+}
