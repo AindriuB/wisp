@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-20 — Compare engine and collection ignore list (task 188)
+`wisp-service` has a pure comparison of two history entries: a status diff, a header diff and a structural JSON body diff, with the spec's evidence wording when a side is missing, truncated or unreadable. A per-collection ignore list (`header:<name>`, `body:<pointer>` with `*` segments) is read and written under `[compare] ignore` in `collection.toml`, keeping comments and other tables. An incomplete side never compares as equal. Verified at 3bfa821.
+**Cost:** Three rounds and Amendment 1. Review found that a side whose stored entry could not be loaded, or whose `.bin` was missing, compared as `NotJson { equal: true }`, so AC10 ("stored body unavailable") was added. Saving the ignore list first replaced the `ignore` key and dropped its comments; it now keeps the key's decor like `write_order`. The evidence strings had to be the spec's wording verbatim, and the last attempt failed only on `cargo fmt`. Do not build a `Side` from `load_without_body`.
+
 ## 2026-11-20 — GraphQL body in the model (task 189)
 `Body::GraphQl(GraphQlBody { query, variables })` round-trips through the request file (`type = "graphql"`), resolves to a compact JSON POST body, appears in Explain as `graphql`, is capped and redacted in history, is covered by the import scan and the resend plan, and is listed in the app's body picker as a read-only placeholder. Verified at fcacbf4: tester PASS, reviewer APPROVE after two review rounds.
 **Cost:** Round 1 found that a whole-body "body" redaction switched off the variables-leaf resend check, and that `write_body` added an empty `variables` to files that lacked it. Round 2 found that a GraphQL request with no variables stayed refused after the user refilled a cleared query; the fix works out which field was cleared from the stored body. AC8 (stale 164 redirect comments) was cut because they are in `crates/core/src/engine.rs`, outside Owns. Nine P3s are in PLAN.
