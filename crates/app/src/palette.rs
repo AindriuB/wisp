@@ -24,6 +24,9 @@ pub enum CommandId {
     ShowCookieJar,
     ClearHistory,
     ToggleHistoryBodies,
+    ToggleSystemTrust,
+    ChooseCaFile,
+    ClearCaFile,
     ToggleConfirmSend,
     EnvSecrets,
     ShareSecrets,
@@ -60,7 +63,7 @@ pub struct Match {
 }
 
 impl CommandId {
-    pub const ALL: [CommandId; 21] = [
+    pub const ALL: [CommandId; 24] = [
         CommandId::Send,
         CommandId::Save,
         CommandId::NewRequest,
@@ -79,6 +82,9 @@ impl CommandId {
         CommandId::ShowCookieJar,
         CommandId::ClearHistory,
         CommandId::ToggleHistoryBodies,
+        CommandId::ToggleSystemTrust,
+        CommandId::ChooseCaFile,
+        CommandId::ClearCaFile,
         CommandId::ToggleConfirmSend,
         CommandId::EnvSecrets,
         CommandId::ShareSecrets,
@@ -104,6 +110,9 @@ impl CommandId {
             CommandId::ShowCookieJar => "Show cookies",
             CommandId::ClearHistory => "Clear history",
             CommandId::ToggleHistoryBodies => "Toggle storing response bodies in history",
+            CommandId::ToggleSystemTrust => "Toggle system certificate trust",
+            CommandId::ChooseCaFile => "Choose CA certificate file…",
+            CommandId::ClearCaFile => "Clear CA certificate file",
             CommandId::ToggleConfirmSend => "Toggle confirm before send (this environment)",
             CommandId::EnvSecrets => "Environment secrets…",
             CommandId::ShareSecrets => "Share keychain secrets with another folder…",

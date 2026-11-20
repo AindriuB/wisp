@@ -65,6 +65,23 @@ pub fn error_words(kind: ErrorKind) -> &'static str {
     }
 }
 
+/// Whether a TLS failure is about an issuer the engine does not trust, so the two trust
+/// commands can help. Other TLS failures (expired, wrong name, handshake) are not.
+pub fn tls_hint(e: Option<&EngineError>) -> Option<&'static str> {
+    let e = e.filter(|e| e.kind == ErrorKind::Tls)?;
+    let m = e.message.to_ascii_lowercase();
+    (m.contains("unknownissuer")
+        || m.contains("unknown issuer")
+        || m.contains("untrusted")
+        || m.contains("unknown ca")
+        || m.contains("unknown certificate authority")
+        || m.contains("self signed")
+        || m.contains("self-signed"))
+    .then_some(
+        "To trust this server, use \"Toggle system certificate trust\" or \"Choose CA certificate file…\" in the command palette.",
+    )
+}
+
 /// Full text of a failure: the heading, then the message when there is one.
 pub fn error_text(e: Option<&EngineError>) -> String {
     match e {
@@ -196,22 +213,29 @@ impl ResponsePane {
                     .unwrap_or(("Request failed", String::new()));
                 let muted = theme.muted_foreground;
                 let full = error_text(r.error.as_ref());
+                let hint = tls_hint(r.error.as_ref());
                 Some(
-                    row()
-                        .id("status-line")
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_color(theme.danger)
-                        .child(div().flex_none().child(words))
+                    div()
                         .child(
-                            div()
+                            row()
+                                .id("status-line")
                                 .min_w_0()
-                                .flex_1()
-                                .truncate()
-                                .text_color(muted)
-                                .child(msg),
+                                .overflow_hidden()
+                                .text_color(theme.danger)
+                                .child(div().flex_none().child(words))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .truncate()
+                                        .text_color(muted)
+                                        .child(msg),
+                                )
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(full.clone()).build(window, cx)
+                                }),
                         )
-                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                        .children(hint.map(|h| row().text_color(muted).child(h)))
                         .into_any_element(),
                 )
             }
@@ -334,6 +358,30 @@ mod tests {
             done_tooltip("200 OK", "· 12 ms · 1.2 KB", String::new()),
             "200 OK · 12 ms · 1.2 KB"
         );
+    }
+
+    #[test]
+    fn tls_hint_positive_and_negative() {
+        let e = |kind, m: &str| EngineError {
+            kind,
+            message: m.into(),
+        };
+        let unknown = e(
+            ErrorKind::Tls,
+            "error sending request: invalid peer certificate: UnknownIssuer",
+        );
+        assert!(tls_hint(Some(&unknown)).is_some());
+        assert!(
+            tls_hint(Some(&e(
+                ErrorKind::Tls,
+                "invalid peer certificate: Expired"
+            )))
+            .is_none()
+        );
+        assert!(tls_hint(Some(&e(ErrorKind::Tls, "handshake failure"))).is_none());
+        // Only a TLS failure gets it.
+        assert!(tls_hint(Some(&e(ErrorKind::Connect, "UnknownIssuer"))).is_none());
+        assert!(tls_hint(None).is_none());
     }
 
     #[test]

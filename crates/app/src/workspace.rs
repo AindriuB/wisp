@@ -15,7 +15,9 @@ use wisp_core::request::{
     Auth, Body, CollectionDefaults, Environment, PartValue, Request, TextBody,
 };
 use wisp_core::resolve::{Location, Problem, Recording, ResolveError, Scope};
-use wisp_core::{Command, Engine, EngineConfig, EngineError, Event, EventReceiver, RequestId};
+use wisp_core::{
+    Command, Engine, EngineConfig, EngineError, Event, EventReceiver, RequestId, TlsTrust,
+};
 use wisp_service::history::{
     HistoryBodies, RecordError, append_to as append_history_to, record as record_history,
 };
@@ -1016,6 +1018,12 @@ pub struct Workspace {
     pub token_banners: Vec<String>,
     /// The keychain probe: `None` until run, then `Ok(())` or the reason.
     pub keychain_probe: Option<Result<(), String>>,
+    /// The extra CA certificates (DER) the engine currently trusts, from the CA file.
+    tls_extra: Vec<Vec<u8>>,
+    /// The trust last handed to the engine, at start or by `apply_tls`.
+    applied_tls: TlsTrust,
+    /// Bumped by every CA file change; a load that finished for an older one is dropped.
+    tls_gen: u64,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -1250,7 +1258,22 @@ impl Workspace {
     ) -> Self {
         let jars = CookieJars::default();
         let refresh_store = Arc::new(vault::KeychainRefreshStore::new(stores.clone()));
+        // The trust is read before the engine starts, so no send can run without it. A CA file
+        // that fails to load leaves the engine without it.
+        let (tls_extra, tls_notice) = match settings.ca_bundle.as_deref().map(load_ca_file) {
+            Some(Ok(certs)) => (certs, None),
+            Some(Err(reason)) => (
+                Vec::new(),
+                Some(format!("CA certificate file not loaded: {reason}")),
+            ),
+            None => (Vec::new(), None),
+        };
+        let applied_tls = TlsTrust {
+            system: settings.system_trust,
+            extra: tls_extra.clone(),
+        };
         let (engine, events) = Engine::start(EngineConfig {
+            tls: applied_tls.clone(),
             body_memory_limit: settings.body_memory_limit,
             cookies: jars.clone(),
             refresh_tokens: refresh_store.clone(),
@@ -1286,7 +1309,18 @@ impl Workspace {
             refresh_store,
             token_banners: Vec::new(),
             keychain_probe: None,
+            tls_extra,
+            applied_tls,
+            tls_gen: 0,
         };
+        if let Some(text) = tls_notice {
+            // The window subscribes after construction; emit once it has.
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |_, cx| cx.emit(WorkspaceEvent::Notice(text.into())))
+                    .ok();
+            })
+            .detach();
+        }
         this.spawn_drain(events, cx);
         // Flush on quit. gpui's shutdown blocks the main thread, so nothing spawned on the
         // foreground runs: take the snapshot here and save it on a worker thread.
@@ -2730,18 +2764,15 @@ impl Workspace {
         let generation = self.collections[cix].history_gen;
         match known_id(&self.collections[cix].coll_id) {
             // One current store: once `history` holds it, every append goes there.
-            _ if recovered.is_some() => {
-                let store = recovered.expect("checked above");
-                self.spawn_record(
-                    task_root,
-                    data,
-                    RecordTo::Store(store),
-                    generation,
-                    new,
-                    body,
-                    cx,
-                )
-            }
+            _ if let Some(store) = recovered => self.spawn_record(
+                task_root,
+                data,
+                RecordTo::Store(store),
+                generation,
+                new,
+                body,
+                cx,
+            ),
             Some(id) => {
                 self.spawn_record(task_root, data, RecordTo::Id(id), generation, new, body, cx)
             }
@@ -3197,6 +3228,95 @@ impl Workspace {
             ));
         }
         cx.notify();
+    }
+
+    /// The TLS trust the engine was last given.
+    #[cfg(test)]
+    pub fn tls_trust(&self) -> TlsTrust {
+        self.applied_tls.clone()
+    }
+
+    fn apply_tls(&mut self) {
+        let trust = TlsTrust {
+            system: self.settings.system_trust,
+            extra: self.tls_extra.clone(),
+        };
+        self.engine.set_tls_trust(trust.clone());
+        self.applied_tls = trust;
+    }
+
+    /// Flip trust in the operating system's certificate store.
+    pub fn toggle_system_trust(&mut self, cx: &mut Context<Self>) {
+        let on = !self.settings.system_trust;
+        self.update_settings(|s| s.system_trust = on, cx);
+        self.apply_tls();
+        let text = if on {
+            "Trusting the system certificate store"
+        } else {
+            "Not trusting the system certificate store"
+        };
+        cx.emit(WorkspaceEvent::Notice(text.into()));
+    }
+
+    /// Trust the certificates in the PEM file at `path`. The file is read off the UI thread;
+    /// on any failure the setting and the trust stay as they were.
+    pub fn set_ca_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.is_absolute() {
+            cx.emit(WorkspaceEvent::Notice(
+                "CA certificate file not loaded: the path is not absolute".into(),
+            ));
+            return;
+        }
+        self.tls_gen += 1;
+        let generation = self.tls_gen;
+        cx.spawn(async move |this, cx| {
+            let p = path.clone();
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { load_ca_file(&p) })
+                .await;
+            this.update(cx, |w, cx| {
+                if w.tls_gen != generation {
+                    return;
+                }
+                match loaded {
+                    Ok(certs) => {
+                        let n = certs.len();
+                        w.tls_extra = certs;
+                        w.update_settings(|s| s.ca_bundle = Some(path.clone()), cx);
+                        w.apply_tls();
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().escape_debug().to_string())
+                            .unwrap_or_default();
+                        let noun = if n == 1 {
+                            "certificate"
+                        } else {
+                            "certificates"
+                        };
+                        cx.emit(WorkspaceEvent::Notice(
+                            format!("Trusting {n} {noun} from {name}").into(),
+                        ));
+                    }
+                    Err(reason) => cx.emit(WorkspaceEvent::Notice(
+                        format!("CA certificate file not loaded: {reason}").into(),
+                    )),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Stop trusting the CA file.
+    pub fn clear_ca_file(&mut self, cx: &mut Context<Self>) {
+        self.tls_gen += 1;
+        self.tls_extra = Vec::new();
+        self.update_settings(|s| s.ca_bundle = None, cx);
+        self.apply_tls();
+        cx.emit(WorkspaceEvent::Notice(
+            "No longer trusting a CA certificate file".into(),
+        ));
     }
 
     pub fn on_node_moved(&mut self, old_rel: &Path, new_rel: &Path, cx: &mut Context<Self>) {
@@ -3710,6 +3830,11 @@ impl Workspace {
             cx.notify();
         });
     }
+}
+
+/// The DER certificates of a PEM CA file; the error text names the file, never its content.
+fn load_ca_file(path: &Path) -> Result<Vec<Vec<u8>>, String> {
+    TlsTrust::load_pem_file(path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -5092,6 +5217,86 @@ mod env_wiring_tests {
         assert_eq!(store_of(&fx, ID).list().unwrap().len(), 1);
     }
 
+    const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBVTCB+6ADAgECAhQZcT++9isQvwfbCwILUQW53mlTgDAKBggqhkjOPQQDAjAX
+MRUwEwYDVQQDDAx3aXNwIHRlc3QgY2EwIBcNMjYxMTIwMDcyNDI1WhgPMjEyNjEw
+MjcwNzI0MjVaMBcxFTATBgNVBAMMDHdpc3AgdGVzdCBjYTBZMBMGByqGSM49AgEG
+CCqGSM49AwEHA0IABNrqJL1sDS/8X1FJRufWB227XSjhf36XL75ceuECkz4Eh40j
+GMi3NLEIKSEZC05IfQNIdlLGleIAKEPQp7imryqjIzAhMA8GA1UdEwEB/wQFMAMB
+Af8wDgYDVR0PAQH/BAQDAgIEMAoGCCqGSM49BAMCA0kAMEYCIQD+GLyBwZtMqHJT
+kw37AFWy0JYvU9uiiFqbGhCCIm7XCAIhAJ84T+4I/dbyqP2MyGxU+M1yfMKUlRiG
+f+i1mjR701R2
+-----END CERTIFICATE-----
+";
+
+    #[gpui::test]
+    fn tls_apply_startup_loads_the_ca_file_or_starts_without_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("ca.pem");
+        std::fs::write(&good, TEST_CA_PEM).unwrap();
+        let start = |cx: &mut TestAppContext, ca: PathBuf| {
+            let settings = Settings {
+                ca_bundle: Some(ca),
+                system_trust: false,
+                ..Settings::default()
+            };
+            let shared: vault::SharedStores = Arc::new(MemoryStore::new());
+            cx.new(|cx| Workspace::with_data_dir(settings, None, None, shared, None, cx))
+        };
+        let ws = start(cx, good);
+        let t = ws.read_with(cx, |w, _| w.tls_trust());
+        assert_eq!((t.system, t.extra.len()), (false, 1));
+        let ws = start(cx, dir.path().join("missing.pem"));
+        let t = ws.read_with(cx, |w, _| w.tls_trust());
+        assert_eq!((t.system, t.extra.len()), (false, 0));
+    }
+
+    #[gpui::test]
+    fn tls_apply_choose_toggle_and_clear_change_the_trust(cx: &mut TestAppContext) {
+        let fx = fixture(cx);
+        assert_eq!(
+            fx.ws.read_with(cx, |w, _| w.tls_trust()),
+            TlsTrust::default()
+        );
+        fx.ws.update(cx, |w, cx| w.toggle_system_trust(cx));
+        assert!(!fx.ws.read_with(cx, |w, _| w.tls_trust().system));
+        let pem = fx._dir.path().join("ca.pem");
+        std::fs::write(&pem, TEST_CA_PEM).unwrap();
+        fx.ws.update(cx, |w, cx| w.set_ca_file(pem.clone(), cx));
+        cx.run_until_parked();
+        let t = fx.ws.read_with(cx, |w, _| w.tls_trust());
+        assert_eq!(t.extra.len(), 1);
+        assert!(!t.system);
+        assert_eq!(
+            fx.ws.read_with(cx, |w, _| w.settings.ca_bundle.clone()),
+            Some(pem.clone())
+        );
+        // A bad file changes nothing.
+        let bad = fx._dir.path().join("bad.pem");
+        std::fs::write(&bad, "not a certificate").unwrap();
+        fx.ws.update(cx, |w, cx| w.set_ca_file(bad, cx));
+        cx.run_until_parked();
+        let t = fx.ws.read_with(cx, |w, _| w.tls_trust());
+        assert_eq!(t.extra.len(), 1);
+        assert_eq!(
+            fx.ws.read_with(cx, |w, _| w.settings.ca_bundle.clone()),
+            Some(pem)
+        );
+        fx.ws.update(cx, |w, cx| w.clear_ca_file(cx));
+        let t = fx.ws.read_with(cx, |w, _| w.tls_trust());
+        assert!(t.extra.is_empty());
+        assert!(!t.system);
+        fx.ws.update(cx, |w, cx| w.toggle_system_trust(cx));
+        assert_eq!(
+            fx.ws.read_with(cx, |w, _| w.tls_trust()),
+            TlsTrust::default()
+        );
+        assert_eq!(
+            fx.ws.read_with(cx, |w, _| w.settings.ca_bundle.clone()),
+            None
+        );
+    }
+
     #[gpui::test]
     fn late_append_after_newid_does_not_pin_old_store(cx: &mut TestAppContext) {
         let fx = fixture(cx);
@@ -5126,6 +5331,8 @@ mod env_wiring_tests {
                 panic!("history is not Ready");
             };
             assert_eq!(s.list().unwrap().len(), 1);
+            // The Ready store is B's, not the old A store.
+            assert_eq!(s.list().unwrap(), store_of(&fx, OTHER_ID).list().unwrap());
         });
         let job = fx.ws.read_with(cx, |w, _| w.history_job()).unwrap();
         assert_eq!(job.list().unwrap().len(), 1);
@@ -6380,12 +6587,23 @@ mod env_wiring_tests {
     fn truncated_sidecar_history_body_stays_equal_to_the_stored_body(cx: &mut TestAppContext) {
         let fx = fixture(cx);
         open(&fx, cx);
-        let big = format!("{{\"k\":\"{}\"}}", "a".repeat(1024 * 1024));
-        let tab = history_tab(&fx, json_sidecar_request("big.body.json", &big), cx);
+        let big = "a".repeat(1024 * 1024 + 10);
+        let request = Request {
+            body: Body::Text(wisp_core::request::TextBody {
+                content: big,
+                sidecar: Some("big.body.txt".into()),
+            }),
+            ..Request::default()
+        };
+        let tab = history_tab(&fx, request, cx);
         tab.read_with(cx, |t, _| {
             let origin = t.from_history.as_ref().unwrap();
             assert!(origin.request_truncated);
-            assert_eq!(json_content(&t.draft).1, &None);
+            let Body::Text(cut) = &t.draft.body else {
+                panic!("not a text body: {:?}", t.draft.body);
+            };
+            assert!(!cut.content.is_empty());
+            assert_eq!(cut.sidecar, None);
             assert_eq!(t.draft.body, origin.stored_body);
         });
     }

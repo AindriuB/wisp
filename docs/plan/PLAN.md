@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 191 (TLS trust for `wisp-cli run`) and 193 (GraphQL editor) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`) and 193 (GraphQL editor) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -33,6 +33,11 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - `graphql::variables_note` pretty-prints the whole variables text on every render; cache it per edit like `refresh_json` (`body.rs:345`, `:247-253`).
 - The variables note checks text as typed, so `{"id": {{id}}}` shows "not a JSON object" though it sends fine after substitution (`crates/app/src/ui/request/graphql.rs:20-26` vs `crates/core/src/resolve/engine.rs:676-690`); revisit with highlighting.
 - The comment at `crates/service/src/plan.rs:250-253` says a "body"-only redaction needs both fields; since 193 that holds only when the stored body was GraphQL.
+
+### Follow-ups from task 190 (TLS trust in the GUI; not scheduled)
+- [P3] The CA file is read synchronously on the UI thread at startup (`crates/app/src/workspace.rs:1259-1268`); a CA path on a stalled network mount would block the window opening.
+- [P3] The TLS hint names "Toggle system certificate trust" even when system trust is already on, so following it turns trust off (`crates/app/src/ui/response/mod.rs:70-83`).
+- [P3] Startup trust is covered only by construction: `applied_tls` and `EngineConfig.tls` come from the same local (`workspace.rs:1271-1276`); a test cannot catch a wrong argument unless the engine exposes its trust.
 
 ### Follow-ups from task 188 (compare engine and ignore list; not scheduled)
 - [P3] JSON nested exactly 128 deep returns TooDeep because of serde_json's limit, while AC7 says beyond 128 (`crates/service/src/compare.rs:421-427`, `:506-509`).
