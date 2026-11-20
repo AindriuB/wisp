@@ -1020,6 +1020,8 @@ pub struct Workspace {
     pub keychain_probe: Option<Result<(), String>>,
     /// The extra CA certificates (DER) the engine currently trusts, from the CA file.
     tls_extra: Vec<Vec<u8>>,
+    /// The trust last handed to the engine, at start or by `apply_tls`.
+    applied_tls: TlsTrust,
     /// Bumped by every CA file change; a load that finished for an older one is dropped.
     tls_gen: u64,
 }
@@ -1266,11 +1268,12 @@ impl Workspace {
             ),
             None => (Vec::new(), None),
         };
+        let applied_tls = TlsTrust {
+            system: settings.system_trust,
+            extra: tls_extra.clone(),
+        };
         let (engine, events) = Engine::start(EngineConfig {
-            tls: TlsTrust {
-                system: settings.system_trust,
-                extra: tls_extra.clone(),
-            },
+            tls: applied_tls.clone(),
             body_memory_limit: settings.body_memory_limit,
             cookies: jars.clone(),
             refresh_tokens: refresh_store.clone(),
@@ -1307,6 +1310,7 @@ impl Workspace {
             token_banners: Vec::new(),
             keychain_probe: None,
             tls_extra,
+            applied_tls,
             tls_gen: 0,
         };
         if let Some(text) = tls_notice {
@@ -3228,14 +3232,16 @@ impl Workspace {
 
     /// The TLS trust the engine was last given.
     pub fn tls_trust(&self) -> TlsTrust {
-        TlsTrust {
-            system: self.settings.system_trust,
-            extra: self.tls_extra.clone(),
-        }
+        self.applied_tls.clone()
     }
 
-    fn apply_tls(&self) {
-        self.engine.set_tls_trust(self.tls_trust());
+    fn apply_tls(&mut self) {
+        let trust = TlsTrust {
+            system: self.settings.system_trust,
+            extra: self.tls_extra.clone(),
+        };
+        self.engine.set_tls_trust(trust.clone());
+        self.applied_tls = trust;
     }
 
     /// Flip trust in the operating system's certificate store.

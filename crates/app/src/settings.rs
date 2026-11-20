@@ -399,6 +399,18 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Replace a key's value, keeping the old line's decor (spacing, trailing comment).
+fn set_keep_decor(t: &mut dyn toml_edit::TableLike, key: &str, new: Item) {
+    let decor = t
+        .get(key)
+        .and_then(|i| i.as_value())
+        .map(|v| v.decor().clone());
+    t.insert(key, new);
+    if let (Some(d), Some(v)) = (decor, t.get_mut(key).and_then(|i| i.as_value_mut())) {
+        *v.decor_mut() = d;
+    }
+}
+
 /// Write `[tls]`, leaving other keys in the table alone and removing the table when it
 /// ends up empty.
 fn save_tls(doc: &mut DocumentMut, settings: &Settings) {
@@ -413,14 +425,29 @@ fn save_tls(doc: &mut DocumentMut, settings: &Settings) {
     let Some(t) = doc["tls"].as_table_like_mut() else {
         return;
     };
+    // An explicit `system_trust = true` is the default; keep it (and its comment) as is.
+    let trust_is = |t: &dyn toml_edit::TableLike, want: bool| {
+        t.get("system_trust")
+            .and_then(|i| i.as_bool())
+            .is_some_and(|b| b == want)
+    };
     if settings.system_trust {
-        t.remove("system_trust");
-    } else {
-        t.insert("system_trust", value(false));
+        if t.contains_key("system_trust") && !trust_is(t, true) {
+            t.remove("system_trust");
+        }
+    } else if !trust_is(t, false) {
+        set_keep_decor(t, "system_trust", value(false));
     }
     match &settings.ca_bundle {
         Some(p) => {
-            t.insert("ca_bundle", value(p.to_string_lossy().as_ref()));
+            let s = p.to_string_lossy();
+            let same = t
+                .get("ca_bundle")
+                .and_then(|i| i.as_str())
+                .is_some_and(|e| e == s.as_ref());
+            if !same {
+                set_keep_decor(t, "ca_bundle", value(s.as_ref()));
+            }
         }
         None => {
             t.remove("ca_bundle");
@@ -686,6 +713,29 @@ mod tests {
         };
         save(&p, &s).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "theme = \"dark\"\n");
+    }
+
+    #[test]
+    fn save_tls_keeps_comments_when_unchanged_or_changed() {
+        let p = dir("tls-decor").join("settings.toml");
+        let before = "[tls]\nca_bundle = \"/etc/ca.pem\"  # work CA\nsystem_trust = true  # keep\n";
+        std::fs::write(&p, before).unwrap();
+        let mut s = load(&p).0;
+        s.theme = ThemeMode::Dark;
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains("ca_bundle = \"/etc/ca.pem\"  # work CA"),
+            "{after}"
+        );
+        assert!(after.contains("system_trust = true  # keep"), "{after}");
+        s.ca_bundle = Some(PathBuf::from("/etc/new.pem"));
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains("ca_bundle = \"/etc/new.pem\"  # work CA"),
+            "{after}"
+        );
     }
 
     #[test]
