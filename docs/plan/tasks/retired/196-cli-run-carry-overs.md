@@ -51,3 +51,27 @@ failure. Remove the port race in the CLI tests. Close the 0.4.0 snapshot and
 - The task 166 Lows (the 200 ms sleep, the `carries_id` guard); NOTEs.
 - `docs/cli.md` (scribe, task 197).
 - Any behaviour change to `run` exit codes or output beyond AC4 and AC5.
+
+## Review round 1 — findings
+
+Reviewed HEAD: fc81449ba6d1513abb3abf2602b0c34336952561. Verdict CLEAN; one optional finding.
+
+- [P3, optional] crates/cli/src/cmd/run.rs:296-320 — In `run_missing_secret_renders_in_text_and_json_without_a_value`, the "no secret value appears" check can never fail. The hand-built `RunReport` (`not_prepared`, :272-293) contains no `CANARY` string anywhere, so `!out.contains("CANARY")` holds whatever `map`, `output::json` or `run_text` emit. The kind, name and message assertions are real. Only the no-leak half of AC3 is empty.
+  route: implementer
+  input: change `map`/`run_text` to echo any report field into the problem line → the test still passes, because nothing in the input looks like a secret.
+  fix (cheap): put a canary value in a field a renderer could leak, such as a sibling problem, `reason` or `dynamics`, and assert it is absent. The binary tests cannot fill a real keychain (`env_remove("WISP_KEYCHAIN_SERVICE")`, crates/cli/tests/run.rs:72), so this unit test is the right place for it.
+
+## Review round 1 — settled (orchestrator, 2026-11-20)
+
+- [DRIFT, accepted residual] This task file is changed on the branch only by the /review loop's own record (`## Review round N` sections). That is workflow bookkeeping, not implementer scope, and matches earlier task branches (#158, #160, #161). When running the `scope` check, also exclude `^docs/plan/tasks/196-cli-run-carry-overs.md$`. No other path outside Owns may change.
+
+## Attempt 1 — failed
+
+/verify at HEAD 386f399 (2026-11-20): tester FAIL, reviewer APPROVE (AC1-AC9).
+- `cargo fmt --all --check` fails: "Diff in crates/cli/src/cmd/run.rs:294". rustfmt wants `let mut report = not_prepared(vec![RunProblem::MissingSecret { name: "kc".into() }]);` on one line. Introduced by review-round-1 commit 0d3b2ff (CANARY-reason test fix). Run `cargo fmt` and commit; change nothing else.
+- Everything else passed on this host: flake loop 20/20, check-boundaries ok, scope ok, clippy -D warnings on core/storage/service/cli, non-app suite green. Workspace-wide test/clippy blocked by missing fontconfig (wisp-app).
+
+## Wave verified — c06f3fa (2026-11-20)
+
+## Outcome
+Landed on `task/196-cli-run-carry-overs` (attempt 2; review round 1 fix 0d3b2ff, attempt 1 failed on `cargo fmt` only, fixed in c06f3fa). The exit-5 flake was a port race: the test bound an ephemeral port and dropped it, and a parallel test's server could take it, so the connect succeeded and the run reported `Completed`. Both the service test and the CLI `closed()` now use port 0, which no process can listen on. Exits 0, 1 and 7 assert the specific outcome. An unreadable environment now adds a `truncated` entry named `environment:<name>` and a stderr note (dropped in the minimal fallback, where the note survives). `== recent ==` lines show the escaped request path, `fsize` stops rendering once past the limit, `text_rendering_is_bounded_too` is renamed, and `scripts/check-boundaries.sh` flags `resolve::resolve(` and `resolve as`. Verified on the Linux host without the workspace-wide test and clippy runs (`wisp-app` needs fontconfig); CI carries them. Open follow-ups are in PLAN.md under "Follow-ups from task 196".

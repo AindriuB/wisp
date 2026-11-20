@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 196 | exit-5 canary flake fixed (port 0, not a dropped ephemeral port); snapshot names an unreadable environment; `== recent ==` shows request paths; `fsize` bounded; boundary check catches path-qualified and aliased `resolve` | ## 2026-11-20 — CLI `run` flake fixed and CLI follow-ups closed (task 196) |
 | 2026-11-20 | 195 | OpenAPI example budget charged through a size-limited writer; linear name uniqueness and import stem picking (hinted `ops.rs`); `url_host` and `split_userinfo` credential carve-outs closed; own error for a missing import folder | ## 2026-11-20 — OpenAPI importer and URL credential hardening, H4b (task 195) |
 | 2026-11-20 | 199 | JSON assertion numbers compare by value (`1` equals `1.0`); string against number stays type-strict; amends 0.3.0 spec :186 | ## 2026-11-20 — JSON assertion numbers compare by value (task 199) |
 | 2026-11-20 | 194 | request-level Postman tests translate to `[[assert]]` only when the whole script is table-form `pm.test` units, else wholly untranslated with a warning; GraphQL import; 170 importer P3s closed; strict grammar replaced the resync scanner | ## 2026-11-20 — Postman test translation and importer hardening (task 194) |
