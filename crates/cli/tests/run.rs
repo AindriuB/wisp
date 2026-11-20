@@ -739,3 +739,205 @@ fn run_help_lists_the_command() {
     let o = Sandbox::new(true).run(&["--help"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("run <collection> <request-path>"));
 }
+
+// ---- TLS trust ----
+
+struct TlsServer {
+    port: u16,
+    /// TCP connections accepted, counted before any handshake.
+    connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ca_pem: String,
+}
+
+/// A TLS server whose leaf (SAN 127.0.0.1, serverAuth, valid now-1h to now+30d) is signed by a
+/// fresh private CA. Counts the requests that complete a handshake.
+fn serve_private_ca() -> TlsServer {
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let at = |offset: i64| {
+        let t = secs + offset;
+        let days = t.div_euclid(86_400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+        let y = (yoe + era * 400 + i64::from(m <= 2)) as i32;
+        let sod = t.rem_euclid(86_400);
+        rcgen::date_time_ymd(y, m, d) + std::time::Duration::from_secs(sod as u64)
+    };
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "Wisp test CA");
+    ca_params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::CrlSign,
+    ];
+    ca_params.not_before = at(-3600);
+    ca_params.not_after = at(30 * 86_400);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+    let mut params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    params.not_before = at(-3600);
+    params.not_after = at(30 * 86_400);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+    let config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![leaf.der().clone()],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+        )
+        .unwrap(),
+    );
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let accepted = connections.clone();
+    std::thread::spawn(move || {
+        for tcp in l.incoming().flatten() {
+            accepted.fetch_add(1, Ordering::SeqCst);
+            let config = config.clone();
+            std::thread::spawn(move || {
+                let conn = rustls::ServerConnection::new(config).unwrap();
+                let mut s = rustls::StreamOwned::new(conn, tcp);
+                let mut buf = [0u8; 4096];
+                match s.read(&mut buf) {
+                    Ok(n) if n > 0 => {}
+                    _ => return,
+                }
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+                s.conn.send_close_notify();
+                let _ = s.flush();
+            });
+        }
+    });
+    TlsServer {
+        port,
+        connections,
+        ca_pem: pem(ca_cert.der()),
+    }
+}
+
+/// PEM-encode a certificate (rcgen's `pem` feature is not enabled in the workspace).
+fn pem(der: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut b64 = String::new();
+    for c in der.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= c.len() {
+                b64.push(T[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                b64.push('=');
+            }
+        }
+    }
+    let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+    for line in b64.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(line).unwrap());
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+    out
+}
+
+fn trust_sandbox(srv: &TlsServer) -> (Sandbox, String) {
+    let s = Sandbox::new(true);
+    s.w(
+        "a.toml",
+        &format!(
+            "name = \"t\"\nmethod = \"GET\"\nurl = \"https://127.0.0.1:{}/\"\n",
+            srv.port
+        ),
+    );
+    let ca = s.tmp.path().join("ca.pem");
+    fs::write(&ca, &srv.ca_pem).unwrap();
+    (s, ca.to_str().unwrap().to_owned())
+}
+
+#[test]
+fn run_trust_no_flags_fails_transport() {
+    let srv = serve_private_ca();
+    let (s, _) = trust_sandbox(&srv);
+    let (code, v) = s.json("a.toml", &[]);
+    assert_eq!(code, 5, "{v}");
+    assert_eq!(v["result"], "transport_failed");
+}
+
+#[test]
+fn run_trust_ca_bundle_passes() {
+    let srv = serve_private_ca();
+    let (s, ca) = trust_sandbox(&srv);
+    let (code, v) = s.json("a.toml", &["--ca-bundle", &ca]);
+    assert_eq!(code, 0, "{v}");
+}
+
+#[test]
+fn run_trust_no_system_trust_with_bundle_passes() {
+    let srv = serve_private_ca();
+    let (s, ca) = trust_sandbox(&srv);
+    let (code, v) = s.json("a.toml", &["--no-system-trust", "--ca-bundle", &ca]);
+    assert_eq!(code, 0, "{v}");
+}
+
+#[test]
+fn run_trust_no_system_trust_without_file_fails_transport() {
+    let srv = serve_private_ca();
+    let (s, _) = trust_sandbox(&srv);
+    let (code, v) = s.json("a.toml", &["--no-system-trust"]);
+    assert_eq!(code, 5, "{v}");
+}
+
+#[test]
+fn run_trust_bad_bundle_exits_3_without_sending() {
+    let srv = serve_private_ca();
+    let (s, _) = trust_sandbox(&srv);
+    let bad = s.tmp.path().join("bad.pem");
+    fs::write(&bad, "CANARY_GARBAGE not a pem").unwrap();
+    let o = s.go("a.toml", &["--ca-bundle", bad.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(3), "{}", text(&o));
+    let t = text(&o);
+    assert!(t.contains("bad.pem"), "{t}");
+    assert!(!t.contains("CANARY_GARBAGE"), "{t}");
+    assert_eq!(srv.connections.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let o = s.go("a.toml", &["--ca-bundle", bad.to_str().unwrap(), "--json"]);
+    assert_eq!(o.status.code(), Some(3));
+}
+
+#[test]
+fn run_trust_flag_on_inspect_exits_2() {
+    let s = Sandbox::new(true);
+    let o = s.run(&["inspect", s.root(), "--ca-bundle", "x.pem"]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    let o = s.run(&["inspect", s.root(), "--no-system-trust"]);
+    assert_eq!(o.status.code(), Some(2));
+}
+
+#[test]
+fn run_trust_help_lists_flags() {
+    let o = Sandbox::new(true).run(&["--help"]);
+    let t = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(t.contains("--ca-bundle") && t.contains("--no-system-trust"));
+}
