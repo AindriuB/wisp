@@ -396,3 +396,17 @@ fn h3b_root_list_capped() {
     assert!(matches!(e, SecretsError::Storage(_)), "{e:?}");
     assert_eq!(bound_roots(&d, &id()).unwrap().len(), 64);
 }
+
+#[test]
+fn h3b_dead_row_keys_dropped_for_same_root() {
+    let (_a, a) = root();
+    let d = data();
+    bind(&d, &id(), &a).unwrap();
+    for i in 0..70u32 {
+        let nid = CollectionId::parse(&format!("{:016x}", 0x1000_0000_0000_0000u64 + u64::from(i)))
+            .unwrap();
+        carry_id(&a, &nid);
+        bind(&d, &nid, &a).unwrap();
+    }
+    assert_eq!(marker_keys(&a).len(), 1);
+}

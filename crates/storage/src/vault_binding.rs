@@ -451,6 +451,8 @@ pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<()
     if let Some(i) = legacy {
         let key = new_nonce();
         let result = write_marker(&canon, &key, &[reg_id.as_str()]).and_then(|nonce| {
+            // PROOF: `i` indexes a row found in `reg.rows[id]` just above, and
+            // nothing has removed it since (we hold the registry lock and `reg`).
             let row = &mut reg.rows.get_mut(id.as_str()).expect("row present")[i];
             row.nonce = nonce;
             row.key = Some(key);
@@ -488,6 +490,16 @@ fn bind_locked(
 ) -> Result<(), BindError> {
     require_id(id, canon)?;
     let reg_id = reg.id.clone();
+    // This registry's marker keys for every other row of the same root (rows of
+    // ids the root no longer carries): dropped on write so re-ids cannot fill
+    // the marker.
+    let dead_keys: Vec<String> = reg
+        .rows
+        .values()
+        .flatten()
+        .filter(|r| r.root == ckey)
+        .map(|r| marker_key(&reg_id, r).to_string())
+        .collect();
     let rows = reg.rows.entry(id.as_str().to_string()).or_default();
     let existing = rows.iter().position(|r| r.root == ckey);
     if let Some(i) = existing {
@@ -505,9 +517,9 @@ fn bind_locked(
         return Err(too_many_roots(canon));
     }
     let key = new_nonce();
-    let old_key = existing.map(|i| marker_key(&reg_id, &rows[i]).to_string());
+    // `dead_keys` already holds the existing row's key (same root).
     let mut drop_keys = vec![reg_id.as_str()];
-    drop_keys.extend(old_key.as_deref());
+    drop_keys.extend(dead_keys.iter().map(String::as_str));
     let nonce = write_marker(canon, &key, &drop_keys)?;
     let key = Some(key);
     match existing {
@@ -806,7 +818,42 @@ fn common_dir(root: &Path, trusted: &[PathBuf]) -> Result<Option<PathBuf>, Stora
     // A worktree's entry and its `.git` file are written together by `git
     // worktree add`. An entry whose folder was deleted by hand and later
     // recreated (or forged) at the same path was not.
-    Ok((back_ok && written_together(&back_file, &dot_git, &common)).then_some(common))
+    Ok((back_ok
+        && written_together(&back_file, &dot_git, &common)
+        && worktree_folder_owner_ok(&dot_git, &common))
+    .then_some(common))
+}
+
+/// Unix: the worktree folder (holding `.git`) must be owned by the common dir's
+/// owner. A directory cannot be hard-linked, so this closes the hard-link forgery
+/// of the two files' times. Elsewhere there is nothing to check.
+fn worktree_folder_owner_ok(dot_git: &Path, common: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Some(folder), Ok(c)) = (dot_git.parent(), std::fs::symlink_metadata(common)) else {
+            return false;
+        };
+        worktree_owner_ok_with(folder, c.uid(), |p| {
+            std::fs::symlink_metadata(p).map(|m| m.uid())
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (dot_git, common);
+        true
+    }
+}
+
+/// True when `owner_of(folder)` reads and equals `expected_uid`; a read error is
+/// a mismatch.
+#[cfg(unix)]
+fn worktree_owner_ok_with(
+    folder: &Path,
+    expected_uid: u32,
+    owner_of: impl Fn(&Path) -> std::io::Result<u32>,
+) -> bool {
+    owner_of(folder).is_ok_and(|u| u == expected_uid)
 }
 
 /// Largest gap between a worktree entry's `gitdir` file and the worktree's
@@ -1033,6 +1080,23 @@ pub(crate) fn env_lock(data: &DataDir, plain: &Path) -> Result<EnvLock, StorageE
 #[cfg(test)]
 mod tests {
     use super::is_remote_or_device;
+
+    #[cfg(unix)]
+    #[test]
+    fn h3b_foreign_owned_worktree_folder_not_verified() {
+        let f = std::path::Path::new("/x");
+        assert!(super::worktree_owner_ok_with(f, 501, |_| Ok(501)));
+        assert!(!super::worktree_owner_ok_with(f, 501, |_| Ok(502)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn h3b_unreadable_worktree_owner_not_verified() {
+        let f = std::path::Path::new("/x");
+        assert!(!super::worktree_owner_ok_with(f, 501, |_| Err(
+            std::io::Error::other("no")
+        )));
+    }
 
     #[cfg(unix)]
     #[test]
