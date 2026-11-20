@@ -245,14 +245,26 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
         _ => (None, None),
     };
     let unedited = if whole {
-        // A GraphQL body has two fields and either one clears as "body".
-        let graphql_blank = matches!(&draft.body, Body::GraphQl(g)
-            if g.variables.trim().is_empty());
-        (graphql_blank || whole_text.is_none_or(|t| t.trim().is_empty()))
-            && matches!(
-                &draft.body,
-                Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_) | Body::GraphQl(_)
-            )
+        // A GraphQL body has two fields and either one clears as "body". The cleared one is
+        // blank in the stored body (the query when both are); refuse while it is still blank.
+        let blank = |t: &str| t.trim().is_empty();
+        match (&draft.body, &origin.stored_body) {
+            (Body::GraphQl(d), Body::GraphQl(st)) => {
+                if blank(&st.query) {
+                    blank(&d.query)
+                } else {
+                    blank(&st.variables) && blank(&d.variables)
+                }
+            }
+            (Body::GraphQl(d), _) => blank(&d.query) || blank(&d.variables),
+            _ => {
+                whole_text.is_none_or(blank)
+                    && matches!(
+                        &draft.body,
+                        Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
+                    )
+            }
+        }
     } else {
         match text.map(|t| empty_json_leaves(t, &fields)) {
             Some(Some(found)) => found,
@@ -497,6 +509,27 @@ mod tests {
             ..Request::default()
         };
         assert!(body_redaction_refusal(&filled, &o).is_none());
+    }
+
+    #[test]
+    fn graphql_query_refill_lifts_refusal_with_blank_variables() {
+        let gql = |q: &str, v: &str| {
+            Body::GraphQl(wisp_core::request::GraphQlBody {
+                query: q.into(),
+                variables: v.into(),
+            })
+        };
+        let o = body_origin(gql("", ""), &["body"]);
+        let blank = Request {
+            body: gql("", ""),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&blank, &o).is_some());
+        let refilled = Request {
+            body: gql(r#"{ a(token: "new") }"#, ""),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&refilled, &o).is_none());
     }
 
     fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {
