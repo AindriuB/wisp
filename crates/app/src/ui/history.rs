@@ -186,6 +186,8 @@ pub struct HistoryView {
     marks_root: Option<std::path::PathBuf>,
     /// The comparison shown in place of the list.
     compare: Option<Entity<CompareView>>,
+    /// The ids of the two entries `compare` shows.
+    compare_ids: Option<(String, String)>,
     focus: FocusHandle,
     prev_focus: Option<FocusHandle>,
     _sub: Subscription,
@@ -211,6 +213,7 @@ impl HistoryView {
             mark: None,
             marks_root: None,
             compare: None,
+            compare_ids: None,
             focus,
             prev_focus,
             _sub,
@@ -226,6 +229,7 @@ impl HistoryView {
         if root != self.marks_root {
             self.mark = None;
             self.compare = None;
+            self.compare_ids = None;
             self.compare_generation += 1;
             self.listing = Listing::Loading;
             self.marks_root = root;
@@ -247,6 +251,13 @@ impl HistoryView {
             this.update(cx, |this, cx| {
                 if this.generation != generation {
                     return;
+                }
+                if let Ok(v) = &result
+                    && !compare_still_listed(this.compare_ids.as_ref(), v)
+                {
+                    this.compare = None;
+                    this.compare_ids = None;
+                    this.compare_generation += 1;
                 }
                 this.listing = match result {
                     Ok(v) => Listing::Ready(v),
@@ -275,6 +286,7 @@ impl HistoryView {
         };
         self.compare_generation += 1;
         let generation = self.compare_generation;
+        let ids = (a.id.clone(), b.id.clone());
         cx.spawn(async move |this, cx| {
             let store = cx
                 .background_executor()
@@ -286,6 +298,7 @@ impl HistoryView {
                 }
                 if let Ok(Some(store)) = store {
                     this.compare = Some(cx.new(|cx| CompareView::new(store, root, a, b, cx)));
+                    this.compare_ids = Some(ids);
                     cx.notify();
                 }
             })
@@ -332,6 +345,7 @@ impl Render for HistoryView {
                             .label("Back to history")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.compare = None;
+                                this.compare_ids = None;
                                 cx.notify();
                             })),
                     );
@@ -460,6 +474,14 @@ impl Render for HistoryView {
             .on_action(cx.listener(|this, _: &CancelRequest, window, cx| this.dismiss(window, cx)))
             .child(body)
     }
+}
+
+/// Whether the entries a comparison shows are still in the list. With no comparison
+/// open this is true; after Clear History it is false, so the stale comparison goes.
+fn compare_still_listed(ids: Option<&(String, String)>, entries: &[HistoryEntry]) -> bool {
+    ids.is_none_or(|(a, b)| {
+        entries.iter().any(|e| e.id == *a) && entries.iter().any(|e| e.id == *b)
+    })
 }
 
 /// Per-row compare state: whether this row is the marked one, and the marked
@@ -766,6 +788,19 @@ mod tests {
         assert_eq!(from.map(|e| e.id).as_deref(), Some("a"));
         // "Clear mark" unsets it.
         assert_eq!(toggled_mark(true, "a"), None);
+    }
+
+    #[test]
+    fn compare_view_cleared_history_drops_the_open_compare() {
+        let mut e1 = entry(Outcome::Completed, Some(200));
+        e1.id = "e1".into();
+        let mut e2 = entry(Outcome::Completed, Some(200));
+        e2.id = "e2".into();
+        let ids = ("e1".to_string(), "e2".to_string());
+        assert!(compare_still_listed(None, &[]));
+        assert!(compare_still_listed(Some(&ids), &[e2.clone(), e1.clone()]));
+        assert!(!compare_still_listed(Some(&ids), &[]));
+        assert!(!compare_still_listed(Some(&ids), &[e2]));
     }
 
     #[gpui::test]

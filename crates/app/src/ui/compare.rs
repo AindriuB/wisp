@@ -133,9 +133,10 @@ pub struct CompareView {
     data: Option<Arc<Data>>,
     patterns: Vec<String>,
     computed: Option<Computed>,
-    /// A pattern awaiting the user's confirmation.
-    pending: Option<String>,
-    notice: Option<String>,
+    /// A pattern awaiting the user's confirmation, with the id of the row that offered it.
+    pending: Option<(String, String)>,
+    /// A save error, with the id of the row (or list entry) it belongs under.
+    notice: Option<(String, String)>,
     generation: u64,
     /// Serialises read-modify-write saves of the ignore list; holds the last sequence number.
     save_lock: Arc<Mutex<u64>>,
@@ -199,7 +200,7 @@ impl CompareView {
     }
 
     /// Re-read the saved list, apply `change` and save it, then recompute, off the UI thread.
-    fn apply(&mut self, change: Change, cx: &mut Context<Self>) {
+    fn apply(&mut self, change: Change, anchor: String, cx: &mut Context<Self>) {
         let Some(data) = self.data.clone() else {
             return;
         };
@@ -220,13 +221,15 @@ impl CompareView {
                 match result {
                     Ok((seq, patterns, computed)) => {
                         // Saves finish in any order; only the newest list is shown.
-                        if seq > this.applied_seq {
+                        if let Some(seq) = newer_seq(this.applied_seq, seq) {
                             this.applied_seq = seq;
                             this.patterns = patterns;
                             this.computed = Some(computed);
                         }
                     }
-                    Err(e) => this.notice = Some(format!("Could not save the ignore list: {e}")),
+                    Err(e) => {
+                        this.notice = Some((anchor, format!("Could not save the ignore list: {e}")))
+                    }
                 }
                 cx.notify();
             })
@@ -237,15 +240,52 @@ impl CompareView {
     }
 
     fn confirm_pending(&mut self, cx: &mut Context<Self>) {
-        if let Some(p) = self.pending.take() {
-            self.apply(Change::Add(p), cx);
+        if let Some((row, p)) = self.pending.take() {
+            // Never persist a pattern the parser rejects.
+            let (_, problems) = IgnoreList::parse(std::slice::from_ref(&p));
+            if let Some(pr) = problems.first() {
+                self.notice = Some((row, format!("Not saved: invalid pattern ({})", pr.reason)));
+                cx.notify();
+                return;
+            }
+            self.apply(Change::Add(p), row, cx);
         }
     }
 
     fn remove_pattern(&mut self, ix: usize, cx: &mut Context<Self>) {
         if let Some(p) = self.patterns.get(ix).cloned() {
-            self.apply(Change::Remove(p), cx);
+            self.apply(Change::Remove(p), format!("pattern-{ix}"), cx);
         }
+    }
+
+    fn confirm_box(&self, p: &str, cx: &mut Context<Self>) -> gpui::AnyElement {
+        v_flex()
+            .gap_1()
+            .p_2()
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(format!(
+                "Ignore `{}`? This pattern is written to this collection's collection.toml, which may be shared through git.",
+                escape_display(p)
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        Button::new("ignore-confirm")
+                            .label("Confirm")
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_pending(cx))),
+                    )
+                    .child(Button::new("ignore-cancel").label("Cancel").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.pending = None;
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .into_any_element()
     }
 
     fn ignore_row(
@@ -254,10 +294,11 @@ impl CompareView {
         pattern: String,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let row = id.to_string();
         Button::new(id)
             .label("Ignore")
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.pending = Some(pattern.clone());
+                this.pending = Some((row.clone(), pattern.clone()));
                 cx.notify();
             }))
             .into_any_element()
@@ -270,6 +311,11 @@ impl CompareView {
             .as_ref()
             .map(|c| status_text(&c.comparison.status))
     }
+}
+
+/// `seq` if it is newer than the last applied save, so an older save never replaces a newer one.
+fn newer_seq(applied: u64, seq: u64) -> Option<u64> {
+    (seq > applied).then_some(seq)
 }
 
 /// A change to the ignore list, applied to the list as saved at that moment.
@@ -422,6 +468,11 @@ fn report_rows(cmp: &Comparison) -> Vec<Row> {
         } => {
             hidden += ignored;
             for (i, ch) in changes.iter().enumerate() {
+                if ch.path.is_empty() {
+                    // The whole body changed; the parser has no root pattern to ignore it with.
+                    rows.push(Row::Text(body_change_text(ch)));
+                    continue;
+                }
                 rows.push(Row::Ignorable {
                     id: format!("ignore-body-{i}"),
                     text: body_change_text(ch),
@@ -483,58 +534,33 @@ impl Render for CompareView {
         col = col
             .child(div().child(side_header("A", &data.a, now)))
             .child(div().child(side_header("B", &data.b, now)));
+        let mut notice_shown = false;
         for row in report_rows(&c.comparison) {
             col = match row {
                 Row::Section(t) => col.child(div().text_color(muted).child(SharedString::from(t))),
                 Row::Text(t) => col.child(div().child(t)),
                 Row::Note(t) => col.child(div().text_color(muted).child(t)),
                 Row::Ignorable { id, text, pattern } => {
-                    let ignore = self.ignore_row(SharedString::from(id), pattern, cx);
-                    col.child(
+                    let ignore = self.ignore_row(SharedString::from(id.clone()), pattern, cx);
+                    col = col.child(
                         div()
                             .flex()
                             .flex_row()
                             .gap_2()
                             .child(div().flex_1().min_w_0().child(text))
                             .child(ignore),
-                    )
+                    );
+                    // The confirmation and any save error sit directly under the clicked row.
+                    if let Some((_, p)) = self.pending.clone().filter(|(r, _)| *r == id) {
+                        col = col.child(self.confirm_box(&p, cx));
+                    }
+                    if let Some(n) = self.notice.as_ref().filter(|(r, _)| *r == id) {
+                        notice_shown = true;
+                        col = col.child(div().text_color(cx.theme().danger).child(n.1.clone()));
+                    }
+                    col
                 }
             };
-        }
-
-        // Inline confirmation, before any write.
-        if let Some(p) = self.pending.clone() {
-            col = col.child(
-                v_flex()
-                    .gap_1()
-                    .p_2()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(format!(
-                        "Ignore `{}`? This pattern is written to this collection's collection.toml, which may be shared through git.",
-                        escape_display(&p)
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(
-                                Button::new("ignore-confirm")
-                                    .label("Confirm")
-                                    .on_click(cx.listener(|this, _, _, cx| this.confirm_pending(cx))),
-                            )
-                            .child(Button::new("ignore-cancel").label("Cancel").on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.pending = None;
-                                    cx.notify();
-                                }),
-                            )),
-                    ),
-            );
-        }
-        if let Some(n) = &self.notice {
-            col = col.child(div().text_color(cx.theme().danger).child(n.clone()));
         }
 
         // The current patterns.
@@ -565,6 +591,17 @@ impl Render for CompareView {
                             cx.listener(move |this, _, _, cx| this.remove_pattern(i, cx)),
                         )),
                 );
+            if let Some(n) = self
+                .notice
+                .as_ref()
+                .filter(|(r, _)| *r == format!("pattern-{i}"))
+            {
+                notice_shown = true;
+                col = col.child(div().text_color(cx.theme().danger).child(n.1.clone()));
+            }
+        }
+        if !notice_shown && let Some(n) = &self.notice {
+            col = col.child(div().text_color(cx.theme().danger).child(n.1.clone()));
         }
         scroll(col)
     }
@@ -816,6 +853,51 @@ mod tests {
     }
 
     #[test]
+    fn compare_view_root_body_change_offers_no_ignore() {
+        let change = |p: &str| BodyChange {
+            path: p.into(),
+            kind: ChangeKind::Changed,
+            before: Some(sh("1")),
+            after: Some(sh("2")),
+        };
+        let rows = report_rows(&cmp(
+            no_headers(),
+            BodyDiff::Different {
+                changes: vec![change(""), change("/a")],
+                total: 2,
+                ignored: 0,
+            },
+        ));
+        let pats: Vec<_> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Ignorable { pattern, .. } => Some(pattern.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pats, vec!["body:/a".to_string()]);
+        // Every offered pattern parses.
+        let (_, problems) = IgnoreList::parse(&pats);
+        assert!(problems.is_empty());
+        // The rule the old code offered is rejected by the parser.
+        let (_, problems) = IgnoreList::parse(&["body:".to_string()]);
+        assert!(!problems.is_empty());
+    }
+
+    #[test]
+    fn compare_view_older_save_never_replaces_a_newer_one() {
+        let mut applied = 0;
+        for seq in [2, 1] {
+            if let Some(s) = newer_seq(applied, seq) {
+                applied = s;
+            }
+        }
+        assert_eq!(applied, 2);
+        assert_eq!(newer_seq(2, 2), None);
+        assert_eq!(newer_seq(2, 3), Some(3));
+    }
+
+    #[test]
     fn compare_view_incomplete_body_shows_evidence_notes_not_equal() {
         let side = |kind| SideReason {
             kind,
@@ -880,5 +962,18 @@ mod tests {
         cx.run_until_parked();
         let text = view.read_with(cx, |v, _| v.status_text());
         assert_eq!(text.as_deref(), Some("Status: 200 changed to 500"));
+
+        // An invalid pattern is never persisted: the save is refused with a notice at its row.
+        view.update(cx, |v, cx| {
+            v.pending = Some(("ignore-body-0".into(), "body:".into()));
+            v.confirm_pending(cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            assert!(v.pending.is_none());
+            assert!(matches!(&v.notice, Some((r, _)) if r == "ignore-body-0"));
+        });
+        let saved = std::fs::read_to_string(dir.path().join("coll/collection.toml")).unwrap();
+        assert!(!saved.contains("body:"), "{saved}");
     }
 }
