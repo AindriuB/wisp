@@ -264,7 +264,8 @@ impl CompareView {
             .into_any_element()
     }
 
-    /// Text of the status row, for display and tests.
+    /// Text of the status row, for tests.
+    #[cfg(test)]
     pub fn status_text(&self) -> Option<String> {
         self.computed
             .as_ref()
