@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 190 | `[tls]` in `settings.toml`; palette commands to toggle system trust and choose/clear a CA file, applied without restart; startup trust with a notice on a bad file; unknown-issuer hint; three workspace carry-overs | ## 2026-11-20 — TLS trust settings in the GUI (task 190) |
 | 2026-11-20 | 188 | compare of two history entries (status, headers, JSON body) with evidence wording; per-collection `[compare] ignore` list; stored-body-unavailable state | ## 2026-11-20 — Compare engine and collection ignore list (task 188) |
 | 2026-11-20 | 189 | `Body::GraphQl` in model, TOML file format, resolve, Explain, history redaction/cap, import scan, resend plan; read-only picker entry in app | ## 2026-11-20 — GraphQL body in the model (task 189) |
 | 2026-11-19 | 186 | id write keeps collection.toml mode; FIFO swap cannot hang a read; git-tracked check bounded at 5 s and fails closed inside any work tree; moved-name check ignores symlinks; `t1` flake fixed | ## 2026-11-19 — Secret-file safety follow-ups from task 169 closed (task 186) |
