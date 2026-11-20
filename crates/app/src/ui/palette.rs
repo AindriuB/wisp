@@ -12,10 +12,11 @@ use gpui_component::kbd::Kbd;
 use gpui_component::{ActiveTheme as _, Disableable as _, IndexPath, h_flex};
 
 use crate::actions::{
-    CancelRequest, ClearHistory, CloseCollection, CloseTab, NewCollection, NewEnvironment,
-    NewRequest, OpenCollection, OpenImport, OpenPalette, ReloadFromDisk, SaveRequest, SendRequest,
-    ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets, ShowHistory, SwitchCollection,
-    SwitchEnvironment, ToggleConfirmSend, ToggleHistoryBodies, ToggleLayout, ToggleTheme,
+    CancelRequest, ChooseCaFile, ClearCaFile, ClearHistory, CloseCollection, CloseTab,
+    NewCollection, NewEnvironment, NewRequest, OpenCollection, OpenImport, OpenPalette,
+    ReloadFromDisk, SaveRequest, SendRequest, ShareKeychainSecrets, ShowCookieJar, ShowEnvSecrets,
+    ShowHistory, SwitchCollection, SwitchEnvironment, ToggleConfirmSend, ToggleHistoryBodies,
+    ToggleLayout, ToggleSystemTrust, ToggleTheme,
 };
 use crate::palette::{self, CommandId, Match, PaletteItem, PaletteKind, PaletteMode};
 use crate::workspace::{Workspace, WorkspaceEvent};
@@ -44,6 +45,9 @@ fn action_for(id: CommandId) -> Box<dyn Action> {
         CommandId::ShowCookieJar => Box::new(ShowCookieJar),
         CommandId::ClearHistory => Box::new(ClearHistory),
         CommandId::ToggleHistoryBodies => Box::new(ToggleHistoryBodies),
+        CommandId::ToggleSystemTrust => Box::new(ToggleSystemTrust),
+        CommandId::ChooseCaFile => Box::new(ChooseCaFile),
+        CommandId::ClearCaFile => Box::new(ClearCaFile),
         CommandId::ToggleConfirmSend => Box::new(ToggleConfirmSend),
         CommandId::EnvSecrets => Box::new(ShowEnvSecrets),
         CommandId::ShareSecrets => Box::new(ShareKeychainSecrets),

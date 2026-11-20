@@ -3,6 +3,7 @@
 pub mod assertions;
 pub mod auth;
 pub mod body;
+mod graphql;
 pub mod headers;
 pub mod params;
 pub mod path;

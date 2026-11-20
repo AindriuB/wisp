@@ -260,7 +260,7 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
             .collect();
         let whole_open = (q && blank(&d.query))
             || (v && blank(&d.variables))
-            || (legacy && (blank(&d.query) || blank(&d.variables)));
+            || (legacy && (blank(&d.query) || (gql_stored && blank(&d.variables))));
         let leaves_open =
             !leaves.is_empty() && empty_json_leaves(&d.variables, &leaves).unwrap_or(true);
         if !whole_open && !leaves_open {
@@ -558,6 +558,16 @@ mod tests {
             }),
             ..Request::default()
         }
+    }
+
+    #[test]
+    fn graphql_draft_from_non_graphql_stored_body_needs_only_query() {
+        let o = body_origin(
+            Body::Json(wisp_core::request::TextBody::default()),
+            &["body"],
+        );
+        assert!(body_redaction_refusal(&gql_body("", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_none());
     }
 
     #[test]

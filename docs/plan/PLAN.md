@@ -20,13 +20,24 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model) and 191 (TLS trust for `wisp-cli run`) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`) and 193 (GraphQL editor) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
 Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`, snapshot, metadata, hardening). Wave 1 tasks 159, 160, 161, 162, 163, 164 and the 165 size measurement are recorded, and wave-2 tasks 175 (Explain metadata, placeholder URL-bar check), 168 (history hardening, read-only history reader), 170 (importer hardening, descriptions), 166 (`wisp-cli run`), 169 (secret store and binding hardening), 171 (Windows hardening: owner-only data dir, real 8.3 test, file identity), 167 (hash file body through one handle) 174 (per-request variables editor) 172 (CLI budgets measurement), 178 (refuse to resend a truncated history body) and 179 (OpenAPI environment names without URL credentials) are recorded; task 173 (CLI snapshot and metadata) and task 176 (0.4.0 docs: `docs/architecture.md`, `docs/cli.md`, `README.md`, closed ACs in `99-hardening-0-2-0.md`) are recorded; 177 (measure and release dry run) is recorded (PR #147): measure run 44593845270 and release dry run 44596574612 both succeeded on 8d6fb0f. Windows GUI 15,616,000 B (284,000 B under the soft line), all CLIs under 7,340,032 B; figures in `scripts/measure/results/v0.4.0-wave-3-size.json`. The draft release `dryrun-44596574612` exists for the user to delete. The macOS hand checklist (AC4) is in PR #147's body for the user to run. Next is the 0.4.0 version bump and release (user's). 178 must ship in the same release as 168. Task 182 (history scrub no longer empties truncated JSON request bodies; marker written when `append` creates the folder) is recorded; it is a must-ship-before-0.4.0 item (user decision 2026-11-18).
 
 **Size, decided 2026-11-18 (task 172):** every `wisp-cli` limit in `scripts/measure/cli-budgets.json` is 7,340,032 B (7 MiB), the user's decision after Linux measured 45,048 B over the earlier 6 MiB. Measured `wisp-cli`: macOS 3,485,408 B, Windows 4,201,472 B, Linux 6,336,504 B (run 44293903312, main 910d681). The Windows GUI is 15,609,344 B, 290,656 B under the 15,900,000 B soft line and 390,656 B under the 16,000,000 B gate; this is the tightest margin, so 177 re-measures it. Task 176 put these limits in `docs/architecture.md`; the sizes there were measured before `snapshot` merged, so 177 re-measures. The wave-1 overage (+26,624 B against +10,240 B allowed) was not cut. Figures: `scripts/measure/results/v0.4.0-wave-2-cli-size.json`.
+
+### Follow-ups from task 193 (GraphQL editor; not scheduled)
+- `{{var}}` highlighting for all body editors (JSON, text, GraphQL Query/Variables); none has it today (`crates/app/src/ui/request/body.rs:201-203`); spec :163 deferred by 193 Amendment 1.
+- `graphql::variables_note` pretty-prints the whole variables text on every render; cache it per edit like `refresh_json` (`body.rs:345`, `:247-253`).
+- The variables note checks text as typed, so `{"id": {{id}}}` shows "not a JSON object" though it sends fine after substitution (`crates/app/src/ui/request/graphql.rs:20-26` vs `crates/core/src/resolve/engine.rs:676-690`); revisit with highlighting.
+- The comment at `crates/service/src/plan.rs:250-253` says a "body"-only redaction needs both fields; since 193 that holds only when the stored body was GraphQL.
+
+### Follow-ups from task 190 (TLS trust in the GUI; not scheduled)
+- [P3] The CA file is read synchronously on the UI thread at startup (`crates/app/src/workspace.rs:1259-1268`); a CA path on a stalled network mount would block the window opening.
+- [P3] The TLS hint names "Toggle system certificate trust" even when system trust is already on, so following it turns trust off (`crates/app/src/ui/response/mod.rs:70-83`).
+- [P3] Startup trust is covered only by construction: `applied_tls` and `EngineConfig.tls` come from the same local (`workspace.rs:1271-1276`); a test cannot catch a wrong argument unless the engine exposes its trust.
 
 ### Follow-ups from task 188 (compare engine and ignore list; not scheduled)
 - [P3] JSON nested exactly 128 deep returns TooDeep because of serde_json's limit, while AC7 says beyond 128 (`crates/service/src/compare.rs:421-427`, `:506-509`).
@@ -48,10 +59,10 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 ### Follow-ups from task 189 (GraphQL body model; not scheduled)
 - [P3] AC8 of 189, not done: the stale redirect comments in `crates/core/src/engine.rs` at ~:927 and ~:1090 (outside 189's Owns). The task 164 follow-up below stays open.
 - [P3] The resend refusal says "the body was not stored" even when only a redacted leaf triggered it (`crates/service/src/plan.rs:275-279`).
+- [P3] No test for the cleared-variables branch (`crates/service/src/plan.rs:256-257`).
 - [P3] Draft GraphQL from a non-GraphQL stored body stays refused until both fields are non-blank; it should be `blank(&d.query)` (`crates/service/src/plan.rs:259`). Folded into task 193.
 - [P3] Integers beyond i64/u64 in GraphQL variables lose precision, because serde_json lacks `arbitrary_precision` (`crates/core/src/resolve/engine.rs:682`).
 - [P3] Explain reports a body size for non-object variables (`crates/core/src/resolve/report.rs:1566`).
-- [P3] The read-only GraphQL placeholder has no scroll area (`crates/app/src/ui/request/body.rs:641-665`); task 193 replaces it.
 - [P3] No serde round-trip test of `Body::GraphQl` in core, and no check that a multi-line query is written as `'''`.
 - [P3] Spec Feature 3 and AC6 (`docs/plan/specs/2026-11-19-wisp-0-5-0.md`) call `crates/storage/src/import/mod.rs:363` "the credential scan", but it is the undefined-variable scan; the wording needs fixing.
 - [P3] The `redact_json_body` doc comment still says "`body` is recorded" (`crates/storage/src/history.rs:793-795`).
