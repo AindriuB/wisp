@@ -158,6 +158,19 @@ fn h3b_malformed_entries_dropped_on_write() {
     assert!(!text.contains("garbage") && !text.contains("bad!key"));
 }
 
+/// A path as `git worktree add` writes it into `.git` and `gitdir` files: the
+/// plain `C:\x` disk form, never the `\\?\C:\x` verbatim form `canonicalize`
+/// returns on Windows (that form starts with a double separator, which the
+/// binding check refuses as a possible network or device path). Identity
+/// elsewhere.
+fn git_form(p: &Path) -> String {
+    let s = p.display().to_string();
+    match s.strip_prefix(r"\\?\") {
+        Some(r) if !r.starts_with("UNC") => r.to_string(),
+        _ => s,
+    }
+}
+
 /// A linked worktree entry: `.git` file -> `<main>/.git/worktrees/<name>`.
 fn make_worktree(main: &Path, wt: &Path, name: &str) -> PathBuf {
     let gd = main.join(".git/worktrees").join(name);
@@ -165,10 +178,10 @@ fn make_worktree(main: &Path, wt: &Path, name: &str) -> PathBuf {
     std::fs::write(gd.join("commondir"), "../..\n").unwrap();
     std::fs::write(
         gd.join("gitdir"),
-        format!("{}\n", wt.join(".git").display()),
+        format!("{}\n", git_form(&wt.join(".git"))),
     )
     .unwrap();
-    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", git_form(&gd))).unwrap();
     gd
 }
 
@@ -187,11 +200,11 @@ fn make_worktree_late(main: &Path, wt: &Path, name: &str, delay: std::time::Dura
     std::fs::write(gd.join("commondir"), "../..\n").unwrap();
     std::fs::write(
         gd.join("gitdir"),
-        format!("{}\n", wt.join(".git").display()),
+        format!("{}\n", git_form(&wt.join(".git"))),
     )
     .unwrap();
     std::thread::sleep(delay);
-    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", git_form(&gd))).unwrap();
     gd
 }
 
@@ -292,14 +305,15 @@ fn verbatim_worktree(name: &str) -> (PathBuf, DataDir, PathBuf) {
     let (_w, w) = root();
     std::mem::forget(_w);
     let gd = a.join(".git").join("worktrees").join(name);
-    let verbatim = PathBuf::from(format!(r"\\?\{}", gd.display()));
+    // `root()` is canonical, so `gd` is already the verbatim form on Windows.
+    let verbatim = gd.clone();
     let _ = std::fs::create_dir_all(&verbatim);
     let _ = std::fs::write(verbatim.join("commondir"), "../..\n");
     let _ = std::fs::write(
         verbatim.join("gitdir"),
-        format!("{}\n", w.join(".git").display()),
+        format!("{}\n", git_form(&w.join(".git"))),
     );
-    std::fs::write(w.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+    std::fs::write(w.join(".git"), format!("gitdir: {}\n", git_form(&gd))).unwrap();
     (a, d, w)
 }
 

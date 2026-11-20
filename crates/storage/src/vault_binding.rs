@@ -1167,6 +1167,18 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_disk_gitdir_text_is_refused_and_plain_form_is_not() {
+        use super::is_remote_or_device;
+        // Verbatim text is never accepted from a `.git` file, on any platform;
+        // git writes the plain form, so a fixture that writes the canonical
+        // verbatim path will not verify.
+        assert!(is_remote_or_device(r"\\?\C:\r\.git\worktrees\w"));
+        assert!(is_remote_or_device(r"\\?\UNC\srv\share\x"));
+        assert!(!is_remote_or_device("C:/r/.git/worktrees/w"));
+        assert!(!is_remote_or_device(r"C:\r\.git\worktrees\w"));
+    }
+
+    #[test]
     fn reserved_and_rewritten_entry_names_are_refused() {
         use super::safe_entry_name;
         use std::ffi::OsStr;
