@@ -225,6 +225,20 @@ fn read_registry(path: &Path) -> Result<Registry, StorageError> {
     Ok(Registry { id, rows })
 }
 
+/// `write_registry`, with a test-only failure seam for the re-key in `check`.
+fn write_registry_hooked(path: &Path, reg: &Registry) -> Result<(), StorageError> {
+    #[cfg(test)]
+    if FAIL_REKEY_REGISTRY.with(|f| f.get()) {
+        return Err(io(path, std::io::Error::other("injected")));
+    }
+    write_registry(path, reg)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_REKEY_REGISTRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn write_registry(path: &Path, reg: &Registry) -> Result<(), StorageError> {
     let rows: serde_json::Map<String, serde_json::Value> = reg
         .rows
@@ -348,6 +362,17 @@ fn read_marker(root: &Path, key: &str) -> Result<Option<String>, StorageError> {
 /// [`MARKER_MAX_ENTRIES`] entries fails closed. Refuses, writing nothing, when
 /// the directory or marker is a symlink or the marker is over a cap.
 fn write_marker(root: &Path, key: &str, drop_keys: &[&str]) -> Result<String, StorageError> {
+    let nonce = new_nonce();
+    write_marker_nonce(root, key, &nonce, drop_keys)?;
+    Ok(nonce)
+}
+
+fn write_marker_nonce(
+    root: &Path,
+    key: &str,
+    nonce: &str,
+    drop_keys: &[&str],
+) -> Result<(), StorageError> {
     safe_marker(root)?;
     let dir = root.join(crate::environment::DIR);
     std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
@@ -357,8 +382,7 @@ fn write_marker(root: &Path, key: &str, drop_keys: &[&str]) -> Result<String, St
     for k in drop_keys {
         entries.remove(*k);
     }
-    let nonce = new_nonce();
-    entries.insert(key.to_string(), nonce.clone());
+    entries.insert(key.to_string(), nonce.to_string());
     if entries.len() > MARKER_MAX_ENTRIES {
         return Err(marker_refuse(
             &marker_path(root),
@@ -366,8 +390,7 @@ fn write_marker(root: &Path, key: &str, drop_keys: &[&str]) -> Result<String, St
         ));
     }
     let text: String = entries.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
-    crate::environment::write_nofollow(&marker_path(root), text.as_bytes())?;
-    Ok(nonce)
+    crate::environment::write_nofollow(&marker_path(root), text.as_bytes())
 }
 
 /// The marker file if git tracks it: a warning for the caller to surface, as
@@ -450,13 +473,20 @@ pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<()
         .and_then(|rs| rs.iter().position(|r| r.root == ckey && r.key.is_none()));
     if let Some(i) = legacy {
         let key = new_nonce();
+        // PROOF: `i` indexes a row found in `reg.rows[id]` just above, and
+        // nothing has removed it since (we hold the registry lock and `reg`).
+        let old_nonce = reg.rows[id.as_str()][i].nonce.clone();
         let result = write_marker(&canon, &key, &[reg_id.as_str()]).and_then(|nonce| {
-            // PROOF: `i` indexes a row found in `reg.rows[id]` just above, and
-            // nothing has removed it since (we hold the registry lock and `reg`).
             let row = &mut reg.rows.get_mut(id.as_str()).expect("row present")[i];
             row.nonce = nonce;
-            row.key = Some(key);
-            write_registry(&registry_path(data), &reg)
+            row.key = Some(key.clone());
+            let saved = write_registry_hooked(&registry_path(data), &reg);
+            if saved.is_err() {
+                // Put the legacy entry back and drop the new one, so the old
+                // row still matches its marker and the binding keeps working.
+                let _ = write_marker_nonce(&canon, &reg_id, &old_nonce, &[key.as_str()]);
+            }
+            saved
         });
         if result.is_err() {
             tracing::warn!("could not re-key a collection binding marker");
@@ -1080,6 +1110,47 @@ pub(crate) fn env_lock(data: &DataDir, plain: &Path) -> Result<EnvLock, StorageE
 #[cfg(test)]
 mod tests {
     use super::is_remote_or_device;
+
+    #[test]
+    fn h3b_failed_rekey_registry_write_keeps_the_binding() {
+        use crate::collection::CollectionId;
+        use crate::data_dir::DataDir;
+        let id = CollectionId::parse("abcdef0123456789").unwrap();
+        let a = tempfile::tempdir().unwrap();
+        std::fs::write(
+            a.path().join("collection.toml"),
+            format!("format = 1\nid = \"{}\"\n", id.as_str()),
+        )
+        .unwrap();
+        let data = DataDir::at(tempfile::tempdir().unwrap().keep());
+        crate::vault::bind(&data, &id, a.path()).unwrap();
+        // Make the row legacy: no `key`, marker entry under the registry id.
+        let rp = super::registry_path(&data);
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&rp).unwrap()).unwrap();
+        let reg_id = v["registry_id"].as_str().unwrap().to_string();
+        let row = &mut v["bindings"][id.as_str()][0];
+        let key = row["key"].as_str().unwrap().to_string();
+        row.as_object_mut().unwrap().remove("key");
+        std::fs::write(&rp, serde_json::to_string(&v).unwrap()).unwrap();
+        let canon = std::fs::canonicalize(a.path()).unwrap();
+        let mp = super::marker_path(&canon);
+        let text = std::fs::read_to_string(&mp).unwrap();
+        std::fs::write(&mp, text.replace(&key, &reg_id)).unwrap();
+
+        super::FAIL_REKEY_REGISTRY.with(|f| f.set(true));
+        assert!(super::check(&data, &id, a.path()).is_ok());
+        // The registry write failed: the old row must still match its marker.
+        assert!(super::check(&data, &id, a.path()).is_ok());
+        assert!(super::check(&data, &id, a.path()).is_ok());
+        // Once writes work again, the re-key completes.
+        super::FAIL_REKEY_REGISTRY.with(|f| f.set(false));
+        assert!(super::check(&data, &id, a.path()).is_ok());
+        assert!(super::check(&data, &id, a.path()).is_ok());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&rp).unwrap()).unwrap();
+        assert!(v["bindings"][id.as_str()][0]["key"].is_string());
+    }
 
     #[cfg(unix)]
     #[test]
