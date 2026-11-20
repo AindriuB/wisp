@@ -190,11 +190,21 @@ impl<'a> Cursor<'a> {
                     continue;
                 }
                 b'/' => {
-                    // Fail closed: only a certain regex start is skipped.
-                    if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() {
-                        prev = b'"';
-                        prev_pos = self.pos - 1;
-                        continue;
+                    // A certain division is skipped; a certain regex start is
+                    // skipped; anything else fails closed.
+                    match slash_kind(self.b, prev, prev_pos) {
+                        Slash::Division => {
+                            prev = b'/';
+                            prev_pos = self.pos;
+                            self.pos += 1;
+                            continue;
+                        }
+                        Slash::Regex if self.skip_regex() => {
+                            prev = b'"';
+                            prev_pos = self.pos - 1;
+                            continue;
+                        }
+                        _ => {}
                     }
                     self.give_up = true;
                     self.pos = self.b.len();
@@ -249,10 +259,19 @@ impl<'a> Cursor<'a> {
                     continue;
                 }
                 b'/' => {
-                    if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() {
-                        prev = b'"';
-                        prev_pos = self.pos - 1;
-                        continue;
+                    match slash_kind(self.b, prev, prev_pos) {
+                        Slash::Division => {
+                            prev = b'/';
+                            prev_pos = self.pos;
+                            self.pos += 1;
+                            continue;
+                        }
+                        Slash::Regex if self.skip_regex() => {
+                            prev = b'"';
+                            prev_pos = self.pos - 1;
+                            continue;
+                        }
+                        _ => {}
                     }
                     self.give_up = true;
                     return None;
@@ -429,38 +448,54 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Keywords after which a `/` starts a regex literal.
-const REGEX_KEYWORDS: [&[u8]; 12] = [
+/// Keywords after which a `/` certainly starts a regex literal.
+const REGEX_KEYWORDS: [&[u8]; 9] = [
     b"return",
     b"typeof",
     b"void",
     b"case",
     b"throw",
     b"in",
-    b"of",
     b"delete",
-    b"await",
-    b"yield",
     b"instanceof",
     b"new",
 ];
 
-/// Whether a `/` after the significant byte `prev` (at `prev_pos`) starts a regex
-/// literal rather than a division.
-fn regex_allowed(b: &[u8], prev: u8, prev_pos: usize) -> bool {
+/// Identifiers whose following `/` is ambiguous (division or regex).
+const AMBIGUOUS_WORDS: [&[u8]; 3] = [b"of", b"yield", b"await"];
+
+/// What a `/` means, judged from the significant byte before it.
+enum Slash {
+    Regex,
+    Division,
+    Ambiguous,
+}
+
+/// Classify a `/` after the significant byte `prev` (at `prev_pos`). Only certain
+/// cases are `Regex` or `Division`; the rest (after `)` or `}`, `of`, `yield`,
+/// `await`, or another operator) are `Ambiguous` and the caller fails closed.
+fn slash_kind(b: &[u8], prev: u8, prev_pos: usize) -> Slash {
     if matches!(
         prev,
-        b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';'
+        b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b';'
     ) {
-        return true;
+        return Slash::Regex;
     }
     // `=>`
     if prev == b'>' {
-        return prev_pos > 0 && b[prev_pos - 1] == b'=';
+        return if prev_pos > 0 && b[prev_pos - 1] == b'=' {
+            Slash::Regex
+        } else {
+            Slash::Ambiguous
+        };
+    }
+    // A number, an identifier, `]` or a closing quote (or a finished regex).
+    if prev == b']' || prev == b'"' {
+        return Slash::Division;
     }
     let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
     if !is_id(prev) {
-        return false;
+        return Slash::Ambiguous;
     }
     // Look back over at most one longer-than-any-keyword identifier run.
     let end = prev_pos + 1;
@@ -469,9 +504,16 @@ fn regex_allowed(b: &[u8], prev: u8, prev_pos: usize) -> bool {
         s -= 1;
     }
     if s > 0 && (is_id(b[s - 1]) || b[s - 1] == b'.') {
-        return false;
+        return Slash::Division;
     }
-    REGEX_KEYWORDS.contains(&&b[s..end])
+    let word = &b[s..end];
+    if REGEX_KEYWORDS.contains(&word) {
+        Slash::Regex
+    } else if AMBIGUOUS_WORDS.contains(&word) {
+        Slash::Ambiguous
+    } else {
+        Slash::Division
+    }
 }
 
 /// `pm.test("name", function () { ... })` or the arrow form, then an optional `;`.

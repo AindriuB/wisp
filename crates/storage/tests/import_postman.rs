@@ -433,3 +433,50 @@ fn pm_pathological_single_line_scripts_parse_in_linear_time() {
         assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
     }
 }
+
+const STATUS_TEST: &str = "pm.test('ok', function () { pm.response.to.have.status(200); });";
+
+fn assert_status_200_translated(stmt: &str) {
+    let (a, _) = import_tests(&[stmt, STATUS_TEST]);
+    let s = format!("{a:?}");
+    assert!(s.contains("Status") && s.contains("200"), "{stmt}: {s}");
+}
+
+#[test]
+fn pm_certain_division_keeps_later_tests_translated() {
+    for stmt in [
+        "var secs = pm.response.responseTime / 1000;",
+        "pm.environment.set('half', pm.response.json().n / 2);",
+        "pm.expect(d.a / d.b).to.be.below(1);",
+        "var q = xs[0] / 2;",
+        "var q = 'a' / 2;",
+    ] {
+        assert_status_200_translated(stmt);
+    }
+}
+
+#[test]
+fn pm_regex_after_arrow_keeps_later_table_test_translated() {
+    assert_status_200_translated("pm.test('r', () => { ['a'].some(x => /a/.test(x)); });");
+}
+
+#[test]
+fn pm_ambiguous_slash_in_conditional_does_not_leak_nested_test() {
+    for line in [
+        "var r = of / 2;",
+        "yield / 2",
+        "await / 2",
+        "{}/2",
+        "var r = (a) / 2;",
+    ] {
+        let (a, _) = import_tests(&[
+            "if (pm.response.code === 500) {",
+            line,
+            "  pm.test('err', function () { pm.response.to.have.status(500); });",
+            "}",
+            STATUS_TEST,
+        ]);
+        let s = format!("{a:?}");
+        assert!(!s.contains("500"), "{line}: {s}");
+    }
+}
