@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Windows ACL follow-ups closed (task 187)
+`is_owner_only` now returns true only when the single DACL ACE is the owner's and grants full file access, so a reduced-rights owner ACE is restricted again. If `restrict_to_owner` fails after the data-dir code created directories, those directories are removed deepest first, only the ones this call created and only if empty. The `windows-sys` line has `default-features = false` and `Cargo.lock` is unchanged. Verified at 679aa19: tester PASS, reviewer APPROVE, no fix rounds; Windows CI ran `acl_reduced_owner_ace_is_not_owner_only` and `acl_failed_restrict_removes_created_dirs` (job 135919944074, run 44626018466).
+**Cost:** The code is `cfg(windows)` and was not built locally, so the Windows CI job was the only proof. Three P3s are in PLAN, including that an INHERIT_ONLY ACE still counts as full access. The ReFS 128-bit file id, `volume_flags` notes and the "already owner-only skips restrict" test were left out of scope.
+
 ## 2026-11-19 — Engine trusts private CAs (task 184)
 `wisp_core::TlsTrust` holds a `system` flag (default on) and extra CA certificates; `TlsTrust::load_pem_file` loads a PEM CA file with strict refusals, and `Engine::set_tls_trust` drops cached clients so the next send uses the new trust. Bundled roots stay in both modes, `verify_tls = false` still accepts anything, and OAuth2 token requests share the trust. Verified at 263495f: tester PASS, reviewer APPROVE, no fix rounds. Measure run 44626294433: Windows GUI 15,616,512 B, +512 B over 15,616,000 B.
 **Cost:** Core only; settings, palette and CLI flags are tasks 190 and 191. Whether `system: true` differs from `false` is untested and left to the macOS hand test. Five P3s are in PLAN.
