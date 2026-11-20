@@ -1895,18 +1895,20 @@ fn rebind_of_one_root_leaves_the_other_bound() {
         rebind(&c.data, &id(), n.path()).unwrap_err(),
         SecretsError::LooksLikeCopy { .. }
     ));
-    // b was moved away (now another id): n replaces b, a stays.
+    // b was moved away (now another id), but a is still live with this id:
+    // the rebind stays refused and both bindings are left as they were.
     write_id(b.path(), "fedcba9876543210");
-    rebind(&c.data, &id(), n.path()).unwrap();
+    assert!(matches!(
+        rebind(&c.data, &id(), n.path()).unwrap_err(),
+        SecretsError::LooksLikeCopy { .. }
+    ));
     let roots = bound_roots(&c.data, &id()).unwrap();
     assert_eq!(roots.len(), 2);
     assert!(roots.contains(&std::fs::canonicalize(a.path()).unwrap()));
-    assert!(roots.contains(&std::fs::canonicalize(n.path()).unwrap()));
+    assert!(roots.contains(&std::fs::canonicalize(b.path()).unwrap()));
     let s = MemoryStore::new();
-    for r in [&a, &n] {
-        let l = load_environment_with(r.path(), "dev", Some(&id()), &s, &c).unwrap();
-        assert!(matches!(l.status, LoadStatus::Store { .. }));
-    }
+    let l = load_environment_with(a.path(), "dev", Some(&id()), &s, &c).unwrap();
+    assert!(matches!(l.status, LoadStatus::Store { .. }));
 }
 
 #[test]
@@ -2644,9 +2646,11 @@ fn h3_a_stale_marker_does_not_make_an_existing_root_look_like_the_bound_one() {
     let c = cx();
     bind(&c.data, &id(), a.path()).unwrap();
     carry(b.path());
-    // The bound folder was recreated: same id, but its marker is gone.
+    // The bound folder was recreated: same id, but its marker is gone. It still
+    // exists and carries the id, so the rebind is a copy and is refused.
     std::fs::remove_dir_all(a.path().join("environments")).unwrap();
-    rebind(&c.data, &id(), b.path()).unwrap();
+    let e = rebind(&c.data, &id(), b.path()).unwrap_err();
+    assert!(matches!(e, SecretsError::LooksLikeCopy { .. }), "{e:?}");
 }
 
 #[test]

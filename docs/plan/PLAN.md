@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view) and 193 (GraphQL editor) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view) and 193 (GraphQL editor) are recorded; 185 (binding registry H3b) is on a PR awaiting review and its Windows CI; it depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -33,6 +33,20 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - `graphql::variables_note` pretty-prints the whole variables text on every render; cache it per edit like `refresh_json` (`body.rs:345`, `:247-253`).
 - The variables note checks text as typed, so `{"id": {{id}}}` shows "not a JSON object" though it sends fine after substitution (`crates/app/src/ui/request/graphql.rs:20-26` vs `crates/core/src/resolve/engine.rs:676-690`); revisit with highlighting.
 - The comment at `crates/service/src/plan.rs:250-253` says a "body"-only redaction needs both fields; since 193 that holds only when the stored body was GraphQL.
+
+### Follow-ups from task 185 (binding registry H3b; not scheduled)
+- [P3] `rebind_confirmed` (`crates/storage/src/vault_binding.rs:1023-1026`) and `check`'s re-key (`:452`) do not drop this registry's dead-row keys for the same root under other ids, as AC11 asks; after about 64 re-ids the rebind fails closed.
+- `h3b_win_trailing_dot_refused` and `h3b_win_com1_refused` do not test the `safe_entry_name` wiring (`verbatim_worktree` ignores setup errors); add a cross-platform lexical test of `exact_worktree_gitdir`.
+- `git worktree move` and ctime changes such as xattrs make worktrees read as unverified; add these beside `git worktree repair` in task 197.
+- `check`'s re-key warning leaves out `error = %e` and logs on every check of a read-only checkout.
+- `tracked_marker_warning` has no production caller; app work.
+- [160-1 residual] Task 197 should document `git worktree move` next to `git worktree repair`.
+- The re-key marker restore at `crates/storage/src/vault_binding.rs:487` is best effort and is not logged on its own.
+- A case-insensitive path on macOS (`WORK` versus `work`) makes a worktree read as unverified.
+- The two `h3b_win_` tests do not prove the name check is wired in.
+- Dead registry rows for a parent folder block nested one-click verification permanently.
+- Tests leak temp dirs (`tempdir().keep()`, `mem::forget` at `crates/storage/tests/binding.rs:22`, `:288`, `:293`).
+- Amendment 3 follow-ups: a cross-registry lock for the marker write race (now also reachable from `check`'s re-key); a test for the uid half of AC4's check; `LooksLikeCopy`'s `Display` prints `bound_root` unescaped (`crates/storage/src/vault.rs:579`); the stale rebind doc comment in `vault.rs` (~:808).
 
 ### Follow-ups from task 190 (TLS trust in the GUI; not scheduled)
 - [P3] The CA file is read synchronously on the UI thread at startup (`crates/app/src/workspace.rs:1259-1268`); a CA path on a stalled network mount would block the window opening.
