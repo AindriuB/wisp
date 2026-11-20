@@ -1154,8 +1154,7 @@ pub fn delete_secret(
 mod tests {
     use super::*;
 
-    /// A repository whose own config names an fsmonitor command must not get
-    /// that command run by the tracked-file check.
+    /// A git that exits 1 with no evidence of a miss fails closed.
     #[cfg(unix)]
     #[test]
     fn git_exit_one_without_evidence_fails_closed() {
@@ -1172,6 +1171,8 @@ mod tests {
         );
     }
 
+    /// A repository whose own config names an fsmonitor command must not get
+    /// that command run by the tracked-file check.
     #[test]
     fn h3_tracked_check_does_not_run_repo_configured_commands() {
         let git = |dir: &Path, args: &[&str]| {
