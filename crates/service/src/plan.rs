@@ -260,7 +260,16 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
             None => false,
         }
     };
-    if !unedited {
+    // A GraphQL body also redacts variables leaves, whether or not the query was cleared.
+    let leaves_unedited = whole
+        && matches!(&draft.body, Body::GraphQl(_))
+        && !fields.is_empty()
+        && match text.map(|t| empty_json_leaves(t, &fields)) {
+            Some(Some(found)) => found,
+            Some(None) => true,
+            None => false,
+        };
+    if !unedited && !leaves_unedited {
         return None;
     }
     let what = if whole {
@@ -467,6 +476,27 @@ mod tests {
         o.stored_body = body;
         o.redacted = redacted.iter().map(|s| s.to_string()).collect();
         o
+    }
+
+    #[test]
+    fn graphql_whole_and_leaf_redaction_refuses_empty_leaf() {
+        let gql = |q: &str, v: &str| {
+            Body::GraphQl(wisp_core::request::GraphQlBody {
+                query: q.into(),
+                variables: v.into(),
+            })
+        };
+        let o = body_origin(gql("", ""), &["body", "body.password"]);
+        let draft = Request {
+            body: gql("{ a }", r#"{"password":""}"#),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&draft, &o).is_some());
+        let filled = Request {
+            body: gql("{ a }", r#"{"password":"x"}"#),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&filled, &o).is_none());
     }
 
     fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {

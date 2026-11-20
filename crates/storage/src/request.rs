@@ -801,8 +801,11 @@ fn write_body(doc: &mut Table, body: &Body, dir: &Path, path: &Path) -> Result<(
             None => set_content(t, &tb.content),
         },
         Body::GraphQl(g) => {
-            set_string(t, "query", &g.query);
-            set_string(t, "variables", &g.variables);
+            for (key, text) in [("query", &g.query), ("variables", &g.variables)] {
+                if t.contains_key(key) || !text.is_empty() {
+                    set_string(t, key, text);
+                }
+            }
         }
         Body::Form(fields) => codec::write_key_values(t, "fields", fields),
         Body::Multipart(parts) => {

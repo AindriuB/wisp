@@ -89,6 +89,17 @@ fn graphql_file_missing_variables_reads_blank() {
 }
 
 #[test]
+fn graphql_file_missing_variables_survives_unchanged_save() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("g.toml");
+    let text = "name = \"g\"\nmethod = \"POST\"\nurl = \"u\"\n\n[body]\ntype = \"graphql\"\nquery = \"{ a }\"\n";
+    fs::write(&path, text).unwrap();
+    let r = load_request(&path).unwrap();
+    save_request(&path, &r).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
 fn graphql_file_write_then_read_round_trips() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("g.toml");
