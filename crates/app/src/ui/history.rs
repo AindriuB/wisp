@@ -8,9 +8,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    Context, DismissEvent, Entity, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
-    Window, div, px,
+    AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle,
+    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
 };
 use gpui_component::button::Button;
 use gpui_component::{ActiveTheme as _, v_flex};
@@ -20,6 +20,7 @@ use wisp_storage::history::{AssertionRecord, AssertionState, Delivery, HistoryEn
 
 use crate::actions::CancelRequest;
 use crate::tab::{HistoryOrigin, Phase, ResponseState};
+use crate::ui::compare::{CompareView, previous_entry};
 use crate::workspace::{Workspace, WorkspaceEvent};
 
 /// The body handed to the history append: none when the setting is off.
@@ -28,7 +29,7 @@ pub fn body_to_store(enabled: bool, body: Option<Vec<u8>>) -> Option<Vec<u8>> {
     if enabled { body } else { None }
 }
 
-fn method_text(m: Method) -> String {
+pub(super) fn method_text(m: Method) -> String {
     format!("{m:?}").to_uppercase()
 }
 
@@ -178,6 +179,11 @@ pub struct HistoryView {
     listing: Listing,
     /// Bumped per load so a slow older load cannot overwrite a newer one.
     generation: u64,
+    /// The entry id marked "Compare from", and the collection root it belongs to.
+    mark: Option<String>,
+    marks_root: Option<std::path::PathBuf>,
+    /// The comparison shown in place of the list.
+    compare: Option<Entity<CompareView>>,
     focus: FocusHandle,
     prev_focus: Option<FocusHandle>,
     _sub: Subscription,
@@ -199,6 +205,9 @@ impl HistoryView {
             workspace,
             listing: Listing::Loading,
             generation: 0,
+            mark: None,
+            marks_root: None,
+            compare: None,
             focus,
             prev_focus,
             _sub,
@@ -210,6 +219,12 @@ impl HistoryView {
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         let generation = self.generation;
+        let root = self.active_root(cx);
+        if root != self.marks_root {
+            self.mark = None;
+            self.compare = None;
+            self.marks_root = root;
+        }
         let job = self.workspace.read(cx).history_job();
         let job = match job {
             Ok(j) => j,
@@ -233,6 +248,41 @@ impl HistoryView {
                     Err(e) => Listing::Unavailable(e),
                 };
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn active_root(&self, cx: &Context<Self>) -> Option<std::path::PathBuf> {
+        let w = self.workspace.read(cx);
+        w.active_collection_ix()
+            .and_then(|ix| w.collection_root(ix))
+    }
+
+    /// Open the comparison of `a` (earlier) and `b`. The store is opened off the UI thread.
+    fn start_compare(&mut self, a: HistoryEntry, b: HistoryEntry, cx: &mut Context<Self>) {
+        let Some(root) = self.active_root(cx) else {
+            return;
+        };
+        let Ok(job) = self.workspace.read(cx).history_job() else {
+            return;
+        };
+        self.generation += 1;
+        let generation = self.generation;
+        cx.spawn(async move |this, cx| {
+            let store = cx
+                .background_executor()
+                .spawn(async move { job.open_existing() })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                if let Ok(Some(store)) = store {
+                    this.compare = Some(cx.new(|cx| CompareView::new(store, root, a, b, cx)));
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -270,12 +320,62 @@ impl Render for HistoryView {
             Listing::Ready(entries) if entries.is_empty() => {
                 body = body.child(div().text_color(muted).child("No history yet"))
             }
+            Listing::Ready(_) if self.compare.is_some() => {
+                if let Some(c) = &self.compare {
+                    body = body.child(c.clone()).child(
+                        Button::new("compare-back")
+                            .label("Back to history")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.compare = None;
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
             Listing::Ready(entries) => {
                 let rows = entries.iter().enumerate().map(|(ix, e)| {
                     let entry = e.clone();
                     let failed = !matches!(e.outcome, Outcome::Completed);
                     let hover = cx.theme().secondary;
-                    div()
+                    let prev = previous_entry(entries, ix).map(|j| entries[j].clone());
+                    let marked = self.mark.as_deref() == Some(e.id.as_str());
+                    let from = self
+                        .mark
+                        .as_ref()
+                        .filter(|_| !marked)
+                        .and_then(|m| entries.iter().find(|x| &x.id == m).cloned());
+                    let this_entry = e.clone();
+                    let id = e.id.clone();
+                    let actions = div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .px_2()
+                        .children(prev.map(|p| {
+                            let b = this_entry.clone();
+                            Button::new(("compare-prev", ix))
+                                .label("Compare with previous")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.start_compare(p.clone(), b.clone(), cx)
+                                }))
+                        }))
+                        .child(
+                            Button::new(("compare-from", ix))
+                                .label(if marked { "Clear mark" } else { "Compare from" })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.mark = if marked { None } else { Some(id.clone()) };
+                                    cx.notify();
+                                })),
+                        )
+                        .children(from.map(|a| {
+                            let b = this_entry.clone();
+                            Button::new(("compare-to", ix))
+                                .label("Compare to")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.start_compare(a.clone(), b.clone(), cx)
+                                }))
+                        }));
+                    let row = div()
                         .id(("history-row", ix))
                         .flex()
                         .flex_row()
@@ -331,7 +431,8 @@ impl Render for HistoryView {
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open(entry.clone(), window, cx)
-                        }))
+                        }));
+                    v_flex().child(row).child(actions)
                 });
                 body = body.child(
                     div()

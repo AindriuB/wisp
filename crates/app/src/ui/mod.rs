@@ -1,6 +1,7 @@
 //! Views. Each file is a placeholder until its owning task fills it in.
 
 pub mod collections;
+mod compare;
 pub mod cookie_jar;
 pub mod create;
 pub mod env_secrets;
