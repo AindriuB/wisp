@@ -259,6 +259,14 @@ pub struct TextBody {
     pub sidecar: Option<String>,
 }
 
+/// A GraphQL body: a query and a JSON object of variables, both inline.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct GraphQlBody {
+    pub query: String,
+    /// JSON text of the variables object; blank means none.
+    pub variables: String,
+}
+
 /// Value of a multipart part.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PartValue {
@@ -282,6 +290,7 @@ pub enum Body {
     Json(TextBody),
     Text(TextBody),
     Xml(TextBody),
+    GraphQl(GraphQlBody),
     Form(Vec<KeyValue>),
     Multipart(Vec<Part>),
     File(PathBuf),

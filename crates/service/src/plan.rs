@@ -236,12 +236,58 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
     if !whole && fields.is_empty() {
         return None;
     }
-    let text = match &draft.body {
-        Body::Json(t) | Body::Text(t) | Body::Xml(t) => Some(t.content.as_str()),
-        _ => None,
+    // The text a whole-body clearing emptied, and the text field-level clearing applies to.
+    let (whole_text, text) = match &draft.body {
+        Body::Json(t) | Body::Text(t) | Body::Xml(t) => {
+            (Some(t.content.as_str()), Some(t.content.as_str()))
+        }
+        Body::GraphQl(g) => (Some(g.query.as_str()), Some(g.variables.as_str())),
+        _ => (None, None),
     };
+    let gql_stored = matches!(&origin.stored_body, Body::GraphQl(_));
+    if let (Body::GraphQl(d), true) = (&draft.body, whole || gql_stored) {
+        // A GraphQL body names the field history cleared: "body.query" or "body.variables".
+        // Any other "body.<leaf>" is a leaf inside the variables. An entry with only "body"
+        // (no per-field name) stays fail-safe: both fields must be filled.
+        let blank = |t: &str| t.trim().is_empty();
+        let q = gql_stored && fields.contains(&"query");
+        let v = gql_stored && fields.contains(&"variables");
+        let legacy = whole && !q && !v;
+        let leaves: Vec<&str> = fields
+            .iter()
+            .copied()
+            .filter(|f| !(gql_stored && matches!(*f, "query" | "variables")))
+            .collect();
+        let whole_open = (q && blank(&d.query))
+            || (v && blank(&d.variables))
+            || (legacy && (blank(&d.query) || blank(&d.variables)));
+        let leaves_open =
+            !leaves.is_empty() && empty_json_leaves(&d.variables, &leaves).unwrap_or(true);
+        if !whole_open && !leaves_open {
+            return None;
+        }
+        let what = if whole_open {
+            "the body was not stored".to_string()
+        } else {
+            format!("{} was not stored", leaves.join(", "))
+        };
+        return Some(format!("Edit the request body before resending: {what}"));
+    }
+    // A per-field clearing of a stored GraphQL body emptied part of the whole body.
+    let whole = whole || (gql_stored && fields.iter().any(|f| matches!(*f, "query" | "variables")));
+    let fields: Vec<&str> = if gql_stored {
+        fields
+            .into_iter()
+            .filter(|f| !matches!(*f, "query" | "variables"))
+            .collect()
+    } else {
+        fields
+    };
+    if !whole && fields.is_empty() {
+        return None;
+    }
     let unedited = if whole {
-        text.is_none_or(|t| t.trim().is_empty())
+        whole_text.is_none_or(|t| t.trim().is_empty())
             && matches!(
                 &draft.body,
                 Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
@@ -460,6 +506,107 @@ mod tests {
         o.stored_body = body;
         o.redacted = redacted.iter().map(|s| s.to_string()).collect();
         o
+    }
+
+    #[test]
+    fn graphql_whole_and_leaf_redaction_refuses_empty_leaf() {
+        let gql = |q: &str, v: &str| {
+            Body::GraphQl(wisp_core::request::GraphQlBody {
+                query: q.into(),
+                variables: v.into(),
+            })
+        };
+        let o = body_origin(gql("", ""), &["body", "body.password"]);
+        let draft = Request {
+            body: gql("{ a }", r#"{"password":""}"#),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&draft, &o).is_some());
+        let filled = Request {
+            body: gql("{ a }", r#"{"password":"x"}"#),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&filled, &o).is_none());
+    }
+
+    #[test]
+    fn graphql_query_refill_lifts_refusal_with_blank_variables() {
+        let gql = |q: &str, v: &str| {
+            Body::GraphQl(wisp_core::request::GraphQlBody {
+                query: q.into(),
+                variables: v.into(),
+            })
+        };
+        let o = body_origin(gql("", ""), &["body.query"]);
+        let blank = Request {
+            body: gql("", ""),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&blank, &o).is_some());
+        let refilled = Request {
+            body: gql(r#"{ a(token: "new") }"#, ""),
+            ..Request::default()
+        };
+        assert!(body_redaction_refusal(&refilled, &o).is_none());
+    }
+
+    fn gql_body(q: &str, v: &str) -> Request {
+        Request {
+            body: Body::GraphQl(wisp_core::request::GraphQlBody {
+                query: q.into(),
+                variables: v.into(),
+            }),
+            ..Request::default()
+        }
+    }
+
+    #[test]
+    fn graphql_resend_both_cleared_query_only_refilled_is_refused() {
+        let o = body_origin(gql_body("", "").body, &["body.query", "body.variables"]);
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", "{}"), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_resend_query_only_cleared_allows_blank_variables() {
+        let o = body_origin(gql_body("", "").body, &["body.query"]);
+        assert!(body_redaction_refusal(&gql_body("", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_resend_variables_only_cleared_needs_variables() {
+        let o = body_origin(gql_body("{ a }", "").body, &["body.variables"]);
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", "{}"), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_resend_old_body_only_entry_needs_both_fields() {
+        let o = body_origin(gql_body("", "").body, &["body"]);
+        assert!(body_redaction_refusal(&gql_body("", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", ""), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("", "{}"), &o).is_some());
+        assert!(body_redaction_refusal(&gql_body("{ a }", "{}"), &o).is_none());
+    }
+
+    #[test]
+    fn graphql_field_clearing_refuses_switch_to_blank_non_graphql_body() {
+        let sets: [&[&str]; 3] = [
+            &["body.query"],
+            &["body.variables"],
+            &["body.query", "body.variables"],
+        ];
+        for names in sets {
+            let o = body_origin(gql_body("", "").body, names);
+            for body in [Body::None, Body::Json(Default::default())] {
+                let draft = Request {
+                    body,
+                    ..Request::default()
+                };
+                assert!(body_redaction_refusal(&draft, &o).is_some(), "{names:?}");
+            }
+        }
     }
 
     fn try_send(draft: &Request, o: &HistoryOrigin) -> Result<SendPlan, ResolveError> {

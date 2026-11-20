@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups) and 188 (compare engine and ignore list) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list) and 189 (GraphQL body model) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -32,6 +32,20 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] JSON nested exactly 128 deep returns TooDeep because of serde_json's limit, while AC7 says beyond 128 (`crates/service/src/compare.rs:421-427`, `:506-509`).
 - [P3] An entry from before 0.5.0 (`evidence: None`) with `status: None` does not flag its headers as not recorded (`compare.rs:300-301`).
 - [Note] For task 192's brief: build a `Side` only from a `StoredEntry` returned by `HistoryStore::load`, never from `load_without_body`, which returns an empty body even when the `.bin` exists.
+
+### Follow-ups from task 189 (GraphQL body model; not scheduled)
+- [P3] AC8 of 189, not done: the stale redirect comments in `crates/core/src/engine.rs` at ~:927 and ~:1090 (outside 189's Owns). The task 164 follow-up below stays open.
+- [P3] The resend refusal says "the body was not stored" even when only a redacted leaf triggered it (`crates/service/src/plan.rs:275-279`).
+- [P3] Draft GraphQL from a non-GraphQL stored body stays refused until both fields are non-blank; it should be `blank(&d.query)` (`crates/service/src/plan.rs:259`). Folded into task 193.
+- [P3] No test for the cleared-variables branch (`crates/service/src/plan.rs:256-257`).
+- [P3] Integers beyond i64/u64 in GraphQL variables lose precision, because serde_json lacks `arbitrary_precision` (`crates/core/src/resolve/engine.rs:682`).
+- [P3] Explain reports a body size for non-object variables (`crates/core/src/resolve/report.rs:1566`).
+- [P3] The read-only GraphQL placeholder has no scroll area (`crates/app/src/ui/request/body.rs:641-665`); task 193 replaces it.
+- [P3] No serde round-trip test of `Body::GraphQl` in core, and no check that a multi-line query is written as `'''`.
+- [P3] Spec Feature 3 and AC6 (`docs/plan/specs/2026-11-19-wisp-0-5-0.md`) call `crates/storage/src/import/mod.rs:363` "the credential scan", but it is the undefined-variable scan; the wording needs fixing.
+- [P3] The `redact_json_body` doc comment still says "`body` is recorded" (`crates/storage/src/history.rs:793-795`).
+- [P3] `graphql_query_refill_lifts_refusal_with_blank_variables` now duplicates `graphql_resend_query_only_cleared_allows_blank_variables` (`crates/service/src/plan.rs:531`).
+- [P3] The round-4 test `graphql_field_clearing_refuses_switch_to_blank_non_graphql_body` is not under the `graphql_resend_` check prefix.
 
 ### Follow-ups from task 186 (secret-file safety; not scheduled)
 - [P3] No test covers the git spawn-failure path or the 5 s timeout path (`crates/storage/src/vault.rs:673-675`, `:689-693`).

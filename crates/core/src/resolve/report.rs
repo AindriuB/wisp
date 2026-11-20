@@ -128,6 +128,7 @@ pub enum BodyKind {
     Json,
     Text,
     Xml,
+    GraphQl,
     Form,
     Multipart,
     File,
@@ -140,6 +141,7 @@ impl BodyKind {
             BodyKind::Json => "JSON",
             BodyKind::Text => "text",
             BodyKind::Xml => "XML",
+            BodyKind::GraphQl => "graphql",
             BodyKind::Form => "form",
             BodyKind::Multipart => "multipart",
             BodyKind::File => "file",
@@ -152,6 +154,7 @@ impl BodyKind {
             Body::Json(_) => BodyKind::Json,
             Body::Text(_) => BodyKind::Text,
             Body::Xml(_) => BodyKind::Xml,
+            Body::GraphQl(_) => BodyKind::GraphQl,
             Body::Form(_) => BodyKind::Form,
             Body::Multipart(_) => BodyKind::Multipart,
             Body::File(_) => BodyKind::File,
@@ -1550,6 +1553,25 @@ impl<'a> Walker<'a> {
                 self.subst(&t.content, &loc).bytes(),
                 Some("application/xml"),
             ),
+            Body::GraphQl(g) => {
+                let q = self.subst(&g.query, &loc);
+                let v = self.subst(&g.variables, &loc);
+                let size = match (q.bytes(), v.bytes()) {
+                    (Some(_), Some(_)) => {
+                        let mut obj = serde_json::Map::new();
+                        obj.insert("query".into(), q.text_only().into());
+                        if !v.text_only().trim().is_empty() {
+                            obj.insert(
+                                "variables".into(),
+                                serde_json::from_str(&v.text_only()).unwrap_or_default(),
+                            );
+                        }
+                        Some(serde_json::Value::Object(obj).to_string().len())
+                    }
+                    _ => None,
+                };
+                (size, Some("application/json"))
+            }
             Body::Form(fields) => {
                 let mut total = Some(0usize);
                 let mut count = 0usize;

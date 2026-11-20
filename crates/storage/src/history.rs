@@ -454,6 +454,14 @@ fn cap_request_body(body: &mut Body) -> bool {
             cut(&mut b.content, BODY_CAP);
             true
         }
+        Body::GraphQl(g) => {
+            if g.query.len() + g.variables.len() <= BODY_CAP {
+                return false;
+            }
+            cut(&mut g.query, BODY_CAP);
+            cut(&mut g.variables, BODY_CAP - g.query.len());
+            true
+        }
         Body::Form(fields) => {
             let total: usize = fields.iter().map(|f| f.name.len() + f.value.len()).sum();
             if total <= BODY_CAP {
@@ -627,10 +635,17 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
                 }
             }
         }
-        Body::Json(b) => redact_json_body(&mut b.content, &mut names),
+        Body::Json(b) => redact_json_body(&mut b.content, "body", &mut names),
         Body::Text(b) | Body::Xml(b) if contains_credential_fragment(&b.content) => {
             b.content.clear();
             note(&mut names, "body".into());
+        }
+        Body::GraphQl(g) => {
+            if contains_credential_fragment(&g.query) {
+                g.query.clear();
+                note(&mut names, "body.query".into());
+            }
+            redact_json_body(&mut g.variables, "body.variables", &mut names);
         }
         _ => {}
     }
@@ -778,19 +793,19 @@ impl<'de> Deserialize<'de> for NoDupKeys {
 /// Redact credential-named keys in a JSON body template. Bodies are text templates, so
 /// `{{ref}}` in value position is masked for the parse and restored unquoted. A body that
 /// still does not parse is dropped (fail closed) and `body` is recorded.
-fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
+fn redact_json_body(content: &mut String, whole: &str, names: &mut Vec<String>) {
     if content.trim().is_empty() {
         return;
     }
     let (masked, refs) = mask_bare_refs(content);
     if serde_json::from_str::<NoDupKeys>(&masked).is_err() {
         content.clear();
-        note(names, "body".into());
+        note(names, whole.into());
         return;
     }
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&masked) else {
         content.clear();
-        note(names, "body".into());
+        note(names, whole.into());
         return;
     };
     let mut found = Vec::new();
@@ -800,7 +815,7 @@ fn redact_json_body(content: &mut String, names: &mut Vec<String>) {
     }
     let Ok(text) = serde_json::to_string(&v) else {
         content.clear();
-        note(names, "body".into());
+        note(names, whole.into());
         return;
     };
     *content = restore_bare_refs(&text, &refs);
