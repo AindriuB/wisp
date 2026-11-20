@@ -563,3 +563,61 @@ fn pm_strict_empty_and_comment_only_scripts_are_clean() {
     assert!(a.is_empty());
     assert!(r.warnings.is_empty());
 }
+
+fn assert_one_warning(a: &[Assertion], r: &ImportResult, what: &str) {
+    assert!(a.is_empty(), "{what}: {a:?}");
+    assert_eq!(r.warnings.len(), 1, "{what}");
+}
+
+#[test]
+fn pm_strict_unicode_line_separator_ends_comment() {
+    for sep in ["\u{2028}", "\u{2029}"] {
+        let c = format!("// note{sep}if (pm.response.code === 500)");
+        let (a, r) = import_tests(&[
+            &c,
+            "pm.test('err', function () { pm.response.to.have.status(500); });",
+        ]);
+        assert_one_warning(&a, &r, "comment");
+    }
+}
+
+#[test]
+fn pm_strict_non_string_exec_entry() {
+    let events = json!([{"listen": "test", "script": {"exec": [
+        ["if (pm.response.code === 500)"],
+        "pm.test('err', function () { pm.response.to.have.status(500); });"
+    ]}}]);
+    let item = request_with(json!({"method": "GET", "url": "http://h/x"}), events);
+    let r = postman::parse(&collection(json!([item]), json!({}))).unwrap();
+    assert_one_warning(&first(&r).assertions, &r, "exec");
+}
+
+#[test]
+fn pm_strict_raw_line_break_in_string_or_before_arrow() {
+    for lines in [
+        vec![
+            "pm.test('a",
+            "b', function () { pm.response.to.have.status(200); });",
+        ],
+        vec![
+            "pm.test('a', () ",
+            "=> { pm.response.to.have.status(200); });",
+        ],
+        vec!["pm.test('a', () /* x\n */ => { pm.response.to.have.status(200); });"],
+        vec!["pm.test('a', function () { pm.expect(pm.response.json().a).to.eql('x\r y'); });"],
+    ] {
+        let (a, r) = import_tests(&lines);
+        assert_one_warning(&a, &r, &format!("{lines:?}"));
+    }
+}
+
+#[test]
+fn pm_strict_leading_zero_integer() {
+    for lit in ["010", "00", "-012", "01.5"] {
+        let src = format!(
+            "pm.test('a', function () {{ pm.expect(pm.response.json().a).to.eql({lit}); }});"
+        );
+        let (a, r) = import_tests(&[&src]);
+        assert_one_warning(&a, &r, lit);
+    }
+}

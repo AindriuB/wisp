@@ -107,6 +107,15 @@ impl<'a> Cursor<'a> {
                 }
                 Some(b'/') if self.b.get(self.pos + 1) == Some(&b'/') => {
                     while self.peek().is_some_and(|c| c != b'\n' && c != b'\r') {
+                        // U+2028 / U+2029 also end a comment in JavaScript; stop
+                        // there so the next bytes fail the grammar.
+                        if self
+                            .src
+                            .get(self.pos..)
+                            .is_some_and(|r| r.starts_with('\u{2028}') || r.starts_with('\u{2029}'))
+                        {
+                            break;
+                        }
                         self.pos += 1;
                     }
                 }
@@ -187,6 +196,8 @@ impl<'a> Cursor<'a> {
                     b'n' => '\n',
                     _ => return None,
                 });
+            } else if ch == '\n' || ch == '\r' {
+                return None;
             } else {
                 out.push(ch);
             }
@@ -207,7 +218,7 @@ impl<'a> Cursor<'a> {
                 while self.peek().is_some_and(|c| c.is_ascii_digit()) {
                     self.pos += 1;
                 }
-                if self.pos == digits {
+                if self.pos == digits || (self.pos - digits > 1 && self.b[digits] == b'0') {
                     return None;
                 }
                 let mut float = false;
@@ -305,6 +316,10 @@ fn test_unit(cur: &mut Cursor, out: &mut Vec<Assertion>) -> Option<()> {
     } else {
         cur.lit("(")?;
         cur.lit(")")?;
+        // No line terminator is allowed between `)` and `=>`.
+        if cur.skip_ws() || cur.bad {
+            return None;
+        }
         cur.lit("=>")?;
     }
     cur.lit("{")?;

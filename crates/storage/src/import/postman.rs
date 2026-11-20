@@ -116,7 +116,19 @@ fn translate_tests(
         }
         let exec = e.get("script").and_then(|s| s.get("exec"));
         let lines: Vec<&str> = match exec {
-            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+            Some(Value::Array(a)) => {
+                let strs: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
+                if strs.len() != a.len() {
+                    // A non-string entry runs in Postman but is never seen here:
+                    // the whole script is left untranslated.
+                    let n = strs.iter().map(|l| l.matches("pm.test(").count()).sum();
+                    let n = usize::max(n, 1);
+                    total += n;
+                    untranslated += n;
+                    continue;
+                }
+                strs
+            }
             Some(Value::String(s)) => vec![s.as_str()],
             _ => continue,
         };
