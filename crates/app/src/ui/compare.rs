@@ -5,7 +5,7 @@
 //! so a stale one never overwrites a newer one. There is no copy or export action.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gpui::{
     Context, InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
@@ -137,6 +137,9 @@ pub struct CompareView {
     pending: Option<String>,
     notice: Option<String>,
     generation: u64,
+    /// Serialises read-modify-write saves of the ignore list; holds the last sequence number.
+    save_lock: Arc<Mutex<u64>>,
+    applied_seq: u64,
 }
 
 impl CompareView {
@@ -157,6 +160,8 @@ impl CompareView {
             pending: None,
             notice: None,
             generation: 0,
+            save_lock: Arc::new(Mutex::new(0)),
+            applied_seq: 0,
         };
         this.generation += 1;
         let generation = this.generation;
@@ -193,33 +198,33 @@ impl CompareView {
         this
     }
 
-    /// Save `patterns` (when `save`) and recompute, off the UI thread.
-    fn apply(&mut self, patterns: Vec<String>, cx: &mut Context<Self>) {
+    /// Re-read the saved list, apply `change` and save it, then recompute, off the UI thread.
+    fn apply(&mut self, change: Change, cx: &mut Context<Self>) {
         let Some(data) = self.data.clone() else {
             return;
         };
-        self.generation += 1;
-        let generation = self.generation;
         let root = self.root.clone();
+        let lock = self.save_lock.clone();
         self.pending = None;
         self.notice = None;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    save_compare_ignore(&root, &patterns).map_err(|e| e.to_string())?;
+                    let (seq, patterns) = save_change(&root, &lock, &change)?;
                     let computed = compute(&data, &patterns);
-                    Ok::<_, String>((patterns, computed))
+                    Ok::<_, String>((seq, patterns, computed))
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if this.generation != generation {
-                    return;
-                }
                 match result {
-                    Ok((patterns, computed)) => {
-                        this.patterns = patterns;
-                        this.computed = Some(computed);
+                    Ok((seq, patterns, computed)) => {
+                        // Saves finish in any order; only the newest list is shown.
+                        if seq > this.applied_seq {
+                            this.applied_seq = seq;
+                            this.patterns = patterns;
+                            this.computed = Some(computed);
+                        }
                     }
                     Err(e) => this.notice = Some(format!("Could not save the ignore list: {e}")),
                 }
@@ -233,19 +238,13 @@ impl CompareView {
 
     fn confirm_pending(&mut self, cx: &mut Context<Self>) {
         if let Some(p) = self.pending.take() {
-            let mut next = self.patterns.clone();
-            if !next.contains(&p) {
-                next.push(p);
-            }
-            self.apply(next, cx);
+            self.apply(Change::Add(p), cx);
         }
     }
 
     fn remove_pattern(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if ix < self.patterns.len() {
-            let mut next = self.patterns.clone();
-            next.remove(ix);
-            self.apply(next, cx);
+        if let Some(p) = self.patterns.get(ix).cloned() {
+            self.apply(Change::Remove(p), cx);
         }
     }
 
@@ -271,6 +270,34 @@ impl CompareView {
             .as_ref()
             .map(|c| status_text(&c.comparison.status))
     }
+}
+
+/// A change to the ignore list, applied to the list as saved at that moment.
+enum Change {
+    Add(String),
+    Remove(String),
+}
+
+/// Re-read the saved list, apply `change` by value, and save. Returns the save's
+/// sequence number and the list written.
+fn save_change(
+    root: &std::path::Path,
+    lock: &Mutex<u64>,
+    change: &Change,
+) -> Result<(u64, Vec<String>), String> {
+    let mut seq = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut list = load_compare_ignore(root).map_err(|e| e.to_string())?;
+    match change {
+        Change::Add(p) => {
+            if !list.contains(p) {
+                list.push(p.clone());
+            }
+        }
+        Change::Remove(p) => list.retain(|x| x != p),
+    }
+    save_compare_ignore(root, &list).map_err(|e| e.to_string())?;
+    *seq += 1;
+    Ok((*seq, list))
 }
 
 fn status_text(s: &StatusDiff) -> String {
@@ -616,6 +643,28 @@ mod tests {
             "body cut at 1 MiB; not compared"
         );
         assert!(evidence_note(&r(BodyKind::Off, true)).ends_with("(recorded before 0.5.0)"));
+    }
+
+    #[test]
+    fn compare_view_save_rereads_the_file_and_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("collection.toml"),
+            "format = 1\n[compare]\nignore = [\"header:date\"]\n",
+        )
+        .unwrap();
+        let lock = Mutex::new(0);
+        // Changed outside the view after it loaded.
+        save_compare_ignore(root, &["header:date".into(), "body:/meta".into()]).unwrap();
+        let (_, list) = save_change(root, &lock, &Change::Add("header:etag".into())).unwrap();
+        assert_eq!(list, ["header:date", "body:/meta", "header:etag"]);
+        let (_, list) = save_change(root, &lock, &Change::Add("header:etag".into())).unwrap();
+        assert_eq!(list.len(), 3);
+        let (seq, list) = save_change(root, &lock, &Change::Remove("header:date".into())).unwrap();
+        assert_eq!(seq, 3);
+        assert_eq!(list, ["body:/meta", "header:etag"]);
+        assert_eq!(load_compare_ignore(root).unwrap(), list);
     }
 
     #[test]

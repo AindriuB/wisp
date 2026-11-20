@@ -179,6 +179,8 @@ pub struct HistoryView {
     listing: Listing,
     /// Bumped per load so a slow older load cannot overwrite a newer one.
     generation: u64,
+    /// Guards `start_compare` separately from `reload`.
+    compare_generation: u64,
     /// The entry id marked "Compare from", and the collection root it belongs to.
     mark: Option<String>,
     marks_root: Option<std::path::PathBuf>,
@@ -205,6 +207,7 @@ impl HistoryView {
             workspace,
             listing: Listing::Loading,
             generation: 0,
+            compare_generation: 0,
             mark: None,
             marks_root: None,
             compare: None,
@@ -223,6 +226,8 @@ impl HistoryView {
         if root != self.marks_root {
             self.mark = None;
             self.compare = None;
+            self.compare_generation += 1;
+            self.listing = Listing::Loading;
             self.marks_root = root;
         }
         let job = self.workspace.read(cx).history_job();
@@ -268,15 +273,15 @@ impl HistoryView {
         let Ok(job) = self.workspace.read(cx).history_job() else {
             return;
         };
-        self.generation += 1;
-        let generation = self.generation;
+        self.compare_generation += 1;
+        let generation = self.compare_generation;
         cx.spawn(async move |this, cx| {
             let store = cx
                 .background_executor()
                 .spawn(async move { job.open_existing() })
                 .await;
             this.update(cx, |this, cx| {
-                if this.generation != generation {
+                if this.compare_generation != generation {
                     return;
                 }
                 if let Ok(Some(store)) = store {
@@ -723,5 +728,57 @@ mod tests {
             .count();
         assert_eq!(bins, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui::test]
+    fn history_root_change_clears_rows_and_cancels_a_pending_compare(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::settings::Settings;
+        use std::sync::Arc;
+        use wisp_storage::data_dir::DataDir;
+        use wisp_storage::vault::MemoryStore;
+
+        cx.update(gpui_component::init);
+        let dir = tempfile::tempdir().unwrap();
+        let mk = |n: &str| {
+            let r = dir.path().join(n);
+            std::fs::create_dir_all(&r).unwrap();
+            std::fs::write(r.join("collection.toml"), "format = 1\n").unwrap();
+            r
+        };
+        let (x, y) = (mk("x"), mk("y"));
+        let data = DataDir::at(&dir.path().join("data"));
+        let ws = cx.new(|cx| {
+            Workspace::with_data_dir(
+                Settings::default(),
+                None,
+                None,
+                Arc::new(MemoryStore::new()),
+                Some(data),
+                cx,
+            )
+        });
+        ws.update(cx, |w, cx| w.open_collection(&x, cx).unwrap());
+        cx.run_until_parked();
+        let window = cx.add_window(|window, cx| HistoryView::new(ws.clone(), window, cx));
+        let view = window.root(cx).unwrap();
+        cx.run_until_parked();
+        view.update(cx, |v, _| {
+            v.listing = Listing::Ready(vec![entry(Outcome::Completed, Some(200))])
+        });
+        let before = view.read_with(cx, |v, _| (v.generation, v.compare_generation));
+        ws.update(cx, |w, cx| w.open_collection(&y, cx).unwrap());
+        view.read_with(cx, |v, _| {
+            assert!(
+                matches!(v.listing, Listing::Loading),
+                "X's rows must not stay under Y"
+            );
+            assert_eq!(v.compare_generation, before.1 + 1);
+            assert_eq!(v.generation, before.0 + 1);
+        });
+        // A reload that does not change the root leaves the compare guard alone.
+        ws.update(cx, |_, cx| cx.emit(WorkspaceEvent::HistoryChanged));
+        view.read_with(cx, |v, _| assert_eq!(v.compare_generation, before.1 + 1));
     }
 }
