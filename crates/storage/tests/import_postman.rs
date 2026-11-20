@@ -316,3 +316,39 @@ fn pm_unsupported_method_warning_has_no_raw_text() {
     assert!(r.warnings.iter().any(|w| w.message.contains("method")));
     assert!(r.warnings.iter().all(|w| !w.message.contains("sk_live")));
 }
+
+#[test]
+fn pm_failing_units_parse_in_linear_time() {
+    let unit = "pm.test('a', function () { ));";
+    let src = unit.repeat(60 * 1024 / unit.len());
+    let start = std::time::Instant::now();
+    for _ in 0..100 {
+        let (a, r) = import_tests(&[&src]);
+        assert!(a.is_empty());
+        assert!(r.warnings[0].message.contains("tests not translated"));
+    }
+    assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+}
+
+#[test]
+fn pm_non_path_json_expressions_not_translated() {
+    for stmt in [
+        "pm.expect(pm.response.json().items.length).to.eql(3);",
+        "pm.expect(pm.response.json().total-1).to.eql(9);",
+    ] {
+        let (a, r) = import_tests(&[&format!("pm.test(\"x\", function () {{ {stmt} }});")]);
+        assert!(a.is_empty(), "{stmt}");
+        assert_eq!(r.warnings.len(), 1);
+    }
+}
+
+#[test]
+fn pm_regex_literal_does_not_desync_resync() {
+    let (a, _) = import_tests(&[
+        "if (pm.response.code === 500) { /}/.test('x');",
+        "pm.test('err', function () { pm.response.to.have.status(500); });",
+        "}",
+        "pm.test('ok', function () { pm.response.to.have.status(200); });",
+    ]);
+    assert!(!format!("{a:?}").contains("500"), "{a:?}");
+}

@@ -48,6 +48,15 @@ pub(super) fn translate(src: &str) -> Translated {
             Some(mut asserts) => out.assertions.append(&mut asserts),
             None => {
                 out.untranslated += 1;
+                if cur.exhausted {
+                    // A block scan ran to the end of the script; rescanning
+                    // for each later unit would be quadratic. Count the rest.
+                    let rest = src.get(start + 1..).unwrap_or("");
+                    let n = rest.matches("pm.test(").count();
+                    out.total += n;
+                    out.untranslated += n;
+                    break;
+                }
                 // Resynchronise past the failed unit; always moves forward.
                 cur.pos = start;
                 cur.skip_statement();
@@ -61,6 +70,8 @@ struct Cursor<'a> {
     b: &'a [u8],
     src: &'a str,
     pos: usize,
+    /// Set when `block_body` failed after scanning to the end of the input.
+    exhausted: bool,
 }
 
 impl<'a> Cursor<'a> {
@@ -69,6 +80,7 @@ impl<'a> Cursor<'a> {
             b: src.as_bytes(),
             src,
             pos: 0,
+            exhausted: false,
         }
     }
 
@@ -137,6 +149,7 @@ impl<'a> Cursor<'a> {
     /// Always advances by at least one byte.
     fn skip_statement(&mut self) {
         let first = self.pos;
+        let mut prev = b';';
         let mut depth = 0usize;
         while let Some(c) = self.peek() {
             match c {
@@ -144,10 +157,15 @@ impl<'a> Cursor<'a> {
                     if !self.skip_quoted() {
                         self.pos = self.b.len();
                     }
+                    prev = b'"';
                     continue;
                 }
                 b'/' if matches!(self.b.get(self.pos + 1), Some(b'/' | b'*')) => {
                     self.skip_ws();
+                    continue;
+                }
+                b'/' if regex_allowed(prev) && self.skip_regex() => {
+                    prev = b'"';
                     continue;
                 }
                 b'(' | b'{' | b'[' => depth += 1,
@@ -157,6 +175,9 @@ impl<'a> Cursor<'a> {
                     break;
                 }
                 _ => {}
+            }
+            if !c.is_ascii_whitespace() {
+                prev = c;
             }
             self.pos += 1;
         }
@@ -168,7 +189,16 @@ impl<'a> Cursor<'a> {
     /// With the cursor just after an opening `{`, move to just after its matching `}`
     /// and return the body text between them.
     fn block_body(&mut self) -> Option<&'a str> {
+        let r = self.block_body_inner();
+        if r.is_none() {
+            self.exhausted = true;
+        }
+        r
+    }
+
+    fn block_body_inner(&mut self) -> Option<&'a str> {
         let start = self.pos;
+        let mut prev = b'{';
         let mut depth = 1usize;
         while let Some(c) = self.peek() {
             match c {
@@ -176,10 +206,15 @@ impl<'a> Cursor<'a> {
                     if !self.skip_quoted() {
                         return None;
                     }
+                    prev = b'"';
                     continue;
                 }
                 b'/' if matches!(self.b.get(self.pos + 1), Some(b'/' | b'*')) => {
                     self.skip_ws();
+                    continue;
+                }
+                b'/' if regex_allowed(prev) && self.skip_regex() => {
+                    prev = b'"';
                     continue;
                 }
                 b'{' => depth += 1,
@@ -193,9 +228,34 @@ impl<'a> Cursor<'a> {
                 }
                 _ => {}
             }
+            if !c.is_ascii_whitespace() {
+                prev = c;
+            }
             self.pos += 1;
         }
         None
+    }
+
+    /// Skip a regex literal starting at the `/` under the cursor. Returns false,
+    /// leaving the cursor unmoved, when it does not close on the same line.
+    fn skip_regex(&mut self) -> bool {
+        let mut i = self.pos + 1;
+        let mut class = false;
+        while let Some(&c) = self.b.get(i) {
+            match c {
+                b'\\' => i += 1,
+                b'\n' => return false,
+                b'[' => class = true,
+                b']' => class = false,
+                b'/' if !class => {
+                    self.pos = i + 1;
+                    return true;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     /// A single- or double-quoted string with `\\ \" \' \n` escapes.
@@ -295,19 +355,24 @@ impl<'a> Cursor<'a> {
                     let s = self.pos;
                     while self
                         .peek()
-                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')
                     {
                         self.pos += 1;
                     }
-                    if self.pos == s {
+                    if self.pos == s || &self.src[s..self.pos] == "length" {
                         return None;
                     }
                     path.push_str(&self.src[s..self.pos]);
                 }
                 b'[' => {
                     let s = self.pos;
-                    while self.peek().is_some_and(|c| c != b']') {
+                    self.pos += 1;
+                    let d = self.pos;
+                    while self.peek().is_some_and(|c| c.is_ascii_digit()) {
                         self.pos += 1;
+                    }
+                    if self.pos == d || self.peek() != Some(b']') {
+                        return None;
                     }
                     self.pos += 1;
                     path.push_str(self.src.get(s..self.pos)?);
@@ -320,6 +385,14 @@ impl<'a> Cursor<'a> {
         }
         (path.len() > 1 && check_path(&path).is_ok()).then_some(path)
     }
+}
+
+/// Whether a `/` after this byte starts a regex literal rather than a division.
+fn regex_allowed(prev: u8) -> bool {
+    matches!(
+        prev,
+        b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';'
+    )
 }
 
 /// `pm.test("name", function () { ... })` or the arrow form, then an optional `;`.
