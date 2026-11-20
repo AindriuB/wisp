@@ -291,7 +291,19 @@ fn save_compare_ignore_locked(root: &Path, ignore: &[String]) -> Result<(), Stor
     for s in ignore {
         arr.push(s.as_str());
     }
-    compare.insert("ignore", Item::Value(Value::Array(arr)));
+    match compare.get_mut("ignore") {
+        Some(item) if item.is_value() => {
+            let decor = item.as_value().map(|v| v.decor().clone());
+            let mut v = Value::Array(arr);
+            if let Some(d) = decor {
+                *v.decor_mut() = d;
+            }
+            *item = Item::Value(v);
+        }
+        _ => {
+            compare.insert("ignore", Item::Value(Value::Array(arr)));
+        }
+    }
     fs::atomic_write(&path, doc.to_string().as_bytes())
 }
 

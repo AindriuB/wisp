@@ -121,12 +121,28 @@ pub struct Side<'a> {
     pub headers: &'a [Header],
     pub redacted: &'a [String],
     pub body: &'a [u8],
+    /// The stored entry could not be loaded, so headers and body are unknown.
+    pub entry_missing: bool,
+    /// A body was recorded but cannot be read now (entry not loadable or `.bin` gone).
+    pub body_unavailable: bool,
 }
 
 impl<'a> Side<'a> {
     /// Build a side from the index line and, when loadable, the stored entry.
-    pub fn from_entry(entry: &'a HistoryEntry, stored: Option<&'a StoredEntry>) -> Side<'a> {
+    /// `body_file_exists` says whether the entry's `.bin` is on disk
+    /// (`HistoryStore::body_path(id).is_some()`); an empty body alone is not "missing".
+    pub fn from_entry(
+        entry: &'a HistoryEntry,
+        stored: Option<&'a StoredEntry>,
+        body_file_exists: bool,
+    ) -> Side<'a> {
+        let expected = match entry.evidence {
+            Some(e) => matches!(e.body, BodyEvidence::Stored | BodyEvidence::Truncated),
+            None => entry.body_stored,
+        };
         Side {
+            entry_missing: stored.is_none(),
+            body_unavailable: expected && (stored.is_none() || !body_file_exists),
             status: entry.status,
             evidence: entry.evidence,
             body_stored: entry.body_stored,
@@ -201,6 +217,21 @@ pub enum BodyKind {
     Off,
     Unreadable,
     NoResponse,
+    /// Recorded, but the stored entry or its body file is gone or unreadable.
+    StoredUnavailable,
+}
+
+impl BodyKind {
+    /// Display text for the reason.
+    pub fn text(self) -> &'static str {
+        match self {
+            BodyKind::StoredUnavailable => "Stored body unavailable (deleted or unreadable)",
+            BodyKind::Truncated => "Body truncated",
+            BodyKind::Off => "Body not recorded",
+            BodyKind::Unreadable => "Body unreadable",
+            BodyKind::NoResponse => "No response",
+        }
+    }
 }
 
 /// Why one side's body cannot be compared.
@@ -297,8 +328,8 @@ fn group<'a>(
 
 fn compare_headers(a: &Side, b: &Side, ignore: &IgnoreList) -> HeadersDiff {
     let mut out = HeadersDiff {
-        a_not_recorded: a.evidence.is_some_and(|e| !e.headers),
-        b_not_recorded: b.evidence.is_some_and(|e| !e.headers),
+        a_not_recorded: a.entry_missing || a.evidence.is_some_and(|e| !e.headers),
+        b_not_recorded: b.entry_missing || b.evidence.is_some_and(|e| !e.headers),
         ..HeadersDiff::default()
     };
     if out.a_not_recorded || out.b_not_recorded {
@@ -357,6 +388,12 @@ fn compare_headers(a: &Side, b: &Side, ignore: &IgnoreList) -> HeadersDiff {
 
 /// `None` means the side's body is stored complete.
 fn side_reason(s: &Side) -> Option<SideReason> {
+    if s.body_unavailable {
+        return Some(SideReason {
+            kind: BodyKind::StoredUnavailable,
+            before_0_5_0: s.evidence.is_none(),
+        });
+    }
     let (kind, pre) = match s.evidence {
         Some(e) => match e.body {
             BodyEvidence::Stored => return None,
@@ -579,6 +616,8 @@ mod tests {
             headers: NONE,
             redacted: NOREDACT,
             body,
+            entry_missing: false,
+            body_unavailable: false,
         }
     }
 
@@ -863,5 +902,101 @@ mod tests {
         assert_eq!(d, BodyDiff::TooDeep);
         let ok = body(&deep(100, "1"), &deep(100, "2"), &IgnoreList::default());
         assert!(matches!(ok, BodyDiff::Different { total: 1, .. }), "{ok:?}");
+    }
+    fn stored_entry(id_hint: &str) -> HistoryEntry {
+        serde_json::from_value(serde_json::json!({
+            "id": id_hint, "at": 0, "method": "Get", "url": "http://x/", "outcome": "Completed",
+            "status": 200, "body_stored": true,
+            "evidence": {"body": "stored", "headers": true}
+        }))
+        .unwrap()
+    }
+
+    fn unavailable_reason() -> Option<SideReason> {
+        Some(SideReason {
+            kind: BodyKind::StoredUnavailable,
+            before_0_5_0: false,
+        })
+    }
+
+    #[test]
+    fn compare_unloadable_stored_entry_is_unavailable_not_equal() {
+        let e = stored_entry("abc");
+        let (a, b) = (
+            Side::from_entry(&e, None, true),
+            Side::from_entry(&e, None, true),
+        );
+        let c = compare(&a, &b, &IgnoreList::default());
+        assert_eq!(
+            c.body,
+            BodyDiff::Incomplete {
+                a: unavailable_reason(),
+                b: unavailable_reason()
+            }
+        );
+        assert!(c.headers.a_not_recorded && c.headers.b_not_recorded);
+        assert_eq!(
+            BodyKind::StoredUnavailable.text(),
+            "Stored body unavailable (deleted or unreadable)"
+        );
+    }
+
+    #[test]
+    fn compare_deleted_bin_in_real_store_is_unavailable_not_equal() {
+        use wisp_core::request::Request;
+        use wisp_storage::collection::CollectionId;
+        use wisp_storage::data_dir::DataDir;
+        use wisp_storage::history::{HistoryStore, NewEntry, Outcome};
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir::at(dir.path());
+        let id = CollectionId::parse("abcdef0123456789").unwrap();
+        let store = HistoryStore::open(&data, &id);
+        let new = || NewEntry {
+            at: std::time::SystemTime::UNIX_EPOCH,
+            request_path: None,
+            request: Request::default(),
+            outcome: Outcome::Completed,
+            status: Some(200),
+            ttfb: None,
+            total: None,
+            dns: None,
+            connect: None,
+            size: None,
+            response_headers: Vec::new(),
+            environment: None,
+            assertions: Vec::new(),
+            delivery: None,
+        };
+        let mut entries = Vec::new();
+        for _ in 0..2 {
+            let mut e = store.append(new(), Some(b"{}")).unwrap();
+            e.evidence = Some(Evidence {
+                body: BodyEvidence::Stored,
+                headers: true,
+            });
+            let bin = store.body_path(&e.id).expect("bin written");
+            std::fs::remove_file(bin).unwrap();
+            entries.push(e);
+        }
+        let sa = store.load(&entries[0].id).unwrap();
+        let sb = store.load(&entries[1].id).unwrap();
+        let a = Side::from_entry(
+            &entries[0],
+            Some(&sa),
+            store.body_path(&entries[0].id).is_some(),
+        );
+        let b = Side::from_entry(
+            &entries[1],
+            Some(&sb),
+            store.body_path(&entries[1].id).is_some(),
+        );
+        let c = compare(&a, &b, &IgnoreList::default());
+        assert_eq!(
+            c.body,
+            BodyDiff::Incomplete {
+                a: unavailable_reason(),
+                b: unavailable_reason()
+            }
+        );
     }
 }

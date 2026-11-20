@@ -78,3 +78,13 @@ fn compare_ignore_survives_save_collection_defaults() {
         vec!["header:date".to_string()]
     );
 }
+
+#[test]
+fn compare_ignore_save_keeps_comments_on_the_ignore_key() {
+    let d = root("format = 1\n[compare]\n# lead\nignore = [\"header:a\"] # trail\n");
+    save_compare_ignore(d.path(), &["header:b".into()]).unwrap();
+    assert_eq!(
+        text(&d),
+        "format = 1\n[compare]\n# lead\nignore = [\"header:b\"] # trail\n"
+    );
+}
