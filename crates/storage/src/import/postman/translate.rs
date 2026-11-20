@@ -48,7 +48,7 @@ pub(super) fn translate(src: &str) -> Translated {
             Some(mut asserts) => out.assertions.append(&mut asserts),
             None => {
                 out.untranslated += 1;
-                if cur.exhausted {
+                if cur.exhausted || cur.give_up {
                     // A block scan ran to the end of the script; rescanning
                     // for each later unit would be quadratic. Count the rest.
                     let rest = src.get(start + 1..).unwrap_or("");
@@ -61,6 +61,13 @@ pub(super) fn translate(src: &str) -> Translated {
                 // Never move back over bytes a block scan already covered.
                 cur.pos = start;
                 cur.skip_statement();
+                if cur.give_up {
+                    let rest = src.get(start + 1..).unwrap_or("");
+                    let n = rest.matches("pm.test(").count();
+                    out.total += n;
+                    out.untranslated += n;
+                    break;
+                }
                 if cur.scanned_to > cur.pos {
                     let skipped = src.get(cur.pos..cur.scanned_to).unwrap_or("");
                     let n = skipped.matches("pm.test(").count();
@@ -80,6 +87,10 @@ struct Cursor<'a> {
     pos: usize,
     /// Set when `block_body` failed after scanning to the end of the input.
     exhausted: bool,
+    /// Set when a `/` of uncertain meaning (or an unclosed regex) was met: the
+    /// rest of the script is not translated. Each regex attempt either moves
+    /// the cursor past what it scanned or ends scanning, so no byte is rescanned.
+    give_up: bool,
     /// Furthest position a successful `block_body` reached.
     scanned_to: usize,
 }
@@ -91,6 +102,7 @@ impl<'a> Cursor<'a> {
             src,
             pos: 0,
             exhausted: false,
+            give_up: false,
             scanned_to: 0,
         }
     }
@@ -177,10 +189,16 @@ impl<'a> Cursor<'a> {
                     self.skip_ws();
                     continue;
                 }
-                b'/' if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() => {
-                    prev = b'"';
-                    prev_pos = self.pos - 1;
-                    continue;
+                b'/' => {
+                    // Fail closed: only a certain regex start is skipped.
+                    if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() {
+                        prev = b'"';
+                        prev_pos = self.pos - 1;
+                        continue;
+                    }
+                    self.give_up = true;
+                    self.pos = self.b.len();
+                    break;
                 }
                 b'(' | b'{' | b'[' => depth += 1,
                 b')' | b'}' | b']' => depth = depth.saturating_sub(1),
@@ -230,10 +248,14 @@ impl<'a> Cursor<'a> {
                     self.skip_ws();
                     continue;
                 }
-                b'/' if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() => {
-                    prev = b'"';
-                    prev_pos = self.pos - 1;
-                    continue;
+                b'/' => {
+                    if regex_allowed(self.b, prev, prev_pos) && self.skip_regex() {
+                        prev = b'"';
+                        prev_pos = self.pos - 1;
+                        continue;
+                    }
+                    self.give_up = true;
+                    return None;
                 }
                 b'{' => depth += 1,
                 b'}' => {
@@ -431,6 +453,10 @@ fn regex_allowed(b: &[u8], prev: u8, prev_pos: usize) -> bool {
         b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b'{' | b'}' | b';'
     ) {
         return true;
+    }
+    // `=>`
+    if prev == b'>' {
+        return prev_pos > 0 && b[prev_pos - 1] == b'=';
     }
     let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
     if !is_id(prev) {

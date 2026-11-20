@@ -382,3 +382,54 @@ fn pm_regex_after_keyword_does_not_desync_resync() {
     let s = format!("{a:?}");
     assert!(!s.contains("500"), "{s}");
 }
+
+#[test]
+fn pm_regex_in_arrow_callback_does_not_leak_nested_test() {
+    for line in [
+        "  const ok = ['a)'].some(x => /\\)$/.test(x));",
+        "  const ok = ['a'].some(x => /}/.test(x));",
+    ] {
+        let (a, _) = import_tests(&[
+            "if (pm.response.code === 500) {",
+            line,
+            "  pm.test('err', function () { pm.response.to.have.status(500); });",
+            "}",
+            "pm.test('ok', function () { pm.response.to.have.status(200); });",
+        ]);
+        let s = format!("{a:?}");
+        assert!(!s.contains("500"), "{line}: {s}");
+    }
+}
+
+#[test]
+fn pm_regex_after_close_paren_does_not_leak_nested_test() {
+    let (a, r) = import_tests(&[
+        "if (s) {",
+        "if (s) /}/.test(s);",
+        "pm.test('err', function () { pm.response.to.have.status(500); });",
+        "}",
+        "pm.test('ok', function () { pm.response.to.have.status(200); });",
+    ]);
+    let s = format!("{a:?}");
+    assert!(!s.contains("500"), "{s}");
+    assert!(r.warnings[0].message.contains("tests not translated"));
+}
+
+#[test]
+fn pm_pathological_single_line_scripts_parse_in_linear_time() {
+    let n = 21_300;
+    let wrapped = format!("pm.test('a', function () {{ {} }});", "(/[".repeat(n));
+    let shapes = [
+        wrapped,
+        "(/[".repeat(n),
+        "=/[".repeat(n),
+        "a/b(".repeat(n),
+        "if (s) /[".repeat(n / 3),
+    ];
+    for src in &shapes {
+        let start = std::time::Instant::now();
+        let (a, _) = import_tests(&[src]);
+        assert!(a.is_empty());
+        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+    }
+}
