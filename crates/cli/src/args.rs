@@ -25,6 +25,8 @@ pub enum Action {
         env: Option<String>,
         keychain: bool,
         history: bool,
+        ca_bundle: Option<PathBuf>,
+        no_system_trust: bool,
     },
     Snapshot {
         collection: PathBuf,
@@ -75,6 +77,7 @@ commands:
   inspect <collection> [--env <name>]
   explain <collection> <request-path> [--env <name>]
   run <collection> <request-path> [--env <name>] [--keychain] [--history]
+      [--ca-bundle <file>] [--no-system-trust]
   snapshot <collection> [--env <name>] [--request <request-path>] [--recent <n>]
 
 options:
@@ -82,6 +85,10 @@ options:
   --env <name> select an environment
   --keychain   run: load keychain-backed secrets
   --history    run: append a history entry
+  --ca-bundle <file>
+               run: also trust the CA certificates in a PEM file
+  --no-system-trust
+               run: do not trust the operating system's store
   --request <request-path>
                snapshot: include the explanation of one request
   --recent <n> snapshot: include the n newest history entries (1-50)
@@ -103,6 +110,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
     let mut env: Option<String> = None;
     let mut keychain = false;
     let mut history = false;
+    let mut ca_bundle: Option<PathBuf> = None;
+    let mut no_system_trust = false;
     let mut request_opt: Option<String> = None;
     let mut recent: Option<usize> = None;
     let mut help = false;
@@ -122,6 +131,15 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
             "--json" => json = true,
             "--keychain" => keychain = true,
             "--history" => history = true,
+            "--no-system-trust" => no_system_trust = true,
+            "--ca-bundle" => {
+                let v = it
+                    .next()
+                    .ok_or_else(|| UsageError::MissingValue("--ca-bundle".into()))?;
+                if ca_bundle.replace(PathBuf::from(v)).is_some() {
+                    return Err(UsageError::ExtraArgument("--ca-bundle".into()));
+                }
+            }
             "--help" | "-h" => help = true,
             "--version" => version = true,
             "--env" => {
@@ -208,6 +226,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
                 env: env.take(),
                 keychain: std::mem::take(&mut keychain),
                 history: std::mem::take(&mut history),
+                ca_bundle: ca_bundle.take(),
+                no_system_trust: std::mem::take(&mut no_system_trust),
             }
         }
         "snapshot" => Action::Snapshot {
@@ -237,6 +257,12 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Parsed, UsageE
     }
     if history {
         return Err(UsageError::UnknownFlag("--history".into()));
+    }
+    if ca_bundle.is_some() {
+        return Err(UsageError::UnknownFlag("--ca-bundle".into()));
+    }
+    if no_system_trust {
+        return Err(UsageError::UnknownFlag("--no-system-trust".into()));
     }
     Ok(Parsed { command, json })
 }
@@ -274,6 +300,8 @@ mod tests {
             env: env.map(str::to_owned),
             keychain,
             history,
+            ca_bundle: None,
+            no_system_trust: false,
         }
     }
 
@@ -448,5 +476,29 @@ mod tests {
         for (args, want) in cases {
             assert_eq!(p(&args), want, "{args:?}");
         }
+    }
+
+    #[test]
+    fn repeated_ca_bundle_is_rejected() {
+        assert_eq!(
+            p(&[
+                "run",
+                "c",
+                "a.toml",
+                "--ca-bundle",
+                "a.pem",
+                "--ca-bundle",
+                "b.pem"
+            ]),
+            Err(UsageError::ExtraArgument("--ca-bundle".into()))
+        );
+    }
+
+    #[test]
+    fn trailing_ca_bundle_needs_a_value() {
+        assert_eq!(
+            p(&["run", "c", "a.toml", "--ca-bundle"]),
+            Err(UsageError::MissingValue("--ca-bundle".into()))
+        );
     }
 }
