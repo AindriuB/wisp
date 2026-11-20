@@ -95,12 +95,16 @@ fn run<I: IntoIterator<Item = std::ffi::OsString>>(
             env,
             keychain,
             history,
+            ca_bundle,
+            no_system_trust,
         } => match cmd::run::run(cmd::run::Args {
             collection,
             request,
             env,
             keychain,
             history,
+            ca_bundle,
+            no_system_trust,
         }) {
             Ok(doc) => match if parsed.json {
                 output::json(out, &doc)
