@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-20 — GraphQL editor in the request pane (task 193)
+Choosing GraphQL in the body picker now shows a Query editor and a Variables editor in place of the read-only placeholder. Variables have a Format action and an inline note, "Variables are not a JSON object", that does not block Send. Both texts survive switching kinds through `Stash`, and save and reload round-trip them. Resending a history entry whose stored body was not GraphQL now needs only a non-blank query (`crates/service/src/plan.rs:263`), the carry-over from 189's review.
+**Cost:** `{{var}}` highlighting, which spec :163 asked for, was dropped: no body editor has it (`crates/app/src/ui/request/body.rs:201-203`), and building it needs a highlighter outside 193's Owns. The wave stopped on this, and Amendment 1 deferred it for all body editors; it supersedes the spec line for 0.5.0. The `scope` check had also omitted `crates/service/src/plan.rs`, which Owns listed. Do not retry highlighting inside a GraphQL-only task; do it once for every body editor.
+
 ## 2026-11-20 — Compare engine and collection ignore list (task 188)
 `wisp-service` has a pure comparison of two history entries: a status diff, a header diff and a structural JSON body diff, with the spec's evidence wording when a side is missing, truncated or unreadable. A per-collection ignore list (`header:<name>`, `body:<pointer>` with `*` segments) is read and written under `[compare] ignore` in `collection.toml`, keeping comments and other tables. An incomplete side never compares as equal. Verified at 3bfa821.
 **Cost:** Three rounds and Amendment 1. Review found that a side whose stored entry could not be loaded, or whose `.bin` was missing, compared as `NotJson { equal: true }`, so AC10 ("stored body unavailable") was added. Saving the ignore list first replaced the `ignore` key and dropped its comments; it now keeps the key's decor like `write_order`. The evidence strings had to be the spec's wording verbatim, and the last attempt failed only on `cargo fmt`. Do not build a `Side` from `load_without_body`.
