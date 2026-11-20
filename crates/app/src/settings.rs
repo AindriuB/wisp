@@ -405,7 +405,12 @@ fn set_keep_decor(t: &mut dyn toml_edit::TableLike, key: &str, new: Item) {
         .get(key)
         .and_then(|i| i.as_value())
         .map(|v| v.decor().clone());
-    t.insert(key, new);
+    match t.get_mut(key) {
+        Some(item) => *item = new,
+        None => {
+            t.insert(key, new);
+        }
+    }
     if let (Some(d), Some(v)) = (decor, t.get_mut(key).and_then(|i| i.as_value_mut())) {
         *v.decor_mut() = d;
     }
@@ -433,7 +438,7 @@ fn save_tls(doc: &mut DocumentMut, settings: &Settings) {
     };
     if settings.system_trust {
         if t.contains_key("system_trust") && !trust_is(t, true) {
-            t.remove("system_trust");
+            set_keep_decor(t, "system_trust", value(true));
         }
     } else if !trust_is(t, false) {
         set_keep_decor(t, "system_trust", value(false));
@@ -736,6 +741,40 @@ mod tests {
             after.contains("ca_bundle = \"/etc/new.pem\"  # work CA"),
             "{after}"
         );
+    }
+
+    #[test]
+    fn save_tls_change_keeps_comment_line_and_spacing() {
+        let p = dir("tls-decor2").join("settings.toml");
+        std::fs::write(
+            &p,
+            "[tls]\n# my work CA\n  ca_bundle   = \"/etc/ca.pem\"  # c\n",
+        )
+        .unwrap();
+        let mut s = load(&p).0;
+        s.ca_bundle = Some(PathBuf::from("/etc/new.pem"));
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(after.contains("# my work CA\n"), "{after}");
+        assert!(
+            after.contains("  ca_bundle   = \"/etc/new.pem\"  # c"),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn save_tls_system_trust_back_on_keeps_comment() {
+        let p = dir("tls-decor3").join("settings.toml");
+        std::fs::write(&p, "[tls]\nsystem_trust = false  # off for proxy\n").unwrap();
+        let mut s = load(&p).0;
+        s.system_trust = true;
+        save(&p, &s).unwrap();
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            after.contains("system_trust = true  # off for proxy"),
+            "{after}"
+        );
+        assert!(load(&p).0.system_trust);
     }
 
     #[test]

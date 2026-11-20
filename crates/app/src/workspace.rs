@@ -3231,6 +3231,7 @@ impl Workspace {
     }
 
     /// The TLS trust the engine was last given.
+    #[cfg(test)]
     pub fn tls_trust(&self) -> TlsTrust {
         self.applied_tls.clone()
     }
@@ -5282,6 +5283,9 @@ f+i1mjR701R2
             Some(pem)
         );
         fx.ws.update(cx, |w, cx| w.clear_ca_file(cx));
+        let t = fx.ws.read_with(cx, |w, _| w.tls_trust());
+        assert!(t.extra.is_empty());
+        assert!(!t.system);
         fx.ws.update(cx, |w, cx| w.toggle_system_trust(cx));
         assert_eq!(
             fx.ws.read_with(cx, |w, _| w.tls_trust()),
