@@ -107,3 +107,54 @@ Follow-up, not this round:
 
 ## Outcome
 Tester PASS and reviewer APPROVE at fcacbf495789e45a27e1c4dd8326e3577838b563 after two review rounds. `Body::GraphQl` is in the model, the file format, resolve, Explain, history, the import scan, the resend plan and the app picker (read-only placeholder). AC8 was not done here: the stale redirect comments are in `crates/core/src/engine.rs`, outside Owns, so it moved to a `PLAN.md` follow-up. The other follow-ups are in `PLAN.md`.
+AC10 was added after the external review, and the final verified head is 13b743a.
+
+## External review — findings
+
+Key: pasted by user · reviewed head 7945bc676a932576c353949e65dedf797bdd2a4c · round 3
+
+P2] Resend guard permits silently discarded GraphQL variables — crates/service/src/plan.rs:253–254
+
+When history clears both query and variables, the guard checks only whether the query was refilled. A supported variables object containing duplicate keys can be cleared entirely during history sanitization. Refilling just the query then permits resend with those variables silently omitted. Track which fields were cleared and retain the refusal until the missing variables are acknowledged.
+
+## Wave stopped — step 7 — orchestrator finding: knowing which GraphQL field history cleared needs a design choice (new redaction names vs fail-safe both-fields rule)
+
+## Amendment 2 (2026-11-20)
+User decision, user's words: "Record per-field names". Fixes the round 3 P2 above: when history clears both the query and the variables it records only `"body"`, so the resend guard (`crates/service/src/plan.rs` ~:253-254) lifts once the query alone is refilled and the request goes out with the variables silently gone.
+
+- [ ] AC10 GraphQL history redaction names and the resend guard:
+  - for a GraphQL body, history records `"body.query"` when it clears the query and `"body.variables"` when it clears the whole variables string. Leaf redactions inside the variables keep their existing names (e.g. `"body.password"`). Non-GraphQL bodies keep `"body"`;
+  - the resend guard refuses while any field named as cleared is still blank in the draft;
+  - an old entry with a GraphQL body and `"body"` but no per-field names stays fail-safe: refuse until both the query and the variables are non-blank.
+
+  Tests `graphql_resend_*` in `plan.rs`'s test module:
+  (a) both fields cleared, only the query refilled → refused;
+  (b) only the query cleared and refilled, variables blank → allowed;
+  (c) only the variables cleared, query intact, variables still blank → refused; refilled → allowed;
+  (d) an old `"body"`-only entry with both blank → refused until both are filled.
+  Plus a `graphql_history_*` test in `tests/graphql.rs` that both-fields clearing records `"body.query"` and `"body.variables"`, not `"body"`.
+
+Files: `crates/storage/src/history.rs` (the GraphQL redaction arm only) and `crates/service/src/plan.rs` (the GraphQL body arm and its tests). Both are already in Owns; nothing else changes.
+
+Docs: no line needed. No user doc, `docs/architecture.md` or `docs/cli.md` lists history redaction names, and the spec's "the 178 resend refusal applies" stays true. Nothing is added to task 197.
+
+Check for AC10:
+- `graphql-resend` command — AC10
+  run: `cargo test -p wisp-service --locked --lib graphql_resend_ 2>&1 | tee /dev/stderr | grep -E 'test result: ok\. ([4-9]|[1-9][0-9]+) passed; 0 failed; 0 ignored'`
+- `graphql-storage` (above) also covers the new `graphql_history_*` test.
+
+## Wave resumed — user chose "Record per-field names" (2026-11-20): Amendment 2, then round 3 fix
+
+## Wave stopped — step 2 — round cap: next fix round would be the 4th. Open: P2 regression at 5487019 (crates/service/src/plan.rs:276-286) — a stored GraphQL body with per-field names switched to None or a blank JSON/Text/XML draft is allowed; fix: treat gql_stored && (q || v) as whole on the non-GraphQL-draft path
+
+## Wave resumed — user chose one more fix run past the cap ("One more fix run"), 2026-11-20
+
+## Review round 4 — findings
+
+Reviewed HEAD: 5487019778006caadd1e967b95b7e98a7a24f5a1
+
+- [P2] crates/service/src/plan.rs:276-286 — Regression from round 3. A stored GraphQL body with per-field clearing names, whose draft switches the body type to None or to a blank JSON/Text/XML body, is now allowed. The legacy `"body"` name still refuses.
+  route: implementer — on the non-GraphQL-draft path, count `gql_stored && (q || v)` as `whole`. That restores the 178 rule (`Body::None | Json | Text | Xml` blank = unedited). Add tests: stored `GraphQl{query:"",variables:""}` with each of `["body.query"]`, `["body.variables"]` and both names, and a draft of `Body::None` and of `Body::Json("")` → refused, in every case.
+  input: stored `GraphQl{query:"",variables:""}`, redacted `["body.query"]`, draft `Body::None` → `body_redaction_refusal` returns None and the send goes out with no body.
+
+## Wave verified — 13b743acde47f6a2be3f7d1e2f3c3e37415d2a19

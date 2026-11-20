@@ -38,6 +38,9 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] The read-only GraphQL placeholder has no scroll area (`crates/app/src/ui/request/body.rs:641-665`); task 193 replaces it.
 - [P3] No serde round-trip test of `Body::GraphQl` in core, and no check that a multi-line query is written as `'''`.
 - [P3] Spec Feature 3 and AC6 (`docs/plan/specs/2026-11-19-wisp-0-5-0.md`) call `crates/storage/src/import/mod.rs:363` "the credential scan", but it is the undefined-variable scan; the wording needs fixing.
+- [P3] The `redact_json_body` doc comment still says "`body` is recorded" (`crates/storage/src/history.rs:793-795`).
+- [P3] `graphql_query_refill_lifts_refusal_with_blank_variables` now duplicates `graphql_resend_query_only_cleared_allows_blank_variables` (`crates/service/src/plan.rs:531`).
+- [P3] The round-4 test `graphql_field_clearing_refuses_switch_to_blank_non_graphql_body` is not under the `graphql_resend_` check prefix.
 
 ### Follow-ups from task 184 (TLS trust engine; not scheduled)
 - [P3] `escape_debug()` doubles backslashes, so Windows paths in `TrustError` come out mangled (`crates/core/src/trust.rs:49`).
