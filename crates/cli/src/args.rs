@@ -477,4 +477,28 @@ mod tests {
             assert_eq!(p(&args), want, "{args:?}");
         }
     }
+
+    #[test]
+    fn repeated_ca_bundle_is_rejected() {
+        assert_eq!(
+            p(&[
+                "run",
+                "c",
+                "a.toml",
+                "--ca-bundle",
+                "a.pem",
+                "--ca-bundle",
+                "b.pem"
+            ]),
+            Err(UsageError::ExtraArgument("--ca-bundle".into()))
+        );
+    }
+
+    #[test]
+    fn trailing_ca_bundle_needs_a_value() {
+        assert_eq!(
+            p(&["run", "c", "a.toml", "--ca-bundle"]),
+            Err(UsageError::MissingValue("--ca-bundle".into()))
+        );
+    }
 }
