@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Task 187 (Windows ACL follow-ups) is recorded. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine) and 187 (Windows ACL follow-ups) are recorded. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -32,6 +32,18 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] `is_owner_only` accepts an INHERIT_ONLY (0x08) ACE as granting full access (`crates/storage/src/win_acl.rs:142-146`); it also needs `AceFlags & 0x08 == 0`.
 - [P3] The `is_owner_only` doc comment does not mention the new full-rights condition (`win_acl.rs:100-101`).
 - [P3] Cleanup can remove an empty parent that a concurrent caller is about to use, but only after a failed restrict (`crates/storage/src/data_dir.rs:166-171`).
+
+### Follow-ups from task 184 (TLS trust engine; not scheduled)
+- [P3] `escape_debug()` doubles backslashes, so Windows paths in `TrustError` come out mangled (`crates/core/src/trust.rs:49`).
+- [P3] No test tells `system: true` apart from `false` (`crates/core/src/client.rs:73`); the spec leaves this to the macOS hand test.
+- [P3] The test fixture's validity starts at yesterday 00:00 UTC, not now-1h, and the comment saying `time` is needed is wrong (`crates/core/tests/tls.rs:143-164`).
+- [P3] `scratch` leaves `wisp-trust-*` directories in the temp dir (`crates/core/tests/tls.rs:223`).
+- [P3] No FIFO test: the FIFO case shares the directory branch, and a FIFO swapped in between metadata and open could block (`crates/core/src/trust.rs:57-64`).
+
+### Follow-ups from task 183 (history evidence; not scheduled)
+- [P3] If the user turns history bodies on while an append waits for the collection id to be read, a body from a response received with storage off is written; the setting is read in `spawn_record`, not at response time (`crates/app/src/workspace.rs:2875`).
+- [P3] No app-level test checks that the GUI passes `history_bodies = false` through; `body_to_store` is now `#[cfg(test)]` (`crates/app/src/ui/history.rs:27`).
+- [P3] A Failed or Cancelled outcome passed with `Some(body)` writes the `.bin` but records `no_response` (`crates/storage/src/history.rs:1288-1290`); no caller does this today.
 
 ### Follow-ups from task 182 (history scrub and truncated bodies; not scheduled)
 

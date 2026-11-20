@@ -1,0 +1,14 @@
+{
+  "run": "https://github.com/AindriuB/wisp/actions/runs/44626294433",
+  "run_id": 44626294433,
+  "built_commit": "a47621694861f5095e46ff5d5eea1c44e2f2e780",
+  "conclusion": "success on every target",
+  "note": "measure.yml dispatched on task/184-tls-trust-engine at a476216 (GUI built alone).",
+  "windows_baseline_gui_bytes": 15616000,
+  "windows_soft_line_bytes": 15900000,
+  "targets": {
+    "aarch64-apple-darwin": { "gui_bytes": 11901152 },
+    "x86_64-pc-windows-msvc": { "gui_bytes": 15616512, "gui_delta_vs_15616000_bytes": 512, "over_soft_line": false },
+    "x86_64-unknown-linux-gnu": { "gui_bytes": 26304968 }
+  }
+}
