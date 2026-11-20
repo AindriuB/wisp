@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 185 (binding registry H3b), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view), 193 (GraphQL editor), 194 (Postman test translation), 195 (OpenAPI importer and URL credential hardening, H4b) and 199 (JSON assertion numbers by value) are recorded; 196 (CLI `run` carry-overs) is on a PR. Open: 197 (0.5.0 docs) and 198 (measure and release dry run). All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 185 (binding registry H3b), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view), 193 (GraphQL editor), 194 (Postman test translation), 195 (OpenAPI importer and URL credential hardening, H4b), 199 (JSON assertion numbers by value) and 196 (CLI `run` carry-overs) are recorded. Open: 197 (0.5.0 docs) and 198 (measure and release dry run). All eight open questions decided as recommended (user, 2026-11-19).
 
 Task 199 (JSON assertion numbers compare by value, so `1` equals `1.0`; strings against numbers stay type-strict) is recorded (PR #162). It resolves the numeric-equality residual on task 194 and amended the 0.3.0 spec at `:186` (user decision, 2026-11-20).
 
@@ -47,6 +47,12 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - `graphql::variables_note` pretty-prints the whole variables text on every render; cache it per edit like `refresh_json` (`body.rs:345`, `:247-253`).
 - The variables note checks text as typed, so `{"id": {{id}}}` shows "not a JSON object" though it sends fine after substitution (`crates/app/src/ui/request/graphql.rs:20-26` vs `crates/core/src/resolve/engine.rs:676-690`); revisit with highlighting.
 - The comment at `crates/service/src/plan.rs:250-253` says a "body"-only redaction needs both fields; since 193 that holds only when the stored body was GraphQL.
+
+### Follow-ups from task 196 (CLI `run` carry-overs; not scheduled)
+- [P3] The `resolve as` pattern in `scripts/check-boundaries.sh` can false-positive on prose, casts or an unrelated `resolve as` import, and misses turbofish `resolve::<T>(` and `{self as m}` followed by `m::resolve(`.
+- [P3] AC2's claim that port 0 is never connectable is reasoned for macOS and Windows, not run; CI on those OSes is the only check.
+- [P3] `snapshot_stays_under_one_mebibyte_with_every_cap_exceeded` takes about 60 s in a debug build.
+- [Docs] `docs/cli.md` must name the `environment:<name>` entry (task 197; see the 173 item above).
 
 ### Follow-ups from task 195 (importer hardening H4b; not scheduled)
 - [P3] The curl extra-URL warning (`crates/storage/src/import/curl.rs:493-496`) prints "host ``" for a URL flagged as possibly holding credentials.
@@ -150,12 +156,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - NOTE: `scrub_truncated_append_keeps_json_body_across_reopen` does not guard the restore (it never scrubs an existing file); `scrub_truncated_file_in_unmarked_folder_keeps_body` does.
 
 ### Follow-ups from task 173 (CLI snapshot and metadata; not scheduled)
-- [P3] An environment whose `environment_info` fails (e.g. a malformed `dev.secrets.toml`) is reported as `variable_count` 0 with no note and no `truncated` entry (`crates/cli/src/cmd/snapshot.rs:72-74`).
-- [P3] Text output `== recent ==` omits `RecentInfo.request`, so a reader cannot tell which request each history line belongs to; JSON has it (`output.rs` `snapshot_text`).
-- [P3] Test gaps: the fallback unit test never has `request`/`recent` present, so it does not check that the minimal `truncated` names them; no test for a migrated history dir with no `index.jsonl` (`snapshot.rs:141-145`).
-- [P3] `fsize` renders the whole text form at every fitting step, so a hostile collection (all-bidi names at the caps, about 60 MB of env files) takes about 10 s release / 37 s debug; make the counting writer stop once past the limit.
-- [P3] Rename test `text_rendering_is_bounded_too` to `snapshot_text_rendering_is_bounded_too` so the `cli-snapshot` check counts it.
-- [P3] `docs/cli.md` (snapshot section, ~:186-200) does not name the cap-hit entries in `truncated` (`environments`, `environment_variables`, `request_variables`, `request_headers`); the implementer chose them and the spec does not name them.
+- [P3] `docs/cli.md` (snapshot section, ~:186-200) does not name the cap-hit entries in `truncated` (`environments`, `environment_variables`, `request_variables`, `request_headers`); the implementer chose them and the spec does not name them, and task 196 added `environment:<name>` for an unreadable environment (dropped in the minimal fallback; the stderr note survives). Task 197 covers it.
 
 ### Follow-ups from task 176 (0.4.0 docs; not scheduled)
 - [P3] AC51 in `docs/plan/tasks/99-hardening-0-2-0.md` says "(done, task 163)"; it should credit tasks 161 and 163.
@@ -164,7 +165,6 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Note] No test proves `restrict_to_owner` is skipped on the already-owner-only path.
 - [Note] ReFS has 128-bit file IDs; `same_file_entry` compares the 64-bit `nFileIndex`.
 - [Note] The 8.3 test could read the short name inside the setup dir instead of a sibling file.
-- [Flake] `run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7` is in `known-flakes.md`; find and fix the cause.
 
 ### Follow-ups from task 180 (no-ACL volumes; not scheduled)
 - [Note] `volume_flags` in `crates/storage/src/win_acl.rs`: a relative path whose first component does not exist walks to an empty parent and returns `None`, so the DACL is applied and fails closed; unreachable today because the data dir is always absolute.
@@ -185,9 +185,6 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - Root cause of the Attempt 2 failure: the engine runs one worker thread, so under load its timer fires late.
 
 ### Follow-ups from task 166 (wisp-cli run; not scheduled)
-- [P3] `crates/cli/tests/run.rs:150-154` `closed()` binds and drops a port; another process could take it, a possible exit-5 flake.
-- [P3] The service keychain-canary test asserts only `Completed` for exits 0/1/7; pin the failed check or bad status.
-- [P3] No CLI-level test of `missing-secret` rendering (text and JSON).
 - [Low] `crates/service/src/run.rs:978` uses a 200 ms sleep against the "no sleeps" rule.
 - [Low] In `run_missing_keychain_secret_is_not_prepared_and_sends_nothing` (crates/service/src/run.rs) the `if carries_id` guard can never be false; bind unconditionally there so a fixture change fails loudly.
 - [NOTE] `crates/cli/src/output.rs` `size_text` duplicates `crates/app/src/format.rs`.
@@ -241,7 +238,6 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] test `late_append_after_newid_does_not_pin_old_store`: its `Ready(s)` count cannot tell A from B; compare `s` to B's store.
 
 ### Follow-ups from task 160 (wisp-service plan and send; not scheduled)
-- [P3] `scripts/check-boundaries.sh:52`: the `resolve(` check (and the task's no-resolve check) misses a path-qualified `wisp_core::resolve::resolve(` call or an aliased import.
 - NOTE: `crates/service/src/plan.rs:340` `prepare` always returns empty `dynamics`; the caller must copy them from its `Recording` (`crates/app/src/workspace.rs:2281`). This is a trap for 166's CLI caller, and no test checks that `Workspace::send` stores them.
 - NOTE: the task's `suite-and-lint` check says `cargo fmt --check`; `cargo fmt --all --check` is needed when not run from the workspace root.
 
