@@ -55,6 +55,9 @@ ignore list that the user builds from the view.
 - `ux-and-threads` read — AC2, AC4, AC6
   how: the reviewer checks the header fields, that the confirmation names `collection.toml` before any write, that every load and save is spawned off the UI thread with the generation guard, and that no copy action exists.
 
+## Carried from task 188's review
+- Build every compare `Side` from `HistoryStore::load`, not `load_without_body`; the compare needs the stored bodies.
+
 ## Out of scope
 - The compare logic and the storage of patterns (188).
 - Comparing the live unsaved response, a CLI compare, or export.

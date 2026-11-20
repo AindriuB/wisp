@@ -1904,3 +1904,31 @@ fn description_and_expected_status_survive_a_request_serde_round_trip() {
     let old: Request = serde_json::from_value(v).unwrap();
     assert!(old.description.is_empty() && old.expected_status.is_empty());
 }
+
+#[test]
+fn graphql_report_labels_and_lists_variables_from_both_fields() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.vars = vec![var("q", "a"), var("id", "7")];
+    f.req.body = Body::GraphQl(crate::request::GraphQlBody {
+        query: "{ {{q}} }".into(),
+        variables: "{\"id\":{{id}}}".into(),
+    });
+    let r = f.report();
+    assert_eq!(r.body.kind, BodyKind::GraphQl);
+    assert_eq!(r.body.kind.label(), "graphql");
+    assert_eq!(r.body.vars, vec!["q".to_string(), "id".to_string()]);
+    let PreparedBody::Bytes(b) = resolve(&f.req, &f.scope()).unwrap().body else {
+        panic!()
+    };
+    assert_eq!(r.body.bytes, Some(b.len()));
+}
+
+#[test]
+fn graphql_report_without_variables_counts_the_query_only() {
+    let mut f = Fx::new(req("http://h"));
+    f.req.body = Body::GraphQl(crate::request::GraphQlBody {
+        query: "{ a }".into(),
+        variables: String::new(),
+    });
+    assert_eq!(f.report().body.bytes, Some(r#"{"query":"{ a }"}"#.len()));
+}
