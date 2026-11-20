@@ -40,3 +40,8 @@ the `windows-sys` dependency line in line with the conventions.
 ## Out of scope
 - ReFS 128-bit file ids, `volume_flags` notes, and the "already owner-only skips restrict" test (Notes, left in PLAN).
 - Any change to which directories are restricted.
+
+## Wave verified — 679aa19c42213edef5f2b439ee63030dff036c75
+
+## Outcome
+Merged 2026-11-19 at 679aa19c42213edef5f2b439ee63030dff036c75 (tester PASS, reviewer APPROVE, no fix rounds). `is_owner_only` requires full file rights on the owner's single ACE, a failed `restrict_to_owner` removes the directories the call created, and `windows-sys` has `default-features = false`. Windows CI ran both new tests (job 135919944074, run 44626018466). Follow-ups are in `PLAN.md`.

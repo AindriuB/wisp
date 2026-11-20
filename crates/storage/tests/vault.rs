@@ -2715,14 +2715,14 @@ fn h3_load_without_a_data_dir_refuses_a_keychain_environment() {
     let t = tempfile::tempdir().unwrap();
     write(t.path(), "dev.toml", STORE_TOML);
     let s = MemoryStore::new();
-    put(&s, "token", "t1");
+    put(&s, "token", "zz-hunter");
     let e =
         wisp_storage::vault::load_environment_without_data_dir(t.path(), "dev", &s).unwrap_err();
     assert!(
         matches!(e, wisp_storage::StorageError::Invalid { ref key, .. } if key == "secrets"),
         "{e:?}"
     );
-    assert!(!e.to_string().contains("t1"));
+    assert!(!e.to_string().contains("zz-hunter"));
 }
 
 #[test]
@@ -2733,4 +2733,170 @@ fn h3_load_without_a_data_dir_still_loads_a_file_mode_environment() {
         wisp_storage::vault::load_environment_without_data_dir(t.path(), "dev", &NoStores).unwrap();
     assert_eq!(l.status, LoadStatus::File);
     assert_eq!(l.env.secrets.len(), 2);
+}
+
+// ---- task 186: secret-file safety ----
+
+#[cfg(unix)]
+#[test]
+fn sfs_write_keeps_existing_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("collection.toml");
+    std::fs::write(&p, "format = 1\n").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    wisp_storage::collection::ensure_collection_id(t.path()).unwrap();
+    assert!(std::fs::read_to_string(&p).unwrap().contains("id ="));
+    assert_eq!(
+        std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sfs_fifo_refused_without_hang() {
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let fifo = t.path().join("environments/dev.secrets.toml");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    if !matches!(made, Ok(s) if s.success()) {
+        println!("skipped: mkfifo is not available");
+        return;
+    }
+    let root = t.path().to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let s = MemoryStore::new();
+        let r = import_secrets_file(&root, "dev", &id(), &s, true, &bcx(&root));
+        let _ = tx.send(r.is_err());
+    });
+    let refused = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("a FIFO secrets file hung the read");
+    assert!(refused);
+}
+
+#[test]
+fn sfs_git_missing_outside_repo_allows() {
+    // No `.git` anywhere under the root: no git call, so the migration runs.
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    let s = MemoryStore::new();
+    put(&s, "token", "t");
+    put(&s, "key", "k");
+    migrate_to_file(t.path(), "dev", &id(), &s, false, &bcx(t.path())).unwrap();
+    assert!(exists(t.path(), "dev.secrets.toml"));
+}
+
+#[test]
+fn sfs_nested_collection_tracked_secrets_refuses() {
+    // The repo root is above the collection root.
+    if !git_available() {
+        println!("skipped: git is not available");
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let coll = t.path().join("coll");
+    std::fs::create_dir_all(&coll).unwrap();
+    write(&coll, "dev.toml", STORE_TOML);
+    write(&coll, "dev.secrets.toml", "[vars]\ntoken = \"t\"\n");
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(t.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-f", "coll/environments/dev.secrets.toml"]);
+    let s = MemoryStore::new();
+    let e = import_secrets_file(&coll, "dev", &id(), &s, true, &bcx(&coll)).unwrap_err();
+    assert!(
+        matches!(e, SecretsError::TrackedSecretsFile { .. }),
+        "{e:?}"
+    );
+    assert!(s.accounts().is_empty());
+}
+
+#[test]
+fn sfs_git_failure_inside_repo_refuses() {
+    // An empty `.git` directory marks a work tree, but git cannot use it:
+    // the check fails, so the target is refused rather than allowed.
+    let t = tempfile::tempdir().unwrap();
+    write(t.path(), "dev.toml", STORE_TOML);
+    std::fs::create_dir(t.path().join(".git")).unwrap();
+    let s = MemoryStore::new();
+    put(&s, "token", "t");
+    put(&s, "key", "k");
+    let e = migrate_to_file(t.path(), "dev", &id(), &s, false, &bcx(t.path())).unwrap_err();
+    assert!(matches!(e, SecretsError::GitCheckFailed { .. }), "{e:?}");
+    assert!(e.to_string().contains("could not run"));
+    assert!(!exists(t.path(), "dev.secrets.toml"));
+}
+
+#[cfg(unix)]
+#[test]
+fn sfs_moved_name_ignores_symlink() {
+    // The secrets file is a symlink to a file holding `host`: saving must
+    // refuse it and never read through it.
+    let t = tempfile::tempdir().unwrap();
+    let dir = t.path().join("environments");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("dev.toml"), "[vars]\nold = \"1\"\n").unwrap();
+    let target = t.path().join("elsewhere.toml");
+    std::fs::write(&target, "[vars]\nhost = \"h\"\n").unwrap();
+    std::os::unix::fs::symlink(&target, dir.join("dev.secrets.toml")).unwrap();
+    let env = Environment {
+        name: "dev".into(),
+        vars: vec![Var {
+            name: "host".into(),
+            value: "h".into(),
+        }],
+        secrets: vec![],
+    };
+    assert!(save_environment(t.path(), &env).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "[vars]\nhost = \"h\"\n"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn sfs_tracked_file_reached_through_a_symlinked_dir_is_refused() {
+    if !git_available() {
+        println!("skipped: git is not available");
+        return;
+    }
+    let t = tempfile::tempdir().unwrap();
+    let repo = t.path().join("repo");
+    let coll = repo.join("sub").join("coll");
+    std::fs::create_dir_all(&coll).unwrap();
+    write(&coll, "dev.toml", STORE_TOML);
+    write(&coll, "dev.secrets.toml", "[vars]\ntoken = \"t\"\n");
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-f", "sub/coll/environments/dev.secrets.toml"]);
+    let link = t.path().join("link");
+    std::os::unix::fs::symlink(repo.join("sub"), &link).unwrap();
+    let via = link.join("coll");
+    let s = MemoryStore::new();
+    let e = import_secrets_file(&via, "dev", &id(), &s, true, &bcx(&via)).unwrap_err();
+    assert!(
+        matches!(e, SecretsError::TrackedSecretsFile { .. }),
+        "{e:?}"
+    );
 }

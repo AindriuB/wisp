@@ -17,6 +17,18 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Secret-file safety follow-ups from task 169 closed (task 186)
+An id write now keeps `collection.toml`'s mode, `open_nofollow` opens with `O_NONBLOCK` and refuses non-regular files so a swapped-in FIFO cannot hang a read, and the git-tracked check is bounded at 5 s and fails closed inside any work tree, including a repo above the collection root. `gains_moved_name` no longer follows symlinks, and the `t1` flake in the vault suite is fixed by using the value `zz-hunter`. Verified at 059ed9c: tester PASS, reviewer APPROVE.
+**Cost:** Two review rounds and Amendment 1 to AC3. The first wording ("no `.git` ancestor up to the collection root") contradicted spec Q8 and let a tracked secrets file through when the collection sat inside a repo; the ancestor walk must run to the filesystem root and resolve symlinks first, or a symlinked path skips git (fail-open). The first FIFO and moved-name integration tests passed without the fix, so the real proof is in `environment.rs` unit tests; do not rely on the integration tests. Windows clippy needed two passes (`keep_mode` unused, then `bind_instead_of_map`). Six follow-ups are in PLAN.
+
+## 2026-11-19 — Windows ACL follow-ups closed (task 187)
+`is_owner_only` now returns true only when the single DACL ACE is the owner's and grants full file access, so a reduced-rights owner ACE is restricted again. If `restrict_to_owner` fails after the data-dir code created directories, those directories are removed deepest first, only the ones this call created and only if empty. The `windows-sys` line has `default-features = false` and `Cargo.lock` is unchanged. Verified at 679aa19: tester PASS, reviewer APPROVE, no fix rounds; Windows CI ran `acl_reduced_owner_ace_is_not_owner_only` and `acl_failed_restrict_removes_created_dirs` (job 135919944074, run 44626018466).
+**Cost:** The code is `cfg(windows)` and was not built locally, so the Windows CI job was the only proof. Three P3s are in PLAN, including that an INHERIT_ONLY ACE still counts as full access. The ReFS 128-bit file id, `volume_flags` notes and the "already owner-only skips restrict" test were left out of scope.
+
+## 2026-11-19 — Engine trusts private CAs (task 184)
+`wisp_core::TlsTrust` holds a `system` flag (default on) and extra CA certificates; `TlsTrust::load_pem_file` loads a PEM CA file with strict refusals, and `Engine::set_tls_trust` drops cached clients so the next send uses the new trust. Bundled roots stay in both modes, `verify_tls = false` still accepts anything, and OAuth2 token requests share the trust. Verified at 263495f: tester PASS, reviewer APPROVE, no fix rounds. Measure run 44626294433: Windows GUI 15,616,512 B, +512 B over 15,616,000 B.
+**Cost:** Core only; settings, palette and CLI flags are tasks 190 and 191. Whether `system: true` differs from `false` is untested and left to the macOS hand test. Five P3s are in PLAN.
+
 ## 2026-11-19 — History entries record body and head evidence (task 183)
 Every new history entry now carries an `evidence` field recording whether the response body and head were stored in full, and it is written as snake_case strings in the index line (for example `no_response`). The `1234` canary flake in the history suite is fixed. Verified at 3359a61: tester PASS, reviewer APPROVE.
 **Cost:** The first attempt (a67fe85) was rejected because the only test round-tripped through `list()`, so it passed under any rename of the wire values; the fix asserts raw index-line text. Do not test serialized spellings through the typed reader. Old entries are not rewritten to add `evidence`. Three P3s are in PLAN.

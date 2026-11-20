@@ -3,6 +3,7 @@
 mod client;
 mod engine;
 mod model;
+mod trust;
 
 pub mod assert;
 pub mod auth;
@@ -20,3 +21,4 @@ pub use model::{
     PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest, RequestId,
 };
 pub use timing::Timings;
+pub use trust::{TlsTrust, TrustError};
