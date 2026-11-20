@@ -745,6 +745,8 @@ fn run_help_lists_the_command() {
 struct TlsServer {
     port: u16,
     requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// TCP connections accepted, counted before any handshake.
+    connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ca_pem: String,
 }
 
@@ -810,8 +812,11 @@ fn serve_private_ca() -> TlsServer {
     let port = l.local_addr().unwrap().port();
     let requests = Arc::new(AtomicUsize::new(0));
     let counter = requests.clone();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let accepted = connections.clone();
     std::thread::spawn(move || {
         for tcp in l.incoming().flatten() {
+            accepted.fetch_add(1, Ordering::SeqCst);
             let config = config.clone();
             let counter = counter.clone();
             std::thread::spawn(move || {
@@ -834,6 +839,7 @@ fn serve_private_ca() -> TlsServer {
     TlsServer {
         port,
         requests,
+        connections,
         ca_pem: pem(ca_cert.der()),
     }
 }
@@ -921,7 +927,7 @@ fn run_trust_bad_bundle_exits_3_without_sending() {
     let t = text(&o);
     assert!(t.contains("bad.pem"), "{t}");
     assert!(!t.contains("CANARY_GARBAGE"), "{t}");
-    assert_eq!(srv.requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(srv.connections.load(std::sync::atomic::Ordering::SeqCst), 0);
     let o = s.go("a.toml", &["--ca-bundle", bad.to_str().unwrap(), "--json"]);
     assert_eq!(o.status.code(), Some(3));
 }
