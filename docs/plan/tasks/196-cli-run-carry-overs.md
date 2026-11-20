@@ -60,3 +60,7 @@ Reviewed HEAD: fc81449ba6d1513abb3abf2602b0c34336952561. Verdict CLEAN; one opti
   route: implementer
   input: change `map`/`run_text` to echo any report field into the problem line → the test still passes, because nothing in the input looks like a secret.
   fix (cheap): put a canary value in a field a renderer could leak, such as a sibling problem, `reason` or `dynamics`, and assert it is absent. The binary tests cannot fill a real keychain (`env_remove("WISP_KEYCHAIN_SERVICE")`, crates/cli/tests/run.rs:72), so this unit test is the right place for it.
+
+## Review round 1 — settled (orchestrator, 2026-11-20)
+
+- [DRIFT, accepted residual] This task file is changed on the branch only by the /review loop's own record (`## Review round N` sections). That is workflow bookkeeping, not implementer scope, and matches earlier task branches (#158, #160, #161). When running the `scope` check, also exclude `^docs/plan/tasks/196-cli-run-carry-overs.md$`. No other path outside Owns may change.
