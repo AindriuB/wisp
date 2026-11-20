@@ -537,6 +537,13 @@ fn is_single_ref(value: &str) -> bool {
 }
 
 impl SecretSink {
+    /// Mark a name as taken, so no generated secret name equals it.
+    pub(crate) fn reserve(&mut self, name: &str) {
+        if !name.is_empty() {
+            self.names.insert(name.to_string());
+        }
+    }
+
     /// Keep `{{refs}}` and empty values; move a literal into the secrets
     /// environment and return a reference to it.
     pub(crate) fn secret_ref(&mut self, request: &str, field: &str, value: String) -> String {

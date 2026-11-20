@@ -3,8 +3,10 @@
 use serde_json::Value;
 use wisp_core::Method;
 use wisp_core::request::{
-    ApiKeyLocation, Auth, Body, KeyValue, Part, PartValue, Request, TextBody, Var,
+    ApiKeyLocation, Auth, Body, GraphQlBody, KeyValue, Part, PartValue, Request, TextBody, Var,
 };
+
+mod translate;
 
 use super::{
     ImportError, ImportItem, ImportResult, RequestCounter, SecretSink, method_name, parse_json,
@@ -15,6 +17,8 @@ struct Ctx {
     result: ImportResult,
     counter: RequestCounter,
     sink: SecretSink,
+    /// Script bytes still allowed across the whole import.
+    script_budget: usize,
 }
 
 fn text(v: Option<&Value>) -> String {
@@ -64,7 +68,12 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
         },
         counter: RequestCounter::default(),
         sink: SecretSink::default(),
+        script_budget: super::MAX_INPUT_BYTES,
     };
+    // Reserve every variable key first, so no generated secret name can equal one.
+    for var in array(doc.get("variable")) {
+        cx.sink.reserve(&text(var.get("key")));
+    }
     for var in array(doc.get("variable")) {
         let key = text(var.get("key"));
         if !key.is_empty() {
@@ -91,9 +100,80 @@ pub fn parse(input: &[u8]) -> Result<ImportResult, ImportError> {
     Ok(cx.result)
 }
 
+/// Translate the request's `test` events into assertions; one warning for the rest.
+fn translate_tests(
+    cx: &mut Ctx,
+    at: &str,
+    node: &Value,
+    req: &mut Request,
+) -> Result<(), ImportError> {
+    let (mut total, mut untranslated) = (0usize, 0usize);
+    let mut size = 0usize;
+    let mut scripts: Vec<Vec<&str>> = Vec::new();
+    for e in array(node.get("event")) {
+        if text(e.get("listen")) != "test" {
+            continue;
+        }
+        let exec = e.get("script").and_then(|s| s.get("exec"));
+        let lines: Vec<&str> = match exec {
+            Some(Value::Array(a)) => {
+                let strs: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
+                if strs.len() != a.len() {
+                    // A non-string entry runs in Postman but is never seen here:
+                    // the whole script is left untranslated.
+                    let n = strs.iter().map(|l| l.matches("pm.test(").count()).sum();
+                    let n = usize::max(n, 1);
+                    total += n;
+                    untranslated += n;
+                    continue;
+                }
+                strs
+            }
+            Some(Value::String(s)) => vec![s.as_str()],
+            _ => continue,
+        };
+        let len: usize = lines.iter().map(|l| l.len() + 1).sum();
+        size = size.saturating_add(len);
+        cx.script_budget = cx.script_budget.checked_sub(len).ok_or_else(|| {
+            ImportError::TooLarge("script text exceeds the import size limit".into())
+        })?;
+        scripts.push(lines);
+    }
+    if size > translate::MAX_SCRIPT_BYTES {
+        // Not parsed and not copied; a rough count of the tests only.
+        let n: usize = scripts
+            .iter()
+            .flatten()
+            .map(|l| l.matches("pm.test(").count())
+            .sum();
+        total = n.max(1);
+        untranslated = total;
+    } else {
+        for lines in scripts {
+            let r = translate::translate(&lines.join("\n"));
+            total += r.total;
+            untranslated += r.untranslated;
+            req.assertions.extend(r.assertions);
+        }
+    }
+    if untranslated > 0 {
+        cx.result.warn(
+            at,
+            format!("{untranslated} of {total} tests not translated; scripts are not run"),
+        );
+    }
+    Ok(())
+}
+
 fn script_warning(cx: &mut Ctx, at: &str, node: &Value) {
+    script_warning_except(cx, at, node, false);
+}
+
+/// Warn for scripts that are not imported; `skip_test` leaves out `test` events.
+fn script_warning_except(cx: &mut Ctx, at: &str, node: &Value, skip_test: bool) {
     let kinds: Vec<String> = array(node.get("event"))
         .iter()
+        .filter(|e| !(skip_test && text(e.get("listen")) == "test"))
         .filter(|e| {
             e.get("script")
                 .and_then(|s| s.get("exec"))
@@ -118,6 +198,7 @@ fn items(cx: &mut Ctx, nodes: &[Value], path: &[String]) -> Result<Vec<ImportIte
     for node in nodes {
         let mut name = text(node.get("name"));
         if node.get("item").is_some() {
+            cx.counter.add()?;
             if name.is_empty() {
                 name = "Folder".into();
             }
@@ -141,13 +222,18 @@ fn items(cx: &mut Ctx, nodes: &[Value], path: &[String]) -> Result<Vec<ImportIte
             });
         } else {
             cx.counter.add()?;
-            out.push(request_item(cx, node, name, path));
+            out.push(request_item(cx, node, name, path)?);
         }
     }
     Ok(out)
 }
 
-fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> ImportItem {
+fn request_item(
+    cx: &mut Ctx,
+    node: &Value,
+    name: String,
+    path: &[String],
+) -> Result<ImportItem, ImportError> {
     let mut req = Request::default();
     let raw = node.get("request");
     let obj = raw.filter(|r| r.is_object());
@@ -178,10 +264,8 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
         );
     }
     if !method_text.is_empty() && parse_method(&method_text).is_none() {
-        cx.result.warn(
-            &at,
-            format!("method `{method_text}` is not supported; using GET"),
-        );
+        cx.result
+            .warn(&at, "the request method is not supported; using GET");
     }
     req.name = name.clone();
     req.description = description_of(obj.and_then(|r| r.get("description")));
@@ -210,7 +294,8 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
         req.auth = auth_of(cx, r.get("auth"), &name, &at);
     }
     if let Some((user, pass)) = userinfo {
-        if req.auth == Auth::Inherit {
+        let has_auth = obj.is_some_and(|r| r.get("auth").is_some_and(Value::is_object));
+        if !has_auth {
             req.auth = Auth::Basic {
                 username: cx.sink.secret_ref(&name, "username", user),
                 password: cx.sink.secret_ref(&name, "password", pass),
@@ -222,8 +307,9 @@ fn request_item(cx: &mut Ctx, node: &Value, name: String, path: &[String]) -> Im
             );
         }
     }
-    script_warning(cx, &at, node);
-    ImportItem::Request { name, request: req }
+    translate_tests(cx, &at, node, &mut req)?;
+    script_warning_except(cx, &at, node, true);
+    Ok(ImportItem::Request { name, request: req })
 }
 
 /// URL string or object into (url, params, path vars). The query is cut off
@@ -433,8 +519,16 @@ fn body_of(cx: &mut Ctx, body: Option<&Value>, headers: &[KeyValue], at: &str) -
             Body::Multipart(parts)
         }
         "graphql" => {
-            cx.result.warn(at, "GraphQL body is not imported");
-            Body::None
+            let g = b.get("graphql");
+            let variables = match g.and_then(|g| g.get("variables")) {
+                Some(Value::String(s)) => s.clone(),
+                Some(v @ (Value::Object(_) | Value::Array(_))) => v.to_string(),
+                _ => String::new(),
+            };
+            Body::GraphQl(GraphQlBody {
+                query: text(g.and_then(|g| g.get("query"))),
+                variables,
+            })
         }
         "file" => {
             cx.result.warn(at, "file body is not imported");
@@ -606,12 +700,18 @@ mod tests {
     }
 
     #[test]
-    fn graphql_warns() {
+    fn graphql_imports() {
         let doc = br#"{"info":{"name":"x","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
           "item":[{"name":"r","request":{"method":"POST","url":"http://h/x","body":{"mode":"graphql","graphql":{"query":"{a}"}}}}]}"#;
         let r = parse(doc).unwrap();
-        assert_eq!(find(&r.items, "r").body, Body::None);
-        assert!(r.warnings[0].message.contains("GraphQL"));
+        assert_eq!(
+            find(&r.items, "r").body,
+            Body::GraphQl(GraphQlBody {
+                query: "{a}".into(),
+                variables: String::new()
+            })
+        );
+        assert!(r.warnings.is_empty());
     }
 
     #[test]
