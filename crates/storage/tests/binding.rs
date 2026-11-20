@@ -331,6 +331,31 @@ fn h3b_win_trailing_dot_refused() {
     unverified(bind_additional_checkout(&d, &id(), &w));
 }
 
+/// Names that are legal folder names on unix but that Win32 would rewrite or
+/// treat as a device. The guard is applied on every platform, so a worktree
+/// entry with such a name must not verify (a control name still does).
+#[cfg(unix)]
+#[test]
+fn h3b_reserved_or_rewritten_worktree_entry_name_is_unverified_on_unix() {
+    for name in ["w1.", "COM1"] {
+        let (_a, a) = root();
+        std::fs::create_dir_all(a.join(".git")).unwrap();
+        let d = data();
+        bind(&d, &id(), &a).unwrap();
+        let (_w, w) = root();
+        make_worktree(&a, &w, name);
+        unverified(bind_additional_checkout(&d, &id(), &w));
+        assert_eq!(bound_roots(&d, &id()).unwrap().len(), 1, "{name}");
+    }
+    let (_a, a) = root();
+    std::fs::create_dir_all(a.join(".git")).unwrap();
+    let d = data();
+    bind(&d, &id(), &a).unwrap();
+    let (_w, w) = root();
+    make_worktree(&a, &w, "w1");
+    bind_additional_checkout(&d, &id(), &w).unwrap();
+}
+
 #[test]
 fn h3b_legacy_row_rekeyed_on_check() {
     let (_a, a) = root();

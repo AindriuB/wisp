@@ -1262,6 +1262,21 @@ mod tests {
     }
 
     #[test]
+    fn exact_worktree_gitdir_applies_the_entry_name_guard() {
+        use super::exact_worktree_gitdir;
+        use std::path::{Path, PathBuf};
+        let trusted = vec![PathBuf::from("/repo/.git")];
+        assert!(exact_worktree_gitdir(
+            Path::new("/repo/.git/worktrees/w1"),
+            &trusted
+        ));
+        for n in ["w1.", "w1 ", "COM1", "nul", "con.txt"] {
+            let gd = PathBuf::from("/repo/.git/worktrees").join(n);
+            assert!(!exact_worktree_gitdir(&gd, &trusted), "{n}");
+        }
+    }
+
+    #[test]
     fn remote_and_device_prefixes_are_detected() {
         for t in [
             "//server/share/x",
