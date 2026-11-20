@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-19 — Engine trusts private CAs (task 184)
+`wisp_core::TlsTrust` holds a `system` flag (default on) and extra CA certificates; `TlsTrust::load_pem_file` loads a PEM CA file with strict refusals, and `Engine::set_tls_trust` drops cached clients so the next send uses the new trust. Bundled roots stay in both modes, `verify_tls = false` still accepts anything, and OAuth2 token requests share the trust. Verified at 263495f: tester PASS, reviewer APPROVE, no fix rounds. Measure run 44626294433: Windows GUI 15,616,512 B, +512 B over 15,616,000 B.
+**Cost:** Core only; settings, palette and CLI flags are tasks 190 and 191. Whether `system: true` differs from `false` is untested and left to the macOS hand test. Five P3s are in PLAN.
+
 ## 2026-11-19 — History entries record body and head evidence (task 183)
 Every new history entry now carries an `evidence` field recording whether the response body and head were stored in full, and it is written as snake_case strings in the index line (for example `no_response`). The `1234` canary flake in the history suite is fixed. Verified at 3359a61: tester PASS, reviewer APPROVE.
 **Cost:** The first attempt (a67fe85) was rejected because the only test round-tripped through `list()`, so it passed under any rename of the wire values; the fix asserts raw index-line text. Do not test serialized spellings through the typed reader. Old entries are not rewritten to add `evidence`. Three P3s are in PLAN.
