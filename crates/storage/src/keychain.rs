@@ -351,6 +351,11 @@ impl SecretStore for KeychainStore {
                 wipe(&mut v);
                 Err(KeyringError::BadEncoding(Vec::new()))
             }
+            // `BadDataFormat` carries the secret's bytes too.
+            Err(KeyringError::BadDataFormat(mut v, e)) => {
+                wipe(&mut v);
+                Err(KeyringError::BadDataFormat(Vec::new(), e))
+            }
             Err(e) => Err(e),
         };
         match self.worker.run(self.timeouts.call, job)? {

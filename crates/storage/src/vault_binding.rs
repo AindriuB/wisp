@@ -8,13 +8,15 @@
 //! written `0600`. A corrupt or unreadable registry fails closed.
 //!
 //! A row is the set of roots bound to an id (several checkouts of one
-//! collection), each with a random nonce, mirrored in a git-ignored marker file
-//! `environments/.wisp-binding` inside that root. The marker holds one entry
-//! per registry (each data dir's registry has a random id), so two data dirs
-//! bound to one root do not overwrite each other. A binding check needs the
-//! marker's entry for this registry to match the root's nonce, so a folder
-//! recreated at a bound path (no marker) is `Unbound` and needs the bind
-//! prompt again.
+//! collection, at most 64), each with a random nonce and a random per-root key,
+//! mirrored as a `<key> <nonce>` line in a git-ignored marker file
+//! `environments/.wisp-binding` inside that root. Keys are per root, so no two
+//! markers share an id, and a marker holds other registries' entries side by
+//! side without overwriting them. A binding check needs the marker's entry for
+//! the row's key to match the row's nonce, so a folder recreated at a bound path
+//! (no marker) is `Unbound` and needs the bind prompt again. A row written
+//! before per-root keys (marker entry under the registry id) is re-keyed by the
+//! next successful check or bind.
 //!
 //! Policy: an unbound id fails closed for every operation; nothing binds
 //! implicitly. Only the user's explicit confirmation, [`crate::vault::bind`],
@@ -156,8 +158,8 @@ fn registry_path(data: &DataDir) -> PathBuf {
     data.root().join(REGISTRY_FILE)
 }
 
-/// The registry: a random id for this data dir (its entry key in every
-/// collection marker) and, per collection id, the set of bound roots.
+/// The registry: a random id for this data dir (the marker key of a row from
+/// before per-root keys) and, per collection id, the set of bound roots.
 struct Registry {
     id: String,
     rows: BTreeMap<String, Vec<Row>>,
@@ -340,10 +342,11 @@ fn read_marker(root: &Path, key: &str) -> Result<Option<String>, StorageError> {
 }
 
 /// Write a fresh nonce under `key` into the marker (mode `0600`, git-ignored),
-/// keeping other keys' entries but dropping `drop_keys`, malformed lines, and
-/// entries beyond [`MARKER_MAX_ENTRIES`]; return the nonce. Refuses, writing
-/// nothing, when the directory or marker is a symlink or the marker is over a
-/// cap.
+/// keeping every other well-formed entry but dropping `drop_keys` (this
+/// registry's superseded keys) and malformed lines; return the nonce. Another
+/// registry's entry is never removed: a write that would leave more than
+/// [`MARKER_MAX_ENTRIES`] entries fails closed. Refuses, writing nothing, when
+/// the directory or marker is a symlink or the marker is over a cap.
 fn write_marker(root: &Path, key: &str, drop_keys: &[&str]) -> Result<String, StorageError> {
     safe_marker(root)?;
     let dir = root.join(crate::environment::DIR);
@@ -356,11 +359,11 @@ fn write_marker(root: &Path, key: &str, drop_keys: &[&str]) -> Result<String, St
     }
     let nonce = new_nonce();
     entries.insert(key.to_string(), nonce.clone());
-    while entries.len() > MARKER_MAX_ENTRIES {
-        let Some(victim) = entries.keys().find(|k| *k != key).cloned() else {
-            break;
-        };
-        entries.remove(&victim);
+    if entries.len() > MARKER_MAX_ENTRIES {
+        return Err(marker_refuse(
+            &marker_path(root),
+            "the binding marker would have too many entries",
+        ));
     }
     let text: String = entries.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
     crate::environment::write_nofollow(&marker_path(root), text.as_bytes())?;
@@ -373,7 +376,7 @@ fn write_marker(root: &Path, key: &str, drop_keys: &[&str]) -> Result<String, St
 pub fn tracked_marker_warning(root: &Path) -> Option<PathBuf> {
     let marker = marker_path(root);
     let rel = marker.strip_prefix(root).unwrap_or(&marker);
-    std::process::Command::new("git")
+    let mut child = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["-c", "core.fsmonitor=false"])
@@ -383,10 +386,28 @@ pub fn tracked_marker_warning(root: &Path) -> Option<PathBuf> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-        .then_some(marker.clone())
+        .spawn()
+        .ok()?;
+    // Bounded like `vault::git_check_with`: a hung git is killed and reads as
+    // "cannot say".
+    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success().then_some(marker),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
+
+/// Longest the `git` child of [`tracked_marker_warning`] may run.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The binding check against an already-read registry. `canon` is canonical and
 /// `ckey` its registry key. The id must also be the one `canon`'s own
@@ -417,8 +438,42 @@ fn check_in(reg: &Registry, id: &CollectionId, canon: &Path, ckey: &str) -> Resu
 pub(crate) fn check(data: &DataDir, id: &CollectionId, root: &Path) -> Result<(), BindError> {
     let (canon, ckey) = canonical(root)?;
     let _l = lock_registry(data)?;
-    let reg = read_registry(&registry_path(data))?;
-    check_in(&reg, id, &canon, &ckey)
+    let mut reg = read_registry(&registry_path(data))?;
+    check_in(&reg, id, &canon, &ckey)?;
+    // A row from before per-root keys still keys its marker by the registry id:
+    // re-key it now, marker first then registry (as `bind_locked` does). A
+    // failed write is logged; the check itself passed.
+    let reg_id = reg.id.clone();
+    let legacy = reg
+        .rows
+        .get(id.as_str())
+        .and_then(|rs| rs.iter().position(|r| r.root == ckey && r.key.is_none()));
+    if let Some(i) = legacy {
+        let key = new_nonce();
+        let result = write_marker(&canon, &key, &[reg_id.as_str()]).and_then(|nonce| {
+            let row = &mut reg.rows.get_mut(id.as_str()).expect("row present")[i];
+            row.nonce = nonce;
+            row.key = Some(key);
+            write_registry(&registry_path(data), &reg)
+        });
+        if result.is_err() {
+            tracing::warn!("could not re-key a collection binding marker");
+        }
+    }
+    Ok(())
+}
+
+/// Most roots bound to one collection id.
+const MAX_ROOTS_PER_ID: usize = 64;
+
+fn too_many_roots(root: &Path) -> BindError {
+    BindError::Storage(StorageError::Invalid {
+        path: root.to_path_buf(),
+        key: "path".into(),
+        message: format!(
+            "this collection is already bound to {MAX_ROOTS_PER_ID} folders; unbind one first"
+        ),
+    })
 }
 
 /// Bind under the registry lock the caller holds. `canon`/`ckey` are the
@@ -436,13 +491,18 @@ fn bind_locked(
     let rows = reg.rows.entry(id.as_str().to_string()).or_default();
     let existing = rows.iter().position(|r| r.root == ckey);
     if let Some(i) = existing {
-        if read_marker(canon, marker_key(&reg_id, &rows[i]))?.as_deref() == Some(&rows[i].nonce) {
+        // A row without its own key is re-keyed below, not returned early.
+        if rows[i].key.is_some()
+            && read_marker(canon, marker_key(&reg_id, &rows[i]))?.as_deref() == Some(&rows[i].nonce)
+        {
             return Ok(());
         }
     } else if !additional && let Some(r) = rows.first() {
         return Err(BindError::BoundElsewhere {
             bound_root: PathBuf::from(&r.root),
         });
+    } else if rows.len() >= MAX_ROOTS_PER_ID {
+        return Err(too_many_roots(canon));
     }
     let key = new_nonce();
     let old_key = existing.map(|i| marker_key(&reg_id, &rows[i]).to_string());
@@ -743,25 +803,49 @@ fn common_dir(root: &Path, trusted: &[PathBuf]) -> Result<Option<PathBuf>, Stora
         .filter(|b| !is_remote_or_device(b))
         .map(|b| simplify_verbatim(&lexical(&gitdir.join(b))))
         .is_some_and(|b| b == dot_git);
-    // A worktree's entry and its `.git` file are written together. An entry
-    // whose folder was deleted by hand and later recreated (or forged) at the
-    // same path is much newer than the entry, so it is not verified.
-    Ok((back_ok && written_together(&back_file, &dot_git)).then_some(common))
+    // A worktree's entry and its `.git` file are written together by `git
+    // worktree add`. An entry whose folder was deleted by hand and later
+    // recreated (or forged) at the same path was not.
+    Ok((back_ok && written_together(&back_file, &dot_git, &common)).then_some(common))
 }
 
 /// Largest gap between a worktree entry's `gitdir` file and the worktree's
 /// `.git` file, both written by `git worktree add` in one go.
-const WRITTEN_TOGETHER: std::time::Duration = std::time::Duration::from_secs(60);
+const WRITTEN_TOGETHER: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// True when the two files' modification times are within [`WRITTEN_TOGETHER`].
-/// Fails closed when a time cannot be read.
-fn written_together(entry_file: &Path, dot_git: &Path) -> bool {
-    let time = |p: &Path| std::fs::symlink_metadata(p).and_then(|m| m.modified());
-    let (Ok(a), Ok(b)) = (time(entry_file), time(dot_git)) else {
-        return false;
-    };
-    let gap = a.duration_since(b).or_else(|e| Ok::<_, ()>(e.duration()));
-    gap.is_ok_and(|g| g <= WRITTEN_TOGETHER)
+/// True when the entry's `gitdir` file and the worktree's `.git` file were
+/// written within [`WRITTEN_TOGETHER`] of each other. On unix this rests on
+/// status-change times (`st_ctime`), which whoever creates the folder cannot set
+/// (`touch -r` does not move them), and requires both files to belong to the
+/// owner of the trusted common dir. Elsewhere it is the modification time, which
+/// the folder's creator can set (a recorded residual). Fails closed when a time
+/// or owner cannot be read.
+fn written_together(entry_file: &Path, dot_git: &Path, common: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let stat = |p: &Path| std::fs::symlink_metadata(p).ok();
+        let (Some(a), Some(b), Some(c)) = (stat(entry_file), stat(dot_git), stat(common)) else {
+            return false;
+        };
+        if a.uid() != c.uid() || b.uid() != c.uid() {
+            return false;
+        }
+        let nanos = |m: &std::fs::Metadata| {
+            i128::from(m.ctime()) * 1_000_000_000 + i128::from(m.ctime_nsec())
+        };
+        (nanos(&a) - nanos(&b)).unsigned_abs() <= WRITTEN_TOGETHER.as_nanos()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = common;
+        let time = |p: &Path| std::fs::symlink_metadata(p).and_then(|m| m.modified());
+        let (Ok(a), Ok(b)) = (time(entry_file), time(dot_git)) else {
+            return false;
+        };
+        let gap = a.duration_since(b).or_else(|e| Ok::<_, ()>(e.duration()));
+        gap.is_ok_and(|g| g <= WRITTEN_TOGETHER)
+    }
 }
 
 /// The common dir of a bound root that may anchor verification: only a root
@@ -847,9 +931,9 @@ pub fn bound_root(data: &DataDir, id: &CollectionId) -> Result<Option<PathBuf>, 
 
 /// Bind `id` to `new_root` after the user confirmed a move: the bound roots
 /// that were moved away (gone, or no longer carrying this id) are replaced by
-/// `new_root`; roots that are still live checkouts stay bound. Refused with
-/// [`BindError::LooksLikeCopy`] when every other bound root still exists and
-/// still carries the same id: that is a copy, not a move.
+/// `new_root`. Refused with [`BindError::LooksLikeCopy`] while any other bound
+/// root is live (exists and its `collection.toml` carries the id, whatever its
+/// marker says): that is a copy, not a move.
 pub(crate) fn rebind_confirmed(
     data: &DataDir,
     id: &CollectionId,
@@ -875,19 +959,19 @@ pub(crate) fn rebind_confirmed(
         // `try_exists`: any error but NotFound fails closed, so a root that
         // cannot be inspected is never taken for a moved one.
         let exists = old.try_exists().map_err(|e| io(&old, e))?;
-        // Live: it exists, carries this id and holds the row's nonce. Other
-        // bound roots being gone does not matter, so a copy cannot be bound as
-        // "moved" once some other root has vanished.
-        if exists
-            && crate::collection::read_collection_id(&old)?.as_ref() == Some(id)
-            && read_marker(&old, marker_key(&reg_id, r))?.as_deref() == Some(r.nonce.as_str())
-        {
+        // Live: it exists and carries this id. A missing or stale marker does
+        // not make it dead, and other bound roots being gone does not matter,
+        // so a copy cannot be bound as "moved".
+        if exists && crate::collection::read_collection_id(&old)?.as_ref() == Some(id) {
             live_other.get_or_insert(old);
             keep.push(r.clone());
         }
     }
     if is_new && let Some(old) = live_other {
         return Err(BindError::LooksLikeCopy { bound_root: old });
+    }
+    if is_new && keep.len() >= MAX_ROOTS_PER_ID {
+        return Err(too_many_roots(&canon));
     }
     let key = new_nonce();
     let mut drop_keys = vec![reg_id.as_str()];

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use wisp_storage::collection::CollectionId;
 use wisp_storage::data_dir::DataDir;
+use wisp_storage::vault::{LoadStatus, MemoryStore, VaultCtx, load_environment_with};
 use wisp_storage::vault::{
     SecretsError, bind, bind_additional_checkout, bound_roots, rebind, share_with_folder,
 };
@@ -178,6 +179,25 @@ fn unverified(r: Result<(), SecretsError>) {
     );
 }
 
+/// A worktree entry whose `.git` file is written `delay` after the entry's own
+/// files, as when a folder is created at an old entry's path.
+fn make_worktree_late(main: &Path, wt: &Path, name: &str, delay: std::time::Duration) -> PathBuf {
+    let gd = main.join(".git/worktrees").join(name);
+    std::fs::create_dir_all(&gd).unwrap();
+    std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+    std::fs::write(
+        gd.join("gitdir"),
+        format!("{}\n", wt.join(".git").display()),
+    )
+    .unwrap();
+    std::thread::sleep(delay);
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+    gd
+}
+
+/// Longer than the provenance window (10 s).
+const PAST_WINDOW: std::time::Duration = std::time::Duration::from_secs(11);
+
 #[test]
 fn h3b_recreated_worktree_not_verified() {
     let (_a, a) = root();
@@ -188,16 +208,33 @@ fn h3b_recreated_worktree_not_verified() {
     let (_ok, ok) = root();
     make_worktree(&a, &ok, "fresh");
     bind_additional_checkout(&d, &id(), &ok).unwrap();
-    // An entry from long ago whose folder was deleted by hand; something now
-    // sits at that path.
+    // An entry whose folder was deleted by hand; a folder written long after
+    // sits at that path now.
     let (_w, w) = root();
-    let gd = make_worktree(&a, &w, "stale");
-    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+    make_worktree_late(&a, &w, "stale", PAST_WINDOW);
+    unverified(bind_additional_checkout(&d, &id(), &w));
+}
+
+#[cfg(unix)]
+#[test]
+fn h3b_forged_mtime_worktree_not_verified() {
+    let (_a, a) = root();
+    std::fs::create_dir_all(a.join(".git")).unwrap();
+    let d = data();
+    bind(&d, &id(), &a).unwrap();
+    let (_w, w) = root();
+    let gd = make_worktree_late(&a, &w, "forged", PAST_WINDOW);
+    // `touch -r`: the `.git` file's mtime is copied from the entry's file. Its
+    // ctime cannot be.
+    let mtime = std::fs::metadata(gd.join("gitdir"))
+        .unwrap()
+        .modified()
+        .unwrap();
     std::fs::File::options()
         .write(true)
-        .open(gd.join("gitdir"))
+        .open(w.join(".git"))
         .unwrap()
-        .set_modified(old)
+        .set_modified(mtime)
         .unwrap();
     unverified(bind_additional_checkout(&d, &id(), &w));
 }
@@ -278,4 +315,84 @@ fn h3b_win_com1_refused() {
 fn h3b_win_trailing_dot_refused() {
     let (_a, d, w) = verbatim_worktree("w1.");
     unverified(bind_additional_checkout(&d, &id(), &w));
+}
+
+#[test]
+fn h3b_legacy_row_rekeyed_on_check() {
+    let (_a, a) = root();
+    let d = data();
+    bind(&d, &id(), &a).unwrap();
+    let reg = registry_id(&d);
+    // Rewrite the row and marker as a pre-0.5.0 binding left them: no `key`,
+    // the marker entry under the registry id.
+    let rp = d.root().join("vault-bindings.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&rp).unwrap()).unwrap();
+    let row = &mut v["bindings"][id().as_str()][0];
+    let key = row["key"].as_str().unwrap().to_string();
+    row.as_object_mut().unwrap().remove("key");
+    std::fs::write(&rp, serde_json::to_string(&v).unwrap()).unwrap();
+    let text = std::fs::read_to_string(marker(&a)).unwrap();
+    std::fs::write(marker(&a), text.replace(&key, &reg)).unwrap();
+    assert_eq!(marker_keys(&a), vec![reg.clone()]);
+    // A load runs the binding check, which passes and re-keys.
+    std::fs::create_dir_all(a.join("environments")).unwrap();
+    std::fs::write(
+        a.join("environments/dev.toml"),
+        "secrets = \"keychain\"\nsecret_names = [\"token\"]\n",
+    )
+    .unwrap();
+    let ctx = VaultCtx::new(d.clone());
+    let l = load_environment_with(&a, "dev", Some(&id()), &MemoryStore::new(), &ctx).unwrap();
+    assert!(
+        matches!(l.status, LoadStatus::Store { .. }),
+        "{:?}",
+        l.status
+    );
+    let keys = marker_keys(&a);
+    assert_eq!(keys.len(), 1);
+    assert!(!keys.contains(&reg));
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&rp).unwrap()).unwrap();
+    assert_eq!(
+        v["bindings"][id().as_str()][0]["key"].as_str(),
+        Some(keys[0].as_str())
+    );
+    // And it still passes.
+    let l = load_environment_with(&a, "dev", Some(&id()), &MemoryStore::new(), &ctx).unwrap();
+    assert!(matches!(l.status, LoadStatus::Store { .. }));
+}
+
+#[test]
+fn h3b_full_marker_refuses_write() {
+    let (_a, a) = root();
+    let (_b, b) = root();
+    let d = data();
+    bind(&d, &id(), &a).unwrap();
+    // 64 other registries' entries fill `b`'s marker.
+    std::fs::create_dir_all(b.join("environments")).unwrap();
+    let full: String = (0..64).map(|i| format!("foreign{i} nonce{i}\n")).collect();
+    std::fs::write(marker(&b), &full).unwrap();
+    assert!(share_with_folder(&d, &id(), &a, &b).is_err());
+    // Nothing was evicted and nothing bound.
+    assert_eq!(std::fs::read_to_string(marker(&b)).unwrap(), full);
+    assert_eq!(bound_roots(&d, &id()).unwrap(), vec![a]);
+}
+
+#[test]
+fn h3b_root_list_capped() {
+    let (_a, a) = root();
+    let d = data();
+    bind(&d, &id(), &a).unwrap();
+    let mut keep = Vec::new();
+    for _ in 1..64 {
+        let (t, r) = root();
+        share_with_folder(&d, &id(), &a, &r).unwrap();
+        keep.push(t);
+    }
+    assert_eq!(bound_roots(&d, &id()).unwrap().len(), 64);
+    let (_x, x) = root();
+    let e = share_with_folder(&d, &id(), &a, &x).unwrap_err();
+    assert!(matches!(e, SecretsError::Storage(_)), "{e:?}");
+    assert_eq!(bound_roots(&d, &id()).unwrap().len(), 64);
 }

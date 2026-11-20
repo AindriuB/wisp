@@ -2646,9 +2646,11 @@ fn h3_a_stale_marker_does_not_make_an_existing_root_look_like_the_bound_one() {
     let c = cx();
     bind(&c.data, &id(), a.path()).unwrap();
     carry(b.path());
-    // The bound folder was recreated: same id, but its marker is gone.
+    // The bound folder was recreated: same id, but its marker is gone. It still
+    // exists and carries the id, so the rebind is a copy and is refused.
     std::fs::remove_dir_all(a.path().join("environments")).unwrap();
-    rebind(&c.data, &id(), b.path()).unwrap();
+    let e = rebind(&c.data, &id(), b.path()).unwrap_err();
+    assert!(matches!(e, SecretsError::LooksLikeCopy { .. }), "{e:?}");
 }
 
 #[test]
