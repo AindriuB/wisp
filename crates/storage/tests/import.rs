@@ -1110,6 +1110,7 @@ fn h4b_deep_example_too_large() {
         matches!(err, wisp_storage::import::ImportError::TooLarge(_)),
         "{err:?}"
     );
+    assert!(err.to_string().contains("serialising"), "{err}");
 }
 
 #[test]
@@ -1133,6 +1134,53 @@ fn h4b_unique_many_equal_names() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), 5000);
+}
+
+#[test]
+fn h4b_import_many_colliding_slugs() {
+    use wisp_storage::import::ImportItem;
+    // Distinct names that all slug to `a-b-c-...`: the separator between
+    // letters is a space or an underscore, chosen by the bits of `i`.
+    let name = |i: usize| {
+        let mut n = String::from("a");
+        for bit in 0..11 {
+            n.push(if i >> bit & 1 == 1 { ' ' } else { '_' });
+            n.push((b'b' + bit as u8) as char);
+        }
+        n
+    };
+    let items: Vec<ImportItem> = (0..2048)
+        .map(|i| {
+            if i % 2 == 0 {
+                ImportItem::Folder {
+                    name: name(i),
+                    items: Vec::new(),
+                }
+            } else {
+                ImportItem::Request {
+                    name: name(i),
+                    request: wisp_core::request::Request::default(),
+                }
+            }
+        })
+        .collect();
+    let r = ImportResult {
+        items,
+        ..ImportResult::default()
+    };
+    let d = collection();
+    let report = write(d.path(), Path::new(""), &r, "imported").unwrap();
+    assert_eq!(report.folders + report.requests, 2048);
+    let mut stems: Vec<String> = std::fs::read_dir(d.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("a-b"))
+        .map(|n| n.trim_end_matches(".toml").to_string())
+        .collect();
+    assert_eq!(stems.len(), 2048);
+    stems.sort();
+    stems.dedup();
+    assert_eq!(stems.len(), 2048);
 }
 
 #[test]

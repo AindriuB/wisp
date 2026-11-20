@@ -13,7 +13,7 @@ use crate::collection::{
     Node, load_collection_defaults, open_collection, save_collection_defaults, save_folder_defaults,
 };
 use crate::environment::{list_environments, save_environment};
-use crate::ops::{create_folder, create_request, slug};
+use crate::ops::{StemHints, create_folder_hinted, create_request_hinted, slug};
 use crate::request::save_request;
 
 use super::openapi::env_name;
@@ -200,6 +200,7 @@ fn clean_name(name: &str) -> String {
 struct Names {
     taken: HashSet<String>,
     next: std::collections::HashMap<String, usize>,
+    hints: StemHints,
 }
 
 fn unique(name: &str, names: &mut Names) -> String {
@@ -234,7 +235,7 @@ fn write_items(
                 if used != *name {
                     report.renamed.push((name.clone(), used.clone()));
                 }
-                let rel = create_folder(root, dir, &used)?;
+                let rel = create_folder_hinted(root, dir, &used, &mut names.hints)?;
                 report.folders += 1;
                 let mut inner = Names::default();
                 let order = write_items(root, &rel, items, &mut inner, report)?;
@@ -252,7 +253,7 @@ fn write_items(
                 if used != *name {
                     report.renamed.push((name.clone(), used.clone()));
                 }
-                let rel = create_request(root, dir, &used)?;
+                let rel = create_request_hinted(root, dir, &used, &mut names.hints)?;
                 let mut req = request.clone();
                 req.name = used;
                 save_request(&root.join(&rel), &req)?;

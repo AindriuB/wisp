@@ -450,7 +450,8 @@ fn is_port_like(p: &str) -> bool {
 pub(crate) fn split_userinfo(url: &str) -> (String, Option<(String, String)>) {
     let (mut cur, first) = split_userinfo_once(url);
     if first.is_some() {
-        for _ in 0..8 {
+        // Every pass shortens `cur`, so this ends.
+        loop {
             let (next, more) = split_userinfo_once(&cur);
             if more.is_none() {
                 break;
