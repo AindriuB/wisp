@@ -103,3 +103,30 @@ Reviewed HEAD: 13264128d7fc7b4c3cd14ff8c18bd7cfbdb694ec
 
 ## Outcome
 Tester PASS and reviewer APPROVE at 059ed9c60d73d1d88727e7d6c9cbc8a5837f00bb after two review rounds and Amendment 1 to AC3 (search for `.git` above the collection root, per spec Q8). Task 185 depends on this task because it changes one test in `crates/storage/tests/vault.rs`. Follow-ups are in `PLAN.md`.
+The external review's 151-1 P2 (git exit 1 read as "not tracked") was fixed in dd4b2ba; the final verified head is 5152195.
+
+## External review — findings
+
+Key: sha256:cced0c07e0b0 · reviewed head 2c5680acd84fc8b76ab95c3b2e96f0c87cc8071f · round 3
+
+## AindriuB/wisp#151 · Changes suggested · head 2c5680acd84f
+0 P1 · 1 P2 · 1 P3
+| ID | Sev | Where | Issue | Failing input | Fix |
+|---|---|---|---|---|---|
+| 151-1 | P2 | `crates/storage/src/vault.rs:683` | Any git exit code 1 is read as "not tracked", but exit 1 does not only mean a clean miss from ls-files. A git that fails with status 1 therefore fails open inside a work tree, which the PR says cannot happen. | On macOS without Command Line Tools, /usr/bin/git is the xcode-select stub, which (as I recall; not run) asks to install the tools and exits 1. A collection sits in a repo cloned with a bundled git (for example GitHub Desktop), and environments/dev.secrets.toml is tracked. migrate_to_file then gets NotTracked and writes the secrets into the tracked file instead of returning GitCheckFailed. | Get positive evidence of a miss: run `git ls-files -- <path>` with stdout piped and drained. Exit 0 with empty output means NotTracked, exit 0 with output means Tracked, and anything else means CouldNotRun. Or check stderr for the "did not match" pathspec error before trusting exit 1. |
+| 151-2 | P3 | `crates/storage/src/environment.rs:54` | write_nofollow now keeps an existing file's mode. vault_binding::write_marker still calls it, and its doc says the marker is written mode 0600, so that contract is now false. | An existing environments/.wisp-binding at mode 0644: after bind or rebind it keeps 0644 and holds the new nonce, where before this PR it was reset to 0600. | Use write_secret_nofollow in write_marker (crates/storage/src/vault_binding.rs:287), or correct its doc comment. |
+Not assessed: Windows or non-macOS/Linux unix behaviour of the hard-coded O_NONBLOCK value (already a PLAN follow-up). I did not build or run anything; the macOS stub's exit status is from memory, not a run. The PR is MERGEABLE.
+
+## Wave stopped — step 7 — round cap: next fix round would be the 4th (cap 4). Open: one STYLE finding (test doc comment misplaced, crates/storage/src/vault.rs:1157-1159) after the 151-1 fix verified CLEAN otherwise at dd4b2ba
+
+## Wave resumed — user chose one more fix run past the cap ("One more fix run"), 2026-11-20
+
+## Review round 4 — findings
+
+Reviewed HEAD: dd4b2ba4e16874d634e3476933bdad0273e55391
+
+- [STYLE] crates/storage/src/vault.rs:1157-1159 — The new test `git_exit_one_without_evidence_fails_closed` went in between the existing `///` doc comment of `h3_tracked_check_does_not_run_repo_configured_commands` and that test's `#[test]`. The new test now carries a doc comment about fsmonitor that does not describe it. The h3 test (now at :1175) has lost its doc comment.
+  route: implementer — move the two doc lines back down to sit above `h3_tracked_check_does_not_run_repo_configured_commands`, and give the new test its own one-line doc.
+  rule: in this module each test's `///` comment sits directly above it, e.g. `h3_tracked_check_works_with_a_relative_root` at vault.rs:1219-1222.
+
+## Wave verified — 51521950410c3815c2a344e5f2d58dc8e7c094a7

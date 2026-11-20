@@ -35,6 +35,9 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] A collection on another filesystem mounted under a repo gets a spurious `GitCheckFailed`, because git stops at the mount boundary.
 - [P3] Fail-closed also refuses on git's "dubious ownership" exit 128, so a repo owned by another user refuses secrets writes.
 - [Note] Integration tests `sfs_fifo_refused_without_hang` and `sfs_moved_name_ignores_symlink` do not reach the code they are named for; the unit tests in `environment.rs` cover it.
+- [P3] The stdout-drain join after git exits has no time limit, so a git wrapper whose background child holds the pipe can exceed the 5 s bound (`crates/storage/src/vault.rs:695-698`).
+- [P3] No test that a really untracked file inside a real repo is allowed.
+- [P3] 151-2: `write_marker` (`crates/storage/src/vault_binding.rs:287`) uses `write_nofollow`, which now keeps an existing mode, so its documented 0600 is false.
 
 ### Follow-ups from task 182 (history scrub and truncated bodies; not scheduled)
 
