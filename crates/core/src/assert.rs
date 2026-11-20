@@ -638,16 +638,39 @@ fn lookup<'a>(root: &'a serde_json::Value, segments: &[Segment]) -> Option<&'a s
     Some(cur)
 }
 
+/// Numbers compare by value (`1` equals `1.0`), never through an `i64 as f64`
+/// cast. NaN and infinity cannot appear in a JSON body (serde_json rejects
+/// them), so a non-finite `Float` expectation simply matches nothing.
 fn scalar_equals(v: &serde_json::Value, e: &Expected) -> bool {
     match (v, e) {
         (serde_json::Value::String(s), Expected::Str(x)) => s == x,
         (serde_json::Value::Bool(b), Expected::Bool(x)) => b == x,
         (serde_json::Value::Number(n), Expected::Int(x)) => {
-            (n.is_i64() || n.is_u64()) && n.as_i64() == Some(*x)
+            if let Some(i) = n.as_i64() {
+                i == *x
+            } else if let Some(u) = n.as_u64() {
+                i128::from(u) == i128::from(*x)
+            } else {
+                n.as_f64().is_some_and(|f| float_is_int(f, i128::from(*x)))
+            }
         }
-        (serde_json::Value::Number(n), Expected::Float(x)) => n.is_f64() && n.as_f64() == Some(*x),
+        (serde_json::Value::Number(n), Expected::Float(x)) => {
+            if let Some(i) = n.as_i64() {
+                float_is_int(*x, i128::from(i))
+            } else if let Some(u) = n.as_u64() {
+                float_is_int(*x, i128::from(u))
+            } else {
+                n.as_f64() == Some(*x)
+            }
+        }
         _ => false,
     }
+}
+
+/// True when `f` is integral, within the i128-safe range, and exactly `n`.
+fn float_is_int(f: f64, n: i128) -> bool {
+    // |f| < 2^100 keeps the `as i128` cast exact; it also rejects NaN/inf.
+    f.is_finite() && f.abs() < 2f64.powi(100) && f.fract() == 0.0 && f as i128 == n
 }
 
 fn render(v: &serde_json::Value) -> String {
@@ -896,7 +919,7 @@ mod tests {
             js("$.n", Op::Equals, Expected::Float(1.5)),
             r#"{"n":1.5}"#,
         ));
-        failed(json(
+        pass(json(
             js("$.n", Op::Equals, Expected::Int(1)),
             r#"{"n":1.0}"#,
         ));
@@ -910,6 +933,48 @@ mod tests {
         ));
         pass(json(js("$.n", Op::Equals, s("x")), r#"{"n":"x"}"#));
         failed(json(js("$.m", Op::Equals, s("x")), r#"{"n":"x"}"#));
+    }
+
+    #[test]
+    fn json_numbers_compare_by_value() {
+        pass(json(
+            js("$.n", Op::Equals, Expected::Float(1.0)),
+            r#"{"n":1}"#,
+        ));
+        failed(json(
+            js("$.n", Op::Equals, Expected::Float(1.5)),
+            r#"{"n":1}"#,
+        ));
+        failed(json(
+            js("$.n", Op::Equals, Expected::Int(1)),
+            r#"{"n":1.5}"#,
+        ));
+        failed(json(
+            js("$.n", Op::Equals, Expected::Int(9007199254740993)),
+            r#"{"n":9007199254740992.0}"#,
+        ));
+        failed(json(
+            js("$.n", Op::Equals, Expected::Float(9007199254740992.0)),
+            r#"{"n":9007199254740993}"#,
+        ));
+        pass(json(
+            js("$.n", Op::Equals, Expected::Int(9007199254740992)),
+            r#"{"n":9007199254740992.0}"#,
+        ));
+        // 2^63 is not an i64 and must not saturate into i64::MAX.
+        failed(json(
+            js("$.n", Op::Equals, Expected::Int(i64::MAX)),
+            r#"{"n":9223372036854775808.0}"#,
+        ));
+    }
+
+    #[test]
+    fn json_contains_numbers_by_value() {
+        for body in [r#"{"a":[1.0,"x"]}"#, r#"{"a":[1,"x"]}"#] {
+            pass(json(js("$.a", Op::Contains, Expected::Int(1)), body));
+            pass(json(js("$.a", Op::Contains, Expected::Float(1.0)), body));
+            failed(json(js("$.a", Op::Contains, Expected::Int(2)), body));
+        }
     }
 
     #[test]
