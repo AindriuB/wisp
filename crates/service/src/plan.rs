@@ -261,11 +261,8 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
         let whole_open = (q && blank(&d.query))
             || (v && blank(&d.variables))
             || (legacy && (blank(&d.query) || blank(&d.variables)));
-        let leaves_open = !leaves.is_empty()
-            && match empty_json_leaves(&d.variables, &leaves) {
-                Some(found) => found,
-                None => true,
-            };
+        let leaves_open =
+            !leaves.is_empty() && empty_json_leaves(&d.variables, &leaves).unwrap_or(true);
         if !whole_open && !leaves_open {
             return None;
         }
