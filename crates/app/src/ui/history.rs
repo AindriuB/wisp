@@ -343,12 +343,7 @@ impl Render for HistoryView {
                     let failed = !matches!(e.outcome, Outcome::Completed);
                     let hover = cx.theme().secondary;
                     let prev = previous_entry(entries, ix).map(|j| entries[j].clone());
-                    let marked = self.mark.as_deref() == Some(e.id.as_str());
-                    let from = self
-                        .mark
-                        .as_ref()
-                        .filter(|_| !marked)
-                        .and_then(|m| entries.iter().find(|x| &x.id == m).cloned());
+                    let (marked, from) = row_compare_state(entries, ix, self.mark.as_deref());
                     let this_entry = e.clone();
                     let id = e.id.clone();
                     let actions = div()
@@ -368,7 +363,7 @@ impl Render for HistoryView {
                             Button::new(("compare-from", ix))
                                 .label(if marked { "Clear mark" } else { "Compare from" })
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.mark = if marked { None } else { Some(id.clone()) };
+                                    this.mark = toggled_mark(marked, &id);
                                     cx.notify();
                                 })),
                         )
@@ -465,6 +460,25 @@ impl Render for HistoryView {
             .on_action(cx.listener(|this, _: &CancelRequest, window, cx| this.dismiss(window, cx)))
             .child(body)
     }
+}
+
+/// Per-row compare state: whether this row is the marked one, and the marked
+/// entry (side A) when another row should offer "Compare to".
+fn row_compare_state(
+    entries: &[HistoryEntry],
+    ix: usize,
+    mark: Option<&str>,
+) -> (bool, Option<HistoryEntry>) {
+    let marked = mark == Some(entries[ix].id.as_str());
+    let from = mark
+        .filter(|_| !marked)
+        .and_then(|m| entries.iter().find(|x| x.id == m).cloned());
+    (marked, from)
+}
+
+/// The mark after "Compare from" / "Clear mark" on a row.
+fn toggled_mark(marked: bool, id: &str) -> Option<String> {
+    if marked { None } else { Some(id.to_string()) }
 }
 
 #[cfg(test)]
@@ -728,6 +742,30 @@ mod tests {
             .count();
         assert_eq!(bins, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compare_view_from_marks_row_and_other_rows_offer_to() {
+        let mut a = entry(Outcome::Completed, Some(200));
+        a.id = "a".into();
+        let mut b = entry(Outcome::Completed, Some(200));
+        b.id = "b".into();
+        let entries = vec![a, b];
+        // Nothing marked: no row offers "Compare to".
+        assert_eq!(row_compare_state(&entries, 0, None).1.map(|e| e.id), None);
+        // "Compare from" on row 0 sets the mark.
+        let mark = toggled_mark(false, &entries[0].id);
+        assert_eq!(mark.as_deref(), Some("a"));
+        // The marked row clears instead and never compares with itself.
+        let (marked, from) = row_compare_state(&entries, 0, mark.as_deref());
+        assert!(marked);
+        assert!(from.is_none());
+        // Another row offers "Compare to" with the marked entry as side A.
+        let (marked, from) = row_compare_state(&entries, 1, mark.as_deref());
+        assert!(!marked);
+        assert_eq!(from.map(|e| e.id).as_deref(), Some("a"));
+        // "Clear mark" unsets it.
+        assert_eq!(toggled_mark(true, "a"), None);
     }
 
     #[gpui::test]
