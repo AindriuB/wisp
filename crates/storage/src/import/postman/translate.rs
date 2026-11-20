@@ -270,6 +270,9 @@ impl<'a> Cursor<'a> {
                     path.push('.');
                     self.pos += 1;
                     let s = self.pos;
+                    if self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        return None;
+                    }
                     while self
                         .peek()
                         .is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_')

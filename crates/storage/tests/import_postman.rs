@@ -635,3 +635,21 @@ fn pm_strict_leading_zero_json_index() {
     ]);
     assert_eq!(a.len(), 1);
 }
+
+#[test]
+fn pm_strict_digit_leading_member_left_untranslated() {
+    for tail in [".0", ".a.0", ".1b", ".items.0"] {
+        let s = format!(
+            "pm.test('a', function () {{ pm.expect(pm.response.json(){tail}).to.eql(1); }});"
+        );
+        assert_untranslated(&[s.as_str()], 1);
+    }
+    for tail in [".a1", "._x"] {
+        let s = format!(
+            "pm.test('a', function () {{ pm.expect(pm.response.json(){tail}).to.eql(1); }});"
+        );
+        let (a, r) = import_tests(&[s.as_str()]);
+        assert_eq!(a.len(), 1, "{tail}");
+        assert!(r.warnings.is_empty(), "{tail}");
+    }
+}
