@@ -720,44 +720,55 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "theme = \"dark\"\n");
     }
 
+    /// Absolute CA paths on every OS (forward slashes keep TOML basic strings valid).
+    fn abs_pems(d: &Path) -> (String, String) {
+        let f = |n: &str| d.join(n).to_string_lossy().replace('\\', "/");
+        (f("ca.pem"), f("new.pem"))
+    }
+
     #[test]
     fn save_tls_keeps_comments_when_unchanged_or_changed() {
-        let p = dir("tls-decor").join("settings.toml");
-        let before = "[tls]\nca_bundle = \"/etc/ca.pem\"  # work CA\nsystem_trust = true  # keep\n";
-        std::fs::write(&p, before).unwrap();
+        let d = dir("tls-decor");
+        let p = d.join("settings.toml");
+        let (old, new) = abs_pems(&d);
+        let before =
+            format!("[tls]\nca_bundle = \"{old}\"  # work CA\nsystem_trust = true  # keep\n");
+        std::fs::write(&p, &before).unwrap();
         let mut s = load(&p).0;
         s.theme = ThemeMode::Dark;
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();
         assert!(
-            after.contains("ca_bundle = \"/etc/ca.pem\"  # work CA"),
+            after.contains(&format!("ca_bundle = \"{old}\"  # work CA")),
             "{after}"
         );
         assert!(after.contains("system_trust = true  # keep"), "{after}");
-        s.ca_bundle = Some(PathBuf::from("/etc/new.pem"));
+        s.ca_bundle = Some(PathBuf::from(&new));
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();
         assert!(
-            after.contains("ca_bundle = \"/etc/new.pem\"  # work CA"),
+            after.contains(&format!("ca_bundle = \"{new}\"  # work CA")),
             "{after}"
         );
     }
 
     #[test]
     fn save_tls_change_keeps_comment_line_and_spacing() {
-        let p = dir("tls-decor2").join("settings.toml");
+        let d = dir("tls-decor2");
+        let p = d.join("settings.toml");
+        let (old, new) = abs_pems(&d);
         std::fs::write(
             &p,
-            "[tls]\n# my work CA\n  ca_bundle   = \"/etc/ca.pem\"  # c\n",
+            format!("[tls]\n# my work CA\n  ca_bundle   = \"{old}\"  # c\n"),
         )
         .unwrap();
         let mut s = load(&p).0;
-        s.ca_bundle = Some(PathBuf::from("/etc/new.pem"));
+        s.ca_bundle = Some(PathBuf::from(&new));
         save(&p, &s).unwrap();
         let after = std::fs::read_to_string(&p).unwrap();
         assert!(after.contains("# my work CA\n"), "{after}");
         assert!(
-            after.contains("  ca_bundle   = \"/etc/new.pem\"  # c"),
+            after.contains(&format!("  ca_bundle   = \"{new}\"  # c")),
             "{after}"
         );
     }
