@@ -14,6 +14,7 @@ use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme as _, IconName, IndexPath, Sizable as _};
 use wisp_core::request::{Body, GraphQlBody, KeyValue, Part, PartValue, TextBody};
 
+use super::graphql;
 use crate::pretty::pretty_json;
 use crate::tab::{RequestTab, TabEvent};
 use crate::ui::kv::{KvEvent, KvOptions, KvTable};
@@ -177,6 +178,8 @@ pub struct BodyEditor {
     json_error: Option<usize>,
     kind_select: LabelSelect,
     editor: Entity<EditorState>,
+    gql_query: Entity<EditorState>,
+    gql_vars: Entity<EditorState>,
     form: Entity<KvTable>,
     /// Real parts followed by one empty trailing row.
     rows: Vec<PartRow>,
@@ -196,6 +199,8 @@ impl BodyEditor {
             SelectState::new(items, Some(IndexPath::new(0)), window, cx)
         });
         let editor = cx.new(|cx| EditorState::new(window, cx));
+        let gql_query = cx.new(|cx| EditorState::new(window, cx));
+        let gql_vars = cx.new(|cx| EditorState::new(window, cx));
         let form = cx.new(|cx| {
             KvTable::new(
                 Vec::new(),
@@ -214,6 +219,8 @@ impl BodyEditor {
         let subs = vec![
             cx.subscribe_in(&kind_select, window, Self::on_kind),
             cx.subscribe_in(&editor, window, Self::on_text),
+            cx.subscribe_in(&gql_query, window, Self::on_graphql),
+            cx.subscribe_in(&gql_vars, window, Self::on_graphql),
             cx.subscribe_in(&form, window, Self::on_form),
             cx.subscribe_in(&file_path, window, Self::on_file_path),
             cx.subscribe_in(&tab, window, Self::on_tab),
@@ -226,6 +233,8 @@ impl BodyEditor {
             json_error: None,
             kind_select,
             editor,
+            gql_query,
+            gql_vars,
             form,
             rows: Vec::new(),
             file_path,
@@ -296,6 +305,53 @@ impl BodyEditor {
         }
     }
 
+    fn on_graphql(
+        &mut self,
+        _: &Entity<EditorState>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let query = self.gql_query.read(cx).value().to_string();
+        let variables = self.gql_vars.read(cx).value().to_string();
+        let g = &mut self.stash.graphql;
+        if g.query == query && g.variables == variables {
+            return;
+        }
+        g.query = query;
+        g.variables = variables;
+        if self.kind == BodyKind::GraphQl {
+            self.commit(cx);
+        }
+    }
+
+    fn format_graphql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pretty) = graphql::format_variables(&self.stash.graphql.variables) {
+            self.gql_vars
+                .update(cx, |e, cx| e.set_value(pretty.clone(), window, cx));
+            // `set_value` emits no Change, so publish by hand.
+            self.stash.graphql.variables = pretty;
+            if self.kind == BodyKind::GraphQl {
+                self.commit(cx);
+            }
+        }
+    }
+
+    fn render_graphql(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let view = cx.entity();
+        let note = graphql::variables_note(&self.stash.graphql.variables);
+        graphql::view(
+            &self.gql_query,
+            &self.gql_vars,
+            note,
+            move |window, cx| view.update(cx, |this, cx| this.format_graphql(window, cx)),
+            cx,
+        )
+    }
+
     fn on_form(
         &mut self,
         _: &Entity<KvTable>,
@@ -349,6 +405,14 @@ impl BodyEditor {
         if self.editor.read(cx).value().as_ref() != content {
             self.editor
                 .update(cx, |e, cx| e.set_value(content, window, cx));
+        }
+        for (state, text) in [
+            (&self.gql_query, self.stash.graphql.query.clone()),
+            (&self.gql_vars, self.stash.graphql.variables.clone()),
+        ] {
+            if state.read(cx).value().as_ref() != text {
+                state.update(cx, |e, cx| e.set_value(text, window, cx));
+            }
         }
         let rows = self.stash.form.clone();
         self.form.update(cx, |f, cx| f.set_rows(rows, window, cx));
@@ -638,32 +702,6 @@ impl BodyEditor {
     }
 }
 
-impl BodyEditor {
-    /// Read-only view until the GraphQL editor exists.
-    fn render_graphql_placeholder(&self, cx: &Context<Self>) -> impl IntoElement {
-        let g = &self.stash.graphql;
-        let block = |title: &'static str, text: &str| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_color(cx.theme().muted_foreground).child(title))
-                .child(div().font_family("monospace").child(text.to_string()))
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("The GraphQL editor is not built yet; this body is read-only."),
-            )
-            .child(block("Query", &g.query))
-            .child(block("Variables", &g.variables))
-    }
-}
-
 /// Lets a row builder skip the checkbox and delete button on the trailing row.
 trait TrailingExt: Sized {
     fn when_not_trailing<E: IntoElement>(self, trailing: bool, f: impl FnOnce() -> E) -> Self;
@@ -685,7 +723,9 @@ impl Render for BodyEditor {
         col = match self.kind {
             BodyKind::None => col,
             BodyKind::Json | BodyKind::Text | BodyKind::Xml => col.child(self.render_text(cx)),
-            BodyKind::GraphQl => col.child(self.render_graphql_placeholder(cx)),
+            BodyKind::GraphQl => {
+                col.child(Self::scroll_area("body-graphql", self.render_graphql(cx)))
+            }
             BodyKind::Form => col.child(div().flex_1().min_h_0().child(self.form.clone())),
             BodyKind::Multipart => col.child(Self::scroll_area(
                 "body-multipart",
@@ -790,5 +830,136 @@ mod tests {
         assert_eq!(json_error_offset(""), None);
         assert_eq!(json_error_offset("{\"a\": 1}"), None);
         assert!(json_error_offset("{\"a\": }").is_some());
+    }
+
+    struct Fx {
+        tab: Entity<RequestTab>,
+        win: gpui::WindowHandle<BodyEditor>,
+    }
+
+    fn fixture(cx: &mut gpui::TestAppContext) -> Fx {
+        use crate::settings::Settings;
+        use std::sync::Arc;
+        use wisp_storage::vault::MemoryStore;
+        cx.update(gpui_component::init);
+        let ws = cx.new(|cx| {
+            Workspace::new(
+                Settings::default(),
+                None,
+                None,
+                Arc::new(MemoryStore::new()),
+                cx,
+            )
+        });
+        let tab = ws.update(cx, |w, cx| w.new_scratch_tab("https://a.test/".into(), cx));
+        let (w, t) = (ws.clone(), tab.clone());
+        let win = cx.add_window(move |window, cx| BodyEditor::new(w, t, window, cx));
+        tab.update(cx, |t, cx| {
+            let mut r = t.draft.clone();
+            r.body = Body::GraphQl(GraphQlBody::default());
+            t.replace_draft(r, cx);
+        });
+        cx.run_until_parked();
+        Fx { tab, win }
+    }
+
+    fn type_into(fx: &Fx, vars: bool, text: &str, cx: &mut gpui::TestAppContext) {
+        fx.win
+            .update(cx, |be, window, cx| {
+                let ed = if vars { &be.gql_vars } else { &be.gql_query };
+                ed.update(cx, |e, cx| e.insert(text.to_string(), window, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    fn texts(fx: &Fx, cx: &mut gpui::TestAppContext) -> (String, String) {
+        fx.win
+            .read_with(cx, |be, cx| {
+                (
+                    be.gql_query.read(cx).value().to_string(),
+                    be.gql_vars.read(cx).value().to_string(),
+                )
+            })
+            .unwrap()
+    }
+
+    const Q: &str = "query { a(id: \"{{id}}\") }";
+    const V: &str = "{\"id\": 1}";
+
+    #[gpui::test]
+    fn graphql_editor_typing_marks_the_draft_dirty(cx: &mut gpui::TestAppContext) {
+        let fx = fixture(cx);
+        type_into(&fx, false, Q, cx);
+        type_into(&fx, true, V, cx);
+        let body = fx.tab.read_with(cx, |t, _| t.draft.body.clone());
+        assert_eq!(
+            body,
+            Body::GraphQl(GraphQlBody {
+                query: Q.into(),
+                variables: V.into()
+            })
+        );
+    }
+
+    #[gpui::test]
+    fn graphql_editor_save_and_reload_keep_both_texts(cx: &mut gpui::TestAppContext) {
+        let fx = fixture(cx);
+        type_into(&fx, false, Q, cx);
+        type_into(&fx, true, V, cx);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.toml");
+        let draft = fx.tab.read_with(cx, |t, _| t.draft.clone());
+        wisp_storage::request::save_request(&path, &draft).unwrap();
+        let loaded = wisp_storage::request::load_request(&path).unwrap();
+        fx.win
+            .update(cx, |be, window, cx| {
+                for e in [&be.gql_query, &be.gql_vars] {
+                    e.update(cx, |e, cx| e.set_value("", window, cx));
+                }
+            })
+            .unwrap();
+        fx.tab.update(cx, |t, cx| t.replace_draft(loaded, cx));
+        cx.run_until_parked();
+        assert_eq!(texts(&fx, cx), (Q.to_string(), V.to_string()));
+    }
+
+    #[gpui::test]
+    fn graphql_editor_switching_kinds_keeps_the_texts(cx: &mut gpui::TestAppContext) {
+        let fx = fixture(cx);
+        type_into(&fx, false, Q, cx);
+        type_into(&fx, true, V, cx);
+        for label in ["JSON", "GraphQL"] {
+            fx.win
+                .update(cx, |be, window, cx| {
+                    let sel = be.kind_select.clone();
+                    be.on_kind(&sel, &SelectEvent::Confirm(Some(label)), window, cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+        }
+        assert_eq!(texts(&fx, cx), (Q.to_string(), V.to_string()));
+        let body = fx.tab.read_with(cx, |t, _| t.draft.body.clone());
+        assert_eq!(
+            body,
+            Body::GraphQl(GraphQlBody {
+                query: Q.into(),
+                variables: V.into()
+            })
+        );
+    }
+
+    #[gpui::test]
+    fn graphql_editor_format_pretty_prints_variables(cx: &mut gpui::TestAppContext) {
+        let fx = fixture(cx);
+        type_into(&fx, true, "{\"a\":1}", cx);
+        fx.win
+            .update(cx, |be, window, cx| be.format_graphql(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        let (_, v) = texts(&fx, cx);
+        assert!(v.contains('\n'), "{v}");
+        let body = fx.tab.read_with(cx, |t, _| t.draft.body.clone());
+        assert!(matches!(body, Body::GraphQl(g) if g.variables == v));
     }
 }
