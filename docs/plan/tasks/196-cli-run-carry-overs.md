@@ -64,3 +64,9 @@ Reviewed HEAD: fc81449ba6d1513abb3abf2602b0c34336952561. Verdict CLEAN; one opti
 ## Review round 1 — settled (orchestrator, 2026-11-20)
 
 - [DRIFT, accepted residual] This task file is changed on the branch only by the /review loop's own record (`## Review round N` sections). That is workflow bookkeeping, not implementer scope, and matches earlier task branches (#158, #160, #161). When running the `scope` check, also exclude `^docs/plan/tasks/196-cli-run-carry-overs.md$`. No other path outside Owns may change.
+
+## Attempt 1 — failed
+
+/verify at HEAD 386f399 (2026-11-20): tester FAIL, reviewer APPROVE (AC1-AC9).
+- `cargo fmt --all --check` fails: "Diff in crates/cli/src/cmd/run.rs:294". rustfmt wants `let mut report = not_prepared(vec![RunProblem::MissingSecret { name: "kc".into() }]);` on one line. Introduced by review-round-1 commit 0d3b2ff (CANARY-reason test fix). Run `cargo fmt` and commit; change nothing else.
+- Everything else passed on this host: flake loop 20/20, check-boundaries ok, scope ok, clippy -D warnings on core/storage/service/cli, non-app suite green. Workspace-wide test/clippy blocked by missing fontconfig (wisp-app).
