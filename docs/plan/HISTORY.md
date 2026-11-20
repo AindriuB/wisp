@@ -17,6 +17,10 @@ in the same commit.
 **Cost:** <what was hard, what was tried and abandoned, what not to retry.>
 -->
 
+## 2026-11-20 — GraphQL body in the model (task 189)
+`Body::GraphQl(GraphQlBody { query, variables })` round-trips through the request file (`type = "graphql"`), resolves to a compact JSON POST body, appears in Explain as `graphql`, is capped and redacted in history, is covered by the import scan and the resend plan, and is listed in the app's body picker as a read-only placeholder. Verified at fcacbf4: tester PASS, reviewer APPROVE after two review rounds.
+**Cost:** Round 1 found that a whole-body "body" redaction switched off the variables-leaf resend check, and that `write_body` added an empty `variables` to files that lacked it. Round 2 found that a GraphQL request with no variables stayed refused after the user refilled a cleared query; the fix works out which field was cleared from the stored body. AC8 (stale 164 redirect comments) was cut because they are in `crates/core/src/engine.rs`, outside Owns. Nine P3s are in PLAN.
+
 ## 2026-11-19 — Engine trusts private CAs (task 184)
 `wisp_core::TlsTrust` holds a `system` flag (default on) and extra CA certificates; `TlsTrust::load_pem_file` loads a PEM CA file with strict refusals, and `Engine::set_tls_trust` drops cached clients so the next send uses the new trust. Bundled roots stay in both modes, `verify_tls = false` still accepts anything, and OAuth2 token requests share the trust. Verified at 263495f: tester PASS, reviewer APPROVE, no fix rounds. Measure run 44626294433: Windows GUI 15,616,512 B, +512 B over 15,616,000 B.
 **Cost:** Core only; settings, palette and CLI flags are tasks 190 and 191. Whether `system: true` differs from `false` is untested and left to the macOS hand test. Five P3s are in PLAN.

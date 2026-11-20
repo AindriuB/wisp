@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 189 | `Body::GraphQl` in model, TOML file format, resolve, Explain, history redaction/cap, import scan, resend plan; read-only picker entry in app | ## 2026-11-20 — GraphQL body in the model (task 189) |
 | 2026-11-19 | 184 | engine trusts private CAs through the OS store and a PEM CA file; `Engine::set_tls_trust` swaps trust at run time; Windows GUI +512 B | ## 2026-11-19 — Engine trusts private CAs (task 184) |
 | 2026-11-19 | 183 | every new history entry records body/head `evidence` with snake_case wire values; `1234` canary flake fixed | ## 2026-11-19 — History entries record body and head evidence (task 183) |
 | 2026-11-19 | 177 | 0.4.0 head measured and release dry run passed; Windows GUI 15,616,000 B, CLIs under 7 MiB | ## 2026-11-19 — 0.4.0 measured and release dry-run passed (task 177) |

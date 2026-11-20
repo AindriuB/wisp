@@ -76,3 +76,34 @@ is task 193.
 - The GraphQL editor (193) and Postman GraphQL import (194).
 - GET-encoded GraphQL, `operationName`, sidecar files and introspection.
 - Changing `PreparedBody`, `Request` fields or `DirtySections`.
+
+## Orchestrator note (2026-11-20)
+
+AC8 (164 stale redirect comments) moved to a follow-up: the comments are in crates/core/src/engine.rs (~:927, ~:1090), not crates/core/src/resolve/engine.rs, so they are outside 189's Owns. Comment-only, undoable; PLAN.md keeps the 164 follow-up open. Reviewers: judge 189 on AC1-AC7 and AC9.
+
+## Review round 1 — findings
+
+Reviewed HEAD: 998bf72ddd0129cd290ab697252a868ef85ed39a
+
+- [P2] crates/service/src/plan.rs:247 — On a GraphQL body, a whole-body "body" redaction turns off the field-level leaf check, so the guard lets a resend go out with a redacted variables leaf still empty.
+  route: implementer — the fix stays inside the plan.rs body arm and restores spec Feature 3 ("the variables are redacted like a JSON body … the 178 resend refusal applies"). When the body is GraphQL and `fields` is non-empty, also run `empty_json_leaves(variables, &fields)`, even when `whole` is set. Add GraphQL refusal tests (no test covers this arm today).
+  input: history stores query `{ a(token: "abc") }` with variables `{"password":"hunter2"}`. `redact_request` clears the query, which records "body" (crates/storage/src/history.rs:643-645), and empties the leaf, which records "body.password" (:648). Redacted list = ["body", "body.password"]. The user retypes the query and leaves the variables as `{"password":""}` → `body_redaction_refusal` returns None and the request is sent with the empty password.
+- [P2] crates/storage/src/request.rs:804-805 — `write_body` always writes `query` and `variables`, so the spec's own format with `variables` left out does not survive an unchanged save byte for byte.
+  route: implementer — restores AC2 (missing `variables` reads as `""` and round-trips byte-for-byte when unchanged). Do not insert an empty `variables` (and arguably `query`) when the key is absent. Add a `graphql_file_*` test for it.
+  input: file `…[body]\ntype = "graphql"\nquery = "{ a }"\n` → `load_request` then `save_request` → the file gains `variables = ""\n`.
+
+## Review round 2 — findings
+
+Reviewed HEAD: 9f46016b0bda68bc7528f05f798b9fd7f095cd29
+
+- [P2] crates/service/src/plan.rs:250-252 — When a GraphQL body has "body" redacted, `unedited` is true whenever the draft's `variables` is blank. A GraphQL request with no variables, whose query was cleared for a credential, therefore stays refused after the user fills the query back in.
+  route: implementer — fix inside the plan.rs body arm; restores spec Feature 3 (docs/plan/specs/2026-11-19-wisp-0-5-0.md:159-161): the query is redacted like a Text body, so the refusal lifts once the cleared text is filled in. Work out which field was cleared from `origin.stored_body` (the field that is blank there) and refuse only while that field is still blank in the draft. Keep the round-1 leaf check. Add a test: query refilled, variables blank → None.
+  input: history stores query `{ a(token: "abc") }` with variables `""`. `redact_request` clears the query, records ["body"], leaves variables alone. The user retypes the query as `{ a(token: "new") }`, variables `""`. `body_redaction_refusal` returns `Some("Edit the request body before resending: the body was not stored")`.
+
+Follow-up, not this round:
+- [P3] plan.rs:275-279 — when only the leaf check triggers, the message says "the body was not stored" instead of naming the leaf.
+
+## Wave verified — fcacbf495789e45a27e1c4dd8326e3577838b563
+
+## Outcome
+Tester PASS and reviewer APPROVE at fcacbf495789e45a27e1c4dd8326e3577838b563 after two review rounds. `Body::GraphQl` is in the model, the file format, resolve, Explain, history, the import scan, the resend plan and the app picker (read-only placeholder). AC8 was not done here: the stale redirect comments are in `crates/core/src/engine.rs`, outside Owns, so it moved to a `PLAN.md` follow-up. The other follow-ups are in `PLAN.md`.

@@ -7,6 +7,7 @@
 - crates/app/src/ui/request/body.rs
 - crates/app/src/ui/request/graphql.rs (new)
 - crates/app/src/ui/request/mod.rs (`mod graphql;` only)
+- crates/service/src/plan.rs (the GraphQL body arm at ~:259 only; added from 189's review)
 
 ## Goal
 Replace task 189's read-only GraphQL placeholder with an editor: a query
@@ -42,6 +43,9 @@ the file.
   run: `cargo test --workspace --locked && cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings`
 - `placeholder-gone` read — AC1, AC2
   how: the reviewer confirms that the task 189 placeholder text is removed and that highlighting reuses the existing helper rather than a copy.
+
+## Carried from task 189's review
+- `crates/service/src/plan.rs:259`: a draft GraphQL body from a non-GraphQL stored body must test `blank(&d.query)`, not require both fields non-blank. Add a test.
 
 ## Out of scope
 - Converting an existing JSON body into GraphQL automatically.
