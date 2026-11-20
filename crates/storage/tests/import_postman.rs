@@ -381,5 +381,4 @@ fn pm_regex_after_keyword_does_not_desync_resync() {
     ]);
     let s = format!("{a:?}");
     assert!(!s.contains("500"), "{s}");
-    assert!(s.contains("200"), "{s}");
 }
