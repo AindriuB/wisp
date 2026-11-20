@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-20 | 194 | request-level Postman tests translate to `[[assert]]` only when the whole script is table-form `pm.test` units, else wholly untranslated with a warning; GraphQL import; 170 importer P3s closed; strict grammar replaced the resync scanner | ## 2026-11-20 — Postman test translation and importer hardening (task 194) |
 | 2026-11-20 | 185 | per-root marker keys with lazy re-key, marker size and entry caps, 64-root cap per id, rebind refused while another root is live, unix worktree provenance by ctime, uid and folder owner, common dir nested in a bound root refused, Windows device names refused, keychain worker zeroizes copies | ## 2026-11-20 — Binding registry and keychain worker hardening, H3b (task 185) |
 | 2026-11-20 | 193 | GraphQL kind in the body picker: Query and Variables editors, Format on variables, non-blocking not-an-object note; no `{{var}}` highlighting (deferred, Amendment 1); non-GraphQL stored body resend needs only a query | ## 2026-11-20 — GraphQL editor in the request pane (task 193) |
 | 2026-11-20 | 190 | `[tls]` in `settings.toml`; palette commands to toggle system trust and choose/clear a CA file, applied without restart; startup trust with a notice on a bad file; unknown-issuer hint; three workspace carry-overs | ## 2026-11-20 — TLS trust settings in the GUI (task 190) |
