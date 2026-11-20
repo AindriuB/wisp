@@ -294,9 +294,7 @@ mod tests {
 
     #[test]
     fn run_missing_secret_renders_in_text_and_json_without_a_value() {
-        let mut report = not_prepared(vec![RunProblem::MissingSecret {
-            name: "kc".into(),
-        }]);
+        let mut report = not_prepared(vec![RunProblem::MissingSecret { name: "kc".into() }]);
         // A value that must never surface: the problem line names the secret, not a value.
         report.reason = Some("CANARY-reason".into());
         let doc = map(&report);
