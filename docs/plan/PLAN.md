@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`) and 193 (GraphQL editor) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view) and 193 (GraphQL editor) are recorded; 185 depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
 
 ### v0.4.0 (spec agreed)
 
@@ -39,10 +39,20 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [P3] The TLS hint names "Toggle system certificate trust" even when system trust is already on, so following it turns trust off (`crates/app/src/ui/response/mod.rs:70-83`).
 - [P3] Startup trust is covered only by construction: `applied_tls` and `EngineConfig.tls` come from the same local (`workspace.rs:1271-1276`); a test cannot catch a wrong argument unless the engine exposes its trust.
 
+### Follow-ups from task 192 (compare view; not scheduled)
+- [Spec call] If the ignore list cannot be loaded, the whole compare fails and the list cannot be fixed from the view (`crates/app/src/ui/compare.rs:169`). Decide: compare with no patterns and show the error?
+- [Spec call] A change to the body root has pointer "", so Ignore writes the invalid pattern `body:` (`compare.rs:47-49`, `:432-435`). Decide: hide Ignore on the root row?
+- [P3] `start_compare` does nothing visible when `history_job` fails or `open_existing` returns Err or None (`crates/app/src/ui/history.rs:265-282`).
+- [P3] The IgnoreProblem reason is shown unescaped (`compare.rs:550`); pass it through `escape_display` like the pattern beside it.
+- [P3] The save lock is per view, so a save from a replaced view is not ordered against a new view's save; consider one lock per collection (`compare.rs:141`, `:207`). Same class as the cross-process race, which needs a storage API change.
+- [P3] `previous_entry` runs per row per render, O(n^2) at 500 entries (`history.rs:339-345`).
+- [P3] A JSON key literally `*` becomes a wildcard pointer segment, so ignoring it hides every sibling (`compare.rs:47`; grammar from 188, see 155-1).
+- [P3] Tests cover the per-row compare helpers, not the "Compare from" button wiring (`history.rs:366`).
+- [P3] Test names `compare_view_header_pattern` and `compare_view_body_pattern` do not read as sentences (`docs/conventions.md:106`).
+
 ### Follow-ups from task 188 (compare engine and ignore list; not scheduled)
 - [P3] JSON nested exactly 128 deep returns TooDeep because of serde_json's limit, while AC7 says beyond 128 (`crates/service/src/compare.rs:421-427`, `:506-509`).
 - [P3] An entry from before 0.5.0 (`evidence: None`) with `status: None` does not flag its headers as not recorded (`compare.rs:300-301`).
-- [Note] For task 192's brief: build a `Side` only from a `StoredEntry` returned by `HistoryStore::load`, never from `load_without_body`, which returns an empty body even when the `.bin` exists.
 
 ### Follow-ups from task 191 (TLS trust for `wisp-cli run`; not scheduled)
 - [P3] A bad CA file is reported as "cannot read collection: CA file ..." (`crates/cli/src/main.rs:45-50`).
