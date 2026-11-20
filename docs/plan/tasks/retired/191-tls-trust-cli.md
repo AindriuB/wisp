@@ -53,3 +53,24 @@ explicit.
 - The task 196 carry-overs (snapshot, the keychain canary flake, `closed()`), even when they sit in the same files.
 - `docs/cli.md` (scribe, task 197).
 - Trust for any command other than `run`.
+
+## Review round 1 — findings
+Reviewed HEAD: ba0e073356d2898e3e88b8b4c52f5ee8f9a6e473
+
+- [P2] crates/cli/tests/run.rs:906 — The check `srv.requests == 0` in `run_trust_bad_bundle_exits_3_without_sending` cannot catch a request that was sent. `serve_private_ca` (around run.rs:820-826) adds to the counter only after a TLS handshake and read succeed. A request sent with the default trust fails the handshake against the private CA, so the counter stays at 0 whether or not a request reached the server. AC4's "no request reaching the server" is therefore not tested.
+  route: implementer — count accepted TCP connections (increment in the `incoming()` loop before the handshake), or assert on a plain-TCP listener. This changes the test only and keeps AC3 and AC4 as written.
+  input: change `cmd/run.rs` to load the bundle after `run_once`, i.e. send with the default trust and then return `Failure::Unreadable`  →  the request goes to the server, yet the test passes.
+  proof: I applied that mutation to a scratch copy of HEAD (bundle error → `unwrap_or_default()` before `run_once`, then reload and `?` after it) and ran `cargo test -p wisp-cli --locked --test run run_trust_bad_bundle`: 1 passed, 0 failed.
+
+## Review round 2 — findings
+Reviewed HEAD: f26fb41204ff9d0ecd0baacc0ccced2e6aceab9a
+
+- [P2] crates/cli/tests/run.rs:747 — The fix moved the only read of `TlsServer.requests` over to `connections`. `requests` is still written (run.rs:813-814, :840) but nothing reads it any more, so rustc raises `dead_code`.
+  route: implementer — remove the `requests` field and its `counter` clone/increment in `serve_private_ca` (run.rs:813-814, 821, 829, 840), or read it somewhere. This changes the test file only; AC3, AC4 and AC6 stay as written.
+  input: `cargo clippy -p wisp-cli --locked --tests -- -D warnings` on f26fb41  →  `error: field 'requests' is never read --> crates/cli/tests/run.rs:747:5`, and `wisp-cli` (test "run") does not compile.
+  proof: I ran clippy on a scratch `git archive` copy of f26fb41 and got the error above. `cargo test` still passes 7/7 `run_trust_` cases with 1 warning, so the `run-trust` check alone would not catch this.
+
+## Wave verified — d9a3dc76aab7190500ced361f7670396966c0d73
+
+## Outcome
+Tester PASS and reviewer APPROVE at d9a3dc76aab7190500ced361f7670396966c0d73 after two review rounds (round 1: the bad-bundle test counted requests only after a successful handshake; round 2: the replacement left a dead `requests` field that failed clippy `-D warnings`). Follow-ups are in `docs/plan/PLAN.md` under "Follow-ups from task 191".
