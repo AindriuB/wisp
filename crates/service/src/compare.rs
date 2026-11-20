@@ -906,12 +906,18 @@ mod tests {
 
     #[test]
     fn body_kind_text_matches_spec_wording() {
-        assert_eq!(BodyKind::Truncated.text(), "body cut at 1 MiB; not compared");
+        assert_eq!(
+            BodyKind::Truncated.text(),
+            "body cut at 1 MiB; not compared"
+        );
         assert_eq!(
             BodyKind::Off.text(),
             "body not stored (history bodies off, or a `wisp-cli run` entry)"
         );
-        assert_eq!(BodyKind::Unreadable.text(), "body could not be read when recorded");
+        assert_eq!(
+            BodyKind::Unreadable.text(),
+            "body could not be read when recorded"
+        );
         assert_eq!(
             BodyKind::NoResponse.text(),
             "no response body (request failed or was cancelled)"
