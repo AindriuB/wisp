@@ -363,6 +363,10 @@ fn template_fields(r: &Request) -> Vec<&str> {
     match &r.body {
         Body::None | Body::File(_) => {}
         Body::Json(t) | Body::Text(t) | Body::Xml(t) => f.push(&t.content),
+        Body::GraphQl(g) => {
+            f.push(&g.query);
+            f.push(&g.variables);
+        }
         Body::Form(kvs) => {
             for kv in kvs {
                 f.push(&kv.name);
@@ -696,6 +700,22 @@ mod tests {
             .filter(|w| w.message.contains("`api_token`"))
             .count();
         assert_eq!(n, 1, "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn graphql_import_scan_covers_query_and_variables() {
+        use wisp_core::request::{Body, GraphQlBody};
+        let mut r = result_with(Request {
+            body: Body::GraphQl(GraphQlBody {
+                query: "{ {{in_query}} }".into(),
+                variables: "{\"a\": {{in_vars}}}".into(),
+            }),
+            ..Default::default()
+        });
+        warn_undefined_vars(&mut r);
+        let text: Vec<&str> = r.warnings.iter().map(|w| w.message.as_str()).collect();
+        assert!(text.iter().any(|m| m.contains("`in_query`")), "{text:?}");
+        assert!(text.iter().any(|m| m.contains("`in_vars`")), "{text:?}");
     }
 
     #[test]

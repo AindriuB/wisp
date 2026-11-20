@@ -454,6 +454,14 @@ fn cap_request_body(body: &mut Body) -> bool {
             cut(&mut b.content, BODY_CAP);
             true
         }
+        Body::GraphQl(g) => {
+            if g.query.len() + g.variables.len() <= BODY_CAP {
+                return false;
+            }
+            cut(&mut g.query, BODY_CAP);
+            cut(&mut g.variables, BODY_CAP - g.query.len());
+            true
+        }
         Body::Form(fields) => {
             let total: usize = fields.iter().map(|f| f.name.len() + f.value.len()).sum();
             if total <= BODY_CAP {
@@ -631,6 +639,13 @@ fn redact_request(req: &Request) -> (Request, Vec<String>) {
         Body::Text(b) | Body::Xml(b) if contains_credential_fragment(&b.content) => {
             b.content.clear();
             note(&mut names, "body".into());
+        }
+        Body::GraphQl(g) => {
+            if contains_credential_fragment(&g.query) {
+                g.query.clear();
+                note(&mut names, "body".into());
+            }
+            redact_json_body(&mut g.variables, &mut names);
         }
         _ => {}
     }

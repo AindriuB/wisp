@@ -236,15 +236,22 @@ pub fn body_redaction_refusal(draft: &Request, origin: &HistoryOrigin) -> Option
     if !whole && fields.is_empty() {
         return None;
     }
-    let text = match &draft.body {
-        Body::Json(t) | Body::Text(t) | Body::Xml(t) => Some(t.content.as_str()),
-        _ => None,
+    // The text a whole-body clearing emptied, and the text field-level clearing applies to.
+    let (whole_text, text) = match &draft.body {
+        Body::Json(t) | Body::Text(t) | Body::Xml(t) => {
+            (Some(t.content.as_str()), Some(t.content.as_str()))
+        }
+        Body::GraphQl(g) => (Some(g.query.as_str()), Some(g.variables.as_str())),
+        _ => (None, None),
     };
     let unedited = if whole {
-        text.is_none_or(|t| t.trim().is_empty())
+        // A GraphQL body has two fields and either one clears as "body".
+        let graphql_blank = matches!(&draft.body, Body::GraphQl(g)
+            if g.variables.trim().is_empty());
+        (graphql_blank || whole_text.is_none_or(|t| t.trim().is_empty()))
             && matches!(
                 &draft.body,
-                Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_)
+                Body::None | Body::Json(_) | Body::Text(_) | Body::Xml(_) | Body::GraphQl(_)
             )
     } else {
         match text.map(|t| empty_json_leaves(t, &fields)) {

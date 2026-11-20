@@ -13,7 +13,9 @@ use crate::auth::EngineAuth;
 use crate::model::{
     ClientSettings, Header, PreparedBody, PreparedPart, PreparedPartValue, PreparedRequest,
 };
-use crate::request::{ApiKeyLocation, Auth, Body, GraphQlBody, KeyValue, PartValue, Request, TextBody};
+use crate::request::{
+    ApiKeyLocation, Auth, Body, GraphQlBody, KeyValue, PartValue, Request, TextBody,
+};
 use crate::template::{self, PathToken};
 
 /// Maximum nesting of variables whose values contain further variables.
