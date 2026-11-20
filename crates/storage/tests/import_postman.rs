@@ -157,11 +157,11 @@ fn pm_mixed_test_not_translated() {
         "  pm.environment.set(\"k\", \"v\");",
         "});",
     ]);
-    assert_eq!(a.len(), 1);
+    assert!(a.is_empty(), "{a:?}");
     assert_eq!(r.warnings.len(), 1);
     assert_eq!(
         r.warnings[0].message,
-        "1 of 2 tests not translated; scripts are not run"
+        "2 of 2 tests not translated; scripts are not run"
     );
 }
 
@@ -194,7 +194,7 @@ fn pm_warning_never_echoes_script_text() {
     assert!(!r.warnings[0].at.contains("CANARY"));
     assert_eq!(
         r.warnings[0].message,
-        "2 of 2 tests not translated; scripts are not run"
+        "1 of 1 tests not translated; scripts are not run"
     );
 }
 
@@ -343,17 +343,6 @@ fn pm_non_path_json_expressions_not_translated() {
 }
 
 #[test]
-fn pm_regex_literal_does_not_desync_resync() {
-    let (a, _) = import_tests(&[
-        "if (pm.response.code === 500) { /}/.test('x');",
-        "pm.test('err', function () { pm.response.to.have.status(500); });",
-        "}",
-        "pm.test('ok', function () { pm.response.to.have.status(200); });",
-    ]);
-    assert!(!format!("{a:?}").contains("500"), "{a:?}");
-}
-
-#[test]
 fn pm_failing_units_with_balanced_body_parse_in_linear_time() {
     let n = 1920;
     let src = format!(
@@ -368,51 +357,6 @@ fn pm_failing_units_with_balanced_body_parse_in_linear_time() {
         assert!(r.warnings[0].message.contains("tests not translated"));
     }
     assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
-}
-
-#[test]
-fn pm_regex_after_keyword_does_not_desync_resync() {
-    let (a, _) = import_tests(&[
-        "if (pm.response.code === 500) {",
-        "  const ok = [1].some(function (x) { return /}/.test(x) });",
-        "  pm.test('err', function () { pm.response.to.have.status(500); });",
-        "}",
-        "pm.test('ok', function () { pm.response.to.have.status(200); });",
-    ]);
-    let s = format!("{a:?}");
-    assert!(!s.contains("500"), "{s}");
-}
-
-#[test]
-fn pm_regex_in_arrow_callback_does_not_leak_nested_test() {
-    for line in [
-        "  const ok = ['a)'].some(x => /\\)$/.test(x));",
-        "  const ok = ['a'].some(x => /}/.test(x));",
-    ] {
-        let (a, _) = import_tests(&[
-            "if (pm.response.code === 500) {",
-            line,
-            "  pm.test('err', function () { pm.response.to.have.status(500); });",
-            "}",
-            "pm.test('ok', function () { pm.response.to.have.status(200); });",
-        ]);
-        let s = format!("{a:?}");
-        assert!(!s.contains("500"), "{line}: {s}");
-    }
-}
-
-#[test]
-fn pm_regex_after_close_paren_does_not_leak_nested_test() {
-    let (a, r) = import_tests(&[
-        "if (s) {",
-        "if (s) /}/.test(s);",
-        "pm.test('err', function () { pm.response.to.have.status(500); });",
-        "}",
-        "pm.test('ok', function () { pm.response.to.have.status(200); });",
-    ]);
-    let s = format!("{a:?}");
-    assert!(!s.contains("500"), "{s}");
-    assert!(r.warnings[0].message.contains("tests not translated"));
 }
 
 #[test]
@@ -436,47 +380,186 @@ fn pm_pathological_single_line_scripts_parse_in_linear_time() {
 
 const STATUS_TEST: &str = "pm.test('ok', function () { pm.response.to.have.status(200); });";
 
-fn assert_status_200_translated(stmt: &str) {
-    let (a, _) = import_tests(&[stmt, STATUS_TEST]);
-    let s = format!("{a:?}");
-    assert!(s.contains("Status") && s.contains("200"), "{stmt}: {s}");
+fn assert_untranslated(lines: &[&str], n: usize) {
+    let (a, r) = import_tests(lines);
+    assert!(a.is_empty(), "{lines:?}: {a:?}");
+    assert_eq!(r.warnings.len(), 1, "{lines:?}");
+    assert_eq!(
+        r.warnings[0].message,
+        format!("{n} of {n} tests not translated; scripts are not run"),
+        "{lines:?}"
+    );
 }
 
 #[test]
-fn pm_certain_division_keeps_later_tests_translated() {
-    for stmt in [
-        "var secs = pm.response.responseTime / 1000;",
-        "pm.environment.set('half', pm.response.json().n / 2);",
-        "pm.expect(d.a / d.b).to.be.below(1);",
-        "var q = xs[0] / 2;",
-        "var q = 'a' / 2;",
-    ] {
-        assert_status_200_translated(stmt);
-    }
+fn pm_strict_comments_and_separators_translate() {
+    let (a, r) = import_tests(&[
+        "// leading",
+        "/* block */ pm.test('a', /* c */ function () { // c",
+        "  pm.response.to.have.status(200) // no semicolon",
+        "  /* x */ pm.response.to.have.header('X'); /* y */",
+        "}) // no semicolon",
+        "pm.test('b', () => { pm.response.to.have.status(201) /* c */ });",
+        "pm.test('c', () => {",
+        "  pm.expect(pm.response.code).to.eql(202);",
+        "}); // trailing",
+    ]);
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(a.len(), 4);
 }
 
 #[test]
-fn pm_regex_after_arrow_keeps_later_table_test_translated() {
-    assert_status_200_translated("pm.test('r', () => { ['a'].some(x => /a/.test(x)); });");
-}
-
-#[test]
-fn pm_ambiguous_slash_in_conditional_does_not_leak_nested_test() {
-    for line in [
-        "var r = of / 2;",
-        "yield / 2",
-        "await / 2",
-        "{}/2",
-        "var r = (a) / 2;",
-    ] {
-        let (a, _) = import_tests(&[
+fn pm_strict_if_nested_test_left_untranslated() {
+    assert_untranslated(
+        &[
             "if (pm.response.code === 500) {",
-            line,
             "  pm.test('err', function () { pm.response.to.have.status(500); });",
             "}",
             STATUS_TEST,
-        ]);
-        let s = format!("{a:?}");
-        assert!(!s.contains("500"), "{line}: {s}");
+        ],
+        2,
+    );
+}
+
+#[test]
+fn pm_strict_else_do_slash_left_untranslated() {
+    assert_untranslated(
+        &[
+            "if (a) { x(); } else { if (b) { y(); } else /}x/.test(s);",
+            "  pm.test('err', function () { pm.response.to.have.status(500); });",
+            "}",
+            STATUS_TEST,
+        ],
+        2,
+    );
+    assert_untranslated(
+        &[
+            "if (a) { do /}/.test(s); while (0);",
+            "  pm.test('err', function () { pm.response.to.have.status(500); });",
+            "}",
+            STATUS_TEST,
+        ],
+        2,
+    );
+}
+
+#[test]
+fn pm_strict_nested_template_left_untranslated() {
+    assert_untranslated(
+        &[
+            "if (a) { var t = `${`}`}`;",
+            "  pm.test('err', function () { pm.response.to.have.status(500); });",
+            "}",
+            STATUS_TEST,
+        ],
+        2,
+    );
+    assert_untranslated(
+        &["pm.test(`name`, function () { pm.response.to.have.status(200); });"],
+        1,
+    );
+}
+
+#[test]
+fn pm_strict_division_left_untranslated() {
+    assert_untranslated(
+        &["var secs = pm.response.responseTime / 1000;", STATUS_TEST],
+        1,
+    );
+    assert_untranslated(
+        &["pm.test('d', function () { pm.expect(pm.response.json().a / 1000).to.eql(1); });"],
+        1,
+    );
+}
+
+#[test]
+fn pm_strict_regex_left_untranslated() {
+    for line in [
+        "const ok = ['a)'].some(x => /\\)$/.test(x));",
+        "const ok = ['a'].some(x => /}/.test(x));",
+        "if (s) /}/.test(s);",
+        "const ok = [1].some(function (x) { return /}/.test(x) });",
+        "if (pm.response.code === 500) { /}/.test('x');",
+    ] {
+        assert_untranslated(&[line, STATUS_TEST], 1);
+        assert_untranslated(
+            &[
+                "if (s) {",
+                line,
+                "  pm.test('err', function () { pm.response.to.have.status(500); });",
+                "}",
+                STATUS_TEST,
+            ],
+            2,
+        );
     }
+}
+
+#[test]
+fn pm_strict_one_bad_test_untranslates_whole_script() {
+    assert_untranslated(
+        &[
+            STATUS_TEST,
+            "pm.test('bad', function () { console.log(1); });",
+        ],
+        2,
+    );
+}
+
+#[test]
+fn pm_strict_unterminated_input_left_untranslated() {
+    assert_untranslated(
+        &["pm.test('a', function () { pm.response.to.have.header('x); });"],
+        1,
+    );
+    assert_untranslated(&[STATUS_TEST, "/* open"], 1);
+    assert_untranslated(
+        &["pm.test('a', function () { pm.response.to.have.status(200); }"],
+        1,
+    );
+    assert_untranslated(
+        &["pm.test('a', function () { pm.response.to.have.status(200); /* open"],
+        1,
+    );
+}
+
+#[test]
+fn pm_strict_scripts_judged_independently() {
+    let item = request_with(
+        json!({"method": "GET", "url": "http://h/x"}),
+        json!([
+            {"listen": "test", "script": {"exec": [STATUS_TEST]}},
+            {"listen": "test", "script": {"exec": ["var x = 1;", "pm.test('b', () => { pm.response.to.have.status(500); });"]}},
+        ]),
+    );
+    let r = postman::parse(&collection(json!([item]), json!({}))).unwrap();
+    assert_eq!(first(&r).assertions.len(), 1);
+    assert_eq!(r.warnings.len(), 1);
+    assert_eq!(
+        r.warnings[0].message,
+        "1 of 2 tests not translated; scripts are not run"
+    );
+}
+
+#[test]
+fn pm_strict_grammar_violations_untranslated() {
+    for src in [
+        "pm.test('a', function (x) { pm.response.to.have.status(200); });",
+        "pm.test('a', (x) => { pm.response.to.have.status(200); });",
+        "pm.test('a', function () { });",
+        "pm.test('a', function () { pm.response.to.have.status(200); pm.test('b', () => {}); });",
+        "pm.test('a', function () { pm.response.to.have.status(200); }) pm.test('b', () => {});",
+        "pm.test('a', function () { pm.response.to.have.status(200) pm.response.to.have.status(201) });",
+        "var x = 1; pm.test('a', () => { pm.response.to.have.status(200); });",
+        "return;",
+    ] {
+        assert_untranslated(&[src], src.matches("pm.test(").count().max(1));
+    }
+}
+
+#[test]
+fn pm_strict_empty_and_comment_only_scripts_are_clean() {
+    let (a, r) = import_tests(&["// nothing here", "/* or here */"]);
+    assert!(a.is_empty());
+    assert!(r.warnings.is_empty());
 }
