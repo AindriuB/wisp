@@ -123,3 +123,8 @@ Reviewed HEAD: 66c308e8047c30455663c10d66c36d1b7c6b079e. Verdict FIX. Fix these 
   input: `https://u:p@` followed by `u0:pw0/?a@u1:pw1/?a@…u9:pw9/?a@h/y` → `split_userinfo` returns `https://u8:pw8/?a@u9:pw9/?a@h/y`, `url_host` returns `u8:pw8`, `may_hold_credentials` returns false; `pw8` ends up in the stored base URL and in the server warning.
 
 Note (orchestrator, 2026-11-20): this task file changes on the branch only through the planner's amendment and the /review loop's records. When running the `scope` check, also exclude `^docs/plan/tasks/195-importer-hardening-h4b.md$`.
+
+## Wave verified — 19bb45a (2026-11-20)
+
+## Outcome
+Landed on `task/195-importer-hardening-h4b` (commits 66c308e, 19bb45a on top of eeae6f4). Verified on the Linux host: tester PASS and reviewer APPROVE after one review round; the workspace-wide test and clippy runs could not run there (`wisp-app` needs system fontconfig), so CI carries them. OpenAPI example text is charged through a size-limited writer while it is serialised, `unique` is a set plus a per-base counter, the import path carries a per-(directory, slug) suffix hint into `ops.rs` (`create_request_hinted`, `create_folder_hinted`), `url_host` never returns a userinfo-shaped host, `split_userinfo` strips every chained credential, a missing import folder has its own error, and the redundant `suspect ||` is gone. Nine `h4b_` tests were added. AC3 was amended by Andrew (2026-11-20) to give the task `ops.rs`. Open follow-ups are in PLAN.md under "Follow-ups from task 195".
