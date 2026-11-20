@@ -20,9 +20,13 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view) and 193 (GraphQL editor) and 194 (Postman test translation, PR open) are recorded; 185 (binding registry H3b) is on a PR awaiting review and its Windows CI; it depends on 186 because it changes one test in `crates/storage/tests/vault.rs`. All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 185 (binding registry H3b), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view), 193 (GraphQL editor), 194 (Postman test translation), 195 (OpenAPI importer and URL credential hardening, H4b) and 199 (JSON assertion numbers by value) are recorded; 196 (CLI `run` carry-overs) is on a PR. Open: 197 (0.5.0 docs) and 198 (measure and release dry run). All eight open questions decided as recommended (user, 2026-11-19).
 
-Task 199 (JSON assertion numbers compare by value, so `1` equals `1.0`; strings against numbers stay type-strict) is on a PR awaiting review. It resolves the numeric-equality residual on task 194 (PR #161) and amends the 0.3.0 spec at `:186` (user decision, 2026-11-20).
+Task 199 (JSON assertion numbers compare by value, so `1` equals `1.0`; strings against numbers stay type-strict) is recorded (PR #162). It resolves the numeric-equality residual on task 194 and amended the 0.3.0 spec at `:186` (user decision, 2026-11-20).
+
+**Task 197 must also document** (carried from tasks 185, 194 and 196): `git worktree move` and `git worktree repair` (git before 2.48) and case-insensitive macOS paths (`WORK` versus `work`) make a worktree read as unverified; the nesting rule blocks one-click verification under a bound parent folder; the strict 194 grammar leaves scripts with `var`, helpers or division untranslated; and the snapshot `truncated` entry for an unreadable environment is named `environment:<name>` (task 196; in the minimal-fallback snapshot that entry is dropped and only the stderr note survives).
+
+**Workflow note:** `.claude/scripts/wt-new.sh` and `wt-list.sh` do not exist in this checkout, and the task files cite macOS `CARGO_TARGET_DIR` paths. Implementers used `git worktree add` and local target dirs; `/verify` on the Linux host cannot run `wisp-app` (no system fontconfig), so the full workspace suite runs only in CI.
 
 ### v0.4.0 (spec agreed)
 
@@ -44,6 +48,12 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - The variables note checks text as typed, so `{"id": {{id}}}` shows "not a JSON object" though it sends fine after substitution (`crates/app/src/ui/request/graphql.rs:20-26` vs `crates/core/src/resolve/engine.rs:676-690`); revisit with highlighting.
 - The comment at `crates/service/src/plan.rs:250-253` says a "body"-only redaction needs both fields; since 193 that holds only when the stored body was GraphQL.
 
+### Follow-ups from task 195 (importer hardening H4b; not scheduled)
+- [P3] The curl extra-URL warning (`crates/storage/src/import/curl.rs:493-496`) prints "host ``" for a URL flagged as possibly holding credentials.
+- [P3] `may_hold_credentials` now flags `http:h/x@y`-style URLs that hold no secret. Accepted false positive under AC5.
+- [P3] `h4b_import_many_colliding_slugs` would also pass against the old quadratic picker; linearity rests on code reading (accepted by the amendment). A probe counter in `ops.rs` would prove it.
+- [P3] No dedicated test for more than 9 chained credentials in `split_userinfo`.
+
 ### Follow-ups from task 199 (not scheduled)
 - No test reaches the u64 branches of `scalar_equals` (body numbers above `i64::MAX`, `crates/core/src/assert.rs:654-662`); a lossy `u as f64` mutation would pass the suite.
 - The compare view still treats `1` and `1.0` as unequal (`crates/service/src/compare.rs:480`), unlike assertions now.
@@ -63,13 +73,12 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - Amendment 3 follow-ups: a cross-registry lock for the marker write race (now also reachable from `check`'s re-key); a test for the uid half of AC4's check; `LooksLikeCopy`'s `Display` prints `bound_root` unescaped (`crates/storage/src/vault.rs:579`); the stale rebind doc comment in `vault.rs` (~:808).
 
 ### Follow-ups from task 190 (TLS trust in the GUI; not scheduled)
-- [P3] The CA file is read synchronously on the UI thread at startup (`crates/app/src/workspace.rs:1259-1268`); a CA path on a stalled network mount would block the window opening.
-- [P3] The TLS hint names "Toggle system certificate trust" even when system trust is already on, so following it turns trust off (`crates/app/src/ui/response/mod.rs:70-83`).
-- [P3] Startup trust is covered only by construction: `applied_tls` and `EngineConfig.tls` come from the same local (`workspace.rs:1271-1276`); a test cannot catch a wrong argument unless the engine exposes its trust.
+- [P3] (157-1) The CA file is read synchronously on the UI thread at startup (`crates/app/src/workspace.rs:1259-1268`); a CA path on a stalled network mount would block the window opening.
+- [P3] (157-2) The TLS hint names "Toggle system certificate trust" even when system trust is already on, so following it turns trust off (`crates/app/src/ui/response/mod.rs:70-83`).
+- [P3] (157-3) Startup trust is covered only by construction: `applied_tls` and `EngineConfig.tls` come from the same local (`workspace.rs:1271-1276`); a test cannot catch a wrong argument unless the engine exposes its trust.
 
 ### Follow-ups from task 192 (compare view; not scheduled)
 - [Spec call] If the ignore list cannot be loaded, the whole compare fails and the list cannot be fixed from the view (`crates/app/src/ui/compare.rs:169`). Decide: compare with no patterns and show the error?
-- [Spec call] A change to the body root has pointer "", so Ignore writes the invalid pattern `body:` (`compare.rs:47-49`, `:432-435`). Decide: hide Ignore on the root row?
 - [P3] `start_compare` does nothing visible when `history_job` fails or `open_existing` returns Err or None (`crates/app/src/ui/history.rs:265-282`).
 - [P3] The IgnoreProblem reason is shown unescaped (`compare.rs:550`); pass it through `escape_display` like the pattern beside it.
 - [P3] The save lock is per view, so a save from a replaced view is not ordered against a new view's save; consider one lock per collection (`compare.rs:141`, `:207`). Same class as the cross-process race, which needs a storage API change.
@@ -204,12 +213,7 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - [Low] AC5's test shows the request/response header separation with `X-Foo-Token` rather than a redacted response `X-Foo`.
 
 ### Follow-ups from task 170 (importer hardening and descriptions; not scheduled)
-- [P3] `mod.rs:298` `url_host` returns `user:digits` for the host:digits userinfo shape `may_hold_credentials` flags (`https://bob:1234?rest@h2/y` gives host `bob:1234`). Task 179 keeps it out of OpenAPI environment names; the shared function is unchanged.
-- [P3] `split_userinfo` carve-outs (scheme-name user, `{{` template, `[`) still let a non-digit password into a host-derived env name with no warning, e.g. `https://http:hunter2?x@h/y` gives `http-hunter2`; closing it needs a change in `crates/storage/src/import/mod.rs`.
-- [P3] Task 179: `openapi.rs:389` `suspect ||` is redundant when the URL had no userinfo.
-- [P3] Task 181 (existing gap, out of scope): in `https://u:p@x:pw/?a@h2/y` the first strip leaves `https://x:pw/?a@h2/y`; `pw` is not port-like, so `may_hold_credentials` stays false, the stored `baseUrl` keeps a possible second credential and nothing warns.
 - [P3] `postman.rs:186-189` the unsupported-method warning still echoes the raw method text.
-- [P3] `write.rs:134` `check_folder_rel` reports a missing folder as `ImportError::Parse` ("cannot parse input").
 - NOTE: `curl.rs:417` after an unknown option, a single positional without `://` is still taken as the URL (`curl --frobnicate SECRETVAL` writes it as the URL).
 - NOTE: `openapi.rs:222` `desc_is_safe` cannot spot a short opaque token used as an environment name.
 - [NOTE] `h4_unknown_option_still_never_takes_secret_as_url` passes on any Err, so it adds nothing beyond the AC2 test.
