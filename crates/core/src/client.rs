@@ -7,6 +7,7 @@ use crate::cookies::CookieJars;
 use crate::engine::err;
 use crate::model::{ClientSettings, EngineError, ErrorKind};
 use crate::timing::{Registry, TimedResolver, TimingLayer};
+use crate::trust::TlsTrust;
 
 /// One `reqwest::Client` per distinct `ClientSettings`.
 ///
@@ -17,15 +18,30 @@ pub(crate) struct ClientCache {
     clients: Mutex<HashMap<ClientSettings, reqwest::Client>>,
     jars: CookieJars,
     timings: Arc<Registry>,
+    trust: Mutex<TlsTrust>,
 }
 
 impl ClientCache {
+    #[cfg(test)]
     pub(crate) fn new(jars: CookieJars) -> Self {
+        Self::with_trust(jars, TlsTrust::default())
+    }
+
+    pub(crate) fn with_trust(jars: CookieJars, trust: TlsTrust) -> Self {
         Self {
             clients: Mutex::default(),
             jars,
             timings: Arc::default(),
+            trust: Mutex::new(trust),
         }
+    }
+
+    /// Swap the trust and drop every cached client. Holding the clients lock across both
+    /// steps means `get` never caches a client built with the old trust afterwards.
+    pub(crate) fn set_trust(&self, trust: TlsTrust) {
+        let mut map = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        *self.trust.lock().unwrap_or_else(|e| e.into_inner()) = trust;
+        map.clear();
     }
 
     /// The connect-timing registry shared by every client of this cache.
@@ -44,20 +60,26 @@ impl ClientCache {
             return Ok(c.clone());
         }
         install_crypto_provider();
-        // Bundled Mozilla roots only: rustls-platform-verifier is linked by reqwest but never used.
+        // The bundled Mozilla roots are always trusted; the OS store and the CA file only add.
+        let trust = self.trust.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
-            .map(|c| reqwest::Certificate::from_der(c.as_ref()))
+            .map(|c| c.as_ref())
+            .chain(trust.extra.iter().map(Vec::as_slice))
+            .map(reqwest::Certificate::from_der)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| err(ErrorKind::Other, format!("cannot load bundled roots: {e}")))?;
-        let mut builder = reqwest::Client::builder()
-            .tls_backend_rustls()
-            .tls_certs_only(roots)
-            .referer(false)
-            .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS)
-            .dns_resolver(Arc::new(TimedResolver))
-            .connector_layer(TimingLayer(self.timings.clone()))
-            .cookie_provider(Arc::new(self.jars.jar(settings.collection.as_deref())));
+            .map_err(|e| err(ErrorKind::Other, format!("cannot load trusted roots: {e}")))?;
+        let builder = reqwest::Client::builder().tls_backend_rustls();
+        let mut builder = if trust.system {
+            builder.tls_certs_merge(roots)
+        } else {
+            builder.tls_certs_only(roots)
+        }
+        .referer(false)
+        .http1_max_headers(HTTP1_MAX_RESPONSE_HEADERS)
+        .dns_resolver(Arc::new(TimedResolver))
+        .connector_layer(TimingLayer(self.timings.clone()))
+        .cookie_provider(Arc::new(self.jars.jar(settings.collection.as_deref())));
         if !settings.verify_tls {
             builder = builder.tls_danger_accept_invalid_certs(true);
         }

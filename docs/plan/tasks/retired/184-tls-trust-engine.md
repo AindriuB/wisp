@@ -70,3 +70,8 @@ and CLI wiring are tasks 190 and 191.
 - `settings.toml`, palette commands and the TLS hint (190); `wisp-cli` flags (191).
 - Client certificates (mTLS), CRLs, pinning, and per-request trust.
 - Changing `ClientSettings` or `PreparedRequest`.
+
+## Wave verified — 263495fa9ed2fb0ecd3161af6bd28d03c122ca59
+
+## Outcome
+Tester PASS and reviewer APPROVE at 263495fa9ed2fb0ecd3161af6bd28d03c122ca59, no fix rounds. `TlsTrust`, `load_pem_file` and `Engine::set_tls_trust` are in core. Measure run 44626294433 put the Windows GUI at 15,616,512 B (+512 B). Follow-ups are in `PLAN.md`.
