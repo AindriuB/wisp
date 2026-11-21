@@ -173,6 +173,10 @@ Size plan: GUI +60-95 KB (diff +40-60, GraphQL +20-35). Needs D-1 resolved; othe
 
 Exit criteria: diff states truncation/missing evidence explicitly and applies user ignore list; a GraphQL request round-trips to TOML; the importer translates the closed set and warns on the rest; size gate per D-1; macOS hand test (others as available, notes say which); 🔒 items for H3b/H4b closed.
 
+### 0.6.0
+
+Not yet shaped. Candidate theme from the user (2026-11-21): UI cleanup. Size constraint: Windows GUI is 76,128 B under the 15,900,000 B soft line, so changes must be roughly size-neutral.
+
 ## Dependency chain
 
 - Theme-palette merge -> 0.3.0 wave 2 UI -> 1M measure baseline.
