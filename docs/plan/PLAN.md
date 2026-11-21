@@ -18,6 +18,10 @@ than no plan.
 **In flight:** 01, 02
 -->
 
+### v0.6.0 (spec agreed 2026-11-21)
+
+Spec: `docs/plan/specs/2026-11-21-wisp-0-6-0.md` (lean-up and polish: visual language, body rendering and highlighting, resolved-URL preview, one Variables view, menu bar, first-run state). The user accepted all recommendations for Q1-Q9, including keeping the resolver's variable precedence. Next is `/plan`. 0.5.0 still awaits the user's macOS hand test, tag and publish.
+
 ### v0.5.0 (spec agreed 2026-11-19)
 
 Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 185 (binding registry H3b), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view), 193 (GraphQL editor), 194 (Postman test translation), 195 (OpenAPI importer and URL credential hardening, H4b), 199 (JSON assertion numbers by value), 196 (CLI `run` carry-overs) 197 (0.5.0 docs) and 198 (measure and release dry run) are recorded: 0.5.0 build work is done. Measure run 44929534630 and release dry run 44930780226 succeeded on 58d75d8; Windows GUI 15,823,872 B (76,128 B under the soft line, 176,128 B under the gate), all CLIs under 7,340,032 B; figures in `scripts/measure/results/v0.5.0-wave-3-size.json`. **Remaining (user's, D-I):** the macOS hand test (checklist in PR 198's body), the version bump, the tag and publishing. The draft release `dryrun-44930780226` exists for the user to delete. All eight open questions decided as recommended (user, 2026-11-19).
