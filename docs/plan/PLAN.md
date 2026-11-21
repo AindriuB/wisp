@@ -20,11 +20,9 @@ than no plan.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
-Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 185 (binding registry H3b), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view), 193 (GraphQL editor), 194 (Postman test translation), 195 (OpenAPI importer and URL credential hardening, H4b), 199 (JSON assertion numbers by value) and 196 (CLI `run` carry-overs) are recorded. Open: 197 (0.5.0 docs) and 198 (measure and release dry run). All eight open questions decided as recommended (user, 2026-11-19).
+Spec: `docs/plan/specs/2026-11-19-wisp-0-5-0.md` (history evidence, TLS/private CA trust, compare, GraphQL, Postman tests, hardening H3b/H4b). Tasks 183-198. Wave 1 starts 183, 184, 186 and 187 first; 185 follows 186 (it changes a `vault.rs` test that 186 owns); 188 and 189 follow 183. Tasks 183 (history evidence), 184 (TLS trust engine), 185 (binding registry H3b), 186 (secret-file safety), 187 (Windows ACL follow-ups), 188 (compare engine and ignore list), 189 (GraphQL body model), 190 (TLS trust settings in the GUI), 191 (TLS trust for `wisp-cli run`), 192 (compare view), 193 (GraphQL editor), 194 (Postman test translation), 195 (OpenAPI importer and URL credential hardening, H4b), 199 (JSON assertion numbers by value), 196 (CLI `run` carry-overs) and 197 (0.5.0 docs) are recorded. Open: 198 (measure and release dry run). All eight open questions decided as recommended (user, 2026-11-19).
 
 Task 199 (JSON assertion numbers compare by value, so `1` equals `1.0`; strings against numbers stay type-strict) is recorded (PR #162). It resolves the numeric-equality residual on task 194 and amended the 0.3.0 spec at `:186` (user decision, 2026-11-20).
-
-**Task 197 must also document** (carried from tasks 185, 194 and 196): `git worktree move` and `git worktree repair` (git before 2.48) and case-insensitive macOS paths (`WORK` versus `work`) make a worktree read as unverified; the nesting rule blocks one-click verification under a bound parent folder; the strict 194 grammar leaves scripts with `var`, helpers or division untranslated; and the snapshot `truncated` entry for an unreadable environment is named `environment:<name>` (task 196; in the minimal-fallback snapshot that entry is dropped and only the stderr note survives).
 
 **Workflow note:** `.claude/scripts/wt-new.sh` and `wt-list.sh` do not exist in this checkout, and the task files cite macOS `CARGO_TARGET_DIR` paths. Implementers used `git worktree add` and local target dirs; `/verify` on the Linux host cannot run `wisp-app` (no system fontconfig), so the full workspace suite runs only in CI.
 
@@ -48,11 +46,17 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 - The variables note checks text as typed, so `{"id": {{id}}}` shows "not a JSON object" though it sends fine after substitution (`crates/app/src/ui/request/graphql.rs:20-26` vs `crates/core/src/resolve/engine.rs:676-690`); revisit with highlighting.
 - The comment at `crates/service/src/plan.rs:250-253` says a "body"-only redaction needs both fields; since 193 that holds only when the stored body was GraphQL.
 
+### Follow-ups from task 197 (0.5.0 docs; not scheduled)
+- [Low] `docs/architecture.md` ~:188-192 says every bad `[compare] ignore` entry is skipped. A list over 256 entries, or an entry over 1,024 bytes, fails the whole list (`load_compare_ignore`, `crates/storage/src/collection.rs` ~:244-254; the compare view goes to `State::Failed`); only a malformed pattern is reported and skipped.
+- [Low] `docs/cli.md` ~:219-221: `tree` and `findings` are also marked `truncated` when the count bounds (2,000 nodes, 500 findings) are hit, not only on size drops (`crates/cli/src/cmd/snapshot.rs:255`, `:262`).
+- [Low] `README.md:23` "Still missing" still says Postman scripts are not translated, which contradicts the bullet at `:17` (checks are translated to `[[assert]]`).
+- [Low] The import docs say only "any other script" stays untranslated; the 195/196 carry-over wanted `var`, helpers and division named.
+- [Low] The 197 task's `scope` check counted the task's own file (the loop appends review rounds to it) as out of scope; future task-file `scope` checks should exclude the task file.
+
 ### Follow-ups from task 196 (CLI `run` carry-overs; not scheduled)
 - [P3] The `resolve as` pattern in `scripts/check-boundaries.sh` can false-positive on prose, casts or an unrelated `resolve as` import, and misses turbofish `resolve::<T>(` and `{self as m}` followed by `m::resolve(`.
 - [P3] AC2's claim that port 0 is never connectable is reasoned for macOS and Windows, not run; CI on those OSes is the only check.
 - [P3] `snapshot_stays_under_one_mebibyte_with_every_cap_exceeded` takes about 60 s in a debug build.
-- [Docs] `docs/cli.md` must name the `environment:<name>` entry (task 197; see the 173 item above).
 
 ### Follow-ups from task 195 (importer hardening H4b; not scheduled)
 - [P3] The curl extra-URL warning (`crates/storage/src/import/curl.rs:493-496`) prints "host ``" for a URL flagged as possibly holding credentials.
@@ -67,12 +71,9 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 ### Follow-ups from task 185 (binding registry H3b; not scheduled)
 - [P3] `rebind_confirmed` (`crates/storage/src/vault_binding.rs:1023-1026`) and `check`'s re-key (`:452`) do not drop this registry's dead-row keys for the same root under other ids, as AC11 asks; after about 64 re-ids the rebind fails closed.
 - `h3b_win_trailing_dot_refused` and `h3b_win_com1_refused` do not test the `safe_entry_name` wiring (`verbatim_worktree` ignores setup errors); add a cross-platform lexical test of `exact_worktree_gitdir`.
-- `git worktree move` and ctime changes such as xattrs make worktrees read as unverified; add these beside `git worktree repair` in task 197.
 - `check`'s re-key warning leaves out `error = %e` and logs on every check of a read-only checkout.
 - `tracked_marker_warning` has no production caller; app work.
-- [160-1 residual] Task 197 should document `git worktree move` next to `git worktree repair`.
 - The re-key marker restore at `crates/storage/src/vault_binding.rs:487` is best effort and is not logged on its own.
-- A case-insensitive path on macOS (`WORK` versus `work`) makes a worktree read as unverified.
 - The two `h3b_win_` tests do not prove the name check is wired in.
 - Dead registry rows for a parent folder block nested one-click verification permanently.
 - Tests leak temp dirs (`tempdir().keep()`, `mem::forget` at `crates/storage/tests/binding.rs:22`, `:288`, `:293`).
@@ -154,9 +155,6 @@ Spec: `docs/plan/specs/2026-11-17-wisp-0-4-0.md` (service layer, `wisp-cli run`,
 
 - NOTE: the scrub skip covers every truncated body type, not only JSON. The only gap is truncated files written by a dev build of e78aca2 before 0e4325e's `redact.rs` rule change (dev-only data).
 - NOTE: `scrub_truncated_append_keeps_json_body_across_reopen` does not guard the restore (it never scrubs an existing file); `scrub_truncated_file_in_unmarked_folder_keeps_body` does.
-
-### Follow-ups from task 173 (CLI snapshot and metadata; not scheduled)
-- [P3] `docs/cli.md` (snapshot section, ~:186-200) does not name the cap-hit entries in `truncated` (`environments`, `environment_variables`, `request_variables`, `request_headers`); the implementer chose them and the spec does not name them, and task 196 added `environment:<name>` for an unreadable environment (dropped in the minimal fallback; the stderr note survives). Task 197 covers it.
 
 ### Follow-ups from task 176 (0.4.0 docs; not scheduled)
 - [P3] AC51 in `docs/plan/tasks/99-hardening-0-2-0.md` says "(done, task 163)"; it should credit tasks 161 and 163.

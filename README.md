@@ -12,11 +12,15 @@ Besides sending requests and keeping collections as TOML files, it also can:
 - **Keep history**: each send is recorded in a per-user history panel with its response. Reopen an entry read-only, or Resend it. Credentials are not stored, and a resend uses your current environment. Clear history empties it. History keeps 500 entries per collection and cuts stored bodies at 1 MiB.
 - **Keep cookies** in a per-collection jar, with a Cookies manager to list and delete them. Saving cookies to disk is off until you turn it on for that collection.
 - **Open several collections** at once (up to 8), each with its own tree, environment and tabs, and switch between them in the sidebar.
+- **Compare two runs** of a request from the History panel ("Compare with previous", or "Compare from" and "Compare to"): status, headers and a structural JSON body diff. A per-collection ignore list (`[compare] ignore` in `collection.toml`, entries such as `header:date` or `body:/data/*/id`) leaves volatile fields out. When a stored body is missing, cut short or was never recorded, the comparison says so as an evidence note instead of calling the sides equal.
+- **Send GraphQL**: a request body can be a GraphQL query plus variables, saved as `[body] type = "graphql"`. There is no introspection or schema explorer. A 0.4.0 build reports such a file as invalid.
+- **Import Postman checks**: a Postman request-level test script made wholly of `pm.test` units in a closed, simple form is translated to `[[assert]]` entries. Any other script is left untranslated and listed in the warnings report; there is still no scripting.
+- **Trust a private certificate authority** for HTTPS, in the app and in `wisp-cli run`; see "TLS and private certificate authorities" below.
 - **Keep secrets in the OS keychain**, if you choose, per environment. Secrets files remain the default. Where no keychain is available (portable mode, or Linux without a Secret Service), Wisp falls back to the secrets file and says so.
 
 It also includes the fixes meant for a 0.1.1 that was never released: Wisp asks before discarding unsaved changes on quit, secrets are kept out of debug output, streamed bodies are resent on 307/308 redirects, Windows-unsafe file names are rejected, the Linux window and launcher have an icon, and the interface fits narrow windows. Redirect handling, history redaction, importers and the reading of collection files were also hardened against leaking credentials or following symlinks out of a collection.
 
-Still missing: scripting, GraphQL, global variables, and a TCP/TLS split in the timings. Postman scripts are not translated. OAuth2 access tokens are never saved to disk; refresh tokens are saved only for keychain-backed environments. The Windows executable is not signed, and there is no Intel Mac build.
+Still missing: scripting, global variables, and a TCP/TLS split in the timings. Postman scripts are not translated. OAuth2 access tokens are never saved to disk; refresh tokens are saved only for keychain-backed environments. The Windows executable is not signed, and there is no Intel Mac build.
 
 ## Install
 
@@ -88,8 +92,52 @@ wisp-cli run ./my-collection orders/create.toml --env staging --json
 Where it is: on macOS inside the app, at `Wisp.app/Contents/MacOS/wisp-cli`; on Windows as `wisp-cli.exe` beside `wisp.exe`; on Linux as `wisp-cli` beside `wisp`. To use it from any macOS terminal, link it onto your `PATH`:
 
 ```sh
-ln -s /Applications/Wisp.app/Contents/MacOS/wisp-cli /usr/local/bin/wisp-cli
+sudo mkdir -p /usr/local/bin
+sudo ln -s /Applications/Wisp.app/Contents/MacOS/wisp-cli /usr/local/bin/wisp-cli
 ```
+
+`/usr/local/bin` may not exist on an Apple-silicon Mac, so the `mkdir -p` comes first; it does nothing if the folder is there. To avoid `sudo`, link it into a folder in your home directory and put that folder on your `PATH`:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s /Applications/Wisp.app/Contents/MacOS/wisp-cli ~/.local/bin/wisp-cli
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile
+```
+
+Open a new terminal window, then check that it works:
+
+```sh
+command -v wisp-cli
+wisp-cli --help
+```
+
+`command -v` should print the path of the link, and `--help` the usage text.
+
+## TLS and private certificate authorities
+
+Wisp verifies HTTPS servers against the certificate authorities (CAs) it trusts. By default that is its bundled Mozilla root list plus your operating system's certificate store, so a server whose certificate was issued by a CA your system trusts works with no setup. Turning system trust off restores the bundled list alone; the bundled roots are always trusted.
+
+For a server signed by a private CA, such as the root Caddy generates for local HTTPS, give Wisp the CA certificate instead of turning verification off. The CA file is a PEM file of at most 1 MiB that holds certificates only. A file with a private key, any other kind of PEM block or a damaged block is refused whole, and nothing is trusted from it.
+
+In the app there are three command palette commands: "Toggle system certificate trust", "Choose CA certificate file…" and "Clear CA certificate file". They write `[tls]` in your `settings.toml` (`system_trust`, and `ca_bundle`, an absolute path). When a send fails because the server's issuer is unknown, the response panel points at these commands. Trust is per user: it is never read from a collection, so a collection you open from someone else cannot widen what Wisp trusts.
+
+On macOS, to export a private root such as Caddy's from Keychain Access:
+
+1. Open Keychain Access and select the "login" or "System" keychain and the "Certificates" category.
+2. Select the root certificate (Caddy's is named like "Caddy Local Authority - 2026 ECC Root").
+3. Choose File, then Export Items, set the format to "Privacy Enhanced Mail (.pem)" and save it, for example as `~/caddy-root.pem`.
+4. In Wisp, run "Choose CA certificate file…" and pick that file.
+
+`wisp-cli run` never reads `settings.toml`; it takes flags only:
+
+```sh
+wisp-cli run ./shop orders/create.toml --env local --ca-bundle ~/caddy-root.pem
+wisp-cli run ./shop orders/create.toml --no-system-trust --ca-bundle ~/caddy-root.pem
+```
+
+`--ca-bundle <file>` adds the CA file to what is trusted, and `--no-system-trust` leaves out the operating system's store. A file that cannot be read or is refused stops the run before anything is sent, with exit 3.
+
+As a last resort for one request, `verify_tls = false` in that request's settings turns verification off for that request alone. Prefer a CA file: it keeps verification on for everything else.
 
 The Windows package for winget also installs the `wisp-cli` command; the Microsoft Store (MSIX) package does not include it.
 
