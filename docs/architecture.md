@@ -132,6 +132,14 @@ A plain library (`wisp-storage`), tested without a window. It provides:
   opt in with `secrets = "<kind>"`; `*.secrets.toml` stays the default.
 - Importers for a curl command, a Postman v2.1 collection and an OpenAPI 3
   document (JSON or YAML), which report what they cannot convert as warnings.
+  From 0.5.0 the Postman importer translates a request-level test script into
+  `[[assert]]` only when the whole script is table-form `pm.test` units; any
+  other script stays untranslated with a warning.
+- From 0.5.0 each history entry carries `evidence`: whether the response body
+  was `stored`, `truncated`, `off`, `unreadable` or had `no_response`, and
+  whether the response head was recorded. Entries written before 0.5.0 have
+  none. `collection.toml` may hold `[compare] ignore`, read and written in
+  place by `load_compare_ignore` and `save_compare_ignore`.
 
 Writes go through `toml_edit` and atomic file replacement, so comments and key
 order survive a save. The fixture test in `crates/storage/tests/` proves the
@@ -172,6 +180,16 @@ my-api/
   Built-in dynamic vars in v1 are `{{$uuid}}` and `{{$timestamp}}` only.
 - **Inheritance:** `auth.type = "inherit"` walks up folders to the collection.
   Headers merge down the chain and the nearer one wins.
+- **GraphQL body (0.5.0):** `[body] type = "graphql"` with string keys `query`
+  and `variables` (the variables are JSON text). `format = 1` is unchanged.
+  Read compatibility: Wisp 0.4.0 does not know the `graphql` body type, so it
+  reports such a request file as invalid (and cannot read a history entry whose
+  request used one); it never rewrites it. Wisp 0.5.0 reads every 0.4.0 file.
+- **Compare ignore list (0.5.0):** `[compare] ignore = ["header:date",
+  "body:/data/*/id"]` in `collection.toml`. A `header:` entry names a header
+  (case-insensitive), a `body:` entry is a JSON pointer where `*` matches any
+  one key or index. At most 256 entries of 1,024 bytes each; a bad entry is
+  reported and skipped.
 - **Query params:** `[[params]]` is the single source of truth; the URL bar
   displays and edits them.
 - **Versioning:** `collection.toml` carries `format = 1`.
@@ -219,6 +237,44 @@ Where each 0.3.0 piece of state lives:
   history entry has its assertions cleared.
 - **No scripting.** The v1 rule stands: no scripting in v1. Assertions are data,
   not code.
+
+## TLS trust and comparison (0.5.0)
+
+**Trust.** `wisp_core::TlsTrust` is engine-level: `system` (also trust the
+operating system's store, through the platform verifier; the default) and
+`extra` (DER certificates). The bundled Mozilla roots are always trusted, so
+trust only ever adds. `TlsTrust::load_pem_file` reads a PEM file of at most
+1 MiB and fails closed: a private key, a non-certificate block or a damaged
+block refuses the whole file. `Engine::set_tls_trust` applies it. Trust is
+configured per user only and never from a collection file, so opening a
+collection cannot widen trust. The GUI keeps it in `settings.toml` `[tls]`
+(`system_trust`, `ca_bundle`) and changes it from three palette commands;
+`wisp-cli run` never reads `settings.toml` and takes `--ca-bundle` and
+`--no-system-trust` instead, exiting 3 on an unusable bundle. A request's
+`verify_tls = false` remains the per-request last resort.
+
+**Compare.** `crates/service/src/compare.rs` (`wisp-service`) compares two
+history entries: status, headers and a structural JSON body diff, with the
+collection's `[compare] ignore` list applied. It is pure and never calls an
+incomplete side equal: it uses the entries' `evidence` to report a body that
+was not stored, was truncated or is missing, and entries from before 0.5.0 (no
+`evidence`) are marked as such. The app renders it in
+`crates/app/src/ui/compare.rs`.
+
+**Collection binding and its trust assumption.** An environment that keeps
+secrets in the OS keychain is tied to a collection by a binding (a registry
+row in the per-user data dir and a marker in the collection root). A second
+checkout of a bound repository, for example a linked git worktree, binds in one
+click only when git's own records prove it: the common git dir must lie outside
+every collection root and the worktree entry must point back at the folder.
+Trust assumption (99-AC65): a planted `.git` at a bound collection root that is
+also the repo root cannot be detected, because that `.git` is the anchor
+Wisp would check against. Do not bind a collection that arrived by zip or sync
+from a source you do not trust. Verification also fails closed, so it falls back
+to the full bind prompt, when `git worktree move` or `git worktree repair`
+(git before 2.48) rewrote only the entry's `gitdir` file, when a case-insensitive
+macOS path differs in case (`WORK` against `work`), or when the worktree sits
+under another bound folder (the nesting rule).
 
 ## Boundaries that must not be crossed
 
