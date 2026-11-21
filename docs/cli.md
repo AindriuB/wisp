@@ -43,6 +43,7 @@ commands:
   inspect <collection> [--env <name>]
   explain <collection> <request-path> [--env <name>]
   run <collection> <request-path> [--env <name>] [--keychain] [--history]
+      [--ca-bundle <file>] [--no-system-trust]
   snapshot <collection> [--env <name>] [--request <request-path>] [--recent <n>]
 
 options:
@@ -50,6 +51,8 @@ options:
   --env <name> select an environment (also --env=<name>)
   --keychain   (run) load keychain-backed secrets
   --history    (run) append a history entry
+  --ca-bundle <file>  (run) also trust the CA certificates in a PEM file
+  --no-system-trust   (run) do not trust the operating system's store
   --request <request-path>  (snapshot) include that request's explain document
   --recent <n> (snapshot) include the last n history entries, 1 to 50
   --version    print "wisp-cli <version>"
@@ -104,7 +107,11 @@ environment layer is applied.
 JSON fields: `schema`, `command`, `request`, `environment` (`name`, `keychain`,
 `secrets` as `{ name, present }`; null without `--env`), `method`, `url`,
 `params`, `headers`, `auth`, `settings`, `body`, `variables`, `problems` and
-`warnings`. Display text is a list of parts. Each part is an object tagged by a
+`warnings`. `body.kind` is one of `none`, `JSON`, `text`, `XML`, `graphql`,
+`form`, `multipart` or `file`; `graphql` is a request with `[body] type =
+"graphql"` (a query and a variables string). `inspect` does not list body
+kinds: it counts such a request as a valid request, where Wisp 0.4.0 would
+count it as invalid. Display text is a list of parts. Each part is an object tagged by a
 `kind` key, one of `text` (`text`), `secret` (`name`, `resolved`), `dynamic`
 (`name`) or `hidden` (`reason` of `credential`, `userinfo` or `too-long`), for
 example `{"kind":"text","text":"..."}` and
@@ -146,6 +153,13 @@ wisp-cli run ./shop orders/create.toml --env staging --json
 - **`--history`** appends one history entry as the GUI would, only when the
   collection already has an id; `run` never creates one. Without an id the
   result says `history: skipped (collection has no id)`. Off by default.
+- **TLS trust.** `run` never reads the GUI's `settings.toml`; trust comes from
+  flags only. By default it trusts the bundled Mozilla roots and the operating
+  system's store. `--ca-bundle <file>` adds the certificates in a PEM file
+  (at most 1 MiB, certificates only; a private key or any other block refuses
+  the whole file). `--no-system-trust` leaves out the operating system's store;
+  the bundled roots stay. A bundle that is missing, unreadable or refused exits 3
+  before anything is prepared or sent. Both flags are accepted only by `run`.
 - **Status.** The status is acceptable when it is in the request's
   `expected_status`, or, without one, below 400. Redirects are followed per the
   request's settings before the check. A `status` assertion is separate: it
@@ -201,6 +215,13 @@ descriptions at 1,000. The whole document is at most 1 MiB. Over that, parts
 are dropped in this order, each drop named in `truncated`: `recent`,
 `findings`, `tree` entries from the end, the `request` detail (replaced by
 `{"omitted":true}`), then each environment's variable list (the count is kept).
+
+The `truncated` list also names the bound that was hit: `environments`,
+`environment_variables`, `request_variables` and `request_headers` for the
+count limits above, plus `tree`, `findings`, `request` and `recent` for the
+drops. An environment that cannot be read adds `environment:<name>` (the name
+is cut at 200 characters) and a note on stderr. In the minimal fallback below
+that entry is dropped and the stderr note stays.
 
 **Fallback.** If it is still over 1 MiB, only `schema`, `command`,
 `wisp_cli`, `source`, the collection info, a count per section and `truncated`
