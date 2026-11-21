@@ -20,7 +20,7 @@ than no plan.
 
 ### v0.6.0 (spec agreed 2026-11-21)
 
-Spec: `docs/plan/specs/2026-11-21-wisp-0-6-0.md` (lean-up and polish: visual language, body rendering and highlighting, resolved-URL preview, one Variables view, menu bar, first-run state). The user accepted all recommendations for Q1-Q9, including keeping the resolver's variable precedence. Next is `/plan`. 0.5.0 still awaits the user's macOS hand test, tag and publish.
+Spec: `docs/plan/specs/2026-11-21-wisp-0-6-0.md` (lean-up and polish: visual language, body rendering and highlighting, resolved-URL preview, one Variables view, menu bar, first-run state). The user accepted all recommendations for Q1-Q9, including keeping the resolver's variable precedence. Next is `/plan`.
 
 ### v0.5.0 (spec agreed 2026-11-19)
 
