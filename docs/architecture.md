@@ -265,16 +265,24 @@ was not stored, was truncated or is missing, and entries from before 0.5.0 (no
 secrets in the OS keychain is tied to a collection by a binding (a registry
 row in the per-user data dir and a marker in the collection root). A second
 checkout of a bound repository, for example a linked git worktree, binds in one
-click only when git's own records prove it: the common git dir must lie outside
-every collection root and the worktree entry must point back at the folder.
+click only when git's own records prove it. Only a bound main checkout, whose
+`.git` is a real directory, anchors verification; the new folder's `.git` file
+must lead to a worktree entry directly under that anchor's `.git/worktrees/`,
+and the entry must point back at the folder. The anchor's own `.git` is
+accepted as the common dir. A common dir nested anywhere else inside a
+collection root (of any collection) is refused, because that is content the
+root's author controls and not a repository's own `.git` (the nesting rule). It
+is a property of where the repository's common dir sits, not of where the
+worktree sits.
 Trust assumption (99-AC65): a planted `.git` at a bound collection root that is
 also the repo root cannot be detected, because that `.git` is the anchor
 Wisp would check against. Do not bind a collection that arrived by zip or sync
 from a source you do not trust. Verification also fails closed, so it falls back
 to the full bind prompt, when `git worktree move` or `git worktree repair`
 (git before 2.48) rewrote only the entry's `gitdir` file, when a case-insensitive
-macOS path differs in case (`WORK` against `work`), or when the worktree sits
-under another bound folder (the nesting rule).
+macOS path differs in case (`WORK` against `work`), or when the nesting rule
+refuses the common dir (for example bound collections `~/work` and
+`~/work/repo`, with a worktree of `~/work/repo` elsewhere).
 
 ## Boundaries that must not be crossed
 
