@@ -1,9 +1,9 @@
 {
-  "run": "https://github.com/AindriuB/wisp/actions/runs/44926945513",
-  "run_id": 44926945513,
-  "built_commit": "3a52ac10fa699e24e26ed09e0bd8ce5ab3f9a814",
+  "run": "https://github.com/AindriuB/wisp/actions/runs/44929534630",
+  "run_id": 44929534630,
+  "built_commit": "58d75d8498fac40e4bcc91c6e87839e2500c2bb5",
   "conclusion": "success on every target",
-  "note": "measure.yml dispatched on main 3a52ac1 with tasks 183-196 and 199 merged. GUI built alone and with the CLI are identical on every target.",
+  "note": "measure.yml dispatched on main 58d75d8 (0.5.0 head: tasks 183-197 and 199 merged; byte-identical to the earlier run 44926945513 on 3a52ac1, as PR #165 was docs only). GUI built alone and with the CLI are identical on every target.",
   "baseline": {
     "v0_4_0": "scripts/measure/results/v0.4.0-wave-3-size.json (run 44593845270)",
     "task_184": "scripts/measure/results/v0.5.0-trust-size.json (run 44626294433)"
