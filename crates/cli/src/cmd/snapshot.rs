@@ -4,7 +4,6 @@
 
 use std::path::Path;
 
-use serde::Serialize;
 use wisp_storage::collection::read_collection_id;
 use wisp_storage::data_dir::DataDir;
 use wisp_storage::environment::{environment_info, list_environments};
@@ -51,16 +50,30 @@ fn mark(truncated: &mut Vec<String>, name: &str) {
 }
 
 /// Serialised size as `--json` prints it.
-fn size<T: Serialize>(doc: &T) -> usize {
+#[cfg(test)]
+fn size<T: serde::Serialize>(doc: &T) -> usize {
     serde_json::to_string_pretty(doc).map_or(usize::MAX, |s| s.len() + 1)
 }
 
-/// Bytes written, nothing kept.
-struct Count(usize);
+/// Bytes written, nothing kept. Refuses further writes once past `limit`, so a renderer
+/// stops instead of producing a document nobody will use.
+struct Count {
+    n: usize,
+    limit: usize,
+}
+
+impl Count {
+    fn new(limit: usize) -> Self {
+        Self { n: 0, limit }
+    }
+}
 
 impl std::io::Write for Count {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0 += b.len();
+        self.n = self.n.saturating_add(b.len());
+        if self.n > self.limit {
+            return Err(std::io::Error::other("over the limit"));
+        }
         Ok(b.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -68,17 +81,25 @@ impl std::io::Write for Count {
     }
 }
 
-/// The larger of the two renderings, so the bound holds whichever format is printed.
-/// The text form escapes control characters and can be longer than the JSON.
-fn fsize(doc: &SnapshotDoc) -> usize {
-    let mut c = Count(0);
-    let text = crate::output::snapshot_text(&mut c, doc).map_or(usize::MAX, |()| c.0);
-    size(doc).max(text)
+/// The larger of the two renderings, so the bound holds whichever format is printed; the
+/// text form escapes control characters and can be longer than the JSON. Rendering stops
+/// once a form is past `limit`, and the result is then `usize::MAX`.
+fn fsize(doc: &SnapshotDoc, limit: usize) -> usize {
+    let mut c = Count::new(limit);
+    if crate::output::snapshot_text(&mut c, doc).is_err() {
+        return usize::MAX;
+    }
+    let mut j = Count::new(limit);
+    if serde_json::to_writer_pretty(&mut j, doc).is_err() {
+        return usize::MAX;
+    }
+    c.n.max(j.n.saturating_add(1))
 }
 
 fn environments(
     root: &Path,
     truncated: &mut Vec<String>,
+    notes: &mut Vec<String>,
 ) -> Result<(Vec<EnvSnapshot>, usize), Failure> {
     let mut names = list_environments(root).map_err(|e| Failure::Unreadable(e.to_string()))?;
     names.sort();
@@ -92,7 +113,14 @@ fn environments(
         .map(|n| {
             let mut vars = environment_info(root, n)
                 .map(|i| i.var_names.into_iter().chain(i.secret_names).collect())
-                .unwrap_or_else(|_| Vec::new());
+                .unwrap_or_else(|_| {
+                    mark(truncated, &format!("environment:{}", cap(n)));
+                    notes.push(format!(
+                        "environment {} could not be read; its variables are not listed",
+                        cap(n)
+                    ));
+                    Vec::new()
+                });
             vars.sort();
             vars.dedup();
             let variable_count = vars.len();
@@ -200,7 +228,7 @@ fn fit_tree(doc: &mut SnapshotDoc, limit: usize) {
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
         doc.tree = all[..mid].to_vec();
-        if fsize(&*doc) <= limit {
+        if fsize(&*doc, limit) <= limit {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -221,7 +249,7 @@ fn build(
     let mut truncated = Vec::new();
     let mut notes = Vec::new();
 
-    let (environments, env_total) = environments(collection, &mut truncated)?;
+    let (environments, env_total) = environments(collection, &mut truncated, &mut notes)?;
 
     if ins.truncated {
         mark(&mut truncated, "tree");
@@ -296,28 +324,28 @@ struct Counts {
 
 /// Drop, in the spec's order, until the document fits `limit`; else the minimal form.
 fn finish(mut doc: SnapshotDoc, counts: Counts, mut notes: Vec<String>, limit: usize) -> Snapshot {
-    let mut fits = fsize(&doc) <= limit;
+    let mut fits = fsize(&doc, limit) <= limit;
     if !fits && doc.recent.as_ref().is_some_and(|r| !r.is_empty()) {
         doc.recent = Some(Vec::new());
         mark(&mut doc.truncated, "recent");
-        fits = fsize(&doc) <= limit;
+        fits = fsize(&doc, limit) <= limit;
     }
     if !fits && !doc.validation.findings.is_empty() {
         doc.validation.findings.clear();
         doc.validation.findings_truncated = true;
         mark(&mut doc.truncated, "findings");
-        fits = fsize(&doc) <= limit;
+        fits = fsize(&doc, limit) <= limit;
     }
     if !fits && !doc.tree.is_empty() {
         fit_tree(&mut doc, limit);
         doc.tree_truncated = true;
         mark(&mut doc.truncated, "tree");
-        fits = fsize(&doc) <= limit;
+        fits = fsize(&doc, limit) <= limit;
     }
     if !fits && matches!(doc.request, Some(RequestSlot::Doc(_))) {
         doc.request = Some(RequestSlot::Omitted { omitted: true });
         mark(&mut doc.truncated, "request");
-        fits = fsize(&doc) <= limit;
+        fits = fsize(&doc, limit) <= limit;
     }
     if !fits {
         let mut any = false;
@@ -330,7 +358,7 @@ fn finish(mut doc: SnapshotDoc, counts: Counts, mut notes: Vec<String>, limit: u
         if any {
             mark(&mut doc.truncated, "environment_variables");
         }
-        fits = fsize(&doc) <= limit;
+        fits = fsize(&doc, limit) <= limit;
     }
     if fits {
         return Snapshot {
@@ -428,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn text_rendering_is_bounded_too() {
+    fn snapshot_text_rendering_is_bounded_too() {
         // A bidi mark is 3 bytes in JSON and 10 once the text form escapes it.
         let mut d = doc(40);
         for n in &mut d.tree {
@@ -436,16 +464,16 @@ mod tests {
         }
         let limit = size(&d) + 100;
         assert!(size(&d) <= limit);
-        let mut c = Count(0);
+        let mut c = Count::new(usize::MAX);
         crate::output::snapshot_text(&mut c, &d).unwrap();
-        assert!(c.0 > limit, "text {} must exceed {limit}", c.0);
+        assert!(c.n > limit, "text {} must exceed {limit}", c.n);
         let s = finish(d, counts(40), Vec::new(), limit);
         let Out::Full(f) = s.doc else {
             panic!("expected a trimmed full document")
         };
         assert!(f.tree.len() < 40);
         assert!(f.truncated.contains(&"tree".to_owned()));
-        assert!(fsize(&f) <= limit);
+        assert!(fsize(&f, limit) <= limit);
     }
 
     #[test]
@@ -470,5 +498,35 @@ mod tests {
         assert!(f.truncated.contains(&"tree".to_owned()));
         assert!(size(&f) <= full - 100);
         assert_eq!(f.tree[0].path, "r0.toml");
+    }
+
+    #[test]
+    fn snapshot_fallback_names_request_and_recent_when_present() {
+        let mut d = doc(30);
+        d.request = Some(RequestSlot::Omitted { omitted: true });
+        d.recent = Some(Vec::new());
+        let mut c = counts(30);
+        c.request = Some(1);
+        c.recent = Some(4);
+        let s = finish(d, c, Vec::new(), 300);
+        let Out::Minimal(m) = s.doc else {
+            panic!("expected the minimal form")
+        };
+        assert_eq!(m.counts.request, Some(1));
+        assert_eq!(m.counts.recent, Some(4));
+        for name in ["environments", "tree", "findings", "request", "recent"] {
+            assert!(m.truncated.contains(&name.to_owned()), "{name}");
+        }
+    }
+
+    #[test]
+    fn snapshot_counting_writer_stops_past_the_limit() {
+        let d = doc(40);
+        let mut full = Count::new(usize::MAX);
+        crate::output::snapshot_text(&mut full, &d).unwrap();
+        let mut c = Count::new(100);
+        assert!(crate::output::snapshot_text(&mut c, &d).is_err());
+        assert!(c.n < full.n, "stopped at {} of {}", c.n, full.n);
+        assert_eq!(fsize(&d, 100), usize::MAX);
     }
 }

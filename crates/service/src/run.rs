@@ -938,10 +938,10 @@ mod tests {
 
     #[test]
     fn run_keychain_canary_never_leaks_on_exits_0_1_4_5_6_7() {
-        let closed = {
-            let l = TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap()
-        };
+        // Port 0 is never connectable: connect() to it fails on Linux (refused), macOS and
+        // Windows (address not available), so the case cannot race with a listener that
+        // takes a freed ephemeral port (the cause of the old exit-5 flake).
+        let closed: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
         let slow = "[settings]\ntimeout_ms = 300\n";
         let cases: [(&str, std::net::SocketAddr, &str, &str, RunEnd); 6] = [
             ("exit 0", server(), "GET", "", RunEnd::Completed),
@@ -987,6 +987,26 @@ mod tests {
             let store = bound_store(&f);
             let report = run_once(input(&f, true, true, Some(Box::new(Shared(store))))).unwrap();
             assert_eq!(report.end, end, "{what}");
+            match what {
+                "exit 0" => {
+                    assert_eq!(report.status, Some(200), "{what}");
+                    assert_eq!(report.status_ok, Some(true), "{what}");
+                    assert!(report.checks.is_empty(), "{what}");
+                }
+                "exit 1" => {
+                    assert_eq!(report.checks.len(), 1, "{what}");
+                    assert!(
+                        matches!(report.checks[0].result.verdict, Verdict::Fail { .. }),
+                        "{what}: {report:?}"
+                    );
+                }
+                "exit 7" => {
+                    assert_eq!(report.status, Some(200), "{what}");
+                    assert_eq!(report.status_ok, Some(false), "{what}");
+                    assert!(report.checks.is_empty(), "{what}");
+                }
+                _ => {}
+            }
             let shown = format!("{report:?}");
             assert!(!shown.contains("CANARY_KC"), "{what}: {shown}");
             let h = history_text(&f);

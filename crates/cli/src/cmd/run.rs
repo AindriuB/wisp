@@ -268,4 +268,56 @@ mod tests {
         assert!(t.system);
         assert!(t.extra.is_empty());
     }
+
+    fn not_prepared(problems: Vec<RunProblem>) -> RunReport {
+        RunReport {
+            request: "a.toml".into(),
+            environment: Some("prod".into()),
+            method: Method::Get,
+            url: "http://h.test/{secret kc}".into(),
+            end: RunEnd::NotPrepared,
+            problems,
+            delivery: Delivery::NotSent,
+            retry_safe: true,
+            status: None,
+            reason: None,
+            expected_status: Vec::new(),
+            status_ok: None,
+            ttfb: None,
+            total: None,
+            size: None,
+            checks: Vec::new(),
+            dynamics: Vec::new(),
+            history: HistoryStatus::SkippedNotSent,
+        }
+    }
+
+    #[test]
+    fn run_missing_secret_renders_in_text_and_json_without_a_value() {
+        let mut report = not_prepared(vec![RunProblem::MissingSecret { name: "kc".into() }]);
+        // A value that must never surface: the problem line names the secret, not a value.
+        report.reason = Some("CANARY-reason".into());
+        let doc = map(&report);
+        assert_eq!(doc.exit, NOT_PREPARED);
+        let mut json = Vec::new();
+        crate::output::json(&mut json, &doc).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert_eq!(v["result"], "not_prepared");
+        assert_eq!(v["problems"][0]["kind"], "missing-secret");
+        assert_eq!(v["problems"][0]["name"], "kc");
+        assert_eq!(
+            v["problems"][0]["message"],
+            "secret `kc` has no value in the keychain"
+        );
+        let mut text = Vec::new();
+        crate::output::run_text(&mut text, &doc).unwrap();
+        let text = String::from_utf8(text).unwrap();
+        assert!(
+            text.contains("problem: missing-secret kc: secret `kc` has no value in the keychain"),
+            "{text}"
+        );
+        for out in [String::from_utf8(json).unwrap(), text] {
+            assert!(!out.contains("CANARY"), "{out}");
+        }
+    }
 }
