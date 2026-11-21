@@ -51,3 +51,12 @@ checklist. The version bump, tag and publishing stay with the user (D-I).
 
 ## Out of scope
 - The version bump, tag, publishing and deleting the draft (all the user's); Windows and Ubuntu hand tests (D-I); any size cut.
+
+## Wave stopped — step 1 — AC3 needs user approval to dispatch release.yml (draft_release=true) on main at 3a52ac10fa699e24e26ed09e0bd8ce5ab3f9a814; AC1, AC2 done (measure run 44926945513), branch pushed, no PR yet
+
+## Wave resumed — user approved (2026-11-21, in chat: "Yes, run it") the draft release.yml dispatch; main moved to 58d75d8 (docs-only PR #165), so re-run measure.yml on that head first, then dispatch release.yml draft_release=true on the same head
+
+## Wave verified — a05e3bb018370f77d43d5daffca9d89a70ade47b
+
+## Outcome
+Landed on `task/198-measure-and-release-dry-run`. Measure run 44929534630 and release dry run 44930780226 (`draft_release=true`) both succeeded on main 58d75d8. Windows GUI 15,823,872 B: 76,128 B under the 15,900,000 B soft line and 176,128 B under the 16,000,000 B gate; every CLI under 7,340,032 B (Linux tightest, 856,968 B headroom). Nothing was cut. The only file added is `scripts/measure/results/v0.5.0-wave-3-size.json`. The draft release `dryrun-44930780226` is left for the user to delete; the AC4 macOS hand-test checklist is in the PR body.

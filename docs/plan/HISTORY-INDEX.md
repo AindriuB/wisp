@@ -20,6 +20,7 @@ no row is one `planner` cannot find, and will re-plan.
 
 | Date | Task IDs | Summary | Heading (grep this exact string) |
 |---|---|---|---|
+| 2026-11-21 | 198 | 0.5.0 head measured (Windows GUI 15,823,872 B, under soft line and gate; CLIs under 7 MiB) and release dry run green with three archives | ## 2026-11-21 — 0.5.0 size measured and release dry run (task 198) |
 | 2026-11-21 | 197 | README, cli.md and architecture.md match 0.5.0 (compare, GraphQL, Postman checks, private CA trust, macOS PATH, binding trust assumptions); 99 hardening ACs ticked | ## 2026-11-21 — 0.5.0 user and reader docs (task 197) |
 | 2026-11-20 | 196 | exit-5 canary flake fixed (port 0, not a dropped ephemeral port); snapshot names an unreadable environment; `== recent ==` shows request paths; `fsize` bounded; boundary check catches path-qualified and aliased `resolve` | ## 2026-11-20 — CLI `run` flake fixed and CLI follow-ups closed (task 196) |
 | 2026-11-20 | 195 | OpenAPI example budget charged through a size-limited writer; linear name uniqueness and import stem picking (hinted `ops.rs`); `url_host` and `split_userinfo` credential carve-outs closed; own error for a missing import folder | ## 2026-11-20 — OpenAPI importer and URL credential hardening, H4b (task 195) |
