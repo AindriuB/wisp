@@ -1,0 +1,40 @@
+{
+  "run": "https://github.com/AindriuB/wisp/actions/runs/44926945513",
+  "run_id": 44926945513,
+  "built_commit": "3a52ac10fa699e24e26ed09e0bd8ce5ab3f9a814",
+  "conclusion": "success on every target",
+  "note": "measure.yml dispatched on main 3a52ac1 with tasks 183-196 and 199 merged. GUI built alone and with the CLI are identical on every target.",
+  "baseline": {
+    "v0_4_0": "scripts/measure/results/v0.4.0-wave-3-size.json (run 44593845270)",
+    "task_184": "scripts/measure/results/v0.5.0-trust-size.json (run 44626294433)"
+  },
+  "windows_gate_bytes": 16000000,
+  "windows_soft_line_bytes": 15900000,
+  "windows_gui_status": "UNDER the 15,900,000 B soft line by 76,128 B; UNDER the 16,000,000 B gate by 176,128 B. Nothing cut.",
+  "cli_limit_bytes": 7340032,
+  "targets": {
+    "aarch64-apple-darwin": {
+      "gui_bytes": 12067072, "cli_bytes": 3667424,
+      "baseline_0_4_0_gui_bytes": 11901136, "gui_delta_vs_0_4_0_bytes": 165936,
+      "baseline_184_gui_bytes": 11901152, "gui_delta_vs_184_bytes": 165920,
+      "baseline_0_4_0_cli_bytes": 3535072, "cli_delta_vs_0_4_0_bytes": 132352,
+      "cli_limit_bytes": 7340032, "cli_headroom_bytes": 3672608
+    },
+    "x86_64-pc-windows-msvc": {
+      "gui_bytes": 15823872, "cli_bytes": 4346880,
+      "baseline_0_4_0_gui_bytes": 15616000, "gui_delta_vs_0_4_0_bytes": 207872,
+      "baseline_184_gui_bytes": 15616512, "gui_delta_vs_184_bytes": 207360,
+      "baseline_0_4_0_cli_bytes": 4263424, "cli_delta_vs_0_4_0_bytes": 83456,
+      "under_gate": true, "over_soft_line": false,
+      "gate_headroom_bytes": 176128, "soft_line_headroom_bytes": 76128,
+      "cli_limit_bytes": 7340032, "cli_headroom_bytes": 2993152
+    },
+    "x86_64-unknown-linux-gnu": {
+      "gui_bytes": 26523592, "cli_bytes": 6483064,
+      "baseline_0_4_0_gui_bytes": 26303048, "gui_delta_vs_0_4_0_bytes": 220544,
+      "baseline_184_gui_bytes": 26304968, "gui_delta_vs_184_bytes": 218624,
+      "baseline_0_4_0_cli_bytes": 6391544, "cli_delta_vs_0_4_0_bytes": 91520,
+      "cli_limit_bytes": 7340032, "cli_headroom_bytes": 856968
+    }
+  }
+}
