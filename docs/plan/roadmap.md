@@ -173,6 +173,12 @@ Size plan: GUI +60-95 KB (diff +40-60, GraphQL +20-35). Needs D-1 resolved; othe
 
 Exit criteria: diff states truncation/missing evidence explicitly and applies user ignore list; a GraphQL request round-trips to TOML; the importer translates the closed set and warns on the rest; size gate per D-1; macOS hand test (others as available, notes say which); 🔒 items for H3b/H4b closed.
 
+### 0.6.0 "Lean-up and polish"
+
+Theme: an intuitive, polished app: a new visual language, one Variables view, a full menu bar, syntax highlighting, and a resolved-URL preview. The design is in `docs/plan/specs/2026-11-21-wisp-0-6-0.md` (DRAFT until the user answers its open questions).
+
+Size: a goal, not a gate (user decision 2026-11-21, relaxes D-1). Windows GUI and CLI sizes are measured per wave and reported in the release notes; a jump of more than about 250 KB in one task needs a line of justification; there is no hard stop. The earlier "roughly size-neutral" aim no longer applies.
+
 ## Dependency chain
 
 - Theme-palette merge -> 0.3.0 wave 2 UI -> 1M measure baseline.
